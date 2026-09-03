@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="CatClawVideo.Core/CatClawVideo.Core.csproj" />
+  <Project Path="CatClawVideo.Data/CatClawVideo.Data.csproj" />
+  <Project Path="CatClawVideo.Maui/CatClawVideo.Maui.csproj">
+    <Deploy />
+  </Project>
+</Solution>

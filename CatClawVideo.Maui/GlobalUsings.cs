@@ -1,0 +1,10 @@
+global using System.Text;
+global using System.Text.Json;
+global using CatClawVideo.Core.Models;
+global using CatClawVideo.Core.Interfaces;
+global using CatClawVideo.Data;
+global using Microsoft.Maui;
+global using Microsoft.Maui.Controls;
+global using Microsoft.Maui.Dispatching;
+global using Microsoft.Maui.Graphics;
+global using Microsoft.Maui.Hosting;

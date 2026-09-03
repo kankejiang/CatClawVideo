@@ -1,0 +1,73 @@
+﻿<?xml version="1.0" encoding="UTF-8" ?>
+<ContentView xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="CatClawVideo.Maui.Pages.SettingsPage"
+             BackgroundColor="Transparent">
+
+    <ScrollView>
+        <VerticalStackLayout Padding="24,16,24,24" Spacing="16">
+
+            <Label Text="设置"
+                   FontSize="28"
+                   FontFamily="OpenSansSemibold"
+                   TextColor="{DynamicResource TextPrimaryColor}"
+                   Margin="0,8,0,0" />
+
+            <!-- ═══ 外观 ═══ -->
+            <Border StrokeThickness="1"
+                    StrokeShape="RoundRectangle 20"
+                    BackgroundColor="{DynamicResource CardBackgroundColor}"
+                    Stroke="{DynamicResource DividerColor}"
+                    Padding="20">
+                <VerticalStackLayout Spacing="16">
+
+                    <Label Text="外观"
+                           FontSize="16"
+                           FontFamily="OpenSansSemibold"
+                           TextColor="{DynamicResource TextPrimaryColor}" />
+
+                    <!-- 主题色 -->
+                    <VerticalStackLayout Spacing="10">
+                        <Label Text="主题色"
+                               FontSize="13"
+                               TextColor="{DynamicResource TextSecondaryColor}" />
+                        <HorizontalStackLayout x:Name="ThemeSwatches" Spacing="14" />
+                    </VerticalStackLayout>
+
+                    <!-- 深浅模式 -->
+                    <VerticalStackLayout Spacing="10">
+                        <Label Text="深浅模式"
+                               FontSize="13"
+                               TextColor="{DynamicResource TextSecondaryColor}" />
+                        <HorizontalStackLayout x:Name="DarkModeChips" Spacing="10" />
+                    </VerticalStackLayout>
+
+                </VerticalStackLayout>
+            </Border>
+
+            <!-- ═══ 关于 ═══ -->
+            <Border StrokeThickness="1"
+                    StrokeShape="RoundRectangle 20"
+                    BackgroundColor="{DynamicResource CardBackgroundColor}"
+                    Stroke="{DynamicResource DividerColor}"
+                    Padding="20">
+                <VerticalStackLayout Spacing="10">
+                    <Label Text="关于"
+                           FontSize="16"
+                           FontFamily="OpenSansSemibold"
+                           TextColor="{DynamicResource TextPrimaryColor}" />
+                    <Label Text="猫爪影视 v0.1.0"
+                           FontSize="13"
+                           TextColor="{DynamicResource TextSecondaryColor}" />
+                    <Label Text="跨平台影视播放器（Android / Windows），后续将兼容 TVBox 单仓源与影视仓多仓源，支持站点订阅、分类浏览、跨站搜索与多线路播放。"
+                           FontSize="13"
+                           LineBreakMode="WordWrap"
+                           TextColor="{DynamicResource TextHintColor}" />
+                </VerticalStackLayout>
+            </Border>
+
+        </VerticalStackLayout>
+    </ScrollView>
+
+</ContentView>
+

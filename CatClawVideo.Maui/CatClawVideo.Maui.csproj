@@ -1,0 +1,114 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFrameworks>net11.0-android</TargetFrameworks>
+		<TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('windows'))">$(TargetFrameworks);net11.0-windows10.0.19041.0</TargetFrameworks>
+
+		<OutputType>Exe</OutputType>
+		<RootNamespace>CatClawVideo.Maui</RootNamespace>
+		<UseMaui>true</UseMaui>
+		<SingleProject>true</SingleProject>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+		<LangVersion>preview</LangVersion>
+
+		<ApplicationTitle>猫爪影视</ApplicationTitle>
+		<ApplicationId>com.catclaw.video</ApplicationId>
+		<ApplicationDisplayVersion>0.1.0</ApplicationDisplayVersion>
+		<ApplicationVersion>1</ApplicationVersion>
+
+		<!-- Android 打包：禁用快速部署，避免 FastDev 状态冲突（同 CatClawMusic 实测结论） -->
+		<AndroidUseFastDeployment>false</AndroidUseFastDeployment>
+		<EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
+		<AndroidPackageFormats>apk</AndroidPackageFormats>
+		<HotReloadEnabled>false</HotReloadEnabled>
+
+		<!-- Windows-specific settings -->
+		<WindowsPackageType>None</WindowsPackageType>
+		<WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+		<!-- 手写 App.generated.cs 绕 .NET 11 + WindowsAppSDK 1.7 的 XamlCompiler 退出码问题（同 CatClawMusic）。
+		     宏必须仅 Release 定义：Debug 下 XamlCompiler 正常生成 App.g.i.cs（含 Main），
+		     手写文件由下方 Compile Remove 排除，两个入口点并存会报 CS5001。 -->
+		<DefineConstants Condition="'$(Configuration)' == 'Release' And $([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+		<!-- XAML 编译器包装：XamlCompiler.exe 在 .NET 11 上编译成功但退出码为 1，用包装脚本绕过 -->
+		<XamlCompilerExePath Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">$(MSBuildProjectDirectory)\XamlCompilerWrapper.bat</XamlCompilerExePath>
+		<!-- MakePri 包装：MakePri.exe x64 版崩溃，包装脚本改用 x86 版并按输出文件判断成功 -->
+		<MakePriExeFullPath Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">$(MSBuildProjectDirectory)\MakePriWrapper.bat</MakePriExeFullPath>
+
+		<!-- Platform min versions -->
+		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">31.0</SupportedOSPlatformVersion>
+		<TargetAndroidApi Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">36</TargetAndroidApi>
+		<RuntimeIdentifiers Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">android-arm64;android-x64</RuntimeIdentifiers>
+		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</SupportedOSPlatformVersion>
+		<TargetPlatformMinVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</TargetPlatformMinVersion>
+		<!-- MAUI 11 Windows 默认 CV2 处理器在集合隐藏状态下变更时抛 COMException 闪退（dotnet/maui#36632），
+		     退回旧 ListView 处理器（同 CatClawMusic），等上游修复后再开。 -->
+		<UseWindowsCollectionView2Handler Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">false</UseWindowsCollectionView2Handler>
+
+		<!-- Android release：关闭 AOT/裁剪（.NET 11 Android CoreCLR R2R 报 XALNS7015；裁剪影响后续插件加载） -->
+		<RunAOTCompilation Condition="'$(Configuration)' == 'Release'">false</RunAOTCompilation>
+		<PublishReadyToRun Condition="'$(Configuration)' == 'Release' And $([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">false</PublishReadyToRun>
+		<PublishTrimmed Condition="'$(Configuration)' == 'Release' And $([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">false</PublishTrimmed>
+		<TrimMode Condition="'$(Configuration)' == 'Release'">partial</TrimMode>
+
+		<!-- Windows Release：不输出 .pdb/.xml 调试符号 -->
+		<DebugType Condition="'$(Configuration)' == 'Release' And $([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">None</DebugType>
+		<DebugSymbols Condition="'$(Configuration)' == 'Release' And $([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">false</DebugSymbols>
+		<GenerateDocumentationFile Condition="'$(Configuration)' == 'Release' And $([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">false</GenerateDocumentationFile>
+	</PropertyGroup>
+
+	<!-- Debug 版本使用独立 ApplicationId，支持与 Release 共存 -->
+	<PropertyGroup>
+		<ApplicationId Condition="'$(Configuration)' == 'Debug'">com.catclaw.video.debug</ApplicationId>
+		<ApplicationTitle Condition="'$(Configuration)' == 'Debug'">猫爪影视(Debug)</ApplicationTitle>
+	</PropertyGroup>
+
+	<!-- Shared project references -->
+	<ItemGroup>
+		<ProjectReference Include="..\CatClawVideo.Core\CatClawVideo.Core.csproj" />
+		<ProjectReference Include="..\CatClawVideo.Data\CatClawVideo.Data.csproj" />
+	</ItemGroup>
+
+	<!-- MAUI resources -->
+	<ItemGroup>
+		<MauiIcon Include="Platforms\Android\Resources\mipmap-xxxhdpi\ic_launcher.png" />
+		<MauiSplashScreen Include="Resources\Images\splash_transparent.svg" Color="#0B0D20" BaseSize="128,128" />
+		<MauiImage Include="Resources\Images\*" />
+		<MauiFont Include="Resources\Fonts\*" />
+		<MauiAsset Include="Resources\Raw\**" LogicalName="%(RecursiveDir)%(Filename)%(Extension)" />
+	</ItemGroup>
+
+	<!-- NuGet packages -->
+	<ItemGroup>
+		<PackageReference Include="Microsoft.Maui.Controls" Version="$(MauiVersion)" />
+		<PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+		<PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="11.0.0-preview.7.26381.103" />
+		<!-- Android 16（16KB 内存页）：SQLitePCLRaw 锁定 16KB 对齐版本（同 CatClawMusic） -->
+		<PackageReference Include="SQLitePCLRaw.bundle_green" Version="2.1.11" />
+		<PackageReference Include="SQLitePCLRaw.lib.e_sqlite3.android" Version="2.1.13" Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'" />
+	</ItemGroup>
+
+	<!-- Android-specific: Media3 ExoPlayer（视频播放器内核，版本同 CatClawMusic 已验证组合） -->
+	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">
+		<PackageReference Include="Xamarin.AndroidX.Media3.ExoPlayer" Version="1.10.1.1" />
+		<PackageReference Include="Xamarin.AndroidX.Media3.ExoPlayer.Hls" Version="1.10.1.1" />
+		<PackageReference Include="Xamarin.AndroidX.Media3.Datasource" Version="1.10.1.1" />
+		<PackageReference Include="Xamarin.AndroidX.Media3.UI" Version="1.10.1.1" />
+	</ItemGroup>
+
+	<!-- Android release signing：发布时生成 keystore 后在此配置（暂用默认 Debug 签名） -->
+
+	<!-- Windows XAML 编译修复（同 CatClawMusic）：App.generated.cs 仅 Release 参与编译（DISABLE_XAML_GENERATED_MAIN），
+	     App.InitializeComponent.fallback.cs 默认排除，XamlCompiler 极端异常未产出 App.g.i.cs 时动态启用兜底。 -->
+	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">
+		<Compile Remove="Platforms\Windows\App.generated.cs" Condition="'$(Configuration)' == 'Debug'" />
+		<Compile Remove="Platforms\Windows\App.InitializeComponent.fallback.cs" />
+	</ItemGroup>
+
+	<Target Name="EnsureAppInitializeComponent" BeforeTargets="CoreCompile" Condition="'$(Configuration)' == 'Release' And $([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">
+		<ItemGroup>
+			<Compile Include="Platforms\Windows\App.InitializeComponent.fallback.cs" Condition="!Exists('$(XamlGeneratedOutputPath)Platforms\Windows\App.g.i.cs') And !Exists('$(XamlGeneratedOutputPath)Platforms\Windows\App.g.cs')" />
+		</ItemGroup>
+	</Target>
+
+</Project>

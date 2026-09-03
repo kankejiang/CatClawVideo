@@ -1,0 +1,150 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:controls="clr-namespace:CatClawVideo.Maui.Controls"
+             x:Class="CatClawVideo.Maui.Pages.VideoPlayerPage"
+             BackgroundColor="Black"
+             NavigationPage.HasNavigationBar="False">
+
+    <Grid x:Name="PlayerRoot">
+
+        <!-- 播放器：铺满，自定义控制层 -->
+        <controls:VideoPlayerView x:Name="Player"
+                                  Aspect="AspectFit"
+                                  ShouldAutoPlay="True"
+                                  ShouldKeepScreenOn="True"
+                                  HorizontalOptions="Fill"
+                                  VerticalOptions="Fill" />
+
+        <!-- 缓冲指示 -->
+        <ActivityIndicator x:Name="BufferingIndicator"
+                           IsVisible="{Binding IsBuffering}"
+                           IsRunning="{Binding IsBuffering}"
+                           Color="{DynamicResource PrimaryColor}"
+                           WidthRequest="48" HeightRequest="48" />
+
+        <!-- 错误面板 -->
+        <VerticalStackLayout x:Name="ErrorPanel"
+                             IsVisible="{Binding IsFailed}"
+                             Spacing="14"
+                             HorizontalOptions="Center"
+                             VerticalOptions="Center"
+                             Padding="32">
+            <Label Text="播放失败"
+                   FontSize="17"
+                   FontFamily="OpenSansSemibold"
+                   TextColor="White"
+                   HorizontalTextAlignment="Center" />
+            <Label Text="{Binding ErrorMessage}"
+                   FontSize="12"
+                   TextColor="#CCFFFFFF"
+                   LineBreakMode="WordWrap"
+                   MaxLines="4"
+                   HorizontalTextAlignment="Center" />
+            <Button x:Name="RetryButton"
+                    Text="重试"
+                    CornerRadius="18"
+                    Padding="20,8"
+                    FontSize="13"
+                    TextColor="White"
+                    BackgroundColor="#33FFFFFF"
+                    Clicked="OnRetryClicked" />
+        </VerticalStackLayout>
+
+        <!-- ═══ 自定义控制层 ═══ -->
+        <Grid x:Name="ControlsOverlay"
+              RowDefinitions="Auto,*,Auto"
+              IsVisible="{Binding ControlsVisible}">
+
+            <Grid.GestureRecognizers>
+                <TapGestureRecognizer Tapped="OnSurfaceTapped" />
+            </Grid.GestureRecognizers>
+
+            <!-- 顶栏：返回 / 标题 / 横竖屏切换 -->
+            <Grid Grid.Row="0"
+                  ColumnDefinitions="Auto,*,Auto"
+                  Padding="12,10,12,10"
+                  BackgroundColor="#66000000">
+                <ImageButton Grid.Column="0"
+                             x:Name="BackButton"
+                             Source="ic_back.svg"
+                             WidthRequest="40" HeightRequest="40"
+                             CornerRadius="20"
+                             BackgroundColor="Transparent"
+                             Clicked="OnBackClicked" />
+                <Label Grid.Column="1"
+                       Text="{Binding Title}"
+                       FontSize="15"
+                       FontFamily="OpenSansSemibold"
+                       TextColor="White"
+                       LineBreakMode="TailTruncation"
+                       MaxLines="1"
+                       Margin="10,0"
+                       VerticalOptions="Center"
+                       HorizontalOptions="Center" />
+                <ImageButton Grid.Column="2"
+                             x:Name="RotateButton"
+                             Source="ic_rotate.svg"
+                             WidthRequest="40" HeightRequest="40"
+                             CornerRadius="20"
+                             BackgroundColor="Transparent"
+                             Command="{Binding ToggleLandscapeCommand}"
+                             IsVisible="False" />
+            </Grid>
+
+            <!-- 中央播放/暂停 -->
+            <ImageButton Grid.Row="1"
+                         x:Name="CenterPlayButton"
+                         Source="ic_play.svg"
+                         WidthRequest="64" HeightRequest="64"
+                         CornerRadius="32"
+                         BackgroundColor="#33000000"
+                         HorizontalOptions="Center"
+                         VerticalOptions="Center"
+                         Clicked="OnPlayPauseClicked" />
+
+            <!-- 底栏：播放/暂停 + 进度条 + 时长 -->
+            <Grid Grid.Row="2"
+                  ColumnDefinitions="Auto,Auto,*,Auto"
+                  ColumnSpacing="10"
+                  Padding="14,8,14,12"
+                  BackgroundColor="#66000000">
+                <ImageButton Grid.Column="0"
+                             x:Name="BottomPlayButton"
+                             Source="ic_pause.svg"
+                             WidthRequest="40" HeightRequest="40"
+                             CornerRadius="20"
+                             BackgroundColor="Transparent"
+                             Clicked="OnPlayPauseClicked" />
+                <Label Grid.Column="1"
+                       Text="{Binding PositionLabel}"
+                       FontSize="12"
+                       FontFamily="OpenSansSemibold"
+                       TextColor="White"
+                       VerticalOptions="Center"
+                       HorizontalOptions="Center" />
+                <Slider Grid.Column="2"
+                        x:Name="ProgressBar"
+                        MinimumTrackColor="{DynamicResource PrimaryColor}"
+                        MaximumTrackColor="#40FFFFFF"
+                        ThumbColor="White"
+                        Minimum="0"
+                        Maximum="100"
+                        Value="0"
+                        VerticalOptions="Center"
+                        DragStarted="OnSeekStarted"
+                        DragCompleted="OnSeekCompleted" />
+                <Label Grid.Column="3"
+                       Text="{Binding DurationLabel}"
+                       FontSize="12"
+                       FontFamily="OpenSansSemibold"
+                       TextColor="White"
+                       VerticalOptions="Center"
+                       HorizontalOptions="Center" />
+            </Grid>
+
+        </Grid>
+
+    </Grid>
+
+</ContentPage>

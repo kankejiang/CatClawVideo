@@ -1,0 +1,118 @@
+﻿<?xml version="1.0" encoding="UTF-8" ?>
+<ContentView xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="CatClawVideo.Maui.Pages.HomePage"
+             BackgroundColor="Transparent">
+
+    <ScrollView>
+        <VerticalStackLayout Padding="24,16,24,24" Spacing="16">
+
+            <!-- 顶部标题 -->
+            <Grid ColumnDefinitions="*,Auto" Margin="0,8,0,0">
+                <Label Grid.Column="0"
+                       Text="猫爪影视"
+                       FontSize="28"
+                       FontFamily="OpenSansSemibold"
+                       TextColor="{DynamicResource TextPrimaryColor}"
+                       VerticalOptions="Center" />
+                <Border Grid.Column="1"
+                        StrokeThickness="0"
+                        BackgroundColor="{DynamicResource ChipInactiveColor}"
+                        StrokeShape="RoundRectangle 10"
+                        Padding="10,4"
+                        VerticalOptions="Center">
+                    <Label Text="0.1.0"
+                           FontSize="11"
+                           TextColor="{DynamicResource TextSecondaryColor}" />
+                </Border>
+            </Grid>
+
+            <!-- 快速播放 -->
+            <Border StrokeThickness="1"
+                    StrokeShape="RoundRectangle 20"
+                    BackgroundColor="{DynamicResource CardBackgroundColor}"
+                    Stroke="{DynamicResource DividerColor}"
+                    Padding="20">
+                <VerticalStackLayout Spacing="12">
+                    <Label Text="快速播放"
+                           FontSize="16"
+                           FontFamily="OpenSansSemibold"
+                           TextColor="{DynamicResource TextPrimaryColor}" />
+                    <Label Text="输入直链地址（m3u8 / mp4 等）即可播放，用于验证播放链路"
+                           FontSize="13"
+                           TextColor="{DynamicResource TextSecondaryColor}" />
+                    <Frame Padding="14,10"
+                           CornerRadius="14"
+                           HasShadow="False"
+                           BackgroundColor="{DynamicResource InputBackgroundColor}">
+                        <Entry x:Name="UrlEntry"
+                               Placeholder="https://example.com/video.m3u8"
+                               PlaceholderColor="{DynamicResource TextHintColor}"
+                               Text="{Binding UrlInput, Mode=TwoWay}"
+                               TextColor="{DynamicResource TextPrimaryColor}"
+                               Keyboard="Url"
+                               ReturnType="Go"
+                               ReturnCommand="{Binding PlayCommand}"
+                               ClearButtonVisibility="WhileEditing" />
+                    </Frame>
+                    <Button Text="播 放"
+                            Command="{Binding PlayCommand}"
+                            IsEnabled="{Binding CanPlay}"
+                            FontFamily="OpenSansSemibold"
+                            TextColor="White"
+                            BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
+                            CornerRadius="24"
+                            Padding="0,14" />
+                </VerticalStackLayout>
+            </Border>
+
+            <!-- 测试流 -->
+            <Border StrokeThickness="1"
+                    StrokeShape="RoundRectangle 20"
+                    BackgroundColor="{DynamicResource CardBackgroundColor}"
+                    Stroke="{DynamicResource DividerColor}"
+                    Padding="20">
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                    <VerticalStackLayout Grid.Column="0" Spacing="4" VerticalOptions="Center">
+                        <Label Text="HLS 测试流"
+                               FontSize="15"
+                               FontFamily="OpenSansSemibold"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                        <Label Text="Apple 官方 fMP4 示例流，验证 m3u8 播放"
+                               FontSize="12"
+                               TextColor="{DynamicResource TextSecondaryColor}" />
+                    </VerticalStackLayout>
+                    <ImageButton Grid.Column="1"
+                                 Source="ic_play_9b7ed8_active"
+                                 x:Name="TestPlayButton"
+                                 WidthRequest="44" HeightRequest="44"
+                                 CornerRadius="22"
+                                 BackgroundColor="{DynamicResource GlassButtonColor}"
+                                 Command="{Binding PlayTestStreamCommand}"
+                                 VerticalOptions="Center" />
+                </Grid>
+            </Border>
+
+            <!-- 订阅源预告 -->
+            <Border StrokeThickness="1"
+                    StrokeShape="RoundRectangle 20"
+                    BackgroundColor="{DynamicResource CardBackgroundColor}"
+                    Stroke="{DynamicResource DividerColor}"
+                    Padding="20">
+                <VerticalStackLayout Spacing="10">
+                    <Label Text="订阅源 · 即将上线"
+                           FontSize="16"
+                           FontFamily="OpenSansSemibold"
+                           TextColor="{DynamicResource TextPrimaryColor}" />
+                    <Label Text="将支持导入 TVBox 单仓配置与影视仓多仓源：站点列表、分类浏览、跨站搜索、多线路选集与嗅探解析。领域模型与源抽象接口已就绪（IVodSourceProvider / ISubscriptionManager）。"
+                           FontSize="13"
+                           LineBreakMode="WordWrap"
+                           TextColor="{DynamicResource TextSecondaryColor}" />
+                </VerticalStackLayout>
+            </Border>
+
+        </VerticalStackLayout>
+    </ScrollView>
+
+</ContentView>
+

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 影视源访问（TVBox 源 / m3u8 流媒体多为 http 明文地址） -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- 播放期间防止 CPU 休眠 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <application
+        android:name=".MainApplication"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:forceDarkAllowed="false"
+        android:enableOnBackInvokedCallback="true"
+        android:resizeableActivity="true"
+        android:usesCleartextTraffic="true">
+
+        <meta-data android:name="android.max_aspect" android:value="2.4" />
+
+    </application>
+
+</manifest>

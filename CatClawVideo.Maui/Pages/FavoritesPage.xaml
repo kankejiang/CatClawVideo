@@ -1,0 +1,66 @@
+﻿<?xml version="1.0" encoding="UTF-8" ?>
+<ContentView xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="CatClawVideo.Maui.Pages.FavoritesPage"
+             BackgroundColor="Transparent">
+
+    <ScrollView>
+        <VerticalStackLayout Padding="24,16,24,24" Spacing="16">
+
+            <Label Text="收藏"
+                   FontSize="28"
+                   FontFamily="OpenSansSemibold"
+                   TextColor="{DynamicResource TextPrimaryColor}"
+                   Margin="0,8,0,0" />
+
+            <!-- 最近播放 -->
+            <Grid ColumnDefinitions="*,Auto">
+                <Label Grid.Column="0" Text="最近播放"
+                       FontSize="15"
+                       FontFamily="OpenSansSemibold"
+                       TextColor="{DynamicResource TextPrimaryColor}"
+                       VerticalOptions="Center" />
+                <Button Grid.Column="1"
+                        x:Name="ClearHistoryButton"
+                        Text="清空"
+                        FontSize="12"
+                        Padding="14,6"
+                        CornerRadius="14"
+                        TextColor="{DynamicResource TextSecondaryColor}"
+                        BackgroundColor="{DynamicResource ChipInactiveColor}"
+                        Command="{Binding ClearHistoryCommand}"
+                        IsVisible="False" />
+            </Grid>
+
+            <!-- 历史列表 -->
+            <VerticalStackLayout x:Name="HistoryList" Spacing="10" />
+
+            <Label x:Name="HistoryEmpty"
+                   Text="暂无播放记录，去首页播放一个视频吧"
+                   FontSize="13"
+                   HorizontalTextAlignment="Center"
+                   TextColor="{DynamicResource TextHintColor}"
+                   Padding="0,12" />
+
+            <!-- 我的收藏（占位） -->
+            <Label Text="我的收藏" Margin="0,8,0,0"
+                   FontSize="15"
+                   FontFamily="OpenSansSemibold"
+                   TextColor="{DynamicResource TextPrimaryColor}" />
+
+            <Border StrokeThickness="1"
+                    StrokeShape="RoundRectangle 20"
+                    BackgroundColor="{DynamicResource CardBackgroundColor}"
+                    Stroke="{DynamicResource DividerColor}"
+                    Padding="20">
+                <Label Text="订阅源功能上线后，可在影片详情页收藏影片，这里会展示追剧列表"
+                       FontSize="13"
+                       LineBreakMode="WordWrap"
+                       TextColor="{DynamicResource TextHintColor}" />
+            </Border>
+
+        </VerticalStackLayout>
+    </ScrollView>
+
+</ContentView>
+

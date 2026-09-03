@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<?xaml-comp compile="true" ?>
+<ResourceDictionary xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+                   xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml">
+
+    <!-- 默认值（启动期占位，ThemeService.ApplyTheme 会用当前主题覆盖全部键） -->
+    <Color x:Key="PrimaryColor">#9B7ED8</Color>
+    <Color x:Key="PrimaryLightColor">#E8E0FF</Color>
+    <Color x:Key="PrimaryDarkColor">#7C5DCE</Color>
+    <Color x:Key="AccentColor">#55D6FF</Color>
+
+    <Color x:Key="WindowBackgroundColor">#12102B</Color>
+    <Color x:Key="WindowBackgroundAltColor">#1E1C42</Color>
+    <Color x:Key="SurfaceColor">#2A2755</Color>
+    <Color x:Key="CardBackgroundColor">#332F5A</Color>
+    <Color x:Key="CardBackgroundStrongColor">#3A3668</Color>
+    <Color x:Key="GlassButtonColor">#12FFFFFF</Color>
+    <Color x:Key="InputBackgroundColor">#0DFFFFFF</Color>
+    <Color x:Key="InputBorderColor">#18FFFFFF</Color>
+    <Color x:Key="DividerColor">#14FFFFFF</Color>
+
+    <Color x:Key="ChipInactiveColor">#15FFFFFF</Color>
+    <Color x:Key="ChipActiveColor">#9B7ED8</Color>
+    <Color x:Key="ChipInactiveTextColor">#C8CDE8</Color>
+    <Color x:Key="ChipActiveTextColor">#FFFFFF</Color>
+
+    <Color x:Key="PrimaryButtonBackgroundColor">#889B7ED8</Color>
+
+    <Color x:Key="TextPrimaryColor">#F5F6FF</Color>
+    <Color x:Key="TextSecondaryColor">#BCC0DD</Color>
+    <Color x:Key="TextHintColor">#868CAE</Color>
+
+    <Color x:Key="TabActiveColor">#9B7ED8</Color>
+    <Color x:Key="TabInactiveColor">#FFFFFF</Color>
+    <Color x:Key="TabBarBackgroundColor">#CC1A1838</Color>
+    <Color x:Key="ProgressTrackColor">#20FFFFFF</Color>
+
+</ResourceDictionary>
