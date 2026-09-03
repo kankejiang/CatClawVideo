@@ -8,6 +8,11 @@
 
     <Grid x:Name="PlayerRoot">
 
+        <Grid.GestureRecognizers>
+            <!-- 点击画面切换控件层：挂在常驻根 Grid 上（控件层隐藏后其自身手势不生效） -->
+            <TapGestureRecognizer Tapped="OnSurfaceTapped" />
+        </Grid.GestureRecognizers>
+
         <!-- 播放器：铺满，自定义控制层 -->
         <controls:VideoPlayerView x:Name="Player"
                                   Aspect="AspectFit"
@@ -54,11 +59,8 @@
         <!-- ═══ 自定义控制层 ═══ -->
         <Grid x:Name="ControlsOverlay"
               RowDefinitions="Auto,*,Auto"
-              IsVisible="{Binding ControlsVisible}">
-
-            <Grid.GestureRecognizers>
-                <TapGestureRecognizer Tapped="OnSurfaceTapped" />
-            </Grid.GestureRecognizers>
+              IsVisible="{Binding ControlsVisible}"
+              InputTransparent="False">
 
             <!-- 顶栏：返回 / 标题 / 横竖屏切换 -->
             <Grid Grid.Row="0"
