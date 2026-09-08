@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<ContentView xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="CatClawVideo.Maui.Pages.HistoryPage"
+             BackgroundColor="Transparent">
+
+    <ScrollView>
+        <VerticalStackLayout Padding="24,16,24,24" Spacing="12">
+
+            <Grid ColumnDefinitions="*,Auto">
+                <Label Grid.Column="0" Text="播放历史" FontSize="17" FontFamily="OpenSansSemibold"
+                       TextColor="{DynamicResource TextPrimaryColor}" Margin="0,8,0,0" />
+                <Label Grid.Column="1" Text="最多保留 50 条" FontSize="11"
+                       TextColor="{DynamicResource TextHintColor}" VerticalOptions="Center" />
+            </Grid>
+
+            <VerticalStackLayout x:Name="HistoryList" Spacing="10" />
+
+            <Label x:Name="HistoryEmpty"
+                   Text="暂无播放记录，去首页挑一部影片吧"
+                   FontSize="13" HorizontalTextAlignment="Center"
+                   TextColor="{DynamicResource TextHintColor}" Padding="0,16" />
+
+        </VerticalStackLayout>
+    </ScrollView>
+
+</ContentView>

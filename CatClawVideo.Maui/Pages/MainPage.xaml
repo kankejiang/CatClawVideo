@@ -12,8 +12,7 @@
                 Padding="20,0"
                 StrokeThickness="0"
                 Stroke="{DynamicResource DividerColor}">
-            <Grid ColumnDefinitions="Auto,Auto,*,Auto" ColumnSpacing="16" HeightRequest="56">
-
+            <Grid ColumnDefinitions="Auto,Auto,Auto,*,Auto" ColumnSpacing="16" HeightRequest="56">
                 <!-- 品牌 -->
                 <HorizontalStackLayout Grid.Column="0" Spacing="10" VerticalOptions="Center">
                     <Border WidthRequest="26" HeightRequest="26"
@@ -30,24 +29,38 @@
                 </HorizontalStackLayout>
 
                 <!-- 页面 tabs -->
-                <HorizontalStackLayout Grid.Column="1" Spacing="6" VerticalOptions="Center" x:Name="NavTabs">
+                <HorizontalStackLayout Grid.Column="1" Spacing="4" VerticalOptions="Center" x:Name="NavTabs">
 
-                    <Border x:Name="NavBg0" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="18,8">
+                    <Border x:Name="NavBg0" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="16,8">
                         <Label x:Name="NavLabel0" Text="首页" FontSize="13.5" FontFamily="OpenSansSemibold" />
                         <Border.GestureRecognizers>
                             <TapGestureRecognizer Tapped="OnTabTapped" />
                         </Border.GestureRecognizers>
                     </Border>
 
-                    <Border x:Name="NavBg1" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="18,8">
-                        <Label x:Name="NavLabel1" Text="收藏" FontSize="13.5" FontFamily="OpenSansSemibold" />
+                    <Border x:Name="NavBg1" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="16,8">
+                        <Label x:Name="NavLabel1" Text="历史" FontSize="13.5" FontFamily="OpenSansSemibold" />
                         <Border.GestureRecognizers>
                             <TapGestureRecognizer Tapped="OnTabTapped" />
                         </Border.GestureRecognizers>
                     </Border>
 
-                    <Border x:Name="NavBg2" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="18,8">
-                        <Label x:Name="NavLabel2" Text="设置" FontSize="13.5" FontFamily="OpenSansSemibold" />
+                    <Border x:Name="NavBg2" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="16,8">
+                        <Label x:Name="NavLabel2" Text="收藏" FontSize="13.5" FontFamily="OpenSansSemibold" />
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnTabTapped" />
+                        </Border.GestureRecognizers>
+                    </Border>
+
+                    <Border x:Name="NavBg3" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="16,8">
+                        <Label x:Name="NavLabel3" Text="本地" FontSize="13.5" FontFamily="OpenSansSemibold" />
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnTabTapped" />
+                        </Border.GestureRecognizers>
+                    </Border>
+
+                    <Border x:Name="NavBg4" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="16,8">
+                        <Label x:Name="NavLabel4" Text="设置" FontSize="13.5" FontFamily="OpenSansSemibold" />
                         <Border.GestureRecognizers>
                             <TapGestureRecognizer Tapped="OnTabTapped" />
                         </Border.GestureRecognizers>
@@ -55,8 +68,20 @@
 
                 </HorizontalStackLayout>
 
+                <!-- 搜索入口 -->
+                <Border Grid.Column="2" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
+                        StrokeShape="RoundRectangle 16" Padding="14,8" VerticalOptions="Center">
+                    <HorizontalStackLayout Spacing="8">
+                        <Label Text="🔍" FontSize="12" VerticalOptions="Center" />
+                        <Label Text="搜索影片 / 演员" FontSize="12" TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
+                    </HorizontalStackLayout>
+                    <Border.GestureRecognizers>
+                        <TapGestureRecognizer Tapped="OnSearchTapped" />
+                    </Border.GestureRecognizers>
+                </Border>
+
                 <!-- 版本 -->
-                <Border Grid.Column="3" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
+                <Border Grid.Column="4" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
                         StrokeShape="RoundRectangle 10" Padding="10,4" VerticalOptions="Center">
                     <Label Text="0.1.0" FontSize="11" TextColor="{DynamicResource TextSecondaryColor}" />
                 </Border>

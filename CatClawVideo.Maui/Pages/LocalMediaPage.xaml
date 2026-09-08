@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<ContentView xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="CatClawVideo.Maui.Pages.LocalMediaPage"
+             BackgroundColor="Transparent">
+
+    <ScrollView>
+        <VerticalStackLayout Padding="24,16,24,24" Spacing="12">
+
+            <Grid ColumnDefinitions="*,Auto">
+                <Label Grid.Column="0" Text="本地播放" FontSize="17" FontFamily="OpenSansSemibold"
+                       TextColor="{DynamicResource TextPrimaryColor}" Margin="0,8,0,0" />
+                <Button Grid.Column="1" Text="＋ 打开本地视频" FontSize="12.5" TextColor="White"
+                        BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
+                        CornerRadius="8" Padding="14,6" Clicked="OnPickFileClicked" />
+            </Grid>
+
+            <Label Text="选择本地视频文件（mp4 / mkv / avi / mov / flv），走同一播放内核直接播放"
+                   FontSize="12" TextColor="{DynamicResource TextSecondaryColor}" />
+
+            <VerticalStackLayout x:Name="LocalList" Spacing="10" Margin="0,6,0,0" />
+
+            <Label x:Name="LocalEmpty"
+                   Text="还没有添加本地视频，点击右上角「打开本地视频」"
+                   FontSize="13" HorizontalTextAlignment="Center"
+                   TextColor="{DynamicResource TextHintColor}" Padding="0,16" />
+
+        </VerticalStackLayout>
+    </ScrollView>
+
+</ContentView>

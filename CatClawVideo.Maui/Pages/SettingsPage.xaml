@@ -20,10 +20,16 @@
                     Stroke="{DynamicResource DividerColor}"
                     Padding="20">
                 <VerticalStackLayout Spacing="10">
-                    <Label Text="订阅源管理"
-                           FontSize="16"
-                           FontFamily="OpenSansSemibold"
-                           TextColor="{DynamicResource TextPrimaryColor}" />
+                    <Grid ColumnDefinitions="*,Auto">
+                        <Label Grid.Column="0" Text="订阅源管理" FontSize="16" FontFamily="OpenSansSemibold"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                        <Label Grid.Column="1" Text="完整配置 ›" FontSize="12"
+                               TextColor="{DynamicResource PrimaryColor}" VerticalOptions="Center">
+                            <Label.GestureRecognizers>
+                                <TapGestureRecognizer Tapped="OnOpenSourceConfig" />
+                            </Label.GestureRecognizers>
+                        </Label>
+                    </Grid>
                     <Label Text="TVBox / 影视仓订阅地址，支持多仓自动识别"
                            FontSize="12"
                            TextColor="{DynamicResource TextSecondaryColor}" />

@@ -4,7 +4,7 @@ using AppTheme = CatClawVideo.Core.Interfaces.AppTheme;
 namespace CatClawVideo.Maui.Pages;
 
 /// <summary>
-/// 主页面：顶部导航栏宿主（首页/收藏/设置），tab 内容为 ContentView 从 DI 注入常驻复用。
+/// 主页面：顶部导航栏宿主（首页/历史/收藏/本地/设置），tab 内容为 ContentView 从 DI 注入常驻复用。
 /// 顶部导航 = 电视遥控横向导航友好；安卓横屏与 Windows 共用同款布局。
 /// </summary>
 public partial class MainPage : ContentPage
@@ -23,12 +23,13 @@ public partial class MainPage : ContentPage
         [AppTheme.Teal] = "26a69a",
     };
 
-    public MainPage(MainViewModel vm, IThemeService theme, HomePage home, FavoritesPage favorites, SettingsPage settings)
+    public MainPage(MainViewModel vm, IThemeService theme, HomePage home, HistoryPage history,
+        FavoritesPage favorites, LocalMediaPage local, SettingsPage settings)
     {
         InitializeComponent();
         _vm = vm;
         _theme = theme;
-        _tabs = [home, favorites, settings];
+        _tabs = [home, history, favorites, local, settings];
 
         foreach (var tab in _tabs)
         {
@@ -52,8 +53,18 @@ public partial class MainPage : ContentPage
 
     private void OnTabTapped(object? sender, TappedEventArgs e)
     {
-        var index = (sender == NavBg1) ? 1 : (sender == NavBg2) ? 2 : 0;
+        var index = (sender == NavBg1) ? 1
+            : (sender == NavBg2) ? 2
+            : (sender == NavBg3) ? 3
+            : (sender == NavBg4) ? 4
+            : 0;
         _vm.SelectTab(index);
+    }
+
+    /// <summary>顶栏搜索入口 → 搜索页</summary>
+    private async void OnSearchTapped(object? sender, TappedEventArgs e)
+    {
+        try { await Shell.Current.GoToAsync("search"); } catch { }
     }
 
     /// <summary>tab 切换入口（MainViewModel 事件）</summary>
@@ -77,13 +88,13 @@ public partial class MainPage : ContentPage
         UpdateNavTabs();
     }
 
-    /// <summary>刷新导航 tabs（选中：主题色渐变胶囊 + 白字；未选中：透明底 + 次级文字）</summary>
+    /// <summary>刷新导航 tabs（选中：主题色实底胶囊 + 白字；未选中：透明底 + 次级文字）</summary>
     private void UpdateNavTabs()
     {
         var activeHex = ThemeHex.GetValueOrDefault(_theme.CurrentTheme, "9b7ed8");
         var primary = Microsoft.Maui.Graphics.Color.FromArgb($"#{activeHex}");
-        var labels = new[] { NavLabel0, NavLabel1, NavLabel2 };
-        var bgs = new[] { NavBg0, NavBg1, NavBg2 };
+        var labels = new[] { NavLabel0, NavLabel1, NavLabel2, NavLabel3, NavLabel4 };
+        var bgs = new[] { NavBg0, NavBg1, NavBg2, NavBg3, NavBg4 };
 
         for (int i = 0; i < labels.Length; i++)
         {

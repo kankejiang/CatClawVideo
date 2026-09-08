@@ -111,4 +111,10 @@ public partial class SettingsPage : ContentView, ITabView
                 : (Color)res["ChipInactiveTextColor"];
         }
     }
+
+    /// <summary>跳转源配置页（订阅源/站点完整管理）</summary>
+    private async void OnOpenSourceConfig(object? sender, TappedEventArgs e)
+    {
+        try { await Shell.Current.GoToAsync("sourceconfig"); } catch { }
+    }
 }

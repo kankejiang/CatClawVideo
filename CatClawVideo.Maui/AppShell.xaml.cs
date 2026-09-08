@@ -14,5 +14,11 @@ public partial class AppShell : Shell
 
         // 观看页路由（详情+播放合并页；参数：title）
         Routing.RegisterRoute("watch", typeof(Pages.WatchPage));
+
+        // 搜索页（顶栏搜索框进入）
+        Routing.RegisterRoute("search", typeof(Pages.SearchPage));
+
+        // 源配置页（设置 → 站点与源配置）
+        Routing.RegisterRoute("sourceconfig", typeof(Pages.SourceConfigPage));
     }
 }

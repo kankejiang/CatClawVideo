@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="CatClawVideo.Maui.Pages.SourceConfigPage"
+             BackgroundColor="{DynamicResource WindowBackgroundColor}"
+             NavigationPage.HasNavigationBar="False">
+
+    <ScrollView>
+        <VerticalStackLayout Padding="24,14,24,28" Spacing="12">
+
+            <Grid ColumnDefinitions="Auto,Auto,*" ColumnSpacing="12">
+                <Border Grid.Column="0" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
+                        StrokeShape="RoundRectangle 12" WidthRequest="38" HeightRequest="38">
+                    <Label Text="←" FontSize="20" TextColor="{DynamicResource TextPrimaryColor}"
+                           HorizontalOptions="Center" VerticalOptions="Center" HorizontalTextAlignment="Center" />
+                    <Border.GestureRecognizers>
+                        <TapGestureRecognizer Tapped="OnBackTapped" />
+                    </Border.GestureRecognizers>
+                </Border>
+                <Label Grid.Column="1" Text="源配置" FontSize="15" FontFamily="OpenSansSemibold"
+                       TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
+            </Grid>
+
+            <!-- 订阅源管理 -->
+            <Border StrokeThickness="1" StrokeShape="RoundRectangle 16"
+                    BackgroundColor="{DynamicResource CardBackgroundColor}"
+                    Stroke="{DynamicResource DividerColor}" Padding="18">
+                <VerticalStackLayout Spacing="10">
+                    <Label Text="订阅源管理" FontSize="15" FontFamily="OpenSansSemibold"
+                           TextColor="{DynamicResource TextPrimaryColor}" />
+                    <Label Text="TVBox / 影视仓订阅地址，支持多仓自动识别（单仓 / urls 多仓）"
+                           FontSize="12" TextColor="{DynamicResource TextSecondaryColor}" />
+                    <VerticalStackLayout x:Name="SubList" Spacing="8" Margin="0,4,0,0" />
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10" Margin="0,6,0,0">
+                        <Entry Grid.Column="0" x:Name="SubEntry"
+                               Placeholder="粘贴订阅地址（TVBox json / 影视仓多仓）…"
+                               PlaceholderColor="{DynamicResource TextHintColor}"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                        <Button Grid.Column="1" Text="＋ 添加" FontSize="12.5" TextColor="White"
+                                BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
+                                CornerRadius="8" Padding="16,6" Clicked="OnAddSubClicked" />
+                    </Grid>
+                    <Label Text="订阅解析与站点拉取能力随 MacCMS Provider 一同上线，当前为界面骨架"
+                           FontSize="11" TextColor="{DynamicResource TextHintColor}" />
+                </VerticalStackLayout>
+            </Border>
+
+            <!-- 站点列表 -->
+            <Border StrokeThickness="1" StrokeShape="RoundRectangle 16"
+                    BackgroundColor="{DynamicResource CardBackgroundColor}"
+                    Stroke="{DynamicResource DividerColor}" Padding="18">
+                <VerticalStackLayout Spacing="10">
+                    <Label Text="站点列表（来自订阅解析）" FontSize="15" FontFamily="OpenSansSemibold"
+                           TextColor="{DynamicResource TextPrimaryColor}" />
+                    <VerticalStackLayout x:Name="SiteList" Spacing="0" />
+                    <Label Text="站点开关控制首页/搜索是否聚合该源；解析失败自动禁用"
+                           FontSize="11" TextColor="{DynamicResource TextHintColor}" />
+                </VerticalStackLayout>
+            </Border>
+
+        </VerticalStackLayout>
+    </ScrollView>
+
+</ContentPage>

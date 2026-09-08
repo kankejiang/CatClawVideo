@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="CatClawVideo.Maui.Pages.SearchPage"
+             BackgroundColor="{DynamicResource WindowBackgroundColor}"
+             NavigationPage.HasNavigationBar="False">
+
+    <ScrollView>
+        <VerticalStackLayout Padding="24,14,24,28" Spacing="12">
+
+            <!-- 顶栏：返回 + 搜索框 -->
+            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+                <Border Grid.Column="0" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
+                        StrokeShape="RoundRectangle 12" WidthRequest="38" HeightRequest="38">
+                    <Label Text="←" FontSize="20" TextColor="{DynamicResource TextPrimaryColor}"
+                           HorizontalOptions="Center" VerticalOptions="Center" HorizontalTextAlignment="Center" />
+                    <Border.GestureRecognizers>
+                        <TapGestureRecognizer Tapped="OnBackTapped" />
+                    </Border.GestureRecognizers>
+                </Border>
+                <Entry Grid.Column="1" x:Name="SearchEntry"
+                       Placeholder="搜索影片 / 演员…"
+                       PlaceholderColor="{DynamicResource TextHintColor}"
+                       TextColor="{DynamicResource TextPrimaryColor}"
+                       ReturnType="Search" ReturnCommand="{Binding SearchCommand}"
+                       VerticalOptions="Center" />
+                <Button Grid.Column="2" Text="搜索" FontSize="12.5" TextColor="White"
+                        BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
+                        CornerRadius="8" Padding="16,6"
+                        Command="{Binding SearchCommand}" VerticalOptions="Center" />
+            </Grid>
+
+            <!-- 热门搜索（结果为空时显示） -->
+            <VerticalStackLayout x:Name="HotSection" Spacing="10" Margin="0,10,0,0">
+                <Label Text="热门搜索" FontSize="13.5" FontFamily="OpenSansSemibold"
+                       TextColor="{DynamicResource TextPrimaryColor}" />
+                <FlexLayout x:Name="HotWords" Wrap="Wrap" JustifyContent="Start" />
+            </VerticalStackLayout>
+
+            <!-- 搜索结果 -->
+            <VerticalStackLayout x:Name="ResultSection" Spacing="10" IsVisible="False">
+                <Label Text="搜索结果" FontSize="13.5" FontFamily="OpenSansSemibold"
+                       TextColor="{DynamicResource TextPrimaryColor}" />
+                <CollectionView x:Name="ResultGrid" SelectionMode="Single">
+                    <CollectionView.ItemsLayout>
+                        <GridItemsLayout Orientation="Vertical" Span="6" VerticalItemSpacing="16" HorizontalItemSpacing="12" />
+                    </CollectionView.ItemsLayout>
+                    <CollectionView.ItemTemplate>
+                        <DataTemplate>
+                            <VerticalStackLayout Spacing="0">
+                                <Border StrokeThickness="0" StrokeShape="RoundRectangle 10"
+                                        BackgroundColor="{DynamicResource CardBackgroundColor}" HeightRequest="190">
+                                    <Grid>
+                                        <Label Text="🎬" FontSize="26" HorizontalOptions="Center" VerticalOptions="Center"
+                                               TextColor="{DynamicResource TextHintColor}" />
+                                        <Border HorizontalOptions="End" VerticalOptions="Start" Margin="0,7,7,0"
+                                                StrokeThickness="0" BackgroundColor="#80000000" StrokeShape="RoundRectangle 8" Padding="6,1">
+                                            <Label Text="{Binding Score}" FontSize="10" TextColor="#FFD76E" />
+                                        </Border>
+                                    </Grid>
+                                </Border>
+                                <Label Text="{Binding Title}" FontSize="12.5" Margin="0,7,0,0"
+                                       LineBreakMode="TailTruncation" MaxLines="1"
+                                       TextColor="{DynamicResource TextPrimaryColor}" />
+                                <Label Text="{Binding Meta}" FontSize="10.5" Margin="0,2,0,0"
+                                       TextColor="{DynamicResource TextHintColor}" />
+                            </VerticalStackLayout>
+                        </DataTemplate>
+                    </CollectionView.ItemTemplate>
+                </CollectionView>
+            </VerticalStackLayout>
+
+        </VerticalStackLayout>
+    </ScrollView>
+
+</ContentPage>

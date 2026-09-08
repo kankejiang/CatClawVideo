@@ -14,7 +14,9 @@ public partial class MainViewModel : ObservableObject
     public IReadOnlyList<TabDef> Tabs { get; } =
     [
         new("ic_home.svg", "首页"),
+        new("ic_history.svg", "历史"),
         new("ic_favorite.svg", "收藏"),
+        new("ic_folder.svg", "本地"),
         new("ic_settings.svg", "设置"),
     ];
 

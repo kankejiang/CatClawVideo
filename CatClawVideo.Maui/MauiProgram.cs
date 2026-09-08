@@ -77,6 +77,10 @@ public static class MauiProgram
         services.AddTransient<Pages.SettingsPage>();
         services.AddTransient<Pages.VideoPlayerPage>();
         services.AddTransient<Pages.WatchPage>();
+        services.AddTransient<Pages.SearchPage>();
+        services.AddTransient<Pages.SourceConfigPage>();
+        services.AddTransient<Pages.HistoryPage>();
+        services.AddTransient<Pages.LocalMediaPage>();
 
 #if DEBUG
         builder.Logging.AddDebug();
