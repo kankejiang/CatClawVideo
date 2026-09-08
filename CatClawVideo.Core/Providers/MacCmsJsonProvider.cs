@@ -12,7 +12,15 @@ namespace CatClawVideo.Core.Providers;
 /// </summary>
 public class MacCmsJsonProvider : IVodSourceProvider
 {
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(15) };
+    private static readonly HttpClient Http = CreateHttp();
+
+    /// <summary>带浏览器 UA + 20s 超时（量子源偶发慢响应，15s 会误超时）</summary>
+    private static HttpClient CreateHttp()
+    {
+        var client = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0");
+        return client;
+    }
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
     public string Id => "maccms-json";
@@ -28,8 +36,10 @@ public class MacCmsJsonProvider : IVodSourceProvider
     {
         try
         {
-            using var doc = await GetJsonAsync(BuildUrl(site.Api, "ac=list"), ct);
-            if (doc == null || !doc.RootElement.TryGetProperty("class", out var cats) || cats.ValueKind != JsonValueKind.Array)
+            var raw = await GetJsonAsync(BuildUrl(site.Api, "ac=list"), ct);
+            if (string.IsNullOrWhiteSpace(raw)) return [];
+            using var doc = JsonDocument.Parse(raw);
+            if (!doc.RootElement.TryGetProperty("class", out var cats) || cats.ValueKind != JsonValueKind.Array)
                 return [];
             var list = new List<VodCategory>();
             foreach (var c in cats.EnumerateArray())
@@ -62,9 +72,15 @@ public class MacCmsJsonProvider : IVodSourceProvider
     {
         try
         {
-            using var doc = await GetJsonAsync(BuildUrl(site.Api, query), ct);
-            if (doc == null || !doc.RootElement.TryGetProperty("list", out var list) || list.ValueKind != JsonValueKind.Array)
+            var raw = await GetJsonAsync(BuildUrl(site.Api, query), ct);
+            if (string.IsNullOrWhiteSpace(raw)) return [];
+            using var doc = JsonDocument.Parse(raw);
+            if (!doc.RootElement.TryGetProperty("list", out var list) || list.ValueKind != JsonValueKind.Array)
+            {
+                Log($"[items] 响应无 list 字段，前120字: {(raw.Length > 120 ? raw[..120] : raw)}");
                 return [];
+            }
+            Log($"[items] 解析到 {list.GetArrayLength()} 条");
             var items = new List<VodItem>();
             foreach (var it in list.EnumerateArray())
             {
@@ -82,6 +98,7 @@ public class MacCmsJsonProvider : IVodSourceProvider
                     Score = it.TryGetProperty("vod_score", out var s) && s.TryGetDouble(out var sv) ? sv : 0,
                 });
             }
+            Log($"[items] return {items.Count} 条");
             return items;
         }
         catch { return []; }
@@ -91,8 +108,10 @@ public class MacCmsJsonProvider : IVodSourceProvider
     {
         try
         {
-            using var doc = await GetJsonAsync(BuildUrl(site.Api, $"ac=videolist&ids={Uri.EscapeDataString(item.Id)}"), ct);
-            if (doc == null || !doc.RootElement.TryGetProperty("list", out var list) || list.ValueKind != JsonValueKind.Array ||
+            var raw = await GetJsonAsync(BuildUrl(site.Api, $"ac=videolist&ids={Uri.EscapeDataString(item.Id)}"), ct);
+            if (string.IsNullOrWhiteSpace(raw)) return [];
+            using var doc = JsonDocument.Parse(raw);
+            if (!doc.RootElement.TryGetProperty("list", out var list) || list.ValueKind != JsonValueKind.Array ||
                 list.GetArrayLength() == 0)
                 return [];
 
@@ -136,15 +155,44 @@ public class MacCmsJsonProvider : IVodSourceProvider
         });
     }
 
-    private static async Task<JsonDocument?> GetJsonAsync(string url, CancellationToken ct)
+    private static void Log(string msg)
+    {
+        try
+        {
+            System.IO.File.AppendAllText(
+                System.IO.Path.Combine(System.IO.Path.GetTempPath(), "catclawvideo_http.log"),
+                $"[{DateTime.Now:HH:mm:ss.fff}] {msg}{Environment.NewLine}");
+        }
+        catch { }
+    }
+
+    private static async Task<string?> GetJsonAsync(string url, CancellationToken ct)
     {
         try
         {
             using var resp = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
             resp.EnsureSuccessStatusCode();
-            await using var stream = await resp.Content.ReadAsStreamAsync(ct);
-            return await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+            var json = await resp.Content.ReadAsStringAsync(ct);
+            try
+            {
+                System.IO.File.AppendAllText(
+                    System.IO.Path.Combine(System.IO.Path.GetTempPath(), "catclawvideo_http.log"),
+                    $"[{DateTime.Now:HH:mm:ss.fff}] {url} => {json.Length} chars{Environment.NewLine}");
+            }
+            catch { }
+            return json;
         }
-        catch { return null; }
+        catch (Exception ex)
+        {
+            var errText = ex.Message;
+            try
+            {
+                System.IO.File.AppendAllText(
+                    System.IO.Path.Combine(System.IO.Path.GetTempPath(), "catclawvideo_http.log"),
+                    $"[{DateTime.Now:HH:mm:ss.fff}] {url} => ERROR {errText}{Environment.NewLine}");
+            }
+            catch { }
+            return null;
+        }
     }
 }
