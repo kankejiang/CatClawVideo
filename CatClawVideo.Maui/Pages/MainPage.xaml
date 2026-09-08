@@ -4,95 +4,68 @@
              x:Class="CatClawVideo.Maui.Pages.MainPage"
              BackgroundColor="{DynamicResource WindowBackgroundColor}">
 
-    <Grid RowDefinitions="*,Auto" RowSpacing="0">
+    <Grid RowDefinitions="Auto,*" RowSpacing="0">
 
-        <!-- 页面容器：3 个 tab 页，切换时改可见性 -->
-        <Grid x:Name="ContentHost" Grid.Row="0" />
-
-        <!-- 底部导航：圆角悬浮胶囊（图标主题色 + 选中高亮光晕） -->
-        <Border Grid.Row="1"
-                x:Name="TabBar"
-                Margin="18,0,18,8"
-                Padding="6,6"
-                StrokeThickness="0"
+        <!-- 顶部导航栏：品牌 + 页面 tabs + 版本（Windows / 安卓横屏共用；电视遥控横向可达） -->
+        <Border Grid.Row="0"
                 BackgroundColor="{DynamicResource TabBarBackgroundColor}"
-                StrokeShape="RoundRectangle 24">
-            <Grid x:Name="TabBarGrid" ColumnDefinitions="*,*,*">
+                Padding="20,0"
+                StrokeThickness="0"
+                Stroke="{DynamicResource DividerColor}">
+            <Grid ColumnDefinitions="Auto,Auto,*,Auto" ColumnSpacing="16" HeightRequest="56">
 
-                <!-- Tab 0：首页 -->
-                <Grid Grid.Column="0" x:Name="TabItem0" HeightRequest="56">
-                    <Grid.GestureRecognizers>
-                        <TapGestureRecognizer Tapped="OnTabTapped" />
-                    </Grid.GestureRecognizers>
-                    <Border x:Name="TabBg0"
+                <!-- 品牌 -->
+                <HorizontalStackLayout Grid.Column="0" Spacing="10" VerticalOptions="Center">
+                    <Border WidthRequest="26" HeightRequest="26"
                             StrokeThickness="0"
-                            BackgroundColor="Transparent"
-                            StrokeShape="RoundRectangle 16"
-                            VerticalOptions="Center"
-                            HeightRequest="48" />
-                    <VerticalStackLayout Spacing="2" VerticalOptions="Center" HorizontalOptions="Center">
-                        <ImageButton x:Name="TabIcon0"
-                                     WidthRequest="26" HeightRequest="26"
-                                     HorizontalOptions="Center"
-                                     BackgroundColor="Transparent"
-                                     Clicked="OnTabIconClicked" />
-                        <Label x:Name="TabLabel0" Text="首页"
-                               FontSize="11"
-                               FontFamily="OpenSansSemibold"
-                               HorizontalTextAlignment="Center" />
-                    </VerticalStackLayout>
-                </Grid>
+                            StrokeShape="RoundRectangle 7"
+                            BackgroundColor="{DynamicResource PrimaryColor}">
+                        <Label Text="🐾" FontSize="13" HorizontalOptions="Center" VerticalOptions="Center" HorizontalTextAlignment="Center" />
+                    </Border>
+                    <Label Text="猫爪影视"
+                           FontSize="14.5"
+                           FontFamily="OpenSansSemibold"
+                           TextColor="{DynamicResource TextPrimaryColor}"
+                           VerticalOptions="Center" />
+                </HorizontalStackLayout>
 
-                <!-- Tab 1：收藏 -->
-                <Grid Grid.Column="1" x:Name="TabItem1" HeightRequest="56">
-                    <Grid.GestureRecognizers>
-                        <TapGestureRecognizer Tapped="OnTabTapped" />
-                    </Grid.GestureRecognizers>
-                    <Border x:Name="TabBg1"
-                            StrokeThickness="0"
-                            BackgroundColor="Transparent"
-                            StrokeShape="RoundRectangle 16"
-                            VerticalOptions="Center"
-                            HeightRequest="48" />
-                    <VerticalStackLayout Spacing="2" VerticalOptions="Center" HorizontalOptions="Center">
-                        <ImageButton x:Name="TabIcon1"
-                                     WidthRequest="26" HeightRequest="26"
-                                     HorizontalOptions="Center"
-                                     BackgroundColor="Transparent"
-                                     Clicked="OnTabIconClicked" />
-                        <Label x:Name="TabLabel1" Text="收藏"
-                               FontSize="11"
-                               FontFamily="OpenSansSemibold"
-                               HorizontalTextAlignment="Center" />
-                    </VerticalStackLayout>
-                </Grid>
+                <!-- 页面 tabs -->
+                <HorizontalStackLayout Grid.Column="1" Spacing="6" VerticalOptions="Center" x:Name="NavTabs">
 
-                <!-- Tab 2：设置 -->
-                <Grid Grid.Column="2" x:Name="TabItem2" HeightRequest="56">
-                    <Grid.GestureRecognizers>
-                        <TapGestureRecognizer Tapped="OnTabTapped" />
-                    </Grid.GestureRecognizers>
-                    <Border x:Name="TabBg2"
-                            StrokeThickness="0"
-                            BackgroundColor="Transparent"
-                            StrokeShape="RoundRectangle 16"
-                            VerticalOptions="Center"
-                            HeightRequest="48" />
-                    <VerticalStackLayout Spacing="2" VerticalOptions="Center" HorizontalOptions="Center">
-                        <ImageButton x:Name="TabIcon2"
-                                     WidthRequest="26" HeightRequest="26"
-                                     HorizontalOptions="Center"
-                                     BackgroundColor="Transparent"
-                                     Clicked="OnTabIconClicked" />
-                        <Label x:Name="TabLabel2" Text="设置"
-                               FontSize="11"
-                               FontFamily="OpenSansSemibold"
-                               HorizontalTextAlignment="Center" />
-                    </VerticalStackLayout>
-                </Grid>
+                    <Border x:Name="NavBg0" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="18,8">
+                        <Label x:Name="NavLabel0" Text="首页" FontSize="13.5" FontFamily="OpenSansSemibold" />
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnTabTapped" />
+                        </Border.GestureRecognizers>
+                    </Border>
+
+                    <Border x:Name="NavBg1" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="18,8">
+                        <Label x:Name="NavLabel1" Text="收藏" FontSize="13.5" FontFamily="OpenSansSemibold" />
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnTabTapped" />
+                        </Border.GestureRecognizers>
+                    </Border>
+
+                    <Border x:Name="NavBg2" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="18,8">
+                        <Label x:Name="NavLabel2" Text="设置" FontSize="13.5" FontFamily="OpenSansSemibold" />
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnTabTapped" />
+                        </Border.GestureRecognizers>
+                    </Border>
+
+                </HorizontalStackLayout>
+
+                <!-- 版本 -->
+                <Border Grid.Column="3" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
+                        StrokeShape="RoundRectangle 10" Padding="10,4" VerticalOptions="Center">
+                    <Label Text="0.1.0" FontSize="11" TextColor="{DynamicResource TextSecondaryColor}" />
+                </Border>
 
             </Grid>
         </Border>
+
+        <!-- 页面容器：3 个 tab 页，切换时改可见性 -->
+        <Grid x:Name="ContentHost" Grid.Row="1" />
 
     </Grid>
 

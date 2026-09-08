@@ -42,22 +42,56 @@
                    TextColor="{DynamicResource TextHintColor}"
                    Padding="0,12" />
 
-            <!-- 我的收藏（占位） -->
-            <Label Text="我的收藏" Margin="0,8,0,0"
-                   FontSize="15"
-                   FontFamily="OpenSansSemibold"
-                   TextColor="{DynamicResource TextPrimaryColor}" />
+            <!-- 我的收藏（订阅源上线前假数据骨架） -->
+            <Grid ColumnDefinitions="*,Auto">
+                <Label Grid.Column="0" Text="我的收藏" Margin="0,8,0,0"
+                       FontSize="15"
+                       FontFamily="OpenSansSemibold"
+                       TextColor="{DynamicResource TextPrimaryColor}" />
+            </Grid>
 
-            <Border StrokeThickness="1"
-                    StrokeShape="RoundRectangle 20"
-                    BackgroundColor="{DynamicResource CardBackgroundColor}"
-                    Stroke="{DynamicResource DividerColor}"
-                    Padding="20">
-                <Label Text="订阅源功能上线后，可在影片详情页收藏影片，这里会展示追剧列表"
-                       FontSize="13"
-                       LineBreakMode="WordWrap"
-                       TextColor="{DynamicResource TextHintColor}" />
-            </Border>
+            <HorizontalStackLayout Spacing="8">
+                <Border StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,5" BackgroundColor="#26262f">
+                    <Label Text="全部 (6)" FontSize="11.5" TextColor="White" />
+                </Border>
+                <Border StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,5" BackgroundColor="{DynamicResource ChipInactiveColor}">
+                    <Label Text="电影 (2)" FontSize="11.5" TextColor="{DynamicResource TextSecondaryColor}" />
+                </Border>
+                <Border StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,5" BackgroundColor="{DynamicResource ChipInactiveColor}">
+                    <Label Text="剧集 (4)" FontSize="11.5" TextColor="{DynamicResource TextSecondaryColor}" />
+                </Border>
+                <Border StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,5" BackgroundColor="{DynamicResource ChipInactiveColor}">
+                    <Label Text="追更 (2)" FontSize="11.5" TextColor="{DynamicResource TextSecondaryColor}" />
+                </Border>
+            </HorizontalStackLayout>
+
+            <CollectionView x:Name="FavGrid" SelectionMode="Single">
+                <CollectionView.ItemsLayout>
+                    <GridItemsLayout Orientation="Vertical" Span="6" VerticalItemSpacing="16" HorizontalItemSpacing="14" />
+                </CollectionView.ItemsLayout>
+                <CollectionView.ItemTemplate>
+                    <DataTemplate>
+                        <VerticalStackLayout Spacing="0">
+                            <Border StrokeThickness="0" StrokeShape="RoundRectangle 10"
+                                    BackgroundColor="{DynamicResource CardBackgroundColor}" HeightRequest="190">
+                                <Grid>
+                                    <Label Text="🎬" FontSize="26" HorizontalOptions="Center" VerticalOptions="Center"
+                                           TextColor="{DynamicResource TextHintColor}" />
+                                    <Border HorizontalOptions="End" VerticalOptions="Start" Margin="0,7,7,0"
+                                            StrokeThickness="0" BackgroundColor="#80000000" StrokeShape="RoundRectangle 8" Padding="6,1">
+                                        <Label Text="{Binding Score}" FontSize="10" TextColor="#FFD76E" />
+                                    </Border>
+                                </Grid>
+                            </Border>
+                            <Label Text="{Binding Title}" FontSize="12.5" Margin="0,7,0,0"
+                                   LineBreakMode="TailTruncation" MaxLines="1"
+                                   TextColor="{DynamicResource TextPrimaryColor}" />
+                            <Label Text="{Binding Meta}" FontSize="10.5" Margin="0,2,0,0"
+                                   TextColor="{DynamicResource TextHintColor}" />
+                        </VerticalStackLayout>
+                    </DataTemplate>
+                </CollectionView.ItemTemplate>
+            </CollectionView>
 
         </VerticalStackLayout>
     </ScrollView>

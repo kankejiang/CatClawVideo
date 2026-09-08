@@ -3,14 +3,17 @@ using AppTheme = CatClawVideo.Core.Interfaces.AppTheme;
 
 namespace CatClawVideo.Maui.Pages;
 
-/// <summary>主页面：底部导航宿主（首页/收藏/设置），tab 内容为 ContentView 从 DI 注入常驻复用。</summary>
+/// <summary>
+/// 主页面：顶部导航栏宿主（首页/收藏/设置），tab 内容为 ContentView 从 DI 注入常驻复用。
+/// 顶部导航 = 电视遥控横向导航友好；安卓横屏与 Windows 共用同款布局。
+/// </summary>
 public partial class MainPage : ContentPage
 {
     private readonly MainViewModel _vm;
     private readonly IThemeService _theme;
     private readonly ContentView[] _tabs = null!;
 
-    /// <summary>主题色枚举 → 主题图标十六进制（与 ThemeService 的 ThemeMap 一致）</summary>
+    /// <summary>主题色枚举 → 主题色十六进制（与 ThemeService 的 ThemeMap 一致）</summary>
     private static readonly Dictionary<AppTheme, string> ThemeHex = new()
     {
         [AppTheme.Purple] = "9b7ed8",
@@ -19,8 +22,6 @@ public partial class MainPage : ContentPage
         [AppTheme.Orange] = "ff7043",
         [AppTheme.Teal] = "26a69a",
     };
-
-    private static readonly string[] TabIconBases = ["ic_home", "ic_favorite", "ic_settings"];
 
     public MainPage(MainViewModel vm, IThemeService theme, HomePage home, FavoritesPage favorites, SettingsPage settings)
     {
@@ -37,9 +38,7 @@ public partial class MainPage : ContentPage
 
         BindingContext = _vm;
         _vm.TabChanged += OnTabChanged;
-
-        // 主题变化时刷新 tab 图标配色
-        _theme.Applied += UpdateTabIcons;
+        _theme.Applied += UpdateNavTabs;
 
         // 安全区 padding（Android 透明状态栏下内容避开系统栏）
         Padding = new Thickness(0, GetTopSafeArea(), 0, 0);
@@ -49,21 +48,11 @@ public partial class MainPage : ContentPage
         ShowTab(0);
     }
 
-    protected override void OnAppearing()
-    {
-        base.OnAppearing();
-        UpdateTabIcons();
-    }
+    protected override void OnAppearing() => UpdateNavTabs();
 
     private void OnTabTapped(object? sender, TappedEventArgs e)
     {
-        var index = (sender == TabItem1) ? 1 : (sender == TabItem2) ? 2 : 0;
-        _vm.SelectTab(index);
-    }
-
-    private void OnTabIconClicked(object? sender, EventArgs e)
-    {
-        var index = (sender == TabIcon1) ? 1 : (sender == TabIcon2) ? 2 : 0;
+        var index = (sender == NavBg1) ? 1 : (sender == NavBg2) ? 2 : 0;
         _vm.SelectTab(index);
     }
 
@@ -85,33 +74,26 @@ public partial class MainPage : ContentPage
         if (tab is ITabView tabView)
             _ = tabView.OnTabShownAsync();
 
-        UpdateTabIcons();
+        UpdateNavTabs();
     }
 
-    /// <summary>刷新 tab 图标/标签/高亮底色（active=主题色变体+光晕底，inactive=深色白/浅色灰）</summary>
-    private void UpdateTabIcons()
+    /// <summary>刷新导航 tabs（选中：主题色渐变胶囊 + 白字；未选中：透明底 + 次级文字）</summary>
+    private void UpdateNavTabs()
     {
-        var isDark = _theme.IsEffectivelyDark();
         var activeHex = ThemeHex.GetValueOrDefault(_theme.CurrentTheme, "9b7ed8");
         var primary = Microsoft.Maui.Graphics.Color.FromArgb($"#{activeHex}");
-        var icons = new[] { TabIcon0, TabIcon1, TabIcon2 };
-        var labels = new[] { TabLabel0, TabLabel1, TabLabel2 };
-        var bgs = new[] { TabBg0, TabBg1, TabBg2 };
+        var labels = new[] { NavLabel0, NavLabel1, NavLabel2 };
+        var bgs = new[] { NavBg0, NavBg1, NavBg2 };
 
-        for (int i = 0; i < icons.Length; i++)
+        for (int i = 0; i < labels.Length; i++)
         {
             bool isActive = _vm.SelectedTabIndex == i;
-            icons[i].Source = isActive
-                ? $"{TabIconBases[i]}_{activeHex}_active"
-                : (isDark ? TabIconBases[i] : $"{TabIconBases[i]}_gray");
-            icons[i].Scale = isActive ? 1.12 : 1.0;
-
             labels[i].TextColor = isActive
-                ? (Microsoft.Maui.Graphics.Color)Application.Current!.Resources["TabActiveColor"]
-                : (Microsoft.Maui.Graphics.Color)Application.Current!.Resources["TabInactiveColor"];
-
-            // 选中高亮光晕底：主题色 22% 透明度
-            bgs[i].BackgroundColor = isActive ? primary.WithAlpha(0.22f) : Microsoft.Maui.Graphics.Colors.Transparent;
+                ? Colors.White
+                : (Microsoft.Maui.Graphics.Color)Application.Current!.Resources["TextSecondaryColor"];
+            bgs[i].BackgroundColor = isActive
+                ? primary
+                : Microsoft.Maui.Graphics.Colors.Transparent;
         }
     }
 

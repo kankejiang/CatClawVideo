@@ -11,5 +11,8 @@ public partial class AppShell : Shell
 
         // 播放页路由（参数：title / url）
         Routing.RegisterRoute("player", typeof(Pages.VideoPlayerPage));
+
+        // 观看页路由（详情+播放合并页；参数：title）
+        Routing.RegisterRoute("watch", typeof(Pages.WatchPage));
     }
 }

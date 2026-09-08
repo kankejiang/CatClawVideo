@@ -5,109 +5,98 @@
              BackgroundColor="Transparent">
 
     <ScrollView>
-        <VerticalStackLayout Padding="24,16,24,24" Spacing="16">
+        <VerticalStackLayout Padding="24,16,24,24" Spacing="14">
 
-            <!-- 顶部标题 -->
-            <Grid ColumnDefinitions="*,Auto" Margin="0,8,0,0">
-                <Label Grid.Column="0"
-                       Text="猫爪影视"
-                       FontSize="28"
-                       FontFamily="OpenSansSemibold"
-                       TextColor="{DynamicResource TextPrimaryColor}"
-                       VerticalOptions="Center" />
-                <Border Grid.Column="1"
-                        StrokeThickness="0"
-                        BackgroundColor="{DynamicResource ChipInactiveColor}"
-                        StrokeShape="RoundRectangle 10"
-                        Padding="10,4"
-                        VerticalOptions="Center">
-                    <Label Text="0.1.0"
-                           FontSize="11"
-                           TextColor="{DynamicResource TextSecondaryColor}" />
-                </Border>
-            </Grid>
+            <!-- 分类 chips -->
+            <CollectionView x:Name="CategoryChips"
+                            SelectionMode="Single"
+                            ItemsLayout="HorizontalList">
+                <CollectionView.ItemTemplate>
+                    <DataTemplate>
+                        <Border StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,6" Margin="0,0,8,0"
+                                BackgroundColor="{DynamicResource ChipInactiveColor}">
+                            <VisualStateManager.VisualStateGroups>
+                                <VisualStateGroupList>
+                                    <VisualStateGroup x:Name="CommonStates">
+                                        <VisualState x:Name="Normal">
+                                            <VisualState.Setters>
+                                                <Setter Property="BackgroundColor" Value="{DynamicResource ChipInactiveColor}" />
+                                            </VisualState.Setters>
+                                        </VisualState>
+                                        <VisualState x:Name="Selected">
+                                            <VisualState.Setters>
+                                                <Setter Property="BackgroundColor" Value="{DynamicResource PrimaryColor}" />
+                                            </VisualState.Setters>
+                                        </VisualState>
+                                    </VisualStateGroup>
+                                </VisualStateGroupList>
+                            </VisualStateManager.VisualStateGroups>
+                            <Label Text="{Binding Name}" FontSize="11.5" TextColor="{DynamicResource TextSecondaryColor}" />
+                        </Border>
+                    </DataTemplate>
+                </CollectionView.ItemTemplate>
+            </CollectionView>
 
-            <!-- 快速播放 -->
-            <Border StrokeThickness="1"
-                    StrokeShape="RoundRectangle 20"
+            <!-- 海报网格（Windows 6 列 / 安卓横屏 4 列） -->
+            <CollectionView x:Name="PosterGrid" SelectionMode="Single">
+                <CollectionView.ItemsLayout>
+                    <GridItemsLayout Orientation="Vertical" Span="6" VerticalItemSpacing="18" HorizontalItemSpacing="14" />
+                </CollectionView.ItemsLayout>
+                <CollectionView.ItemTemplate>
+                    <DataTemplate>
+                        <VerticalStackLayout Spacing="0">
+                            <Grid RowDefinitions="Auto,Auto" RowSpacing="0">
+                                <!-- 海报占位（订阅源接入后换成 Cover 真图） -->
+                                <Border Grid.Row="0" StrokeThickness="0" StrokeShape="RoundRectangle 10"
+                                        BackgroundColor="{DynamicResource CardBackgroundColor}" HeightRequest="190">
+                                    <Grid>
+                                        <Label Text="🎬" FontSize="30" HorizontalOptions="Center" VerticalOptions="Center"
+                                               TextColor="{DynamicResource TextHintColor}" />
+                                        <Border HorizontalOptions="End" VerticalOptions="Start" Margin="0,8,8,0"
+                                                StrokeThickness="0" BackgroundColor="#80000000" StrokeShape="RoundRectangle 8" Padding="6,1">
+                                            <Label Text="{Binding Score}" FontSize="10" TextColor="#FFD76E" />
+                                        </Border>
+                                    </Grid>
+                                </Border>
+                            </Grid>
+                            <Label Text="{Binding Title}" FontSize="12.5" Margin="0,7,0,0"
+                                   LineBreakMode="TailTruncation" MaxLines="1"
+                                   TextColor="{DynamicResource TextPrimaryColor}" />
+                            <Label Text="{Binding Meta}" FontSize="10.5" Margin="0,2,0,0"
+                                   TextColor="{DynamicResource TextHintColor}" />
+                            <Grid.GestureRecognizers>
+                                <TapGestureRecognizer Tapped="OnPosterTapped" />
+                            </Grid.GestureRecognizers>
+                        </VerticalStackLayout>
+                    </DataTemplate>
+                </CollectionView.ItemTemplate>
+            </CollectionView>
+
+            <!-- 快速播放（订阅源上线前的播放链路验证入口，折叠为底部卡片） -->
+            <Border StrokeThickness="1" Margin="0,18,0,0"
+                    StrokeShape="RoundRectangle 16"
                     BackgroundColor="{DynamicResource CardBackgroundColor}"
-                    Stroke="{DynamicResource DividerColor}"
-                    Padding="20">
-                <VerticalStackLayout Spacing="12">
-                    <Label Text="快速播放"
-                           FontSize="16"
-                           FontFamily="OpenSansSemibold"
+                    Stroke="{DynamicResource DividerColor}" Padding="18">
+                <VerticalStackLayout Spacing="10">
+                    <Label Text="快速播放（开发用）"
+                           FontSize="14" FontFamily="OpenSansSemibold"
                            TextColor="{DynamicResource TextPrimaryColor}" />
-                    <Label Text="输入直链地址（m3u8 / mp4 等）即可播放，用于验证播放链路"
-                           FontSize="13"
-                           TextColor="{DynamicResource TextSecondaryColor}" />
-                    <Frame Padding="14,10"
-                           CornerRadius="14"
-                           HasShadow="False"
-                           BackgroundColor="{DynamicResource InputBackgroundColor}">
-                        <Entry x:Name="UrlEntry"
+                    <Label Text="输入直链地址（m3u8 / mp4）验证播放链路，或播放 HLS 测试流"
+                           FontSize="12" TextColor="{DynamicResource TextSecondaryColor}" />
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+                        <Entry Grid.Column="0"
                                Placeholder="https://example.com/video.m3u8"
                                PlaceholderColor="{DynamicResource TextHintColor}"
                                Text="{Binding UrlInput, Mode=TwoWay}"
                                TextColor="{DynamicResource TextPrimaryColor}"
-                               Keyboard="Url"
-                               ReturnType="Go"
-                               ReturnCommand="{Binding PlayCommand}"
-                               ClearButtonVisibility="WhileEditing" />
-                    </Frame>
-                    <Button Text="播 放"
-                            Command="{Binding PlayCommand}"
-                            IsEnabled="{Binding CanPlay}"
-                            FontFamily="OpenSansSemibold"
-                            TextColor="White"
-                            BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
-                            CornerRadius="24"
-                            Padding="0,14" />
-                </VerticalStackLayout>
-            </Border>
-
-            <!-- 测试流 -->
-            <Border StrokeThickness="1"
-                    StrokeShape="RoundRectangle 20"
-                    BackgroundColor="{DynamicResource CardBackgroundColor}"
-                    Stroke="{DynamicResource DividerColor}"
-                    Padding="20">
-                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
-                    <VerticalStackLayout Grid.Column="0" Spacing="4" VerticalOptions="Center">
-                        <Label Text="HLS 测试流"
-                               FontSize="15"
-                               FontFamily="OpenSansSemibold"
-                               TextColor="{DynamicResource TextPrimaryColor}" />
-                        <Label Text="Apple 官方 fMP4 示例流，验证 m3u8 播放"
-                               FontSize="12"
-                               TextColor="{DynamicResource TextSecondaryColor}" />
-                    </VerticalStackLayout>
-                    <ImageButton Grid.Column="1"
-                                 Source="ic_play_9b7ed8_active"
-                                 x:Name="TestPlayButton"
-                                 WidthRequest="44" HeightRequest="44"
-                                 CornerRadius="22"
-                                 BackgroundColor="{DynamicResource GlassButtonColor}"
-                                 Command="{Binding PlayTestStreamCommand}"
-                                 VerticalOptions="Center" />
-                </Grid>
-            </Border>
-
-            <!-- 订阅源预告 -->
-            <Border StrokeThickness="1"
-                    StrokeShape="RoundRectangle 20"
-                    BackgroundColor="{DynamicResource CardBackgroundColor}"
-                    Stroke="{DynamicResource DividerColor}"
-                    Padding="20">
-                <VerticalStackLayout Spacing="10">
-                    <Label Text="订阅源 · 即将上线"
-                           FontSize="16"
-                           FontFamily="OpenSansSemibold"
-                           TextColor="{DynamicResource TextPrimaryColor}" />
-                    <Label Text="将支持导入 TVBox 单仓配置与影视仓多仓源：站点列表、分类浏览、跨站搜索、多线路选集与嗅探解析。领域模型与源抽象接口已就绪（IVodSourceProvider / ISubscriptionManager）。"
-                           FontSize="13"
-                           LineBreakMode="WordWrap"
-                           TextColor="{DynamicResource TextSecondaryColor}" />
+                               Keyboard="Url" ReturnType="Go"
+                               ReturnCommand="{Binding PlayCommand}" />
+                        <Button Grid.Column="1" Text="播放"
+                                Command="{Binding PlayTestStreamCommand}"
+                                FontFamily="OpenSansSemibold" TextColor="White"
+                                BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
+                                CornerRadius="10" Padding="18,6" />
+                    </Grid>
                 </VerticalStackLayout>
             </Border>
 
@@ -115,4 +104,3 @@
     </ScrollView>
 
 </ContentView>
-

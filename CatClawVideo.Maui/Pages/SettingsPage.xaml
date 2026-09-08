@@ -13,6 +13,75 @@
                    TextColor="{DynamicResource TextPrimaryColor}"
                    Margin="0,8,0,0" />
 
+            <!-- ═══ 订阅源管理 ═══ -->
+            <Border StrokeThickness="1"
+                    StrokeShape="RoundRectangle 20"
+                    BackgroundColor="{DynamicResource CardBackgroundColor}"
+                    Stroke="{DynamicResource DividerColor}"
+                    Padding="20">
+                <VerticalStackLayout Spacing="10">
+                    <Label Text="订阅源管理"
+                           FontSize="16"
+                           FontFamily="OpenSansSemibold"
+                           TextColor="{DynamicResource TextPrimaryColor}" />
+                    <Label Text="TVBox / 影视仓订阅地址，支持多仓自动识别"
+                           FontSize="12"
+                           TextColor="{DynamicResource TextSecondaryColor}" />
+                    <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="12" Padding="0,4">
+                        <Label Grid.Column="0" Text="暴风资源站" FontSize="13" TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
+                        <Label Grid.Column="1" Text="github.com/…/baoFeng.json" FontSize="11" TextColor="{DynamicResource TextHintColor}" VerticalOptions="Center" />
+                        <Label Grid.Column="2" Text="删除" FontSize="11.5" TextColor="#c0392b" VerticalOptions="Center" />
+                    </Grid>
+                    <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="12" Padding="0,4">
+                        <Label Grid.Column="0" Text="量子资源库" FontSize="13" TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
+                        <Label Grid.Column="1" Text="tvbox.xxx.com/liangzi.json" FontSize="11" TextColor="{DynamicResource TextHintColor}" VerticalOptions="Center" />
+                        <Label Grid.Column="2" Text="删除" FontSize="11.5" TextColor="#c0392b" VerticalOptions="Center" />
+                    </Grid>
+                    <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="12" Padding="0,4">
+                        <Label Grid.Column="0" Text="非凡影视" FontSize="13" TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
+                        <Label Grid.Column="1" Text="http://xx/feifan.json" FontSize="11" TextColor="{DynamicResource TextHintColor}" VerticalOptions="Center" />
+                        <Label Grid.Column="2" Text="删除" FontSize="11.5" TextColor="#c0392b" VerticalOptions="Center" />
+                    </Grid>
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10" Margin="0,6,0,0">
+                        <Entry Grid.Column="0" Placeholder="粘贴订阅地址（TVBox json / 影视仓多仓）…"
+                               PlaceholderColor="{DynamicResource TextHintColor}"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                        <Button Grid.Column="1" Text="＋ 添加" FontSize="12.5" TextColor="White"
+                                BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}" CornerRadius="8" Padding="16,6" />
+                    </Grid>
+                </VerticalStackLayout>
+            </Border>
+
+            <!-- ═══ 播放器 ═══ -->
+            <Border StrokeThickness="1"
+                    StrokeShape="RoundRectangle 20"
+                    BackgroundColor="{DynamicResource CardBackgroundColor}"
+                    Stroke="{DynamicResource DividerColor}"
+                    Padding="20">
+                <VerticalStackLayout Spacing="12">
+                    <Label Text="播放器"
+                           FontSize="16"
+                           FontFamily="OpenSansSemibold"
+                           TextColor="{DynamicResource TextPrimaryColor}" />
+                    <Grid ColumnDefinitions="*,Auto" Padding="0,4">
+                        <Label Grid.Column="0" Text="小窗尺寸（21:9 手机横屏）" FontSize="13" TextColor="{DynamicResource TextPrimaryColor}" />
+                        <Label Grid.Column="1" Text="58% 宽 · 可展开全宽" FontSize="12" TextColor="{DynamicResource TextSecondaryColor}" />
+                    </Grid>
+                    <Grid ColumnDefinitions="*,Auto" Padding="0,4">
+                        <Label Grid.Column="0" Text="默认画面比例" FontSize="13" TextColor="{DynamicResource TextPrimaryColor}" />
+                        <Label Grid.Column="1" Text="保持比例（AspectFit）" FontSize="12" TextColor="{DynamicResource TextSecondaryColor}" />
+                    </Grid>
+                    <Grid ColumnDefinitions="*,Auto" Padding="0,4">
+                        <Label Grid.Column="0" Text="默认倍速" FontSize="13" TextColor="{DynamicResource TextPrimaryColor}" />
+                        <Label Grid.Column="1" Text="1.0×" FontSize="12" TextColor="{DynamicResource TextSecondaryColor}" />
+                    </Grid>
+                    <Grid ColumnDefinitions="*,Auto" Padding="0,4">
+                        <Label Grid.Column="0" Text="电视遥控焦点样式" FontSize="13" TextColor="{DynamicResource TextPrimaryColor}" />
+                        <Label Grid.Column="1" Text="白色描边 + 放大" FontSize="12" TextColor="{DynamicResource TextSecondaryColor}" />
+                    </Grid>
+                </VerticalStackLayout>
+            </Border>
+
             <!-- ═══ 外观 ═══ -->
             <Border StrokeThickness="1"
                     StrokeShape="RoundRectangle 20"

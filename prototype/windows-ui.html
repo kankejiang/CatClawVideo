@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-page-node-id="oCBhEvEVxF3RMRfcpUFakb">
+<head data-page-node-id="Sho1SyRtjG6b5EaMJ9dS0j">
+<meta charset="UTF-8" data-page-node-id="WZ2cCb2ffa1MH4Y2VLNY0a">
+<title>猫爪影视 · UI 原型（顶部导航 · 21:9 手机 / 电视 / Windows）</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0a0a0f; font-family:"Segoe UI","Microsoft YaHei",sans-serif; color:#f2f2f5; display:flex; justify-content:center; padding:20px 0; }
+  .window { width:1240px; min-height:860px; background:#121218; border-radius:12px; overflow:hidden; position:relative; box-shadow:0 20px 60px rgba(0,0,0,.6); display:flex; flex-direction:column; }
+  .topnav { height:56px; display:flex; align-items:center; padding:0 18px; gap:22px; background:#17171f; border-bottom:1px solid #23232d; flex:0 0 auto; }
+  .logo { width:24px; height:24px; border-radius:6px; background:linear-gradient(135deg,#7c5cff,#c44dff); }
+  .brand { font-size:14px; font-weight:600; }
+  .ntabs { display:flex; gap:6px; }
+  .ntab { font-size:13.5px; color:#9a9aa5; padding:8px 18px; border-radius:9px; cursor:pointer; }
+  .ntab.on { color:#fff; background:linear-gradient(90deg,rgba(124,92,255,.30),rgba(196,77,255,.14)); }
+  .srcpill { margin-left:6px; font-size:12px; color:#cfcfd8; background:#22222c; border:1px solid #2e2e3a; border-radius:16px; padding:6px 14px; cursor:pointer; }
+  .searchbox { margin-left:auto; width:300px; background:#1f1f28; border-radius:8px; padding:7px 12px; font-size:12px; color:#8a8a95; }
+  .winbtns { display:flex; gap:6px; }
+  .winbtns span { width:26px; height:22px; border-radius:4px; background:#22222c; display:flex; align-items:center; justify-content:center; font-size:10px; color:#9a9aa5; }
+  .winbtns .close { background:#c0392b; color:#fff; }
+  .content { flex:1; overflow-y:auto; padding:18px 24px 30px; }
+  .page { display:none; }
+  .page.on { display:block; }
+  h2 { font-size:17px; font-weight:600; margin-bottom:12px; }
+  h3 { font-size:14px; font-weight:600; margin:16px 0 10px; color:#e8e8ee; }
+  .sub { font-size:12px; color:#8a8a95; margin:-8px 0 12px; }
+  .chips { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+  .chip { font-size:11.5px; color:#b9b9c2; background:#1f1f28; border-radius:14px; padding:5px 13px; cursor:pointer; }
+  .chip.on { background:linear-gradient(90deg,#7c5cff,#c44dff); color:#fff; }
+  .grid { display:grid; grid-template-columns:repeat(6,1fr); gap:16px 14px; }
+  .card { cursor:pointer; }
+  .card .poster { position:relative; width:100%; aspect-ratio:2/3; border-radius:10px; background:linear-gradient(160deg,#2b2b38,#191922); display:flex; align-items:center; justify-content:center; font-size:26px; color:#555560; }
+  .card .score { position:absolute; right:7px; top:7px; font-size:10px; background:rgba(0,0,0,.5); padding:1px 6px; border-radius:6px; color:#ffd76e; }
+  .card .n { font-size:12.5px; margin-top:7px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .card .m { font-size:10.5px; color:#8a8a95; margin-top:2px; }
+  .t { font-size:21px; font-weight:600; }
+  .meta { font-size:12.5px; color:#9a9aa5; margin:8px 0; }
+  .meta b { color:#cfcfd8; font-weight:500; }
+  .meta .score { color:#ffd76e; }
+  .desc { font-size:12.5px; color:#b9b9c2; line-height:1.7; margin:8px 0 4px; text-align:justify; }
+  .lines { display:flex; gap:8px; margin:8px 0; }
+  .line { font-size:12px; padding:6px 14px; border-radius:8px; background:#1f1f28; color:#b9b9c2; cursor:pointer; }
+  .line.on { background:linear-gradient(90deg,#7c5cff,#c44dff); color:#fff; }
+  .eps { display:grid; grid-template-columns:repeat(9,1fr); gap:8px; }
+  .ep { text-align:center; font-size:12px; padding:8px 0; border-radius:8px; background:#1f1f28; color:#b9b9c2; cursor:pointer; }
+  .ep.on { background:linear-gradient(90deg,#7c5cff,#c44dff); color:#fff; }
+  .ep.played { color:#6a6a75; }
+  .btn { background:linear-gradient(90deg,#7c5cff,#c44dff); border-radius:8px; padding:7px 20px; font-size:12.5px; cursor:pointer; display:inline-block; }
+  .ghost { background:#1f1f28; border-radius:8px; padding:7px 20px; font-size:12.5px; color:#cfcfd8; cursor:pointer; display:inline-block; }
+  .watch-top { display:flex; gap:18px; margin-bottom:6px; }
+  .miniplayer { flex:0 0 58%; position:relative; aspect-ratio:16/9; border-radius:12px; background:#000; overflow:hidden; }
+  .miniplayer .center { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:40px; color:#33333d; }
+  .ctrl { position:absolute; left:0; right:0; bottom:0; padding:20px 14px 10px; background:linear-gradient(transparent,rgba(0,0,0,.85)); }
+  .bar { height:4px; border-radius:2px; background:rgba(255,255,255,.22); position:relative; margin-bottom:8px; }
+  .bar .fill { position:absolute; left:0; top:0; bottom:0; width:34%; border-radius:2px; background:#7c5cff; }
+  .bar .dot { position:absolute; left:34%; top:50%; transform:translate(-50%,-50%); width:10px; height:10px; border-radius:50%; background:#fff; }
+  .crow { display:flex; align-items:center; gap:12px; font-size:11px; color:#ddd; }
+  .crow .btns { display:flex; gap:11px; font-size:14px; }
+  .crow .sp { flex:1; }
+  .infopanel { flex:1; min-width:0; padding:2px 0 0 4px; }
+  .watch-bottom h3 { margin-top:18px; }
+  .hint { font-size:12px; color:#6a6a75; background:#1a1a22; border-radius:10px; padding:14px 18px; margin-top:16px; line-height:1.8; }
+  .setcard { background:#1a1a22; border-radius:12px; padding:16px 18px; margin-bottom:14px; }
+  .setrow { display:flex; align-items:center; gap:12px; padding:9px 0; border-bottom:1px solid #23232d; font-size:13px; }
+  .setrow:last-child { border-bottom:none; }
+  .setrow .k { color:#cfcfd8; }
+  .setrow .v { margin-left:auto; color:#8a8a95; font-size:12px; }
+  .setrow .del { color:#c0392b; font-size:11.5px; cursor:pointer; }
+  .addsub { display:flex; gap:10px; margin-top:10px; }
+  .addsub input { flex:1; background:#14141a; border:1px solid #2a2a35; border-radius:8px; padding:8px 12px; font-size:12px; color:#9a9aa5; }
+  .addsub .btn { background:linear-gradient(90deg,#7c5cff,#c44dff); border-radius:8px; padding:8px 18px; font-size:12.5px; cursor:pointer; }
+  .favbar { display:flex; gap:10px; margin-bottom:14px; }
+  .fchip { font-size:11.5px; padding:5px 13px; border-radius:14px; background:#1f1f28; color:#b9b9c2; cursor:pointer; }
+  .fchip.on { color:#fff; background:#26262f; }
+</style>
+</head>
+<body data-page-node-id="rGkM6giYNMClALiA1VVFmO">
+<div class="window" data-page-node-id="70y0Gi8nuQkAHf9YGk2kK2">
+  <div class="topnav" data-page-node-id="5Y4cJ6RAUPqGwNUboverPF">
+    <div class="logo" data-page-node-id="RSWvXo7Xml5LBZW5fKvOQU"></div><div class="brand" data-page-node-id="4kLW7xSCKigHd4iXvdhDFk">猫爪影视</div>
+    <div class="ntabs" data-page-node-id="5W01VUdMNmOOA7Qw90FFIg">
+      <div class="ntab on" data-p="home" data-page-node-id="4lXRePMHZ7OCXrtug5JuGT">首页</div>
+      <div class="ntab" data-p="watch" data-page-node-id="vGXeVTuWhpUbPhR9sWEqCf">观看页</div>
+      <div class="ntab" data-p="fav" data-page-node-id="omCLz14BcqaDp4AfwBJbhn">收藏</div>
+      <div class="ntab" data-p="set" data-page-node-id="kKTwyn82npSUi3tDZbg2C3">设置</div>
+    </div>
+    <div class="srcpill" data-page-node-id="l6nUGgBt6NSKk6HAYhEDlU">📺 暴风资源 ▾</div>
+    <div class="searchbox" data-page-node-id="zM2lVbIuMBw20klLS4EmSl">🔍 搜索影片 / 演员…</div>
+    <div class="winbtns" data-page-node-id="QOTO1odu1sBAFeHiuCTh9n"><span data-page-node-id="GMWEMmTR10PABnurr7vJI9">—</span><span data-page-node-id="aGjY4SFTvBHBKBR4ciquZ9">□</span><span class="close" data-page-node-id="iziDvGU5d6uMyG25mlNwII">✕</span></div>
+  </div>
+  <div class="content" data-page-node-id="oF4a7zsDeeqWhvfRBarXUh">
+
+    <div class="page on" id="home" data-page-node-id="yLmt5tFsjpLpqe5cCQbiJw">
+      <h2 data-page-node-id="jAvcTfMGiAiaU7fy99n51z">首页</h2>
+      <div class="chips" data-page-node-id="8HiVaEgAe3AH0d2dkdij1j">
+        <div class="chip on" data-page-node-id="ptHgCh4db3X3D9pH3C3bc4">全部</div><div class="chip" data-page-node-id="l7e4jtaAsDfISyywdVMi9c">电影</div><div class="chip" data-page-node-id="PsZmHDLkQquHjgA0KnNdqh">剧集</div><div class="chip" data-page-node-id="0Km17RAKWL4U1h8JMnP6gE">综艺</div><div class="chip" data-page-node-id="gIwwD3uWksgYHsXETAuZBx">动漫</div><div class="chip" data-page-node-id="ErfP0R6zEMXG1t57f9cMly">纪录片</div><div class="chip" data-page-node-id="XHahcxIf0l81UK22wrQyIW">动作片</div><div class="chip" data-page-node-id="9jbhxAuWBjFPLQPh7npuov">喜剧片</div><div class="chip" data-page-node-id="3To6BEijzu8TyJB4BZNu0k">科幻片</div><div class="chip" data-page-node-id="vNeV0MyESNxrTEZBKbQjlS">悬疑片</div>
+      </div>
+      <div class="grid" data-page-node-id="ka3EJIJ6ADuFZwoXeDewnI">
+        <div class="card" data-page-node-id="ziYp0YfRROvMhcsVk536U5"><div class="poster" data-page-node-id="BlwQCQtO5gSjkxs0SNE9Gy">🎬<div class="score" data-page-node-id="n1HvbGGBPNhxjaIUMTahZe">8.7</div></div><div class="n" data-page-node-id="gQ14m0VeLZpnA6HGwQqhLC">流浪地球 2</div><div class="m" data-page-node-id="qwesn2H2FZOuBAMM3EZDVJ">2023 · 科幻</div></div>
+        <div class="card" data-page-node-id="FOPEqzZGyBg27xojdpmHV8"><div class="poster" data-page-node-id="VWxAXcsMigkYwyi11cVZwk">🎬<div class="score" data-page-node-id="tvMfKHNd8zu5aMptyxuPlI">9.1</div></div><div class="n" data-page-node-id="kI4ynVagdILHGA1z4z1VuF">漫长的季节</div><div class="m" data-page-node-id="fmrKBioSXkiAX0T5SlmNaP">2023 · 悬疑</div></div>
+        <div class="card" data-page-node-id="4LP9dke7pWIWS9OTg1DIgi"><div class="poster" data-page-node-id="W7L6Qp9XzF8730TTncJp4z">🎬<div class="score" data-page-node-id="XptXIdl2zzJAaV5IlosQVx">8.4</div></div><div class="n" data-page-node-id="FRV6WWgFGTBwcc7BrESB2g">狂飙</div><div class="m" data-page-node-id="NZ0pTCMKpPsYAh2lIg1Ton">2023 · 剧情</div></div>
+        <div class="card" data-page-node-id="qRZkk4CKvspvcf5arRsEAW"><div class="poster" data-page-node-id="R5XWwikzqEuV3LIqGgAEij">🎬<div class="score" data-page-node-id="kUESuE742i5UtiVzdhM65y">7.9</div></div><div class="n" data-page-node-id="tYaeGzTZAHYPl6N8pxlG18">三体</div><div class="m" data-page-node-id="5K8Xs9SOPsnksSWkvG8e0z">2023 · 科幻</div></div>
+        <div class="card" data-page-node-id="sUuMEPAqm2suDPaiJjmCPw"><div class="poster" data-page-node-id="LWRRNlehUlS8Bn18RBKxTf">🎬<div class="score" data-page-node-id="Fx84AC2TLoZnSSshijXSIO">8.8</div></div><div class="n" data-page-node-id="rzs2VBahqi2f5D8Hk8aoTY">繁花</div><div class="m" data-page-node-id="rRQvVE8sJC8nt8KzAOFir4">2023 · 剧情</div></div>
+        <div class="card" data-page-node-id="BU24So5VTTIQ14wfIsqgve"><div class="poster" data-page-node-id="EzGyVZyDtxpGFR6eoQlAwH">🎬<div class="score" data-page-node-id="yJvLpIrBXyiMPZKkGIulzu">8.2</div></div><div class="n" data-page-node-id="ZsK5n8iFQQHpdYvd8HSGsM">隐秘的角落</div><div class="m" data-page-node-id="zdettQzqrASYYE6LdUUicz">2020 · 悬疑</div></div>
+        <div class="card" data-page-node-id="hTkX87VYOcGV9A7hqvPIEI"><div class="poster" data-page-node-id="GKS0fKftzypc1e3gKpq9Vu">🎬<div class="score" data-page-node-id="gKKVWjYxPrTu8v9RWqUKeq">8.5</div></div><div class="n" data-page-node-id="nBrdwRw0DaRkTr4uFCRRW6">庆余年 第二季</div><div class="m" data-page-node-id="RYG9p1soIm9umzhV6bb56D">2024 · 古装</div></div>
+        <div class="card" data-page-node-id="AkmF9iBt29cIheMudugsxM"><div class="poster" data-page-node-id="r2pkRoNP1cX7SLRmO5feaR">🎬<div class="score" data-page-node-id="MfnCz5krZ185lbLwg6ZFXC">9.3</div></div><div class="n" data-page-node-id="CRhidtwkeECrbrMwLEdHx2">大明王朝 1566</div><div class="m" data-page-node-id="SRFm4amSKwQiTB5dCucPxj">2007 · 古装</div></div>
+        <div class="card" data-page-node-id="aC7j5KeFZ3PiGEYoGOSEtB"><div class="poster" data-page-node-id="EcAbz6AIHSYFa0VEhaByUN">🎬<div class="score" data-page-node-id="EWmee4EfT3TtbgcoeDA0nX">8.6</div></div><div class="n" data-page-node-id="W2KLG6Quo9ulixZqluAj57">琅琊榜</div><div class="m" data-page-node-id="WjNg4F1i2Eez4qe6kSiBgs">2015 · 古装</div></div>
+        <div class="card" data-page-node-id="aczk1HLjxObBJ4ye1XA2kg"><div class="poster" data-page-node-id="XeV31WW7CgsGyfSh8FWTRl">🎬<div class="score" data-page-node-id="OQTivmfQAhGiXWsF4Bwukx">8.0</div></div><div class="n" data-page-node-id="0tWL8OBCeDCLfdEJLQA65O">去有风的地方</div><div class="m" data-page-node-id="alq2XUpgNUZvtml1xbYAyC">2023 · 偶像</div></div>
+        <div class="card" data-page-node-id="cAzAeKONDt6wilS5ieESDo"><div class="poster" data-page-node-id="yWyOOjzuj49NVCwjRYaMIv">🎬<div class="score" data-page-node-id="uZM4Lp1W8Gtc8bMYkTIZeW">8.3</div></div><div class="n" data-page-node-id="pa7NO7ArH8eyjduvyJEhCg">不良人 第七季</div><div class="m" data-page-node-id="Ny2CtdsmlGiZTYGAZvAVor">2024 · 动漫</div></div>
+        <div class="card" data-page-node-id="tvNWOcQFF4rxStynb5y4Jj"><div class="poster" data-page-node-id="T4k2S4iOdxWaJPEAO5z0cm">🎬<div class="score" data-page-node-id="pPenSdVl3kz1hEneyeRsHh">7.6</div></div><div class="n" data-page-node-id="owNXXOZ7D1cgrH2HcXn9Nh">一年一度喜剧大赛</div><div class="m" data-page-node-id="hvGppIUwQ8BEWwC2XaUWk0">2024 · 综艺</div></div>
+      </div>
+      <div class="hint" data-page-node-id="cNa598OUHxHQEF1m8iLh0S">顶部导航栏（电视遥控横向切换最友好）：品牌 + 页面 tabs + 影视源下拉 + 全局搜索 + 窗口按钮。<br data-page-node-id="fzsukxhcUNXpTvh1VmjCFF">影视源从旧版左栏移入顶栏下拉；多源时展开源列表（名称/站点数/最近更新）。<br data-page-node-id="h6kxq5PwBCZzywdjR0HizR">网格列数：① Windows 6 列（如图）；② 21:9 手机横屏 4 列；③ 电视 16:9 焦点卡片白描边 + 放大 1.05。</div>
+    </div>
+
+    <div class="page" id="watch" data-page-node-id="H3AbMyddaBg2TI9GKUa2uF">
+      <div class="watch-top" data-page-node-id="4pfsBaPNFRV3ArbXz4BfDc">
+        <div class="miniplayer" data-page-node-id="SCJ9g1XcDLkjVSkdipH8Oa">
+          <div class="center" data-page-node-id="5Q5UE0IWAHURTInRQn3wFF">▶</div>
+          <div class="ctrl" data-page-node-id="C8we69eaAWHA1eSMaEVP5H">
+            <div class="bar" data-page-node-id="FwKo51pME3ZiS4TkwFBNR1"><div class="fill" data-page-node-id="9oCrw6D8ZoKjHgg9CdPDy9"></div><div class="dot" data-page-node-id="wT2Is9x9EfjCeGF7efItQq"></div></div>
+            <div class="crow" data-page-node-id="6j7xPtuZq27D9ozbBXdIzS">
+              <div class="btns" data-page-node-id="tgUTarF1uAJUK170I9jBZO"><span data-page-node-id="darS2QnN378DImvXQYo1T1">⏮</span><span data-page-node-id="yx4bneW9efikS8gQ4n7fHT">⏸</span><span data-page-node-id="CY21nC8De2w4RDVfSPJk9i">⏭</span></div>
+              <span data-page-node-id="0lrm1qDyfUTlhZGADqvcSr">38:12 / 45:20</span>
+              <span class="sp" data-page-node-id="2204lWrrEBnS5F2h0yEo1H"></span>
+              <span data-page-node-id="4frPAnuxlcjVSrjy6ogOSK">1080P</span><span data-page-node-id="WPpPoDi3nR3dcjojoGRvfm">⛶</span>
+            </div>
+          </div>
+        </div>
+        <div class="infopanel" data-page-node-id="hObgktFPDQTB4m5PDub3NV">
+          <div class="t" data-page-node-id="yJIr9djqGCVgISFFSB6OuP">漫长的季节</div>
+          <div class="meta" data-page-node-id="OnHTCqODM34ACA6m5Y2gHg"><b class="score" data-page-node-id="CUpeZ07TDk2Yh0wRYfWyhM">★ 9.1</b> · 2023 · 剧情 / 悬疑 · 12 集 · 已完结</div>
+          <div class="desc" data-page-node-id="xvlTyIAg0jBMQecLVOfsj3">北方小城桦林，出租车司机王响、妹夫龚彪、退休刑警马德胜，因一具无名尸和一辆套牌出租车，被卷入一场横跨十八年的碎尸悬案…</div>
+          <div class="lines" style="margin-top:12px" data-page-node-id="v5QURn6agwfbXSxounixwg"><div class="line on" data-page-node-id="3PNbhUNQL4p4iaMY4fphJz">暴风在线 ①</div><div class="line" data-page-node-id="9Tx9DGrCrkhYAh67of6Anc">量子云播 ②</div><div class="line" data-page-node-id="tsWrrjx7HlYjtJ3G6XOoTZ">非凡备用 ③</div></div>
+          <div style="display:flex; gap:10px; margin-top:10px" data-page-node-id="injMa4KkIaTGiMflhBHeJe">
+            <span class="btn" data-page-node-id="xHlnYLbDRUEDSje69TwFK1">▶ 继续播放 第 4 集</span>
+            <span class="ghost" data-page-node-id="wUCO06Oinmvxf9AJ4p8Q0G">♥ 收藏</span>
+            <span class="ghost" data-page-node-id="87VwR0TQjL7ZypeOGFqQjK">缓存</span>
+          </div>
+        </div>
+      </div>
+      <div class="watch-bottom" data-page-node-id="FEi7kpKaxeWBV8sE9SyhWI">
+        <h3 data-page-node-id="bsWxGNFtP0qy0fSVpI3QTA">选集（12）</h3>
+        <div class="eps" data-page-node-id="BiGuEYSLjo9UIWNN2ScOr1">
+          <div class="ep played" data-page-node-id="2lADzyo1qHtFAkvMwjGHGW">01</div><div class="ep played" data-page-node-id="1Z00ZjD9MOVPOEjba9IGcv">02</div><div class="ep played" data-page-node-id="6CBp6GLS4JLrCbCowCs56d">03</div><div class="ep on" data-page-node-id="JBxkBECbYA2k9zXGXQDgSL">04</div><div class="ep" data-page-node-id="g4uQgBltFmsJuVKgDD5ogf">05</div><div class="ep" data-page-node-id="DLPbQNWwFckaS7wIkPHSPd">06</div><div class="ep" data-page-node-id="IjFwQBl58VLDY8dQ3Vz0aS">07</div><div class="ep" data-page-node-id="quOOnz9gj3VJiB0HJ56ygi">08</div><div class="ep" data-page-node-id="U5E6oSmat5jwsPcMX8HP6p">09</div><div class="ep" data-page-node-id="O3cS3fNMuatB1Beba1EaKn">10</div><div class="ep" data-page-node-id="BZUT5HynPmRp4b33IEbLrT">11</div><div class="ep" data-page-node-id="DgYgIeNuKRJFRQXGQhtFRR">12</div>
+        </div>
+        <h3 data-page-node-id="kOQJv2MZGDLUW8JK2uVHdE">相关推荐</h3>
+        <div class="grid" data-page-node-id="2WZfAnSF7fFldAmpNgsQ4o">
+          <div class="card" data-page-node-id="KWQhExbpC4EhHah1U08oH7"><div class="poster" data-page-node-id="mDLkk6TB8eGQomYdOf8ZCy">🎬<div class="score" data-page-node-id="9EfJsu0LB6OhpnsFpd73sx">8.7</div></div><div class="n" data-page-node-id="WtD7rs4du0U9iF0BoCrcEv">平原上的摩西</div><div class="m" data-page-node-id="Mj8E7i4UDT58tT4wniblsm">2023 · 悬疑</div></div>
+          <div class="card" data-page-node-id="QVuYlIHHIFx9SYy5y3CKm8"><div class="poster" data-page-node-id="JymYuyBt0DI2rttiWJkkGJ">🎬<div class="score" data-page-node-id="cKL9FeCwRkNAGmnjcIHKSs">9.1</div></div><div class="n" data-page-node-id="4hjb0SJwvmCGYncxb2RDCS">沉默的真相</div><div class="m" data-page-node-id="Xd4Np3IctbFd1FxXb04MvV">2020 · 悬疑</div></div>
+          <div class="card" data-page-node-id="eGAMSrIMlEsqRXOmf2ssYZ"><div class="poster" data-page-node-id="b4KYaYQBf86FOmVM0GTYBn">🎬<div class="score" data-page-node-id="tHG04Q8JY85ZvpZ9CexJEg">8.9</div></div><div class="n" data-page-node-id="Kdv6dht9uEEjRWA98WMGI6">白夜追凶</div><div class="m" data-page-node-id="VWwftdJ0pGQDc6Fgu4uD2h">2017 · 悬疑</div></div>
+          <div class="card" data-page-node-id="s1VxM3xV9AUSEy69MTC1mC"><div class="poster" data-page-node-id="YJGJQqUfYLBGEnjnCxfsBb">🎬<div class="score" data-page-node-id="xJ4Auuqe5Ad3sS4AT55xXU">8.4</div></div><div class="n" data-page-node-id="3BEsbxwlGX4C9eNCesX52M">尘封十三载</div><div class="m" data-page-node-id="xVZXAfdGTrHQ4EhwpVfmzC">2023 · 悬疑</div></div>
+          <div class="card" data-page-node-id="LmSl6gCigLxqdm9DtIQbY1"><div class="poster" data-page-node-id="ZR4yjesmjifPicZLOtelxL">🎬<div class="score" data-page-node-id="QfVAGNyRQznV81Nt0ug1Zw">8.1</div></div><div class="n" data-page-node-id="yN5FPSx0eDYXBxkWIgYQLk">胆小鬼</div><div class="m" data-page-node-id="ON1ewbmFHjoAZCkMLAL7qz">2022 · 悬疑</div></div>
+          <div class="card" data-page-node-id="1BdfzyYKbJ3aFa5S1vFICD"><div class="poster" data-page-node-id="x8nw4jLPDIcXjJ1eMPXeqg">🎬<div class="score" data-page-node-id="2mKcudue1Frudhv6Mr2NWm">7.8</div></div><div class="n" data-page-node-id="0ZGQtwYEV3BfAIpmG33yG9">立功·东北旧事</div><div class="m" data-page-node-id="VLv9wCMpdXDuHjZei5cnlB">2023 · 剧情</div></div>
+        </div>
+      </div>
+      <div class="hint" data-page-node-id="fG5hCQzXnxvf5pI0NgZ5PJ">
+        <b style="color:#cfcfd8" data-page-node-id="0izS9VdHMcHIrHcOJFMyXq">21:9 手机横屏</b>：播放器小窗占宽 58%（16:9），右侧信息面板（片名/评分/简介/线路/操作）同高填满，选集与相关推荐在下方滚动——播放画面不吃掉整个屏幕，信息区零浪费。<br data-page-node-id="8a0rsBRJ2ZIrTLAtxBhl8s">
+        <b style="color:#cfcfd8" data-page-node-id="kglB4MJtx62Ek6d8HfbCVr">电视适配</b>：① 顶部导航 = 遥控器左右键页面切换；② 卡片/按钮获得焦点时白色描边 + 放大 1.05；③ 选集网格 ≥6 列、字号加大；④ 返回键 = 退出播放器回首页。<br data-page-node-id="P2vrAOvvquQiVkTa4GoT1K">
+        <b style="color:#cfcfd8" data-page-node-id="zeFoA6KRizS2Tb1PtQOToA">Windows</b>：同款顶部导航；小窗双击可展开至全宽，窗口拉伸布局不变形。
+      </div>
+    </div>
+
+    <div class="page" id="fav" data-page-node-id="CDpRQSNCIKCtn4NsLh4FlS">
+      <h2 data-page-node-id="NCiETZxGjGukR7eSAsK94n">我的收藏</h2>
+      <div class="favbar" data-page-node-id="1YjBVAtOGmfkIvYMZTile2">
+        <div class="fchip on" data-page-node-id="vKU248mcRGI4ZwDYZOqpmj">全部 (6)</div><div class="fchip" data-page-node-id="UwRYlQ8PGeFVQzZDLBDovT">电影 (2)</div><div class="fchip" data-page-node-id="6FBWL0FgBMWqQYrrYXCfcH">剧集 (4)</div><div class="fchip" data-page-node-id="spL0cVDygVZEQJBQ8jBM5d">追更 (2)</div>
+      </div>
+      <div class="grid" data-page-node-id="SbqAfMYmBh94qTij9ywhxo">
+        <div class="card" data-page-node-id="XsTExgx34CVfIgAlJBw30g"><div class="poster" data-page-node-id="NuVZ2AuNNWW6F0A6b1qKSH">🎬<div class="score" data-page-node-id="cAaALLySUg7j6VKEK3c44m">9.1</div></div><div class="n" data-page-node-id="cIBCJqE7HxTGAYfNbxF26z">漫长的季节</div><div class="m" data-page-node-id="VaemmH751SJwzcV2tJaV7v">看到第 4 集 · 追更中</div></div>
+        <div class="card" data-page-node-id="k9RFqNALSqBE5BSfXvrDfp"><div class="poster" data-page-node-id="w8wsneExuMWEVoLwOUU0tq">🎬<div class="score" data-page-node-id="2AP5qCnsq0AccKBuT4NgVE">8.5</div></div><div class="n" data-page-node-id="r7aStQKgltKKTqFElz5F8b">庆余年 第二季</div><div class="m" data-page-node-id="fhiwVD64JV6WZnlYdsY74O">看到第 12 集 · 追更中</div></div>
+        <div class="card" data-page-node-id="GP81EksS1Osxc5qNtOwhWX"><div class="poster" data-page-node-id="I65uooD1wFqNVAHx7LtNsU">🎬<div class="score" data-page-node-id="eFKHxJijeFiHaCeWumIBaS">8.7</div></div><div class="n" data-page-node-id="iHa235xJLLv5j1zbSDlRoF">流浪地球 2</div><div class="m" data-page-node-id="7dd0s39Hz8kwQdjkt6nuC9">2023 · 电影</div></div>
+        <div class="card" data-page-node-id="K7VVAEq8w2IFNaiuK89cQL"><div class="poster" data-page-node-id="aRhrPAGjXJrBBcg7TvxYQQ">🎬<div class="score" data-page-node-id="QK6ShdDMl6YHzvcEj1ChwI">9.3</div></div><div class="n" data-page-node-id="HfvxccG9tzezZcZsqqisbd">大明王朝 1566</div><div class="m" data-page-node-id="6i8vNEiTYRkCb37nN0O8eF">2007 · 剧集</div></div>
+        <div class="card" data-page-node-id="B0ATTHvbLaUXEedDQWeJYQ"><div class="poster" data-page-node-id="2qphISNKU6NcYatqEDUkvg">🎬<div class="score" data-page-node-id="OIowSbYPRxmRY6AVG1dniT">8.3</div></div><div class="n" data-page-node-id="K7dVhPG8yLfX9Hb3HcEVjH">不良人 第七季</div><div class="m" data-page-node-id="JGgDeW1czwDtkJCzqbulzC">看到第 8 集 · 追更中</div></div>
+        <div class="card" data-page-node-id="qYE2Ycs8dxj8edyCpZfDJZ"><div class="poster" data-page-node-id="iMV5zmaAyDSiETNBP42rNH">🎬<div class="score" data-page-node-id="lvc1FUnTfabYjJCOmsPbiZ">8.6</div></div><div class="n" data-page-node-id="8k2tv3MBb190t4PsFXtmov">琅琊榜</div><div class="m" data-page-node-id="XpqqGEuPw3T7dQC674OG8G">2015 · 剧集</div></div>
+      </div>
+    </div>
+
+    <div class="page" id="set" data-page-node-id="U88KttlaBd0pgS2RoV98tu">
+      <h2 data-page-node-id="SN7XaZv8wlpmn33mBHUkbx">设置</h2>
+      <div class="setcard" data-page-node-id="8KNKWNtp7eJ4P3XBWj6QwJ">
+        <h3 style="margin-top:0" data-page-node-id="GP4HgHSmVrSVKTqIKv8FdH">订阅源管理</h3>
+        <div class="sub" data-page-node-id="p4LGHUBHE4zvQwgxd4NyQa">TVBox / 影视仓订阅地址，支持多仓自动识别</div>
+        <div class="setrow" data-page-node-id="GieLFGP120fu7TlGvakl1L"><span class="k" data-page-node-id="X13DpCBBXXXMAcnCWPY6A9">暴风资源站</span><span class="v" data-page-node-id="dmYj3T0nFSGJHJHHmixI1z">github.com/…/baoFeng.json</span><span class="del" data-page-node-id="MTKDptJpLHmPLAll1S0P1y">删除</span></div>
+        <div class="setrow" data-page-node-id="kKeroYqadDGBS8SugKjEZE"><span class="k" data-page-node-id="t7h4up5dNnBS2qJHZ5otGE">量子资源库</span><span class="v" data-page-node-id="1Q2zTDz8Y9fzED902KnFfk">tvbox.xxx.com/liangzi.json</span><span class="del" data-page-node-id="kNNhrdzzfYTxtNl14LlQiq">删除</span></div>
+        <div class="setrow" data-page-node-id="y1pIaxekIOf8INT2M8fne7"><span class="k" data-page-node-id="58jBzNRbGSXPYsOAHVdcJk">非凡影视</span><span class="v" data-page-node-id="vfilAwRApNf8hJQeCgSf1F">http://xx/feifan.json</span><span class="del" data-page-node-id="ObrdRq88bDHRWotjU72xaQ">删除</span></div>
+        <div class="addsub" data-page-node-id="DrWeNY3bdxEHyqcSL7VhKd"><input placeholder="粘贴订阅地址（TVBox json / 影视仓多仓）…" data-page-node-id="FASaIWGvEiomBUe3P57i8k"><div class="btn" data-page-node-id="yFvYfbncRVD70BZ1Reue2T">＋ 添加</div></div>
+      </div>
+      <div class="setcard" data-page-node-id="01KkfGnoBU4vYiYLNNf9pG">
+        <h3 style="margin-top:0" data-page-node-id="nMZjvBl1xUPTSPIxGRBO9R">播放器</h3>
+        <div class="setrow" data-page-node-id="i8QwrGJHLefgUKflG9Dp8r"><span class="k" data-page-node-id="E9xiaM61gWYVopaPgxqzOB">小窗尺寸（21:9 手机）</span><span class="v" data-page-node-id="gGOvAprd07vw1x7nHZ8psh">58% 宽 · 可展开全宽</span></div>
+        <div class="setrow" data-page-node-id="9hd8UaPJpx7sB5R5ZavvAN"><span class="k" data-page-node-id="SUtwHUkfHn2c6mqHybFoDm">默认画面比例</span><span class="v" data-page-node-id="RbkSkungU9HtfAyE3HmSH7">保持比例（AspectFit）</span></div>
+        <div class="setrow" data-page-node-id="mFB04VgFNwSXWRMRBuoWoV"><span class="k" data-page-node-id="DxsGplwEJur22ufvg9fmum">默认倍速</span><span class="v" data-page-node-id="iK5Aqh37V2Z0IhPRluNAxh">1.0×</span></div>
+        <div class="setrow" data-page-node-id="Vng5RhaebACfOPEVZ1thBP"><span class="k" data-page-node-id="TwFZBsavsbx1CxJcEg9kmj">电视遥控焦点样式</span><span class="v" data-page-node-id="Jl9Y5RgR696uof5Thupno0">白色描边 + 放大</span></div>
+        <div class="setrow" data-page-node-id="CwEB8PfKgAxYz7U7UtfES1"><span class="k" data-page-node-id="IQChQm9LE0KgRPJkSHsbOQ">自动跳过片头</span><span class="v" data-page-node-id="NVKtJHa4Ab7iZuU4jtpAin">关闭</span></div>
+      </div>
+      <div class="setcard" data-page-node-id="c3KNBrplnXkNsMRHaxIFa8">
+        <h3 style="margin-top:0" data-page-node-id="IGo9x9kuAwZmtEZaR3r0LL">通用</h3>
+        <div class="setrow" data-page-node-id="uHH9NhKBIV4A7wmnAihuOA"><span class="k" data-page-node-id="3UuUrtbEUfTOvIOE61iSr6">主题</span><span class="v" data-page-node-id="TXIEWT62WXWMKWONtfFh7g">深色（跟随系统）</span></div>
+        <div class="setrow" data-page-node-id="3wNKwGsbAWitfYl1PEq5tC"><span class="k" data-page-node-id="EbKvx9jJh3ZfqVukkqDONy">启动页</span><span class="v" data-page-node-id="uNGtokCcMeZvwQWoAs7BSF">首页</span></div>
+        <div class="setrow" data-page-node-id="TWEwu0IAlbP20hjXsLiT9o"><span class="k" data-page-node-id="soDvge4kbeE6QBEEhs9wmL">版本</span><span class="v" data-page-node-id="MD55Qmhq7jh47UwUupV3GL">0.1.0</span></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+<script>
+  document.querySelectorAll(".ntab").forEach(t => t.onclick = () => {
+    document.querySelectorAll(".ntab").forEach(x => x.classList.remove("on"));
+    document.querySelectorAll(".page").forEach(x => x.classList.remove("on"));
+    t.classList.add("on");
+    document.getElementById(t.dataset.p).classList.add("on");
+  });
+</script>
+</body>
+</html>
