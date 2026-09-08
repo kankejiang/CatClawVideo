@@ -12,7 +12,7 @@
                 Padding="20,0"
                 StrokeThickness="0"
                 Stroke="{DynamicResource DividerColor}">
-            <Grid ColumnDefinitions="Auto,Auto,Auto,*,Auto" ColumnSpacing="16" HeightRequest="56">
+            <Grid ColumnDefinitions="Auto,Auto,Auto,*,140" ColumnSpacing="16" HeightRequest="56">
                 <!-- 品牌 -->
                 <HorizontalStackLayout Grid.Column="0" Spacing="10" VerticalOptions="Center">
                     <Border WidthRequest="26" HeightRequest="26"
@@ -80,11 +80,7 @@
                     </Border.GestureRecognizers>
                 </Border>
 
-                <!-- 版本 -->
-                <Border Grid.Column="4" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
-                        StrokeShape="RoundRectangle 10" Padding="10,4" VerticalOptions="Center">
-                    <Label Text="0.1.0" FontSize="11" TextColor="{DynamicResource TextSecondaryColor}" />
-                </Border>
+
 
             </Grid>
         </Border>
