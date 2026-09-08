@@ -1,15 +1,19 @@
 using System.Collections.ObjectModel;
-using Microsoft.Maui.Controls.Shapes;
+using CatClawVideo.Core.Interfaces;
 using CatClawVideo.Core.Models;
+using Microsoft.Maui.Controls.Shapes;
 
 namespace CatClawVideo.Maui.Pages;
 
 /// <summary>
-/// 源配置页：订阅源管理（增删）+ 站点列表（开关）。
-/// 订阅解析（ISubscriptionManager）与站点拉取接入前用假数据撑起 UI；数据模型对齐 VodSiteInfo。
+/// 源配置页：订阅源管理（增删，真解析）+ 站点列表（开关）。
+/// TVBox 明文 JSON 真解析（TvBoxSubscriptionManager）；加密源（饭太硬等）返回明确错误提示；
+/// csp spider 源标记「需播放器内核」暂不可播；type=1 MacCMS 源可直接播放。
 /// </summary>
 public partial class SourceConfigPage : ContentPage
 {
+    private readonly ISubscriptionManager _subscriptionManager;
+
     private sealed class SubRow
     {
         public string Name { get; }
@@ -19,31 +23,28 @@ public partial class SourceConfigPage : ContentPage
 
     private readonly ObservableCollection<SubRow> _subs = new()
     {
-        new("暴风资源站", "https://github.com/xx/baoFeng.json"),
-        new("量子资源库", "https://tvbox.xxx.com/liangzi.json"),
-        new("非凡影视", "http://xx/feifan.json"),
+        new("量子资源（内置）", "https://cj.lziapi.com/api.php/provide/vod"),
+        new("非凡资源（内置）", "http://cj.ffzyapi.com/api.php/provide/vod"),
     };
 
     private sealed class SiteRow
     {
         public string Name { get; }
         public string Type { get; }
+        public bool Playable { get; }
         public bool Enabled { get; set; } = true;
-        public SiteRow(string name, string type) { Name = name; Type = type; }
+        public SiteRow(string name, string type, bool playable)
+        {
+            Name = name; Type = type; Playable = playable;
+        }
     }
 
-    private readonly List<SiteRow> _sites =
-    [
-        new("暴风资源", "mac_cms json"),
-        new("量子资源", "mac_cms json"),
-        new("非凡影视", "mac_cms xml"),
-        new("多多资源", "mac_cms json"),
-        new("豆瓣官方", "csp_Douban (spider)"),
-    ];
+    private readonly List<SiteRow> _sites = [];
 
-    public SourceConfigPage()
+    public SourceConfigPage(ISubscriptionManager subscriptionManager)
     {
         InitializeComponent();
+        _subscriptionManager = subscriptionManager;
         RebuildSubs();
         RebuildSites();
     }
@@ -86,8 +87,20 @@ public partial class SourceConfigPage : ContentPage
                 Padding = new Thickness(0, 8),
             };
             var left = new VerticalStackLayout { Spacing = 2 };
-            left.Add(new Label { Text = captured.Name, FontSize = 13, TextColor = Application.Current?.Resources["TextPrimaryColor"] as Color });
-            left.Add(new Label { Text = captured.Type, FontSize = 10.5, TextColor = Application.Current?.Resources["TextHintColor"] as Color });
+            left.Add(new Label
+            {
+                Text = captured.Name + (captured.Playable ? "" : "  · 需播放器内核"),
+                FontSize = 13,
+                TextColor = captured.Playable
+                    ? (Color)Application.Current!.Resources["TextPrimaryColor"]
+                    : (Color)Application.Current!.Resources["TextHintColor"],
+            });
+            left.Add(new Label
+            {
+                Text = captured.Type,
+                FontSize = 10.5,
+                TextColor = Application.Current?.Resources["TextHintColor"] as Color,
+            });
             row.Add(left, 0);
 
             var sw = new Switch { IsToggled = captured.Enabled, HorizontalOptions = LayoutOptions.End, VerticalOptions = LayoutOptions.Center };
@@ -98,13 +111,46 @@ public partial class SourceConfigPage : ContentPage
         }
     }
 
-    private void OnAddSubClicked(object? sender, EventArgs e)
+    /// <summary>添加订阅：拉取并解析 TVBox 配置 → 站点列表真数据</summary>
+    private async void OnAddSubClicked(object? sender, EventArgs e)
     {
         var url = SubEntry.Text?.Trim();
         if (string.IsNullOrEmpty(url)) return;
-        _subs.Add(new SubRow($"订阅 {_subs.Count + 1}", url));
-        SubEntry.Text = "";
-        RebuildSubs();
-        // 订阅解析（LoadSubscriptionAsync）接入后：拉取 → 站点列表 → 持久化
+
+        try
+        {
+            var sites = await _subscriptionManager.LoadSubscriptionAsync(url);
+
+            // 合并去重（按站点名）
+            var existing = _sites.Select(s => s.Name).ToHashSet();
+            int added = 0, skipped = 0;
+            foreach (var s in sites)
+            {
+                if (!existing.Add(s.Name)) continue;
+                var typeName = s.Type switch
+                {
+                    0 => "xml",
+                    1 => "MacCMS json",
+                    3 => s.Api.StartsWith("csp_") ? "spider (需内核)" : "spider",
+                    _ => $"type {s.Type}",
+                };
+                _sites.Add(new SiteRow(s.Name, typeName, s.Playable));
+                added++;
+            }
+            skipped = sites.Count - added;
+            RebuildSites();
+            SubEntry.Text = "";
+            await DisplayAlertAsync("订阅已添加",
+                $"解析到 {sites.Count} 个站点，新增 {added} 个" +
+                (skipped > 0 ? $"（跳过重复 {skipped} 个）" : "") + "。", "确定");
+        }
+        catch (NotSupportedException ex)
+        {
+            await DisplayAlertAsync("暂不支持该订阅", ex.Message, "确定");
+        }
+        catch (Exception ex)
+        {
+            await DisplayAlertAsync("订阅添加失败", $"无法拉取或解析该地址：{ex.Message}", "确定");
+        }
     }
 }

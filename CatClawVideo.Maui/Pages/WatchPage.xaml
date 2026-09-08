@@ -10,7 +10,7 @@
         <VerticalStackLayout Padding="24,14,24,28" Spacing="14">
 
             <!-- 顶栏：返回 + 品牌（延续顶部导航视觉） -->
-            <Grid ColumnDefinitions="Auto,Auto,*" ColumnSpacing="12">
+            <Grid ColumnDefinitions="Auto,Auto,*,Auto" ColumnSpacing="12">
                 <Border Grid.Column="0" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
                         StrokeShape="RoundRectangle 12" WidthRequest="38" HeightRequest="38">
                     <Label Text="←" FontSize="20" TextColor="{DynamicResource TextPrimaryColor}"
@@ -21,18 +21,26 @@
                 </Border>
                 <Label Grid.Column="1" Text="猫爪影视" FontSize="14.5" FontFamily="OpenSansSemibold"
                        TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
+                <Button Grid.Column="3" Text="⛶ 全屏播放" FontSize="12" TextColor="White"
+                        BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
+                        CornerRadius="8" Padding="12,5" Clicked="OnPlayFullClicked" />
             </Grid>
 
             <!-- 上区：小窗播放器（58%）+ 信息面板（42%） -->
             <Grid ColumnDefinitions="58*,42*" ColumnSpacing="18">
 
-                <!-- 小窗播放器（16:9）+ 简易控制条 -->
+                <!-- 小窗播放器（16:9）+ 控制条 -->
                 <Border Grid.Column="0" StrokeThickness="0" StrokeShape="RoundRectangle 12" BackgroundColor="Black">
                     <Grid HeightRequest="300">
                         <controls:VideoPlayerView x:Name="Player"
                                                   Aspect="AspectFit"
-                                                  ShouldAutoPlay="True"
                                                   ShouldKeepScreenOn="True" />
+
+                        <Grid x:Name="BufferingIndicator" IsVisible="False">
+                            <ActivityIndicator IsRunning="True" Color="{DynamicResource PrimaryColor}"
+                                               WidthRequest="40" HeightRequest="40"
+                                               HorizontalOptions="Center" VerticalOptions="Center" />
+                        </Grid>
 
                         <!-- 控制覆盖层：中央播放/暂停 + 底部进度 -->
                         <Grid x:Name="ControlsOverlay">
@@ -68,46 +76,18 @@
 
                 <!-- 信息面板 -->
                 <VerticalStackLayout Grid.Column="1" Spacing="0">
-                    <Label Text="漫长的季节" FontSize="21" FontFamily="OpenSansSemibold"
+                    <Label x:Name="TitleLabel" FontSize="21" FontFamily="OpenSansSemibold"
+                           LineBreakMode="TailTruncation" MaxLines="2"
                            TextColor="{DynamicResource TextPrimaryColor}" />
-                    <Label FontSize="12.5" Margin="0,8,0,0"
-                           TextColor="{DynamicResource TextSecondaryColor}">
-                        <Label.FormattedText>
-                            <FormattedString>
-                                <Span Text="★ 9.1" TextColor="#FFD76E" />
-                                <Span Text=" · 2023 · 剧情 / 悬疑 · 12 集 · 已完结" />
-                            </FormattedString>
-                        </Label.FormattedText>
-                    </Label>
-                    <Label Text="北方小城桦林，出租车司机王响、妹夫龚彪、退休刑警马德胜，因一具无名尸和一辆套牌出租车，被卷入一场横跨十八年的碎尸悬案…"
-                           FontSize="12.5" LineHeight="19" Margin="0,10,0,0"
+                    <Label x:Name="MetaLabel" FontSize="12.5" Margin="0,8,0,0"
+                           TextColor="{DynamicResource TextSecondaryColor}" />
+                    <Label x:Name="DescLabel" FontSize="12.5" LineHeight="19" Margin="0,10,0,0"
                            TextColor="{DynamicResource TextSecondaryColor}" />
                     <Label Text="播放线路" FontSize="13.5" FontFamily="OpenSansSemibold" Margin="0,16,0,0"
                            TextColor="{DynamicResource TextPrimaryColor}" />
-                    <HorizontalStackLayout Spacing="8" Margin="0,8,0,0">
-                        <Border StrokeThickness="0" StrokeShape="RoundRectangle 8" Padding="14,6"
-                                BackgroundColor="{DynamicResource PrimaryColor}">
-                            <Label Text="暴风在线 ①" FontSize="12" TextColor="White" />
-                        </Border>
-                        <Border StrokeThickness="0" StrokeShape="RoundRectangle 8" Padding="14,6"
-                                BackgroundColor="{DynamicResource ChipInactiveColor}">
-                            <Label Text="量子云播 ②" FontSize="12" TextColor="{DynamicResource TextSecondaryColor}" />
-                        </Border>
-                        <Border StrokeThickness="0" StrokeShape="RoundRectangle 8" Padding="14,6"
-                                BackgroundColor="{DynamicResource ChipInactiveColor}">
-                            <Label Text="非凡备用 ③" FontSize="12" TextColor="{DynamicResource TextSecondaryColor}" />
-                        </Border>
-                    </HorizontalStackLayout>
+                    <HorizontalStackLayout x:Name="LinesHost" Spacing="8" Margin="0,8,0,0" />
                     <HorizontalStackLayout Spacing="10" Margin="0,14,0,0">
-                        <Button x:Name="ContinueButton" Text="▶ 继续播放 第 4 集"
-                                FontFamily="OpenSansSemibold" FontSize="12.5" TextColor="White"
-                                BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
-                                CornerRadius="8" Padding="16,7" Clicked="OnPlayFullClicked" />
                         <Button Text="♥ 收藏" FontSize="12.5"
-                                TextColor="{DynamicResource TextPrimaryColor}"
-                                BackgroundColor="{DynamicResource ChipInactiveColor}"
-                                CornerRadius="8" Padding="16,7" />
-                        <Button Text="缓存" FontSize="12.5"
                                 TextColor="{DynamicResource TextPrimaryColor}"
                                 BackgroundColor="{DynamicResource ChipInactiveColor}"
                                 CornerRadius="8" Padding="16,7" />
@@ -116,7 +96,7 @@
             </Grid>
 
             <!-- 选集 -->
-            <Label Text="选集（12）" FontSize="13.5" FontFamily="OpenSansSemibold" Margin="0,10,0,0"
+            <Label Text="选集" FontSize="13.5" FontFamily="OpenSansSemibold" Margin="0,10,0,0"
                    TextColor="{DynamicResource TextPrimaryColor}" />
             <CollectionView x:Name="EpisodeGrid" SelectionMode="Single">
                 <CollectionView.ItemsLayout>
@@ -126,43 +106,17 @@
                     <DataTemplate>
                         <Border StrokeThickness="0" StrokeShape="RoundRectangle 8"
                                 BackgroundColor="{DynamicResource ChipInactiveColor}" Padding="0,8">
-                            <Label Text="{Binding}" FontSize="12" HorizontalTextAlignment="Center"
+                            <Label Text="{Binding Name}" FontSize="12" HorizontalTextAlignment="Center"
+                                   MaxLines="1" LineBreakMode="TailTruncation"
                                    TextColor="{DynamicResource TextSecondaryColor}" />
                         </Border>
                     </DataTemplate>
                 </CollectionView.ItemTemplate>
             </CollectionView>
 
-            <!-- 相关推荐 -->
-            <Label Text="相关推荐" FontSize="13.5" FontFamily="OpenSansSemibold" Margin="0,10,0,0"
-                   TextColor="{DynamicResource TextPrimaryColor}" />
-            <CollectionView x:Name="RecommendGrid" SelectionMode="Single">
-                <CollectionView.ItemsLayout>
-                    <GridItemsLayout Orientation="Vertical" Span="6" VerticalItemSpacing="14" HorizontalItemSpacing="12" />
-                </CollectionView.ItemsLayout>
-                <CollectionView.ItemTemplate>
-                    <DataTemplate>
-                        <VerticalStackLayout Spacing="0">
-                            <Border StrokeThickness="0" StrokeShape="RoundRectangle 10"
-                                    BackgroundColor="{DynamicResource CardBackgroundColor}" HeightRequest="170">
-                                <Grid>
-                                    <Label Text="🎬" FontSize="26" HorizontalOptions="Center" VerticalOptions="Center"
-                                           TextColor="{DynamicResource TextHintColor}" />
-                                    <Border HorizontalOptions="End" VerticalOptions="Start" Margin="0,7,7,0"
-                                            StrokeThickness="0" BackgroundColor="#80000000" StrokeShape="RoundRectangle 8" Padding="6,1">
-                                        <Label Text="{Binding Score}" FontSize="10" TextColor="#FFD76E" />
-                                    </Border>
-                                </Grid>
-                            </Border>
-                            <Label Text="{Binding Title}" FontSize="12.5" Margin="0,7,0,0"
-                                   LineBreakMode="TailTruncation" MaxLines="1"
-                                   TextColor="{DynamicResource TextPrimaryColor}" />
-                            <Label Text="{Binding Meta}" FontSize="10.5" Margin="0,2,0,0"
-                                   TextColor="{DynamicResource TextHintColor}" />
-                        </VerticalStackLayout>
-                    </DataTemplate>
-                </CollectionView.ItemTemplate>
-            </CollectionView>
+            <!-- 相关推荐占位（接入推荐接口后填充） -->
+            <Label Text="相关推荐随后续推荐接口上线" FontSize="11" Margin="0,14,0,0"
+                   TextColor="{DynamicResource TextHintColor}" />
 
         </VerticalStackLayout>
     </ScrollView>

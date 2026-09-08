@@ -54,9 +54,10 @@ public static class MauiProgram
         services.AddSingleton<VideoPlaybackManager>();
 
         // ═══════════════════════════════════════════════════
-        // 影视源提供者（订阅源功能开发阶段在此注册：
-        // services.AddSingleton<IVodSourceProvider, MacCmsJsonProvider>() 等）
+        // 影视源提供者：MacCMS JSON 直连源 + TVBox 订阅解析
         // ═══════════════════════════════════════════════════
+        services.AddSingleton<IVodSourceProvider, CatClawVideo.Core.Providers.MacCmsJsonProvider>();
+        services.AddSingleton<ISubscriptionManager, CatClawVideo.Core.Providers.TvBoxSubscriptionManager>();
 
         // ═══════════════════════════════════════════════════
         // ViewModels

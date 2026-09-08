@@ -1,5 +1,6 @@
 using Microsoft.Maui.Controls.Shapes;
 using System.Collections.ObjectModel;
+using CatClawVideo.Core.Models;
 using CatClawVideo.Maui.ViewModels;
 
 namespace CatClawVideo.Maui.Pages;
@@ -54,14 +55,14 @@ public partial class SearchPage : ContentPage
         HotSection.IsVisible = false;
         ResultSection.IsVisible = true;
 
-        var results = new ObservableCollection<VodCard>
+        var results = new ObservableCollection<VodItem>
         {
-            new("漫长的季节", "9.1", "2023 · 剧集"),
-            new("狂飙", "8.4", "2023 · 剧集"),
-            new("三体", "7.9", "2023 · 剧集"),
-            new("流浪地球 2", "8.7", "2023 · 电影"),
-            new("满江红", "7.0", "2023 · 电影"),
-            new("封神第一部", "7.8", "2023 · 电影"),
+            new() { Title = "漫长的季节", Score = 9.1, Year = "2023", Category = "剧集" },
+            new() { Title = "狂飙", Score = 8.4, Year = "2023", Category = "剧集" },
+            new() { Title = "三体", Score = 7.9, Year = "2023", Category = "剧集" },
+            new() { Title = "流浪地球 2", Score = 8.7, Year = "2023", Category = "电影" },
+            new() { Title = "满江红", Score = 7.0, Year = "2023", Category = "电影" },
+            new() { Title = "封神第一部", Score = 7.8, Year = "2023", Category = "电影" },
         };
         ResultGrid.ItemsSource = results;
     }

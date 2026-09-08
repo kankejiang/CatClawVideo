@@ -78,6 +78,9 @@ public class VodItem
 
     /// <summary>更新说明（如「更新至12集」「HD」）</summary>
     public string? Remarks { get; set; }
+
+    /// <summary>评分（MacCMS vod_score；部分源列表接口返回 0）</summary>
+    public double Score { get; set; }
 }
 
 /// <summary>播放线路（一部影片通常有多条线路，每条线路含全部剧集）</summary>

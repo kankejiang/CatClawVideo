@@ -55,14 +55,14 @@
                                                TextColor="{DynamicResource TextHintColor}" />
                                         <Border HorizontalOptions="End" VerticalOptions="Start" Margin="0,7,7,0"
                                                 StrokeThickness="0" BackgroundColor="#80000000" StrokeShape="RoundRectangle 8" Padding="6,1">
-                                            <Label Text="{Binding Score}" FontSize="10" TextColor="#FFD76E" />
+                                            <Label Text="{Binding Remarks}" FontSize="10" TextColor="#FFD76E" MaxLines="1" />
                                         </Border>
                                     </Grid>
                                 </Border>
                                 <Label Text="{Binding Title}" FontSize="12.5" Margin="0,7,0,0"
                                        LineBreakMode="TailTruncation" MaxLines="1"
                                        TextColor="{DynamicResource TextPrimaryColor}" />
-                                <Label Text="{Binding Meta}" FontSize="10.5" Margin="0,2,0,0"
+                                <Label Text="{Binding Year}" FontSize="10.5" Margin="0,2,0,0"
                                        TextColor="{DynamicResource TextHintColor}" />
                             </VerticalStackLayout>
                         </DataTemplate>

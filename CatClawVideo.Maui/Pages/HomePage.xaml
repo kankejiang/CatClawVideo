@@ -7,13 +7,17 @@
     <ScrollView>
         <VerticalStackLayout Padding="24,16,24,24" Spacing="14">
 
-            <!-- 分类 chips -->
+            <!-- 分类 chips（真数据：当前源分类目录） -->
             <CollectionView x:Name="CategoryChips"
                             SelectionMode="Single"
-                            ItemsLayout="HorizontalList">
+                            ItemsSource="{Binding Categories}"
+                            SelectedItem="{Binding SelectedCategory, Mode=OneWayToSource}">
+                <CollectionView.ItemsLayout>
+                    <LinearItemsLayout Orientation="Horizontal" ItemSpacing="8" />
+                </CollectionView.ItemsLayout>
                 <CollectionView.ItemTemplate>
                     <DataTemplate>
-                        <Border StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,6" Margin="0,0,8,0"
+                        <Border StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,6" Margin="0,0,0,0"
                                 BackgroundColor="{DynamicResource ChipInactiveColor}">
                             <VisualStateManager.VisualStateGroups>
                                 <VisualStateGroupList>
@@ -37,32 +41,41 @@
                 </CollectionView.ItemTemplate>
             </CollectionView>
 
-            <!-- 海报网格（Windows 6 列 / 安卓横屏 4 列） -->
-            <CollectionView x:Name="PosterGrid" SelectionMode="Single">
+            <!-- 加载状态 -->
+            <Label Text="{Binding HomeStatus}" FontSize="12"
+                   TextColor="{DynamicResource TextHintColor}"
+                   IsVisible="{Binding HomeStatus, Converter={StaticResource StringNotEmptyConverter}}" />
+
+            <!-- 海报网格（真数据：当前源影片列表，Windows 6 列 / 安卓横屏 4 列） -->
+            <CollectionView x:Name="PosterGrid" SelectionMode="Single" ItemsSource="{Binding Items}">
                 <CollectionView.ItemsLayout>
                     <GridItemsLayout Orientation="Vertical" Span="6" VerticalItemSpacing="18" HorizontalItemSpacing="14" />
                 </CollectionView.ItemsLayout>
                 <CollectionView.ItemTemplate>
                     <DataTemplate>
                         <VerticalStackLayout Spacing="0">
-                            <Grid RowDefinitions="Auto,Auto" RowSpacing="0">
-                                <!-- 海报占位（订阅源接入后换成 Cover 真图） -->
-                                <Border Grid.Row="0" StrokeThickness="0" StrokeShape="RoundRectangle 10"
-                                        BackgroundColor="{DynamicResource CardBackgroundColor}" HeightRequest="190">
-                                    <Grid>
-                                        <Label Text="🎬" FontSize="30" HorizontalOptions="Center" VerticalOptions="Center"
-                                               TextColor="{DynamicResource TextHintColor}" />
-                                        <Border HorizontalOptions="End" VerticalOptions="Start" Margin="0,8,8,0"
-                                                StrokeThickness="0" BackgroundColor="#80000000" StrokeShape="RoundRectangle 8" Padding="6,1">
-                                            <Label Text="{Binding Score}" FontSize="10" TextColor="#FFD76E" />
-                                        </Border>
-                                    </Grid>
-                                </Border>
-                            </Grid>
+                            <Border StrokeThickness="0" StrokeShape="RoundRectangle 10"
+                                    BackgroundColor="{DynamicResource CardBackgroundColor}" HeightRequest="190">
+                                <Grid>
+                                    <Image Source="{Binding Cover}" Aspect="AspectFill" />
+                                    <Label Text="🎬" FontSize="28" HorizontalOptions="Center" VerticalOptions="Center"
+                                           TextColor="{DynamicResource TextHintColor}">
+                                        <Label.Triggers>
+                                            <DataTrigger TargetType="Label" Binding="{Binding Cover}" Value="{x:Null}">
+                                                <Setter Property="IsVisible" Value="True" />
+                                            </DataTrigger>
+                                        </Label.Triggers>
+                                    </Label>
+                                    <Border HorizontalOptions="End" VerticalOptions="Start" Margin="0,8,8,0"
+                                            StrokeThickness="0" BackgroundColor="#80000000" StrokeShape="RoundRectangle 8" Padding="6,1">
+                                        <Label Text="{Binding Remarks}" FontSize="10" TextColor="#FFD76E" MaxLines="1" />
+                                    </Border>
+                                </Grid>
+                            </Border>
                             <Label Text="{Binding Title}" FontSize="12.5" Margin="0,7,0,0"
                                    LineBreakMode="TailTruncation" MaxLines="1"
                                    TextColor="{DynamicResource TextPrimaryColor}" />
-                            <Label Text="{Binding Meta}" FontSize="10.5" Margin="0,2,0,0"
+                            <Label Text="{Binding Year}" FontSize="10.5" Margin="0,2,0,0"
                                    TextColor="{DynamicResource TextHintColor}" />
                             <Grid.GestureRecognizers>
                                 <TapGestureRecognizer Tapped="OnPosterTapped" />
@@ -72,7 +85,7 @@
                 </CollectionView.ItemTemplate>
             </CollectionView>
 
-            <!-- 快速播放（订阅源上线前的播放链路验证入口，折叠为底部卡片） -->
+            <!-- 快速播放（开发用播放链路验证入口） -->
             <Border StrokeThickness="1" Margin="0,18,0,0"
                     StrokeShape="RoundRectangle 16"
                     BackgroundColor="{DynamicResource CardBackgroundColor}"
