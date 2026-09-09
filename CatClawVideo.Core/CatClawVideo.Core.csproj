@@ -5,4 +5,9 @@
     <Nullable>enable</Nullable>
     <LangVersion>preview</LangVersion>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- Jint JS 引擎：drpy2 爬虫运行时（与猫爪音乐同版本，Acornima 显式锁定） -->
+    <PackageReference Include="Jint" Version="4.16.0" />
+    <PackageReference Include="Acornima" Version="1.7.0" />
+  </ItemGroup>
 </Project>

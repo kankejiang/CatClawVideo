@@ -35,7 +35,8 @@
                         <Entry Grid.Column="0" x:Name="SubEntry"
                                Placeholder="粘贴订阅地址（TVBox json / 影视仓多仓）…"
                                PlaceholderColor="{DynamicResource TextHintColor}"
-                               TextColor="{DynamicResource TextPrimaryColor}" />
+                               TextColor="{DynamicResource TextPrimaryColor}"
+                               Completed="OnAddSubClicked" />
                         <Button Grid.Column="1" Text="＋ 添加" FontSize="12.5" TextColor="White"
                                 BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
                                 CornerRadius="8" Padding="16,6" Clicked="OnAddSubClicked" />

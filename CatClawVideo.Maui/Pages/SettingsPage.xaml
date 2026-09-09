@@ -30,24 +30,9 @@
                             </Label.GestureRecognizers>
                         </Label>
                     </Grid>
-                    <Label Text="TVBox / 影视仓订阅地址，支持多仓自动识别"
+                    <Label Text="TVBox / 影视仓订阅地址，支持多仓自动识别；不内置任何源，添加订阅后首页/搜索即用该源"
                            FontSize="12"
                            TextColor="{DynamicResource TextSecondaryColor}" />
-                    <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="12" Padding="0,4">
-                        <Label Grid.Column="0" Text="暴风资源站" FontSize="13" TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
-                        <Label Grid.Column="1" Text="github.com/…/baoFeng.json" FontSize="11" TextColor="{DynamicResource TextHintColor}" VerticalOptions="Center" />
-                        <Label Grid.Column="2" Text="删除" FontSize="11.5" TextColor="#c0392b" VerticalOptions="Center" />
-                    </Grid>
-                    <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="12" Padding="0,4">
-                        <Label Grid.Column="0" Text="量子资源库" FontSize="13" TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
-                        <Label Grid.Column="1" Text="tvbox.xxx.com/liangzi.json" FontSize="11" TextColor="{DynamicResource TextHintColor}" VerticalOptions="Center" />
-                        <Label Grid.Column="2" Text="删除" FontSize="11.5" TextColor="#c0392b" VerticalOptions="Center" />
-                    </Grid>
-                    <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="12" Padding="0,4">
-                        <Label Grid.Column="0" Text="非凡影视" FontSize="13" TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
-                        <Label Grid.Column="1" Text="http://xx/feifan.json" FontSize="11" TextColor="{DynamicResource TextHintColor}" VerticalOptions="Center" />
-                        <Label Grid.Column="2" Text="删除" FontSize="11.5" TextColor="#c0392b" VerticalOptions="Center" />
-                    </Grid>
                     <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10" Margin="0,6,0,0">
                         <Entry Grid.Column="0" Placeholder="粘贴订阅地址（TVBox json / 影视仓多仓）…"
                                PlaceholderColor="{DynamicResource TextHintColor}"

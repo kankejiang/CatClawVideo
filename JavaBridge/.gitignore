@@ -1,0 +1,5 @@
+build/
+converted/
+data/
+sources.txt
+*.log

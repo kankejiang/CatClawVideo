@@ -7,39 +7,28 @@
     <ScrollView>
         <VerticalStackLayout Padding="24,16,24,24" Spacing="14">
 
-            <!-- 分类 chips（真数据：当前源分类目录） -->
-            <CollectionView x:Name="CategoryChips"
-                            SelectionMode="Single"
-                            ItemsSource="{Binding Categories}"
-                            SelectedItem="{Binding SelectedCategory, Mode=OneWayToSource}">
-                <CollectionView.ItemsLayout>
-                    <LinearItemsLayout Orientation="Horizontal" ItemSpacing="8" />
-                </CollectionView.ItemsLayout>
-                <CollectionView.ItemTemplate>
-                    <DataTemplate>
-                        <Border StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,6" Margin="0,0,0,0"
-                                BackgroundColor="{DynamicResource ChipInactiveColor}">
-                            <VisualStateManager.VisualStateGroups>
-                                <VisualStateGroupList>
-                                    <VisualStateGroup x:Name="CommonStates">
-                                        <VisualState x:Name="Normal">
-                                            <VisualState.Setters>
-                                                <Setter Property="BackgroundColor" Value="{DynamicResource ChipInactiveColor}" />
-                                            </VisualState.Setters>
-                                        </VisualState>
-                                        <VisualState x:Name="Selected">
-                                            <VisualState.Setters>
-                                                <Setter Property="BackgroundColor" Value="{DynamicResource PrimaryColor}" />
-                                            </VisualState.Setters>
-                                        </VisualState>
-                                    </VisualStateGroup>
-                                </VisualStateGroupList>
-                            </VisualStateManager.VisualStateGroups>
-                            <Label Text="{Binding Name}" FontSize="11.5" TextColor="{DynamicResource TextSecondaryColor}" />
-                        </Border>
-                    </DataTemplate>
-                </CollectionView.ItemTemplate>
-            </CollectionView>
+            <!-- 分类 chips（真数据：当前源分类目录）
+                 注意：此处原用 CollectionView + SelectionMode=Single，Windows 上选中后 item 容器
+                 未释放指针捕获，会导致后续所有点击（含顶部导航 tab）失效，故改为 BindableLayout + Tap。 -->
+            <ScrollView Orientation="Horizontal"
+                        HorizontalScrollBarVisibility="Never"
+                        VerticalScrollBarVisibility="Never">
+                <HorizontalStackLayout x:Name="CategoryChipHost" Spacing="8" Padding="0,0,24,0"
+                                       BindableLayout.ItemsSource="{Binding Categories}">
+                    <BindableLayout.ItemTemplate>
+                        <DataTemplate>
+                            <Border StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,6"
+                                    BackgroundColor="{DynamicResource ChipInactiveColor}">
+                                <Label Text="{Binding Name}" FontSize="11.5"
+                                       TextColor="{DynamicResource TextSecondaryColor}" />
+                                <Border.GestureRecognizers>
+                                    <TapGestureRecognizer Tapped="OnCategoryTapped" />
+                                </Border.GestureRecognizers>
+                            </Border>
+                        </DataTemplate>
+                    </BindableLayout.ItemTemplate>
+                </HorizontalStackLayout>
+            </ScrollView>
 
             <!-- 加载状态 -->
             <Label Text="{Binding HomeStatus}" FontSize="12"

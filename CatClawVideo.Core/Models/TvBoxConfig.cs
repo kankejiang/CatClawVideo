@@ -27,6 +27,21 @@ public class TvBoxConfig
     [JsonPropertyName("parses")]
     public List<TvBoxParse> Parses { get; set; } = [];
 
+    /// <summary>
+    /// 域名替换表（"a.com=b.com" 形式）。爬虫返回的图片/资源域名在此映射到可用镜像，
+    /// 典型如饭太硬源的 img1.wsyzy.org=fan.cloudflare.182682.xyz。
+    /// </summary>
+    [JsonPropertyName("hosts")]
+    public List<string> Hosts { get; set; } = [];
+
+    /// <summary>播放规则列表（m3u8 广告段剔除正则等，按 host 匹配生效）</summary>
+    [JsonPropertyName("rules")]
+    public List<TvBoxRule> Rules { get; set; } = [];
+
+    /// <summary>站点 logo（影视仓扩展字段）</summary>
+    [JsonPropertyName("logo")]
+    public string? Logo { get; set; }
+
     /// <summary>壁纸地址（影视仓扩展字段）</summary>
     [JsonPropertyName("wallpaper")]
     public string? Wallpaper { get; set; }
@@ -34,6 +49,21 @@ public class TvBoxConfig
     /// <summary>首页推荐路由（如 https://xx/home.video 后续版本使用）</summary>
     [JsonPropertyName("homeVideo")]
     public bool? HomeVideo { get; set; }
+}
+
+/// <summary>TVBox 播放规则（按 host 匹配的 m3u8 正则处理规则）</summary>
+public class TvBoxRule
+{
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>该规则生效的 host 关键字列表</summary>
+    [JsonPropertyName("hosts")]
+    public List<string> Hosts { get; set; } = [];
+
+    /// <summary>匹配并剔除/改写的正则列表</summary>
+    [JsonPropertyName("regex")]
+    public List<string> Regex { get; set; } = [];
 }
 
 /// <summary>TVBox 配置中的单个站点</summary>
@@ -61,13 +91,36 @@ public class TvBoxSite
     public string? Jar { get; set; }
 
     [JsonPropertyName("playerable")]
+    [JsonConverter(typeof(FlexibleBoolConverter))]
     public bool? Playable { get; set; }
 
     [JsonPropertyName("searchable")]
+    [JsonConverter(typeof(FlexibleBoolConverter))]
     public bool? Searchable { get; set; }
 
     [JsonPropertyName("quickSearch")]
+    [JsonConverter(typeof(FlexibleBoolConverter))]
     public bool? QuickSearch { get; set; }
+
+    /// <summary>是否可换源（影视仓扩展字段，源里写作 0/1）</summary>
+    [JsonPropertyName("changeable")]
+    [JsonConverter(typeof(FlexibleBoolConverter))]
+    public bool? Changeable { get; set; }
+
+    /// <summary>是否支持分类筛选（源里写作 0/1）</summary>
+    [JsonPropertyName("filterable")]
+    [JsonConverter(typeof(FlexibleBoolConverter))]
+    public bool? Filterable { get; set; }
+
+    /// <summary>首页取第几组数据（影视仓扩展字段）</summary>
+    [JsonPropertyName("indexs")]
+    [JsonConverter(typeof(FlexibleIntConverter))]
+    public int? Indexs { get; set; }
+
+    /// <summary>播放器类型（1=IJK、2=Exo 等；源中可能写作数字或字符串）</summary>
+    [JsonPropertyName("playerType")]
+    [JsonConverter(typeof(FlexibleIntConverter))]
+    public int? PlayerType { get; set; }
 
     /// <summary>超时（秒）</summary>
     [JsonPropertyName("timeout")]
@@ -128,6 +181,61 @@ public class TvBoxLive
 
     [JsonPropertyName("logo")]
     public string? Logo { get; set; }
+
+    /// <summary>请求直播源时使用的 UA（如 okhttp/3.15）</summary>
+    [JsonPropertyName("ua")]
+    public string? Ua { get; set; }
+
+    /// <summary>播放器类型（源中可能写作数字或字符串）</summary>
+    [JsonPropertyName("playerType")]
+    [JsonConverter(typeof(FlexibleIntConverter))]
+    public int? PlayerType { get; set; }
+}
+
+/// <summary>
+/// 布尔字段容错反序列化。TVBox 社区配置的布尔值写法不统一：true/false、1/0、"1"/"0" 都常见
+/// （如本订阅源的 searchable/quickSearch 全部是 1/0 数字），直接按 bool 读会抛异常。
+/// </summary>
+public class FlexibleBoolConverter : JsonConverter<bool?>
+{
+    public override bool? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) => reader.TokenType switch
+    {
+        JsonTokenType.True => true,
+        JsonTokenType.False => false,
+        JsonTokenType.Number => reader.TryGetInt32(out var n) ? n != 0 : null,
+        JsonTokenType.String => ParseText(reader.GetString()),
+        _ => null,
+    };
+
+    private static bool? ParseText(string? text)
+    {
+        if (bool.TryParse(text, out var b)) return b;
+        if (int.TryParse(text, out var n)) return n != 0;
+        return null;
+    }
+
+    public override void Write(Utf8JsonWriter writer, bool? value, JsonSerializerOptions options)
+    {
+        if (value.HasValue) writer.WriteBooleanValue(value.Value);
+        else writer.WriteNullValue();
+    }
+}
+
+/// <summary>整数字段容错反序列化（源中 playerType 等可能写成 "2" 字符串）</summary>
+public class FlexibleIntConverter : JsonConverter<int?>
+{
+    public override int? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) => reader.TokenType switch
+    {
+        JsonTokenType.Number => reader.TryGetInt32(out var n) ? n : null,
+        JsonTokenType.String => int.TryParse(reader.GetString(), out var s) ? s : null,
+        _ => null,
+    };
+
+    public override void Write(Utf8JsonWriter writer, int? value, JsonSerializerOptions options)
+    {
+        if (value.HasValue) writer.WriteNumberValue(value.Value);
+        else writer.WriteNullValue();
+    }
 }
 
 /// <summary>影视仓多仓源模型（仓库列表 JSON，如 {"urls":[{"url":"...","name":"..."}]}）</summary>

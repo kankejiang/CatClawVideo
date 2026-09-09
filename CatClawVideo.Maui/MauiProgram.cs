@@ -54,10 +54,37 @@ public static class MauiProgram
         services.AddSingleton<VideoPlaybackManager>();
 
         // ═══════════════════════════════════════════════════
-        // 影视源提供者：MacCMS JSON 直连源 + TVBox 订阅解析
+        // 影视源提供者：MacCMS JSON 直连 + TVBox spider 爬虫运行时 + 聚合路由
         // ═══════════════════════════════════════════════════
-        services.AddSingleton<IVodSourceProvider, CatClawVideo.Core.Providers.MacCmsJsonProvider>();
         services.AddSingleton<ISubscriptionManager, CatClawVideo.Core.Providers.TvBoxSubscriptionManager>();
+
+        // spider 运行时：JS（drpy2，Jint 纯托管，双端可用）+ jar/dex（Android DexClassLoader，仅 Android）
+        services.AddSingleton<CatClawVideo.Core.Interfaces.IJsRuntimeService, CatClawVideo.Core.Services.JsRuntimeService>();
+        var jsRuntime = new CatClawVideo.Core.Providers.DrpyJsSpiderRuntime(
+            new CatClawVideo.Core.Services.JsRuntimeService(),
+            cacheDir: Path.Combine(FileSystem.CacheDirectory, "drpy2"),
+            log: m => System.Diagnostics.Debug.WriteLine(m));
+#if ANDROID
+        var jarRuntime = new Platforms.Android.DexSpiderRuntime(
+            Path.Combine(FileSystem.CacheDirectory, "spider"),
+            m => System.Diagnostics.Debug.WriteLine(m));
+#else
+        // 桌面 JVM 桥：JavaBridge 目录 + 系统 java.exe（缺一则不可用）
+        var bridgeDir = CatClawVideo.Core.Providers.JavaSpiderRuntime.FindBridgeDir();
+        var javaExe = CatClawVideo.Core.Providers.JavaSpiderRuntime.FindJavaExe();
+        CatClawVideo.Core.Interfaces.ISpiderRuntime jarRuntime = bridgeDir != null && javaExe != null
+            ? new CatClawVideo.Core.Providers.JavaSpiderRuntime(bridgeDir, javaExe, m => System.Diagnostics.Debug.WriteLine(m))
+            : new CatClawVideo.Core.Providers.NullSpiderRuntime("jvm-dex");
+#endif
+        CatClawVideo.Core.Models.SiteRegistry.JsSpiderAvailable = jsRuntime.IsSupported;
+        CatClawVideo.Core.Models.SiteRegistry.JarSpiderAvailable = jarRuntime.IsSupported;
+
+        services.AddSingleton<IVodSourceProvider>(new CatClawVideo.Core.Providers.CompositeVodSourceProvider(
+            new IVodSourceProvider[]
+            {
+                new CatClawVideo.Core.Providers.MacCmsJsonProvider(),
+                new CatClawVideo.Core.Providers.SpiderVodProvider(jsRuntime, jarRuntime),
+            }));
 
         // ═══════════════════════════════════════════════════
         // ViewModels

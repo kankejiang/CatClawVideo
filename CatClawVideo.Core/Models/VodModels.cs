@@ -1,5 +1,21 @@
 namespace CatClawVideo.Core.Models;
 
+/// <summary>
+/// spider（爬虫）源依赖的运行时类型。TVBox site.type=3 只说明「是爬虫源」，
+/// 具体还要按 api 形态区分：csp_Xxx 走 jar/dex 爬虫、http(s) 脚本地址走 JS 引擎。
+/// </summary>
+public enum VodSpiderKind
+{
+    /// <summary>非爬虫源（MacCMS json/xml 等直接按 API 协议取数）</summary>
+    None = 0,
+
+    /// <summary>Java jar/dex 爬虫（api 形如 csp_Xxx，依赖订阅全局或站点 jar）</summary>
+    Jar = 1,
+
+    /// <summary>脚本爬虫（api 为 http(s) 脚本文件地址，如 .js / drp，依赖 JS 引擎）</summary>
+    Script = 2,
+}
+
 /// <summary>影视站点信息（订阅源解析后的统一站点描述，跨 TVBox / 影视仓多仓格式）</summary>
 public class VodSiteInfo
 {
@@ -27,8 +43,26 @@ public class VodSiteInfo
     /// <summary>是否可搜索</summary>
     public bool Searchable { get; set; } = true;
 
+    /// <summary>
+    /// spider 包地址（type=3 站点）。站点自带 jar 时取站点值，否则回退到订阅的全局 spider。
+    /// 常见写法 "url;md5;hash"，也可能是伪装成 .jpg 的 jar。
+    /// </summary>
+    public string? Jar { get; set; }
+
+    /// <summary>爬虫运行时类型（type=3 站点按 api 形态判定）</summary>
+    public VodSpiderKind SpiderKind { get; set; }
+
     /// <summary>是否支持快速搜索</summary>
     public bool QuickSearch { get; set; } = true;
+
+    /// <summary>请求超时（秒）。来自订阅配置的 timeout 字段，为空时用全局默认。</summary>
+    public int? TimeoutSeconds { get; set; }
+
+    /// <summary>
+    /// 站点状态说明（不可播时给出具体原因，如「jar 爬虫源 · 需 spider 运行时」）。
+    /// 可播站点为 null。
+    /// </summary>
+    public string? StatusNote { get; set; }
 
     public override string ToString() => Name;
 }

@@ -7,7 +7,10 @@ namespace CatClawVideo.Core.Providers;
 /// <summary>
 /// TVBox / 影视仓订阅解析器（明文 JSON 配置）。
 /// 站点类型映射：type 1 = MacCMS json（MacCmsJsonProvider 可播）、0 = xml（暂不支持）、
-/// 3 = csp spider（依赖 jar 运行时，标记 Playable=false——spider 运行时为独立大项）。
+/// 3 = spider 爬虫源，再按 api 细分为：
+///   · csp_Xxx    → Java jar/dex 爬虫（依赖订阅全局 spider 或站点自带 jar）
+///   · http(s) 脚本地址 → JS 脚本爬虫（如 .js / drp，依赖 JS 引擎）
+/// 两者当前都不可播，通过 <see cref="VodSiteInfo.StatusNote"/> 给出具体原因。
 /// 加密配置（饭太硬等返回 logo 图/密文的源）识别后抛出明确异常。
 /// </summary>
 public class TvBoxSubscriptionManager : ISubscriptionManager
@@ -29,10 +32,21 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
                 "请使用明文 TVBox json 或 MacCMS 直连地址。");
 
         var text = System.Text.Encoding.UTF8.GetString(bytes);
-        return await ParseConfigTextAsync(text, subscriptionName: new Uri(subscriptionUrl).Host, ct);
+        var sites = await ParseConfigTextAsync(text, subscriptionName: new Uri(subscriptionUrl).Host, ct);
+
+        // 相对路径解析：小雅等站点 jar 写作 ./libs/x.jar（相对订阅源目录）
+        var baseUrl = subscriptionUrl[..(subscriptionUrl.LastIndexOf('/') + 1)];
+        foreach (var s in sites)
+        {
+            if (s.Jar is not null && s.Jar.StartsWith("./", StringComparison.Ordinal))
+                s.Jar = baseUrl + s.Jar[2..];
+            if (s.Ext is not null && s.Ext.StartsWith("./", StringComparison.Ordinal))
+                s.Ext = baseUrl + s.Ext[2..];
+        }
+        return sites;
     }
 
-    public async Task<List<VodSiteInfo>> ParseConfigTextAsync(string jsonText, string subscriptionName, CancellationToken ct = default)
+    public Task<List<VodSiteInfo>> ParseConfigTextAsync(string jsonText, string subscriptionName, CancellationToken ct = default)
     {
         var trimmed = jsonText.TrimStart();
 
@@ -47,7 +61,12 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
 
         var sites = new List<VodSiteInfo>();
         if (!root.TryGetProperty("sites", out var siteArray) || siteArray.ValueKind != JsonValueKind.Array)
-            return sites;
+            return Task.FromResult(sites);
+
+        // 全局 spider 包（csp_ 类站点未自带 jar 时回退到它）
+        var globalSpider = root.TryGetProperty("spider", out var sp) && sp.ValueKind == JsonValueKind.String
+            ? sp.GetString()
+            : null;
 
         foreach (var s in siteArray.EnumerateArray())
         {
@@ -55,11 +74,27 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
             var name = s.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
             var api = s.TryGetProperty("api", out var a) ? a.GetString() ?? "" : "";
             var type = s.TryGetProperty("type", out var t) && t.TryGetInt32(out var tv) ? tv : -1;
-            var ext = s.TryGetProperty("ext", out var e) && e.ValueKind == JsonValueKind.String ? e.GetString() : null;
             if (key.Length == 0 || name.Length == 0) continue;
 
-            bool playable = type == 1 && api.StartsWith("http", StringComparison.OrdinalIgnoreCase) &&
+            // ext 可能是字符串（URL/密文），也可能是内嵌对象或对象数组（如小雅 Alist 的全局配置）
+            var ext = s.TryGetProperty("ext", out var e) && e.ValueKind != JsonValueKind.Null
+                ? (e.ValueKind == JsonValueKind.String ? e.GetString() : e.GetRawText())
+                : null;
+
+            var jar = s.TryGetProperty("jar", out var j) && j.ValueKind == JsonValueKind.String ? j.GetString() : null;
+            var timeout = s.TryGetProperty("timeout", out var to) && to.TryGetInt32(out var tov) ? tov : (int?)null;
+
+            // 源里 searchable/quickSearch 常写作 1/0 而非 true/false，此处按两者都兼容读取
+            var searchableFlag = ReadFlag(s, "searchable");
+            var quickSearchFlag = ReadFlag(s, "quickSearch");
+
+            var (spiderKind, statusNote) = Classify(type, api);
+
+            bool playable = spiderKind == VodSpiderKind.None &&
+                            type == 1 &&
+                            api.StartsWith("http", StringComparison.OrdinalIgnoreCase) &&
                             !api.Contains("csp_", StringComparison.OrdinalIgnoreCase);
+
             sites.Add(new VodSiteInfo
             {
                 Key = key,
@@ -67,12 +102,65 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
                 Api = api,
                 Type = type,
                 Ext = ext,
+                Jar = string.IsNullOrWhiteSpace(jar) ? globalSpider : jar,
+                SpiderKind = spiderKind,
+                TimeoutSeconds = timeout,
                 SubscriptionName = subscriptionName,
                 Playable = playable,
-                Searchable = playable,
+                Searchable = searchableFlag ?? playable,
+                QuickSearch = quickSearchFlag ?? playable,
+                StatusNote = playable ? null : statusNote,
             });
         }
-        return sites;
+        return Task.FromResult(sites);
+    }
+
+    /// <summary>
+    /// 判定爬虫运行时类型与不可播原因。type=3 按 api 形态细分：
+    /// csp_ 前缀为 jar 爬虫、http(s) 地址为脚本爬虫。
+    /// </summary>
+    private static (VodSpiderKind Kind, string Note) Classify(int type, string api)
+    {
+        if (type == 3)
+        {
+            if (api.StartsWith("csp_", StringComparison.OrdinalIgnoreCase))
+                return (VodSpiderKind.Jar, "jar 爬虫源 · 需 spider 运行时");
+
+            if (api.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                return (VodSpiderKind.Script, "脚本爬虫源 · 需 JS 引擎");
+
+            return (VodSpiderKind.Jar, "爬虫源 · 需 spider 运行时");
+        }
+
+        return type switch
+        {
+            0 => (VodSpiderKind.None, "xml 源 · 暂不支持"),
+            1 => (VodSpiderKind.None, "MacCMS json · 地址不可用"),
+            _ => (VodSpiderKind.None, $"type {type} · 暂不支持"),
+        };
+    }
+
+    /// <summary>读取布尔标记，兼容 true/false、1/0、"1"/"0" 四种写法；字段缺失或类型异常返回 null。</summary>
+    private static bool? ReadFlag(JsonElement obj, string propertyName)
+    {
+        if (!obj.TryGetProperty(propertyName, out var v)) return null;
+        try
+        {
+            return v.ValueKind switch
+            {
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                JsonValueKind.Number => v.TryGetInt32(out var n) ? n != 0 : null,
+                JsonValueKind.String => bool.TryParse(v.GetString(), out var b)
+                    ? b
+                    : (int.TryParse(v.GetString(), out var n2) ? n2 != 0 : null),
+                _ => null,
+            };
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
     }
 
     private static bool IsBinary(byte[] bytes)
