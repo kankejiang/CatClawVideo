@@ -32,6 +32,18 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
 
     public async Task<List<VodSiteInfo>> LoadSubscriptionAsync(string subscriptionUrl, CancellationToken ct = default)
     {
+        // 本地源文件（猫爪源生态 / 本地 TVBox json）：与远程同链路解析
+        if (File.Exists(subscriptionUrl) || subscriptionUrl.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
+        {
+            var path = subscriptionUrl.StartsWith("file://", StringComparison.OrdinalIgnoreCase)
+                ? new Uri(subscriptionUrl).LocalPath
+                : subscriptionUrl;
+            var local = await File.ReadAllTextAsync(path, ct);
+            if (local.Contains(CatClawSourceDoc.ProtocolMagic, StringComparison.OrdinalIgnoreCase))
+                return [BuildCatClawSite(local, subscriptionUrl)];
+            return await ParseConfigTextAsync(local, System.IO.Path.GetFileNameWithoutExtension(path), ct);
+        }
+
         using var resp = await Http.GetAsync(subscriptionUrl, HttpCompletionOption.ResponseHeadersRead, ct);
         resp.EnsureSuccessStatusCode();
 

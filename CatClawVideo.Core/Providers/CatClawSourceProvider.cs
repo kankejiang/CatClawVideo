@@ -66,6 +66,12 @@ public class CatClawSourceProvider : IVodSourceProvider
 
     public Task<PlayRequest> ResolvePlayUrlAsync(VodSiteInfo site, VodEpisode episode, CancellationToken ct = default)
     {
+        // 磁力/电驴链接：播放器无法直播（BT 引擎为后续独立工程），给明确提示而非网络错误
+        if (episode.Url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase) ||
+            episode.Url.StartsWith("ed2k://", StringComparison.OrdinalIgnoreCase))
+            throw new NotSupportedException(
+                "该集为磁力/电驴下载链接，暂不支持在线播放（BT 引擎规划中）；可复制链接到下载工具");
+
         // 猫爪源：剧集即播放直链（m3u8/mp4），可选 UA / Referer 防盗链
         return Task.FromResult(new PlayRequest
         {
@@ -108,9 +114,22 @@ public class CatClawSourceProvider : IVodSourceProvider
 
     private static async Task<CatClawSourceDoc> FetchDocAsync(string url, CancellationToken ct)
     {
-        using var resp = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-        resp.EnsureSuccessStatusCode();
-        var json = await resp.Content.ReadAsStringAsync(ct);
+        // 本地源文件：直接读盘（生态 v1 支持本地 ccs.json）
+        string json;
+        if (File.Exists(url) || url.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
+        {
+            var path = url.StartsWith("file://", StringComparison.OrdinalIgnoreCase)
+                ? new Uri(url).LocalPath
+                : url;
+            json = await File.ReadAllTextAsync(path, ct);
+        }
+        else
+        {
+            using var resp = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+            resp.EnsureSuccessStatusCode();
+            json = await resp.Content.ReadAsStringAsync(ct);
+        }
+
         var doc = JsonSerializer.Deserialize<CatClawSourceDoc>(json, JsonOpts)
                   ?? throw new InvalidOperationException("猫爪源解析结果为空");
 
