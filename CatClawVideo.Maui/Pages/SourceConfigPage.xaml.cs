@@ -1,26 +1,30 @@
 using System.Collections.ObjectModel;
 using CatClawVideo.Core.Interfaces;
 using CatClawVideo.Core.Models;
+using CatClawVideo.Data;
 using Microsoft.Maui.Controls.Shapes;
 namespace CatClawVideo.Maui.Pages;
 
 /// <summary>
-/// 源配置页：订阅源管理（增删，真解析）+ 站点列表（开关）。
+/// 源配置页：订阅源管理（增删，真解析，持久化到数据库）+ 站点列表（开关）。
 /// TVBox 明文 JSON 真解析（TvBoxSubscriptionManager）；加密源（饭太硬等）返回明确错误提示；
-/// type=3 spider 源按 jar/脚本细分并标注所需运行时（当前均不可播）；type=1 MacCMS 源可直接播放。
+/// type=3 spider 源按 jar/脚本细分并标注所需运行时；type=1 MacCMS 源可直接播放。
 /// </summary>
 public partial class SourceConfigPage : ContentPage
 {
     private readonly ISubscriptionManager _subscriptionManager;
+    private readonly VideoDatabase _db;
 
+    /// <summary>订阅行（携带数据库记录，删除时同步删库）</summary>
     private sealed class SubRow
     {
-        public string Name { get; }
-        public string Url { get; }
-        public SubRow(string name, string url) { Name = name; Url = url; }
+        public VodSubscription Sub { get; }
+        public string Name => Sub.Name;
+        public string Url => Sub.SourceUrl;
+        public SubRow(VodSubscription sub) { Sub = sub; }
     }
 
-    /// <summary>订阅列表（不内置任何源，全部由用户添加）</summary>
+    /// <summary>订阅列表（进入页面时从数据库加载）</summary>
     private readonly ObservableCollection<SubRow> _subs = new();
 
     private sealed class SiteRow
@@ -38,23 +42,37 @@ public partial class SourceConfigPage : ContentPage
 
     private readonly List<SiteRow> _sites = [];
 
-    public SourceConfigPage(ISubscriptionManager subscriptionManager)
+    public SourceConfigPage(ISubscriptionManager subscriptionManager, VideoDatabase db)
     {
         InitializeComponent();
         _subscriptionManager = subscriptionManager;
-        RebuildSubs();
+        _db = db;
         RebuildSites();
     }
 
-    /// <summary>进入页面即聚焦订阅地址输入框（键盘/遥控直接输入，回车即添加）</summary>
+    /// <summary>进入页面即聚焦订阅地址输入框（键盘/遥控直接输入，回车即添加），并从数据库加载订阅列表</summary>
     protected override void OnAppearing()
     {
         base.OnAppearing();
+        _ = LoadSubsFromDbAsync();
         MainThread.BeginInvokeOnMainThread(async () =>
         {
             await Task.Delay(120);
             SubEntry.Focus();
         });
+    }
+
+    /// <summary>从数据库加载订阅列表（数据库可能仍在后台建表，失败静默下次再载）</summary>
+    private async Task LoadSubsFromDbAsync()
+    {
+        try
+        {
+            var subs = await _db.GetSubscriptionsAsync();
+            _subs.Clear();
+            foreach (var s in subs) _subs.Add(new SubRow(s));
+            RebuildSubs();
+        }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[源配置] 订阅列表加载失败: {ex.Message}"); }
     }
 
     private void OnBackTapped(object? sender, TappedEventArgs e) => Shell.Current.GoToAsync("..");
@@ -72,15 +90,20 @@ public partial class SourceConfigPage : ContentPage
             var del = new Label { Text = "删除", FontSize = 11.5, TextColor = Color.FromArgb("#c0392b"), VerticalOptions = LayoutOptions.Center };
             var captured = sub;
             var tap = new TapGestureRecognizer();
-            tap.Tapped += (_, _) =>
-            {
-                _subs.Remove(captured);
-                RebuildSubs();
-            };
+            tap.Tapped += (_, _) => _ = DeleteSubAsync(captured);
             del.GestureRecognizers.Add(tap);
             row.Add(del, 1);
             SubList.Children.Add(row);
         }
+    }
+
+    /// <summary>删除订阅：UI 移除 + 同步删库（失败不回滚 UI，下次进入以库为准）</summary>
+    private async Task DeleteSubAsync(SubRow row)
+    {
+        _subs.Remove(row);
+        RebuildSubs();
+        try { await _db.DeleteSubscriptionAsync(row.Sub); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[源配置] 订阅删除失败: {ex.Message}"); }
     }
 
     private void RebuildSites()
@@ -156,6 +179,13 @@ public partial class SourceConfigPage : ContentPage
 
             // 写入站点仓库（首页/搜索从这里取可播站点）
             SiteRegistry.Replace(sites);
+
+            // 订阅入库（按地址去重，重复添加只刷新站点）
+            var name = new Uri(url).Host;
+            if (await _db.FindSubscriptionAsync(url) is null)
+                await _db.AddSubscriptionAsync(new VodSubscription { Name = name, SourceUrl = url, Kind = "tvbox" });
+            if (_subs.All(s => !string.Equals(s.Url, url, StringComparison.OrdinalIgnoreCase)))
+                _subs.Add(new SubRow(new VodSubscription { Name = name, SourceUrl = url, Kind = "tvbox" }));
 
             RebuildSites();
             SubEntry.Text = "";

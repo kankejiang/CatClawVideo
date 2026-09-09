@@ -116,6 +116,37 @@ public static class MauiProgram
 
         var app = builder.Build();
         Services = app.Services;
+
+        // ═══════════════════════════════════════════════════
+        // 启动后台恢复订阅源：解析已保存订阅 → 填充 SiteRegistry
+        // （失败静默不阻塞首帧；多订阅取第一个成功者）
+        // ═══════════════════════════════════════════════════
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var database = app.Services.GetRequiredService<VideoDatabase>();
+                var subscriptionManager = app.Services.GetRequiredService<ISubscriptionManager>();
+                foreach (var sub in await database.GetSubscriptionsAsync())
+                {
+                    try
+                    {
+                        SiteRegistry.Replace(await subscriptionManager.LoadSubscriptionAsync(sub.SourceUrl));
+                        System.Diagnostics.Debug.WriteLine($"[启动] 订阅恢复成功: {sub.Name} ({sub.SourceUrl})");
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[启动] 订阅恢复失败 {sub.SourceUrl}: {ex.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[启动] 订阅恢复异常: {ex.Message}");
+            }
+        });
+
         return app;
     }
 }

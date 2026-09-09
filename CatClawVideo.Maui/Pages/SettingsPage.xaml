@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="UTF-8" ?>
+<?xml version="1.0" encoding="UTF-8" ?>
 <ContentView xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
              x:Class="CatClawVideo.Maui.Pages.SettingsPage"
@@ -34,11 +34,12 @@
                            FontSize="12"
                            TextColor="{DynamicResource TextSecondaryColor}" />
                     <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10" Margin="0,6,0,0">
-                        <Entry Grid.Column="0" Placeholder="粘贴订阅地址（TVBox json / 影视仓多仓）…"
+                        <Entry x:Name="SubEntry" Grid.Column="0" Placeholder="粘贴订阅地址（TVBox json / 影视仓多仓）…"
                                PlaceholderColor="{DynamicResource TextHintColor}"
                                TextColor="{DynamicResource TextPrimaryColor}" />
-                        <Button Grid.Column="1" Text="＋ 添加" FontSize="12.5" TextColor="White"
-                                BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}" CornerRadius="8" Padding="16,6" />
+                        <Button x:Name="AddSubButton" Grid.Column="1" Text="＋ 添加" FontSize="12.5" TextColor="White"
+                                BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}" CornerRadius="8" Padding="16,6"
+                                Clicked="OnAddSubClicked" />
                     </Grid>
                 </VerticalStackLayout>
             </Border>

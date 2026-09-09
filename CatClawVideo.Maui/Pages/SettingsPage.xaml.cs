@@ -1,19 +1,26 @@
+using CatClawVideo.Core.Interfaces;
+using CatClawVideo.Data;
 using CatClawVideo.Maui.ViewModels;
 using Microsoft.Maui.Controls.Shapes;
 
 namespace CatClawVideo.Maui.Pages;
 
-/// <summary>设置页：主题色 / 深浅模式 / 关于。</summary>
+/// <summary>设置页：订阅源添加 / 主题色 / 深浅模式 / 关于。</summary>
 public partial class SettingsPage : ContentView, ITabView
 {
     private readonly SettingsViewModel _vm;
     private readonly IThemeService _theme;
+    private readonly ISubscriptionManager _subscriptionManager;
+    private readonly VideoDatabase _db;
 
-    public SettingsPage(SettingsViewModel vm, IThemeService theme)
+    public SettingsPage(SettingsViewModel vm, IThemeService theme,
+        ISubscriptionManager subscriptionManager, VideoDatabase db)
     {
         InitializeComponent();
         _vm = vm;
         _theme = theme;
+        _subscriptionManager = subscriptionManager;
+        _db = db;
         BindingContext = _vm;
 
         BuildThemeSwatches();
@@ -116,5 +123,49 @@ public partial class SettingsPage : ContentView, ITabView
     private async void OnOpenSourceConfig(object? sender, TappedEventArgs e)
     {
         try { await Shell.Current.GoToAsync("sourceconfig"); } catch { }
+    }
+
+    /// <summary>添加订阅：拉取解析 TVBox 配置 → 写库 → 站点仓库立即生效</summary>
+    private async void OnAddSubClicked(object? sender, EventArgs e)
+    {
+        var url = SubEntry.Text?.Trim();
+        if (string.IsNullOrEmpty(url)) return;
+
+        if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+        {
+            await Shell.Current.DisplayAlertAsync("无效地址", "请输入 http(s) 开头的订阅地址。", "确定");
+            return;
+        }
+
+        try
+        {
+            AddSubButton.IsEnabled = false;
+            var sites = await _subscriptionManager.LoadSubscriptionAsync(url);
+
+            // 站点仓库立即生效（首页/搜索事件刷新）
+            SiteRegistry.Replace(sites);
+
+            // 订阅入库（按地址去重）
+            var name = new Uri(url).Host;
+            if (await _db.FindSubscriptionAsync(url) is null)
+                await _db.AddSubscriptionAsync(new VodSubscription { Name = name, SourceUrl = url, Kind = "tvbox" });
+
+            SubEntry.Text = "";
+            var playableCount = sites.Count(s => s.Playable);
+            await Shell.Current.DisplayAlertAsync("订阅已添加",
+                $"解析到 {sites.Count} 个站点，其中可播 {playableCount} 个。", "确定");
+        }
+        catch (NotSupportedException ex)
+        {
+            await Shell.Current.DisplayAlertAsync("暂不支持该订阅", ex.Message, "确定");
+        }
+        catch (Exception ex)
+        {
+            await Shell.Current.DisplayAlertAsync("订阅添加失败", $"无法拉取或解析该地址：{ex.Message}", "确定");
+        }
+        finally
+        {
+            AddSubButton.IsEnabled = true;
+        }
     }
 }
