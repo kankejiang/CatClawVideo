@@ -47,18 +47,146 @@ public partial class MainPage : ContentPage
 
         // 首个 tab 直接显示（SelectedTabIndex 默认 0 不触发 TabChanged）
         ShowTab(0);
+
+        HandlerChanged += OnPageHandlerChanged;
     }
 
-    protected override void OnAppearing() => UpdateNavTabs();
+    protected override void OnAppearing()
+    {
+        UpdateNavTabs();
+        OnPageHandlerChanged(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// 挂键盘监听。顶部 tab 是 Border + TapGestureRecognizer，默认不在 Tab 焦点链里，
+    /// 这里改挂到原生窗口 Content 根元素（键盘事件会冒泡到根），保证任何焦点下都能收到。
+    /// </summary>
+    private void OnPageHandlerChanged(object? sender, EventArgs e)
+    {
+#if WINDOWS
+        try
+        {
+            var native = (Window?.Handler?.PlatformView as Microsoft.UI.Xaml.Window)
+                ?? (Application.Current?.Windows.FirstOrDefault()?.Handler?.PlatformView as Microsoft.UI.Xaml.Window);
+
+            if (native?.Content is Microsoft.UI.Xaml.UIElement root)
+            {
+                root.KeyDown -= OnPlatformKeyDown;
+                root.KeyDown += OnPlatformKeyDown;
+            }
+        }
+        catch { }
+#endif
+    }
+
+#if WINDOWS
+    /// <summary>
+    /// 键盘 / 电视遥控导航：数字键 1-5（或 F1-F5）直接切换顶部 tab，F6 直达源配置页。
+    /// 焦点位于文本框内时不响应，避免抢走输入。
+    /// </summary>
+    private void OnPlatformKeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
+    {
+        var srcName = e.OriginalSource?.GetType().Name ?? "";
+        if (srcName.Contains("TextBox") || srcName.Contains("AutoSuggestBox") || srcName.Contains("RichEdit"))
+            return;
+
+        int index = e.Key switch
+        {
+            Windows.System.VirtualKey.Number1 or Windows.System.VirtualKey.NumberPad1 or Windows.System.VirtualKey.F1 => 0,
+            Windows.System.VirtualKey.Number2 or Windows.System.VirtualKey.NumberPad2 or Windows.System.VirtualKey.F2 => 1,
+            Windows.System.VirtualKey.Number3 or Windows.System.VirtualKey.NumberPad3 or Windows.System.VirtualKey.F3 => 2,
+            Windows.System.VirtualKey.Number4 or Windows.System.VirtualKey.NumberPad4 or Windows.System.VirtualKey.F4 => 3,
+            Windows.System.VirtualKey.Number5 or Windows.System.VirtualKey.NumberPad5 or Windows.System.VirtualKey.F5 => 4,
+            _ => -1,
+        };
+
+        if (index >= 0)
+        {
+            e.Handled = true;
+            MainThread.BeginInvokeOnMainThread(() => _vm.SelectTab(index));
+            return;
+        }
+
+        if (e.Key == Windows.System.VirtualKey.F6)
+        {
+            e.Handled = true;
+            MainThread.BeginInvokeOnMainThread(async () =>
+            {
+                try { await Shell.Current.GoToAsync("sourceconfig"); } catch { }
+            });
+        }
+    }
+#endif
+
+    /// <summary>
+    /// 顶部交互元素（导航 tabs + 搜索框）相对窗口客户区的物理像素矩形。
+    /// 无边框窗口下顶栏处于系统标题栏语义区，App 宿主把这些区域标记为
+    /// InputNonClientPointerSource.Passthrough，否则点击被拖拽吞掉。
+    /// </summary>
+    public Windows.Graphics.RectInt32[] GetTitleBarPassthroughRects()
+    {
+        var rects = new List<Windows.Graphics.RectInt32>();
+        void Add(Microsoft.Maui.Controls.VisualElement el)
+        {
+            if (el?.Handler?.PlatformView is Microsoft.UI.Xaml.FrameworkElement fe && fe.XamlRoot != null)
+            {
+                try
+                {
+                    var p = fe.TransformToVisual(null).TransformPoint(new Windows.Foundation.Point(0, 0));
+                    var scale = fe.XamlRoot.RasterizationScale;
+                    if (fe.ActualWidth <= 0 || fe.ActualHeight <= 0) return;
+                    rects.Add(new Windows.Graphics.RectInt32
+                    {
+                        X = (int)Math.Round(p.X * scale),
+                        Y = (int)Math.Round(p.Y * scale),
+                        Width = (int)Math.Ceiling(fe.ActualWidth * scale),
+                        Height = (int)Math.Ceiling(fe.ActualHeight * scale),
+                    });
+                }
+                catch { }
+            }
+        }
+        Add(NavTabs);
+        Add(TopSearchBox);
+        return rects.ToArray();
+    }
+
+    private int TabIndexOf(object? sender) =>
+        (sender == NavBg1) ? 1
+        : (sender == NavBg2) ? 2
+        : (sender == NavBg3) ? 3
+        : (sender == NavBg4) ? 4
+        : 0;
+
+    /// <summary>hover 空壳胶囊：未选中 tab 悬停时显示主题色描边 + 文字提亮；选中态样式不覆盖。</summary>
+    private void OnTabPointerEntered(object? sender, PointerEventArgs e)
+    {
+        if (sender is not Border b) return;
+        var index = TabIndexOf(b);
+        if (_vm.SelectedTabIndex == index) return;
+        var activeHex = ThemeHex.GetValueOrDefault(_theme.CurrentTheme, "9b7ed8");
+        var primary = Microsoft.Maui.Graphics.Color.FromArgb($"#{activeHex}");
+        b.Stroke = primary;
+        b.StrokeThickness = 1;
+        if (index >= 0 && index < 5)
+            ((new[] { NavLabel0, NavLabel1, NavLabel2, NavLabel3, NavLabel4 })[index]).TextColor =
+                (Microsoft.Maui.Graphics.Color)Application.Current!.Resources["TextPrimaryColor"];
+    }
+
+    private void OnTabPointerExited(object? sender, PointerEventArgs e)
+    {
+        if (sender is not Border b) return;
+        var index = TabIndexOf(b);
+        if (_vm.SelectedTabIndex == index) return;
+        b.StrokeThickness = 0;
+        if (index >= 0 && index < 5)
+            ((new[] { NavLabel0, NavLabel1, NavLabel2, NavLabel3, NavLabel4 })[index]).TextColor =
+                (Microsoft.Maui.Graphics.Color)Application.Current!.Resources["TextSecondaryColor"];
+    }
 
     private void OnTabTapped(object? sender, TappedEventArgs e)
     {
-        var index = (sender == NavBg1) ? 1
-            : (sender == NavBg2) ? 2
-            : (sender == NavBg3) ? 3
-            : (sender == NavBg4) ? 4
-            : 0;
-        _vm.SelectTab(index);
+        _vm.SelectTab(TabIndexOf(sender));
     }
 
     /// <summary>顶栏搜索入口 → 搜索页</summary>
@@ -105,6 +233,7 @@ public partial class MainPage : ContentPage
             bgs[i].BackgroundColor = isActive
                 ? primary
                 : Microsoft.Maui.Graphics.Colors.Transparent;
+            bgs[i].StrokeThickness = 0; // 清 hover 空壳胶囊残留
         }
     }
 

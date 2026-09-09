@@ -96,6 +96,9 @@ public partial class App : Application
                 UpdateWindowsTheme(MauiProgram.Services.GetService<IThemeService>()?.IsEffectivelyDark()
                     ?? RequestedTheme == Microsoft.Maui.ApplicationModel.AppTheme.Dark);
 
+                // ③ 标题栏拖拽区穿透：顶栏处于非客户区语义，导航 tabs/搜索框必须标为 Passthrough
+                nativeWindow.SizeChanged += (_, _) => SchedulePassthroughRefresh();
+
                 // ④ 窗口激活后（布局完成）：反射折叠 MAUI 内部 32px 标题栏宿主（官方 workaround dotnet/maui#36040）
                 global::Windows.Foundation.TypedEventHandler<object, Microsoft.UI.Xaml.WindowActivatedEventArgs>? firstActivated = null;
                 firstActivated = (_, _) =>
@@ -103,12 +106,13 @@ public partial class App : Application
                     nativeWindow.Activated -= firstActivated;
                     _ = Task.Run(async () =>
                     {
-                        await Task.Delay(100);
+                        await Task.Delay(150);
                         MainThread.BeginInvokeOnMainThread(() =>
                         {
                             try
                             {
                                 InvokeMauiSetTitleBarVisibility(window);
+                                SchedulePassthroughRefresh();
                                 UpdateWindowsTheme(MauiProgram.Services.GetService<IThemeService>()?.IsEffectivelyDark()
                                     ?? RequestedTheme == Microsoft.Maui.ApplicationModel.AppTheme.Dark);
                             }
@@ -206,6 +210,94 @@ public partial class App : Application
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern uint GetDpiForWindow(IntPtr hwnd);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool ClientToScreen(IntPtr hWnd, ref NativePoint p);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool GetClientRect(IntPtr hWnd, out NativeRect r);
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct NativePoint { public int X; public int Y; }
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct NativeRect { public int Left; public int Top; public int Right; public int Bottom; }
+
+    private Microsoft.UI.Input.InputNonClientPointerSource? _nonClientInput;
+
+    /// <summary>
+    /// 布局稳定后多次刷新 Passthrough 矩形：标题栏宿主折叠（SetTitleBarVisibility）
+    /// 会让顶栏布局在启动后数秒内持续变化，单次计算会拿到旧位置。
+    /// </summary>
+    private void SchedulePassthroughRefresh()
+    {
+        _ = Task.Run(async () =>
+        {
+            foreach (var delay in new[] { 200, 400, 800, 1500, 3000 })
+            {
+                try { await Task.Delay(delay); } catch { return; }
+                MainThread.BeginInvokeOnMainThread(UpdateTitleBarPassthrough);
+            }
+        });
+    }
+
+    /// <summary>
+    /// 标题栏拖拽区（用户方案·反向白名单）：**显式声明拖拽区 = 搜索框右侧空白段**
+    /// （搜索框右缘 → 窗口控制按钮区），其余顶栏（品牌/tabs/搜索框）自动归客户区、点击直达控件。
+    /// 注：InputNonClientPointerSource Passthrough 对物理鼠标输入不可靠（SendInput 有效、真实点击仍被吞），
+    /// SetDragRectangles 是根治方案。
+    /// </summary>
+    private void UpdateTitleBarPassthrough()
+    {
+        try
+        {
+            if (_appWindow == null || _appHwnd == IntPtr.Zero) return;
+            var mainPage = MauiProgram.Services.GetService<Pages.MainPage>();
+            var rects = mainPage?.GetTitleBarPassthroughRects();
+            if (rects is not { Length: > 0 }) return;
+
+            // 客户区尺寸 + 坐标系校正（TransformToVisual 是客户区坐标，SetDragRectangles 是窗口坐标）
+            if (!GetClientRect(_appHwnd, out var rc)) return;
+            var origin = new NativePoint { X = 0, Y = 0 };
+            ClientToScreen(_appHwnd, ref origin);
+            var offX = origin.X - _appWindow.Position.X;
+            var offY = origin.Y - _appWindow.Position.Y;
+            var clientW = rc.Right - rc.Left;
+
+            var scale = GetDpiForWindow(_appHwnd) / 96.0;
+            var searchRight = rects.Max(r => r.X + r.Width);
+            var buttonZone = (int)(150 * scale); // 右端 min/max/close 按钮区（~138 逻辑px，留余量）
+            var dragX = offX + searchRight;
+            var dragW = offX + clientW - buttonZone - dragX;
+            if (dragW <= 0) return;
+
+            var dragRect = new Windows.Graphics.RectInt32
+            {
+                X = dragX,
+                Y = offY,
+                Width = dragW,
+                Height = (int)Math.Ceiling(56 * scale),
+            };
+            _appWindow.TitleBar.SetDragRectangles(new[] { dragRect });
+
+            // 调试日志（自测点击用）
+            try
+            {
+                var dir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CatClawVideo");
+                Directory.CreateDirectory(dir);
+                var winPos = _appWindow.Position;
+                var winSize = _appWindow.Size;
+                File.AppendAllText(Path.Combine(dir, "passthrough.log"),
+                    $"{DateTime.Now:HH:mm:ss.fff} win={winPos.X},{winPos.Y},{winSize.Width},{winSize.Height} drag=[{dragRect.X},{dragRect.Y},{dragRect.Width},{dragRect.Height}]{Environment.NewLine}");
+            }
+            catch { }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[App] UpdateTitleBarPassthrough failed: {ex.Message}");
+        }
+    }
 
     /// <summary>
     /// 反射调用 MAUI 内部 NavigationRootManager.SetTitleBarVisibility(false)：
