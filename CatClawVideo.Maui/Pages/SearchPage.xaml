@@ -41,7 +41,10 @@
             <VerticalStackLayout x:Name="ResultSection" Spacing="10" IsVisible="False">
                 <Label Text="搜索结果" FontSize="13.5" FontFamily="OpenSansSemibold"
                        TextColor="{DynamicResource TextPrimaryColor}" />
-                <CollectionView x:Name="ResultGrid" SelectionMode="Single">
+                <Label x:Name="StatusLabel" FontSize="12"
+                       TextColor="{DynamicResource TextHintColor}" IsVisible="True" />
+                <CollectionView x:Name="ResultGrid" SelectionMode="Single"
+                                SelectionChanged="OnResultSelected">
                     <CollectionView.ItemsLayout>
                         <GridItemsLayout Orientation="Vertical" Span="6" VerticalItemSpacing="16" HorizontalItemSpacing="12" />
                     </CollectionView.ItemsLayout>
@@ -51,8 +54,15 @@
                                 <Border StrokeThickness="0" StrokeShape="RoundRectangle 10"
                                         BackgroundColor="{DynamicResource CardBackgroundColor}" HeightRequest="190">
                                     <Grid>
+                                        <Image Source="{Binding Cover}" Aspect="AspectFill" />
                                         <Label Text="🎬" FontSize="26" HorizontalOptions="Center" VerticalOptions="Center"
-                                               TextColor="{DynamicResource TextHintColor}" />
+                                               TextColor="{DynamicResource TextHintColor}">
+                                            <Label.Triggers>
+                                                <DataTrigger TargetType="Label" Binding="{Binding Cover}" Value="{x:Null}">
+                                                    <Setter Property="IsVisible" Value="True" />
+                                                </DataTrigger>
+                                            </Label.Triggers>
+                                        </Label>
                                         <Border HorizontalOptions="End" VerticalOptions="Start" Margin="0,7,7,0"
                                                 StrokeThickness="0" BackgroundColor="#80000000" StrokeShape="RoundRectangle 8" Padding="6,1">
                                             <Label Text="{Binding Remarks}" FontSize="10" TextColor="#FFD76E" MaxLines="1" />

@@ -180,34 +180,77 @@ public class CatClawWebEngine
 
     // ═══════════════════ 搜索 ═══════════════════
 
-    /// <summary>站点搜索（需 searchUrl + searchItem/listItem 规则；缺省返回空）</summary>
+    /// <summary>搜索：优先 searchUrl 站点接口；无规则时回退「分类前 N 页 + 标题过滤」本地搜索。</summary>
     public async Task<List<VodItem>> SearchAsync(CatClawSourceWeb web, string keyword, string sourceKey)
     {
-        if (string.IsNullOrEmpty(web.Rules.SearchUrl)) return [];
-        var url = web.Rules.SearchUrl.Replace("{kw}", Uri.EscapeDataString(keyword.Trim()));
-        var html = await GetHtmlAsync(Absolute(web, url));
-        if (html == null) return [];
+        var kw = keyword?.Trim();
+        if (string.IsNullOrEmpty(kw)) return [];
 
-        var itemRule = string.IsNullOrEmpty(web.Rules.SearchItem) ? web.Rules.ListItem : web.Rules.SearchItem;
-        if (string.IsNullOrEmpty(itemRule)) return [];
-
-        var result = new List<VodItem>();
-        foreach (Match m in Regex.Matches(html, itemRule))
+        if (!string.IsNullOrEmpty(web.Rules.SearchUrl))
         {
-            var g = m.Groups;
-            var itemUrl = g["url"].Success ? g["url"].Value : "";
-            var title = g["title"].Success ? Decode(g["title"].Value) : "";
-            if (itemUrl.Length == 0 || title.Length == 0) continue;
-            result.Add(new VodItem
+            var url = web.Rules.SearchUrl.Replace("{kw}", Uri.EscapeDataString(kw));
+            var html = await GetHtmlAsync(Absolute(web, url));
+            if (html == null) return [];
+
+            var itemRule = string.IsNullOrEmpty(web.Rules.SearchItem) ? web.Rules.ListItem : web.Rules.SearchItem;
+            if (string.IsNullOrEmpty(itemRule)) return [];
+
+            var result = new List<VodItem>();
+            foreach (Match m in Regex.Matches(html, itemRule))
             {
-                Id = Absolute(web, itemUrl),
-                SourceKey = sourceKey,
-                Title = title,
-                Cover = g["cover"].Success ? Absolute(web, Decode(g["cover"].Value)) : null,
-            });
+                var g = m.Groups;
+                var itemUrl = g["url"].Success ? g["url"].Value : "";
+                var title = g["title"].Success ? Decode(g["title"].Value) : "";
+                if (itemUrl.Length == 0 || title.Length == 0) continue;
+                result.Add(new VodItem
+                {
+                    Id = Absolute(web, itemUrl),
+                    SourceKey = sourceKey,
+                    Title = title,
+                    Cover = g["cover"].Success ? Absolute(web, Decode(g["cover"].Value)) : null,
+                });
+            }
+            return result;
         }
-        return result;
+
+        // 回退：抓各分类前 FallbackSearchPages 页，标题过滤（站点搜索接口防爬时的可用替代）
+        var kwNoSpace = kw;
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var results = new List<VodItem>();
+        foreach (var cat in web.Categories)
+        {
+            for (int page = 1; page <= FallbackSearchPages; page++)
+            {
+                var url = BuildListUrl(web, cat, page);
+                var html = await GetHtmlAsync(url);
+                if (html == null) break;
+
+                if (string.IsNullOrEmpty(web.Rules.ListItem)) break;
+                foreach (Match m in Regex.Matches(html, web.Rules.ListItem))
+                {
+                    var g = m.Groups;
+                    var itemUrl = g["url"].Success ? g["url"].Value : "";
+                    var title = g["title"].Success ? Decode(g["title"].Value) : "";
+                    if (itemUrl.Length == 0 || title.Length == 0) continue;
+                    if (!title.Contains(kwNoSpace, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!seen.Add(itemUrl)) continue;
+                    results.Add(new VodItem
+                    {
+                        Id = Absolute(web, itemUrl),
+                        SourceKey = sourceKey,
+                        Title = title,
+                        Cover = g["cover"].Success ? Absolute(web, Decode(g["cover"].Value)) : null,
+                        Category = cat.Name,
+                        Year = g["year"].Success ? Decode(g["year"].Value) : null,
+                    });
+                }
+            }
+        }
+        return results;
     }
+
+    /// <summary>回退搜索每分类抓取页数</summary>
+    private const int FallbackSearchPages = 3;
 
     // ═══════════════════ 工具 ═══════════════════
 
