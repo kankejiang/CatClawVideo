@@ -148,9 +148,9 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
             var (spiderKind, statusNote) = Classify(type, api);
             var (needsCreds, credServers) = DetectCredentials(ext);
 
-            // 猫爪源（type=100）：原生数据源，地址有效即可播
-            bool playable = type == CatClawSourceDoc.SiteType
-                ? api.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+            // 猫爪源（type=100/101）：原生数据源，地址有效即可播
+            bool playable = type is CatClawSourceDoc.SiteType or CatClawSourceWeb.WebSiteType
+                ? api.StartsWith("http", StringComparison.OrdinalIgnoreCase) || File.Exists(api)
                 : spiderKind == VodSpiderKind.None &&
                   type == 1 &&
                   api.StartsWith("http", StringComparison.OrdinalIgnoreCase) &&
@@ -184,7 +184,7 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
     /// </summary>
     private static (VodSpiderKind Kind, string Note) Classify(int type, string api)
     {
-        if (type == CatClawSourceDoc.SiteType)
+        if (type is CatClawSourceDoc.SiteType or CatClawSourceWeb.WebSiteType)
             return (VodSpiderKind.None, "");
 
         if (type == 3)
@@ -206,15 +206,18 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
         };
     }
 
-    /// <summary>把猫爪源文档包装为单站点（type=100，由 CatClawSourceProvider 承接取数）</summary>
+    /// <summary>把猫爪源文档包装为单站点（static=type100 / web 规则=type101，由 CatClawSourceProvider 承接）</summary>
     private static VodSiteInfo BuildCatClawSite(string json, string url)
     {
         var name = "猫爪源";
+        var isWeb = false;
         try
         {
             using var doc = JsonDocument.Parse(json);
             if (doc.RootElement.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String)
                 name = n.GetString() ?? name;
+            if (doc.RootElement.TryGetProperty("mode", out var m) && m.ValueKind == JsonValueKind.String)
+                isWeb = m.GetString() == "web";
         }
         catch { }
         return new VodSiteInfo
@@ -222,7 +225,7 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
             Key = "catclaw",
             Name = name,
             Api = url,
-            Type = CatClawSourceDoc.SiteType,
+            Type = isWeb ? CatClawSourceWeb.WebSiteType : CatClawSourceDoc.SiteType,
             SubscriptionName = new Uri(url).Host,
             Playable = true,
             Searchable = true,

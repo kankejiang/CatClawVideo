@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using CatClawVideo.Core.Models;
+using CatClawVideo.Core.Providers;
 
 // ═══════════════════════════════════════════════════════════════
 // 猫爪源生成器（试点：xb6v.com 磁力下载站）
@@ -24,6 +25,13 @@ for (int i = 0; i < args.Length - 1; i++)
     if (args[i] == "--out") output = args[i + 1];
 }
 maxPages = Math.Clamp(maxPages, 1, 20);
+
+// ═══ 自检模式：加载 web 规则源，走 列表→详情→播放解析 全链路并输出（规则调试器）═══
+for (int i = 0; i < args.Length - 1; i++)
+{
+    if (args[i] != "--selftest") continue;
+    return await SelfTest.RunAsync(args[i + 1]);
+}
 
 // 分类清单（xb6v 栏目 → 猫爪源分类）
 var categories = new (string Path, string Name)[]
@@ -267,3 +275,57 @@ async Task<string?> GetAsync(string url)
 }
 
 void Log(string msg) => Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] {msg}");
+
+/// <summary>规则源自检：列表 → 详情 → 播放解析全链路输出</summary>
+internal static class SelfTest
+{
+    public static async Task<int> RunAsync(string ccsPath)
+    {
+        using var http = new HttpClient();
+        http.Timeout = TimeSpan.FromSeconds(20);
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64) Chrome/124.0");
+
+        var web = await CatClawWebEngine.LoadWebAsync(ccsPath, http);
+        Console.WriteLine($"源: {web.Name} (v{web.Version}, {web.Mode}) / 分类 {web.Categories.Count} 个");
+
+        var cat = web.Categories.First();
+        var engine = new CatClawWebEngine();
+        Console.WriteLine($"\n── 列表 [{cat.Name}] 第1页 ──");
+        var items = await engine.GetItemsAsync(web, cat, 1, "selftest");
+        Console.WriteLine($"条目 {items.Count} 个，前 3 部:");
+        foreach (var it in items.Take(3))
+            Console.WriteLine($"  · {it.Title} ({it.Year}) 封面={(it.Cover != null)}");
+
+        var first = items.FirstOrDefault();
+        if (first == null) { Console.WriteLine("列表为空！检查 listItem 规则"); return 1; }
+
+        Console.WriteLine($"\n── 详情 {first.Title} ──");
+        var (sources, year, area, desc, remarks) = await engine.GetDetailAsync(web, first.Id, first.Title);
+        Console.WriteLine($"年份={year} 产地={area} 备注={remarks} 简介长度={desc?.Length ?? 0}");
+        foreach (var src in sources)
+            Console.WriteLine($"  线路[{src.Name}] {src.Episodes.Count} 集: {string.Join(", ", src.Episodes.Take(3).Select(e => e.Name))}");
+
+        var online = sources.FirstOrDefault(s => s.Name == "在线播放");
+        if (online == null) { Console.WriteLine("\n无在线线路！检查 detailPlay 规则"); return 1; }
+
+        Console.WriteLine($"\n── 播放解析 {online.Episodes[0].Name} ──");
+        Console.WriteLine($"入口: {online.Episodes[0].Url}");
+        var play = await engine.ResolvePlayAsync(web, online.Episodes[0].Name, online.Episodes[0].Url, default);
+        Console.WriteLine($"直链: {play.Url}");
+        Console.WriteLine($"Referer: {play.Referer}");
+
+        // 直链可用性
+        try
+        {
+            using var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, play.Url);
+            req.Headers.Referrer = play.Referer != null ? new Uri(play.Referer) : null;
+            using var resp = await http.SendAsync(req);
+            var body = await resp.Content.ReadAsStringAsync();
+            Console.WriteLine($"直链状态: HTTP {(int)resp.StatusCode}，{(body.StartsWith("#EXTM3U") ? "有效 m3u8 ✔" : $"内容开头: {body[..Math.Min(60, body.Length)]}")}");
+        }
+        catch (Exception ex) { Console.WriteLine($"直链请求失败: {ex.Message}"); }
+
+        Console.WriteLine("\n全链路自检完成 ✔");
+        return 0;
+    }
+}

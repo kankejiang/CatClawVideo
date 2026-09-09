@@ -6,10 +6,14 @@ using CatClawVideo.Core.Models;
 namespace CatClawVideo.Core.Providers;
 
 /// <summary>
-/// 猫爪源适配器（CatClaw Source，自建生态 v1）：
-/// 单文件纯静态 JSON（分类 + 影片全集内嵌播放直链），托管于任意静态空间，
-/// 原生 HttpClient 拉取 + 内存缓存（10 分钟 TTL），无爬虫运行时依赖，全平台一致可播。
-/// 协议模型见 <see cref="CatClawSourceDoc"/>。
+/// 猫爪源适配器（CatClaw Source，自建生态），按源文件 mode 分流：
+/// <para>
+/// · static（type=100，v1）：单文件纯静态整包（分类 + 影片全集内嵌播放直链），
+///   拉取 + 内存缓存（10 分钟 TTL），适合自建轻量源；
+/// · web（type=101，v2）：站点入口 + 声明式解析规则（几 KB），数据全部由
+///   <see cref="CatClawWebEngine"/> 按需实时抓取，源永不携带内容，适配任意站点。
+/// </para>
+/// 无爬虫运行时依赖，全平台一致可播。
 /// </summary>
 public class CatClawSourceProvider : IVodSourceProvider
 {
@@ -24,21 +28,39 @@ public class CatClawSourceProvider : IVodSourceProvider
 
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
-    /// <summary>整包缓存 TTL（期间重复取分类/列表/详情零请求）</summary>
+    /// <summary>static 整包缓存 TTL</summary>
     private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(10);
 
-    /// <summary>site.Api → 整包缓存（Lazy 防并发重复下载）</summary>
+    /// <summary>static：site.Api → 整包缓存（Lazy 防并发重复下载）</summary>
     private readonly ConcurrentDictionary<string, Lazy<Task<CatClawSourceDoc>>> _cache = new();
+
+    /// <summary>web：site.Api → 规则文档缓存</summary>
+    private readonly ConcurrentDictionary<string, Lazy<Task<CatClawSourceWeb>>> _webCache = new();
+
+    /// <summary>web 模式通用引擎</summary>
+    private readonly CatClawWebEngine _engine = new();
 
     public string Id => "catclaw";
     public string Name => "猫爪源";
 
-    public bool CanHandle(VodSiteInfo site) => site.Type == CatClawSourceDoc.SiteType;
+    public bool CanHandle(VodSiteInfo site) =>
+        site.Type == CatClawSourceDoc.SiteType || site.Type == CatClawSourceWeb.WebSiteType;
 
-    // ═══════════════════ ISpiderRuntime 协议实现 ═══════════════════
+    private bool IsWeb(VodSiteInfo site) => site.Type == CatClawSourceWeb.WebSiteType;
+
+    // ═══════════════════ 分类 ═══════════════════
 
     public async Task<List<VodCategory>> GetCategoriesAsync(VodSiteInfo site, CancellationToken ct = default)
     {
+        if (IsWeb(site))
+        {
+            var web = await LoadWebAsync(site);
+            return web.Categories
+                .Where(c => !string.IsNullOrEmpty(c.Id))
+                .Select(c => new VodCategory { Id = c.Id, Name = c.Name })
+                .ToList();
+        }
+
         var doc = await LoadDocAsync(site, ct);
         return doc.Categories
             .Where(c => !string.IsNullOrEmpty(c.Id))
@@ -46,8 +68,18 @@ public class CatClawSourceProvider : IVodSourceProvider
             .ToList();
     }
 
+    // ═══════════════════ 列表 ═══════════════════
+
     public async Task<List<VodItem>> GetItemsAsync(VodSiteInfo site, VodCategory category, int page = 1, CancellationToken ct = default)
     {
+        if (IsWeb(site))
+        {
+            var web = await LoadWebAsync(site);
+            var webCat = web.Categories.FirstOrDefault(c => c.Id == category.Id);
+            if (webCat == null) return [];
+            return await _engine.GetItemsAsync(web, webCat, page, site.Key);
+        }
+
         var doc = await LoadDocAsync(site, ct);
         var matched = doc.Items
             .Where(i => string.IsNullOrEmpty(category.Id) ||
@@ -56,13 +88,24 @@ public class CatClawSourceProvider : IVodSourceProvider
         return matched.Skip((page - 1) * PageSize).Take(PageSize).Select(i => ToVodItem(i, site)).ToList();
     }
 
+    // ═══════════════════ 详情线路 ═══════════════════
+
     public async Task<List<VodPlaySource>> GetPlaySourcesAsync(VodSiteInfo site, VodItem item, CancellationToken ct = default)
     {
+        if (IsWeb(site))
+        {
+            var web = await LoadWebAsync(site);
+            var (sources, _, _, _, _) = await _engine.GetDetailAsync(web, item.Id, item.Title);
+            return sources;
+        }
+
         var doc = await LoadDocAsync(site, ct);
         var src = FindItem(doc, item.Id);
         if (src == null) return [];
         return ToPlaySources(src);
     }
+
+    // ═══════════════════ 播放解析 ═══════════════════
 
     public async Task<PlayRequest> ResolvePlayUrlAsync(VodSiteInfo site, VodEpisode episode, CancellationToken ct = default)
     {
@@ -74,15 +117,22 @@ public class CatClawSourceProvider : IVodSourceProvider
             throw new NotSupportedException(
                 "该集为磁力/电驴下载链接，暂不支持在线播放（BT 引擎规划中）；可复制链接到下载工具");
 
-        // resolve 模式（v1.1）：非直链 URL 视为待解析页面，实时嗅探出当下有效的直链
-        // （判定依据：不含 m3u8/mp4 扩展的 http 链接，如站点播放页 /e/DownSys/play/?...）
+        // web 模式：非直链 URL（播放入口页）→ 规则引擎实时解析直链（时效签名现取现用）
+        if (IsWeb(site) &&
+            !url.Contains(".m3u8", StringComparison.OrdinalIgnoreCase) &&
+            !url.Contains(".mp4", StringComparison.OrdinalIgnoreCase))
+        {
+            var web = await LoadWebAsync(site);
+            return await _engine.ResolvePlayAsync(web, episode.Name, url, ct);
+        }
+
+        // static 模式 resolve（v1.1）：非直链形态 → 通用嗅探
         var isDirect = url.Contains(".m3u8", StringComparison.OrdinalIgnoreCase) ||
                        url.Contains(".mp4", StringComparison.OrdinalIgnoreCase);
         if (!isDirect && url.StartsWith("http", StringComparison.OrdinalIgnoreCase))
         {
             var (resolved, referer) = await WebProbeResolver.ResolveAsync(url, ct: ct);
-            url = resolved;
-            return new PlayRequest { Title = episode.Name, Url = url, Referer = referer };
+            return new PlayRequest { Title = episode.Name, Url = resolved, Referer = referer };
         }
 
         // 直链模式：可选 UA / Referer 防盗链
@@ -95,9 +145,18 @@ public class CatClawSourceProvider : IVodSourceProvider
         };
     }
 
+    // ═══════════════════ 搜索 ═══════════════════
+
     public async Task<List<VodItem>> SearchAsync(VodSiteInfo site, string keyword, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(keyword)) return [];
+
+        if (IsWeb(site))
+        {
+            var web = await LoadWebAsync(site);
+            return await _engine.SearchAsync(web, keyword, site.Key);
+        }
+
         var doc = await LoadDocAsync(site, ct);
         return doc.Items
             .Where(i => i.Title.Contains(keyword.Trim(), StringComparison.OrdinalIgnoreCase))
@@ -106,12 +165,16 @@ public class CatClawSourceProvider : IVodSourceProvider
             .ToList();
     }
 
-    // ═══════════════════ 内部实现 ═══════════════════
+    // ═══════════════════ 文档加载 ═══════════════════
 
-    /// <summary>列表分页大小（内存分页，与 MacCMS 接口语义对齐）</summary>
-    private const int PageSize = 60;
+    /// <summary>web 规则文档加载（带缓存；本地/远程通吃）</summary>
+    private async Task<CatClawSourceWeb> LoadWebAsync(VodSiteInfo site)
+    {
+        var lazy = _webCache.GetOrAdd(site.Api, key => new Lazy<Task<CatClawSourceWeb>>(() => CatClawWebEngine.LoadWebAsync(key, Http)));
+        return await lazy.Value;
+    }
 
-    /// <summary>拉取并解析整包（带缓存；解析失败抛出明确异常）</summary>
+    /// <summary>static 整包拉取并解析（带缓存；解析失败抛出明确异常）</summary>
     private async Task<CatClawSourceDoc> LoadDocAsync(VodSiteInfo site, CancellationToken ct)
     {
         var lazy = _cache.GetOrAdd(site.Api, key => new Lazy<Task<CatClawSourceDoc>>(() => FetchDocAsync(key, ct)));
@@ -154,6 +217,11 @@ public class CatClawSourceProvider : IVodSourceProvider
         doc.LoadedAt = DateTime.Now;
         return doc;
     }
+
+    // ═══════════════════ static 模式内部 ═══════════════════
+
+    /// <summary>列表分页大小（内存分页，与 MacCMS 接口语义对齐）</summary>
+    private const int PageSize = 60;
 
     private static CatClawSourceItem? FindItem(CatClawSourceDoc doc, string id) =>
         doc.Items.FirstOrDefault(i => string.Equals(i.Id, id, StringComparison.Ordinal));

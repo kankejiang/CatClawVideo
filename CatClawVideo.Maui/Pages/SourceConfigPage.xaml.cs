@@ -199,6 +199,7 @@ public partial class SourceConfigPage : ContentPage
                         0 => "xml",
                         1 => "MacCMS json",
                         CatClawSourceDoc.SiteType => "猫爪源",
+                        CatClawSourceWeb.WebSiteType => "猫爪源(web)",
                         _ => $"type {s.Type}",
                     },
                 };
