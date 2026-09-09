@@ -131,24 +131,59 @@ public partial class SettingsPage : ContentView, ITabView
         var url = SubEntry.Text?.Trim();
         if (string.IsNullOrEmpty(url)) return;
 
-        if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+        var isLocal = File.Exists(url) || url.StartsWith("file://", StringComparison.OrdinalIgnoreCase);
+        if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase) && !isLocal)
         {
-            await Shell.Current.DisplayAlertAsync("无效地址", "请输入 http(s) 开头的订阅地址。", "确定");
+            await Shell.Current.DisplayAlertAsync("无效地址", "请输入 http(s) 订阅地址，或使用「📂 文件」导入本地源文件。", "确定");
             return;
         }
 
+        await AddSubscriptionCoreAsync(url);
+    }
+
+    /// <summary>导入本地源文件（猫爪源 ccs / TVBox json）：文件选择器 → 同链路解析入库</summary>
+    private async void OnImportFileClicked(object? sender, EventArgs e)
+    {
+        try
+        {
+            var fileTypes = new FilePickerFileType(new Dictionary<DevicePlatform, IEnumerable<string>>
+            {
+                [DevicePlatform.WinUI] = new[] { ".json", ".ccs", ".txt" },
+                [DevicePlatform.Android] = new[] { "application/json", "text/plain", "application/octet-stream" },
+            });
+            var result = await FilePicker.PickAsync(new PickOptions
+            {
+                PickerTitle = "选择猫爪源 / TVBox 订阅文件",
+                FileTypes = fileTypes,
+            });
+            if (result is null || string.IsNullOrEmpty(result.FullPath)) return;
+
+            await AddSubscriptionCoreAsync(result.FullPath);
+        }
+        catch (Exception ex)
+        {
+            await Shell.Current.DisplayAlertAsync("导入失败", ex.Message, "确定");
+        }
+    }
+
+    /// <summary>订阅添加核心流程（地址/本地文件共用）：解析 → 站点仓库生效 → 入库去重 → 认证弹窗 → 结果反馈</summary>
+    private async Task AddSubscriptionCoreAsync(string urlOrPath)
+    {
         try
         {
             AddSubButton.IsEnabled = false;
-            var sites = await _subscriptionManager.LoadSubscriptionAsync(url);
+            ImportFileButton.IsEnabled = false;
+            var sites = await _subscriptionManager.LoadSubscriptionAsync(urlOrPath);
 
             // 站点仓库立即生效（首页/搜索事件刷新）
             SiteRegistry.Replace(sites);
 
-            // 订阅入库（按地址去重）
-            var name = new Uri(url).Host;
-            if (await _db.FindSubscriptionAsync(url) is null)
-                await _db.AddSubscriptionAsync(new VodSubscription { Name = name, SourceUrl = url, Kind = "tvbox" });
+            // 订阅入库（按地址去重；本地文件存绝对路径，重启后仍可恢复）
+            var name = urlOrPath.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+                ? new Uri(urlOrPath).Host
+                : System.IO.Path.GetFileNameWithoutExtension(urlOrPath);
+            if (await _db.FindSubscriptionAsync(urlOrPath) is null)
+                await _db.AddSubscriptionAsync(new VodSubscription { Name = name, SourceUrl = urlOrPath, Kind = "tvbox" });
 
             SubEntry.Text = "";
 
@@ -174,6 +209,7 @@ public partial class SettingsPage : ContentView, ITabView
         finally
         {
             AddSubButton.IsEnabled = true;
+            ImportFileButton.IsEnabled = true;
         }
     }
 }

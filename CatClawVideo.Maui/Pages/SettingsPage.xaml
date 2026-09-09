@@ -33,11 +33,14 @@
                     <Label Text="TVBox / 影视仓订阅地址，支持多仓自动识别；不内置任何源，添加订阅后首页/搜索即用该源"
                            FontSize="12"
                            TextColor="{DynamicResource TextSecondaryColor}" />
-                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10" Margin="0,6,0,0">
-                        <Entry x:Name="SubEntry" Grid.Column="0" Placeholder="粘贴订阅地址（TVBox json / 影视仓多仓）…"
+                    <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10" Margin="0,6,0,0">
+                        <Button x:Name="ImportFileButton" Grid.Column="0" Text="📂 文件" FontSize="12.5" TextColor="White"
+                                BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}" CornerRadius="8" Padding="14,6"
+                                Clicked="OnImportFileClicked" />
+                        <Entry x:Name="SubEntry" Grid.Column="1" Placeholder="粘贴订阅地址（TVBox json / 影视仓多仓 / 猫爪源）…"
                                PlaceholderColor="{DynamicResource TextHintColor}"
                                TextColor="{DynamicResource TextPrimaryColor}" />
-                        <Button x:Name="AddSubButton" Grid.Column="1" Text="＋ 添加" FontSize="12.5" TextColor="White"
+                        <Button x:Name="AddSubButton" Grid.Column="2" Text="＋ 添加" FontSize="12.5" TextColor="White"
                                 BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}" CornerRadius="8" Padding="16,6"
                                 Clicked="OnAddSubClicked" />
                     </Grid>
