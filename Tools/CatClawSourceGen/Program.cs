@@ -68,7 +68,7 @@ foreach (var (path, name) in categories)
 }
 Log($"列表抓取完成，去重前详情页 {detailUrls.Count} 个");
 
-// ═══ 2. 抓详情页（在线直链 + 磁力 + 简介）═══
+// ═══ 2. 抓详情页（在线播放入口 + 磁力 + 简介）═══
 var unique = detailUrls.DistinctBy(d => d.Url).ToList();
 int done = 0;
 var tasks = unique.Select(async entry =>
@@ -81,17 +81,18 @@ var tasks = unique.Select(async entry =>
         var detailOpt = ParseDetail(html);
         if (detailOpt is not { } detail) return;
 
-        // 在线播放入口（帝国CMS DownSys）→ 播放页 iframe → iframe 内 JS 直链
-        var playEpisodes = new List<CatClawSourceEpisode>();
-        foreach (var playPath in detail.PlayUrls.Distinct().Take(MaxPlayEntriesPerItem))
-        {
-            try
+        // 在线线路：只存稳定的播放页链接（resolve 模式），App 播放时实时嗅探直链——
+        // 站点直链带时效签名，快照进源文件会整批过期
+        var playEpisodes = detail.PlayUrls
+            .Select((p, i) => new CatClawSourceEpisode
             {
-                var ep = await ResolvePlayEntryAsync(new Uri(new Uri(baseUrl), playPath).ToString());
-                if (ep != null) playEpisodes.Add(ep);
-            }
-            catch { }
-        }
+                Name = detail.PlayNames.Count > i && detail.PlayNames[i].Length > 0
+                    ? detail.PlayNames[i]
+                    : $"播放源{i + 1}",
+                Resolve = new Uri(new Uri(baseUrl), p).ToString(),
+            })
+            .Take(MaxPlayEntriesPerItem)
+            .ToList();
         if (playEpisodes.Count == 0 && detail.Sources.Sum(s => s.Episodes.Count) == 0) return;
 
         if (playEpisodes.Count > 0)
@@ -181,9 +182,9 @@ static List<(string Url, string Title, string? Cover, string? Year)> ParseList(s
     return result;
 }
 
-/// <summary>解析详情页：标题 / 播放入口 / 磁力列表 / 简介 / 年份产地 / 清晰度备注</summary>
+/// <summary>解析详情页：标题 / 播放入口(链接+集名) / 磁力列表 / 简介 / 年份产地 / 清晰度备注</summary>
 static (string Title, string? Cover, string? Year, string? Area, string? Remarks, double Score,
-         string? Description, List<string> PlayUrls, List<CatClawSourceGroup> Sources)? ParseDetail(string html)
+         string? Description, List<string> PlayUrls, List<string> PlayNames, List<CatClawSourceGroup> Sources)? ParseDetail(string html)
 {
     // 标题：h1（entry 标题，取第一个非站点名 h1）
     var titleMatch = Regex.Match(html, @"<h1[^>]*>\s*(?:<a[^>]*>)?([^<]{2,80})</a>\s*</h1>");
@@ -193,11 +194,22 @@ static (string Title, string? Cover, string? Year, string? Area, string? Remarks
     if (title.Length == 0) return null;
 
     // 在线播放入口（帝国CMS DownSys 播放页，pathid 为集/源序号）
-    // 注意站点 HTML 不规范：href= 与引号间可能带空格（href= "..."）
-    var playUrls = Regex.Matches(html, @"href\s*=\s*['""](/e/DownSys/play/[^'""]+)['""]")
-        .Select(m => System.Net.WebUtility.HtmlDecode(m.Groups[1].Value))
-        .Distinct()
-        .ToList();
+    // 注意站点 HTML 不规范：href= 与引号间可能带空格（href= "..."）；集名取 a 标签内文本
+    var playUrls = new List<string>();
+    var playNames = new List<string>();
+    foreach (Match m in Regex.Matches(html, @"<a[^>]*href\s*=\s*['""](/e/DownSys/play/[^'""]+)['""][^>]*>([^<]*)</a>"))
+    {
+        playUrls.Add(System.Net.WebUtility.HtmlDecode(m.Groups[1].Value));
+        playNames.Add(System.Net.WebUtility.HtmlDecode(m.Groups[2].Value).Trim());
+    }
+    if (playUrls.Count == 0)
+    {
+        // 兜底：只抓链接（a 结构不符时）
+        playUrls = Regex.Matches(html, @"href\s*=\s*['""](/e/DownSys/play/[^'""]+)['""]")
+            .Select(m => System.Net.WebUtility.HtmlDecode(m.Groups[1].Value))
+            .Distinct()
+            .ToList();
+    }
 
     // 磁力链接：【下载地址】区块内 磁力：<a href="magnet:...">文件名</a>
     var sources = new List<CatClawSourceGroup>();
@@ -240,41 +252,7 @@ static (string Title, string? Cover, string? Year, string? Area, string? Remarks
     }
 
     return (title, null, year.Length > 0 ? year : null, area.Length > 0 ? area : null,
-            remarks, score, desc.Length > 0 ? desc : null, playUrls, sources);
-}
-
-/// <summary>
-/// 两级解析一个播放入口为直链剧集：
-/// 播放页 → 播放器 iframe 地址 → iframe 页内 JS const url（相对 m3u8，需拼 iframe 域名）。
-/// 集名取 iframe 页 title（如「吞噬星空01」），取不到用「线路N」。
-/// </summary>
-async Task<CatClawSourceEpisode?> ResolvePlayEntryAsync(string playUrl)
-{
-    var playHtml = await GetAsync(playUrl);
-    if (playHtml == null) return null;
-
-    var iframeSrc = Regex.Match(playHtml, @"iframe[^>]*src=""([^""]+)""").Groups[1].Value;
-    if (iframeSrc.Length == 0) return null;
-    var iframeUrl = new Uri(new Uri(playUrl), System.Net.WebUtility.HtmlDecode(iframeSrc)).ToString();
-
-    var frameHtml = await GetAsync(iframeUrl);
-    if (frameHtml == null) return null;
-
-    // const url = "/xxx/index.m3u8?sign=..."（相对或绝对）
-    var urlMatch = Regex.Match(frameHtml, @"const\s+url\s*=\s*""([^""]+)""");
-    if (!urlMatch.Success) return null;
-    var videoUrl = new Uri(new Uri(iframeUrl), urlMatch.Groups[1].Value).ToString();
-    if (!videoUrl.Contains("/m3u8", StringComparison.OrdinalIgnoreCase) &&
-        !videoUrl.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase) &&
-        !videoUrl.Contains(".m3u8?", StringComparison.OrdinalIgnoreCase) &&
-        !videoUrl.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase))
-        return null;
-
-    var epName = Regex.Match(frameHtml, @"<title>([^<]+)</title>").Groups[1].Value.Trim();
-    if (epName.Length == 0) epName = "在线" + (playUrl.Contains("pathid1=")
-        ? playUrl.Split("pathid1=")[1].Split('&')[0]
-        : "");
-    return new CatClawSourceEpisode { Name = epName, Url = videoUrl, Referer = new Uri(iframeUrl).GetLeftPart(System.UriPartial.Authority) };
+            remarks, score, desc.Length > 0 ? desc : null, playUrls, playNames, sources);
 }
 
 async Task<string?> GetAsync(string url)

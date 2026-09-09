@@ -64,22 +64,35 @@ public class CatClawSourceProvider : IVodSourceProvider
         return ToPlaySources(src);
     }
 
-    public Task<PlayRequest> ResolvePlayUrlAsync(VodSiteInfo site, VodEpisode episode, CancellationToken ct = default)
+    public async Task<PlayRequest> ResolvePlayUrlAsync(VodSiteInfo site, VodEpisode episode, CancellationToken ct = default)
     {
+        var url = episode.Url ?? "";
+
         // 磁力/电驴链接：播放器无法直播（BT 引擎为后续独立工程），给明确提示而非网络错误
-        if (episode.Url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase) ||
-            episode.Url.StartsWith("ed2k://", StringComparison.OrdinalIgnoreCase))
+        if (url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase) ||
+            url.StartsWith("ed2k://", StringComparison.OrdinalIgnoreCase))
             throw new NotSupportedException(
                 "该集为磁力/电驴下载链接，暂不支持在线播放（BT 引擎规划中）；可复制链接到下载工具");
 
-        // 猫爪源：剧集即播放直链（m3u8/mp4），可选 UA / Referer 防盗链
-        return Task.FromResult(new PlayRequest
+        // resolve 模式（v1.1）：非直链 URL 视为待解析页面，实时嗅探出当下有效的直链
+        // （判定依据：不含 m3u8/mp4 扩展的 http 链接，如站点播放页 /e/DownSys/play/?...）
+        var isDirect = url.Contains(".m3u8", StringComparison.OrdinalIgnoreCase) ||
+                       url.Contains(".mp4", StringComparison.OrdinalIgnoreCase);
+        if (!isDirect && url.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+        {
+            var (resolved, referer) = await WebProbeResolver.ResolveAsync(url, ct: ct);
+            url = resolved;
+            return new PlayRequest { Title = episode.Name, Url = url, Referer = referer };
+        }
+
+        // 直链模式：可选 UA / Referer 防盗链
+        return new PlayRequest
         {
             Title = episode.Name,
-            Url = episode.Url,
-            UserAgent = FindEpisode(episode.Url)?.Ua,
-            Referer = FindEpisode(episode.Url)?.Referer ?? site.Api,
-        });
+            Url = url,
+            UserAgent = FindEpisode(url)?.Ua,
+            Referer = FindEpisode(url)?.Referer ?? site.Api,
+        };
     }
 
     public async Task<List<VodItem>> SearchAsync(VodSiteInfo site, string keyword, CancellationToken ct = default)
@@ -145,7 +158,7 @@ public class CatClawSourceProvider : IVodSourceProvider
     private static CatClawSourceItem? FindItem(CatClawSourceDoc doc, string id) =>
         doc.Items.FirstOrDefault(i => string.Equals(i.Id, id, StringComparison.Ordinal));
 
-    /// <summary>按播放直链反查剧集（取可选 UA/Referer）</summary>
+    /// <summary>按播放链接反查剧集配置（取可选 UA/Referer；同时匹配直链与 resolve 页面链接）</summary>
     private CatClawSourceEpisode? FindEpisode(string url)
     {
         foreach (var doc in _cache.Values)
@@ -156,7 +169,8 @@ public class CatClawSourceProvider : IVodSourceProvider
             foreach (var item in task.Result.Items)
                 foreach (var group in item.Sources)
                     foreach (var ep in group.Episodes)
-                        if (string.Equals(ep.Url, url, StringComparison.Ordinal))
+                        if (string.Equals(ep.Url, url, StringComparison.Ordinal) ||
+                            string.Equals(ep.Resolve, url, StringComparison.Ordinal))
                             return ep;
         }
         return null;
@@ -185,8 +199,13 @@ public class CatClawSourceProvider : IVodSourceProvider
             {
                 Name = string.IsNullOrEmpty(g.Name) ? "默认线路" : g.Name,
                 Episodes = g.Episodes
-                    .Where(e => !string.IsNullOrEmpty(e.Url))
-                    .Select(e => new VodEpisode { Name = e.Name, Url = e.Url })
+                    .Where(e => !string.IsNullOrEmpty(e.Url) || !string.IsNullOrEmpty(e.Resolve))
+                    .Select(e => new VodEpisode
+                    {
+                        Name = e.Name,
+                        // resolve（页面链接）优先存入 Url；ResolvePlayUrlAsync 按是否直链形态分流
+                        Url = string.IsNullOrEmpty(e.Resolve) ? e.Url ?? "" : e.Resolve,
+                    })
                     .ToList(),
             })
             .ToList();

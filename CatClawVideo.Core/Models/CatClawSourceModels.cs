@@ -128,16 +128,24 @@ public class CatClawSourceGroup
     public List<CatClawSourceEpisode> Episodes { get; set; } = [];
 }
 
-/// <summary>猫爪源剧集（播放直链）</summary>
+/// <summary>猫爪源剧集（直链 url 与待解析页面链接 resolve 二选一；resolve 优先）</summary>
 public class CatClawSourceEpisode
 {
     /// <summary>集名（如「第01集」「HD」）</summary>
     [JsonPropertyName("name")]
     public string Name { get; set; } = string.Empty;
 
-    /// <summary>播放直链（m3u8 / mp4）</summary>
+    /// <summary>播放直链（m3u8 / mp4，稳定直链源用）</summary>
     [JsonPropertyName("url")]
-    public string Url { get; set; } = string.Empty;
+    public string? Url { get; set; }
+
+    /// <summary>
+    /// 待解析页面链接（v1.1）：如站点的播放页/播放器页地址，含时效签名也无需担心——
+    /// App 播放时经通用嗅探器（WebProbeResolver）实时解析出当下有效的直链。
+    /// 与 url 二选一，resolve 优先。
+    /// </summary>
+    [JsonPropertyName("resolve")]
+    public string? Resolve { get; set; }
 
     /// <summary>可选：播放请求 UA（防盗链直链用）</summary>
     [JsonPropertyName("ua")]
