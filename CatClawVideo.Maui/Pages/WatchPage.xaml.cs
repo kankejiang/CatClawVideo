@@ -38,6 +38,8 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     {
         if (query.TryGetValue("title", out var t) && t is string title) _item.Title = title;
         if (query.TryGetValue("sourceKey", out var sk) && sk is string sourceKey) _site.Key = sourceKey;
+        if (query.TryGetValue("type", out var tp) && tp is string typeStr && int.TryParse(typeStr, out var type))
+            _site.Type = type;
         if (query.TryGetValue("api", out var apiObj) && apiObj is string api) _site.Api = api;
         if (query.TryGetValue("itemId", out var idObj) && idObj is string itemId) _item.Id = itemId;
         if (query.TryGetValue("year", out var y) && y is string year && year.Length > 0) _item.Year = year;
@@ -48,7 +50,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         var meta = $"{(_item.Year.Length > 0 ? _item.Year + " · " : "")}{(_item.Remarks.Length > 0 ? _item.Remarks + " · " : "")}{_site.Name}";
         MetaLabel.Text = meta;
         DescLabel.Text = _item.Description is { Length: > 0 } descText
-            ? descText
+            ? System.Net.WebUtility.HtmlDecode(descText)
             : "暂无简介";
     }
 

@@ -70,7 +70,7 @@ public partial class HomePage : ContentView, ITabView
         }
     }
 
-    /// <summary>海报卡点击 → 观看页（带源定位参数）</summary>
+    /// <summary>海报卡点击 → 观看页（带源定位参数；type 必传——猫爪源等无 api 特征的源靠它路由）</summary>
     private void OnPosterTapped(object? sender, TappedEventArgs e)
     {
         if (_vm.Site is null) return;
@@ -78,6 +78,7 @@ public partial class HomePage : ContentView, ITabView
 
         var query = $"watch?title={Uri.EscapeDataString(item.Title)}" +
                     $"&sourceKey={Uri.EscapeDataString(item.SourceKey)}" +
+                    $"&type={_vm.Site.Type}" +
                     $"&api={Uri.EscapeDataString(_vm.Site.Api)}" +
                     $"&itemId={Uri.EscapeDataString(item.Id)}" +
                     $"&year={Uri.EscapeDataString(item.Year ?? "")}" +
