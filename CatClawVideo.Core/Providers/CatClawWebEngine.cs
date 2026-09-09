@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text;
 using System.Text.RegularExpressions;
 using CatClawVideo.Core.Models;
 
@@ -164,7 +165,18 @@ public class CatClawWebEngine
         if (!direct.Success)
             throw new NotSupportedException("播放页中未找到视频直链");
 
-        var url = Absolute(current, Decode(direct.Groups["url"].Value));
+        // urlb64 捕获组约定：捕获内容为 base64 编码的直链（如站点 base64decode() 混淆），解码后使用
+        string url;
+        if (direct.Groups["urlb64"].Success)
+        {
+            var b64 = Decode(direct.Groups["urlb64"].Value).Trim();
+            url = Absolute(current, Encoding.UTF8.GetString(Convert.FromBase64String(
+                b64.Length % 4 == 0 ? b64 : b64 + new string('=', 4 - b64.Length % 4))));
+        }
+        else
+        {
+            url = Absolute(current, Decode(direct.Groups["url"].Value));
+        }
 
         // 集名修正（可选规则，如 iframe 页 title）
         var name = episodeName;
