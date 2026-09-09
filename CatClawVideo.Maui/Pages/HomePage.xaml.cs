@@ -29,6 +29,20 @@ public partial class HomePage : ContentView, ITabView
 
     public Task OnTabShownAsync() => _vm.LoadHomeCommand.ExecuteAsync(null);
 
+    /// <summary>「切换源」点击 → 数据源选择弹窗（参考影视仓），选择后切换首页数据源</summary>
+    private async void OnSwitchSiteTapped(object? sender, TappedEventArgs e)
+    {
+        var sites = _vm.PlayableSites;
+        if (sites.Count == 0)
+        {
+            _vm.HomeStatus = "暂无可用站点，请先在 设置 → 订阅源管理 添加订阅";
+            return;
+        }
+        var dialog = new SitePickerDialogPage(sites, _vm.Site?.Key,
+            site => MainThread.BeginInvokeOnMainThread(() => _ = _vm.SelectSiteCommand.ExecuteAsync(site)));
+        await Shell.Current.Navigation.PushModalAsync(dialog);
+    }
+
     /// <summary>分类 chip 点击 → 拉取该分类影片</summary>
     private async void OnCategoryTapped(object? sender, TappedEventArgs e)
     {

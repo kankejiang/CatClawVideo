@@ -21,6 +21,15 @@ public partial class HomeViewModel : ObservableObject
     /// <summary>当前生效站点（UI 显示/详情页拉取用；无可用源时为 null）</summary>
     public VodSiteInfo? Site => CurrentSite;
 
+    /// <summary>顶部站点条显示文本（无源时给引导文案）</summary>
+    public string SiteDisplayName => CurrentSite?.Name ?? "未选择数据源";
+
+    /// <summary>可播站点列表（数据源选择弹窗用）</summary>
+    public List<VodSiteInfo> PlayableSites => SiteRegistry.Playable.ToList();
+
+    /// <summary>用户首选站点 Key（Preferences 持久记忆，跨启动生效）</summary>
+    private const string PreferredSiteKey = "home_preferred_site";
+
     [ObservableProperty]
     private VodSiteInfo? _currentSite;
 
@@ -54,7 +63,7 @@ public partial class HomeViewModel : ObservableObject
             MainThread.BeginInvokeOnMainThread(() => { if (!IsHomeLoading) _ = LoadHomeCommand.ExecuteAsync(null); });
     }
 
-    /// <summary>首页首载：逐个可用站点拉分类目录，取第一个成功者 → 选第一个分类拉列表</summary>
+    /// <summary>首页首载：用户首选站点优先（失败回退自动探测第一个成功者）→ 选第一个分类拉列表</summary>
     [RelayCommand]
     public async Task LoadHomeAsync()
     {
@@ -72,10 +81,25 @@ public partial class HomeViewModel : ObservableObject
             return;
         }
 
+        // 用户首选站点优先（数据源弹窗选择后记忆）；拉取失败回退自动探测
+        var preferredKey = Preferences.Default.Get(PreferredSiteKey, string.Empty);
+        var preferred = sites.FirstOrDefault(s => s.Key == preferredKey);
+
         var cats = new List<VodCategory>();
         VodSiteInfo? usedSite = null;
-        foreach (var site in sites)
+        if (preferred != null)
         {
+            try
+            {
+                cats = await _provider.GetCategoriesAsync(preferred);
+                if (cats.Count > 0) usedSite = preferred;
+            }
+            catch { }
+        }
+
+        foreach (var site in sites.Where(s => s.Key != usedSite?.Key && s.Key != preferred?.Key))
+        {
+            if (usedSite != null) break;
             try
             {
                 cats = await _provider.GetCategoriesAsync(site);
@@ -93,10 +117,29 @@ public partial class HomeViewModel : ObservableObject
 
         CurrentSite = usedSite;
         OnPropertyChanged(nameof(Site));
+        OnPropertyChanged(nameof(SiteDisplayName));
         Categories.Clear();
         foreach (var c in cats) Categories.Add(c);
 
         await SelectCategoryAsync(cats[0]);
+    }
+
+    /// <summary>切换首页数据源（数据源弹窗选择后）：记忆首选 → 清空当前 → 重载分类与列表</summary>
+    [RelayCommand]
+    public async Task SelectSiteAsync(VodSiteInfo? site)
+    {
+        if (site == null) return;
+        Preferences.Default.Set(PreferredSiteKey, site.Key);
+
+        Categories.Clear();
+        Items.Clear();
+        SelectedCategoryId = string.Empty;
+        CurrentSite = site;
+        OnPropertyChanged(nameof(Site));
+        OnPropertyChanged(nameof(SiteDisplayName));
+
+        IsHomeLoading = false; // 复位后 LoadHome 可重入
+        await LoadHomeAsync();
     }
 
     /// <summary>切换分类并拉取第一页影片（仅当前站点）</summary>

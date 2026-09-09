@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="UTF-8" ?>
+<?xml version="1.0" encoding="UTF-8" ?>
 <ContentView xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
              x:Class="CatClawVideo.Maui.Pages.HomePage"
@@ -6,6 +6,27 @@
 
     <ScrollView>
         <VerticalStackLayout Padding="24,16,24,24" Spacing="14">
+
+            <!-- 站点条：当前数据源 + 切换入口（参考影视仓首页数据源） -->
+            <Grid ColumnDefinitions="Auto,*,Auto" Margin="0,0,24,0">
+                <HorizontalStackLayout Grid.Column="0" Spacing="8" VerticalOptions="Center">
+                    <Label Text="📺" FontSize="14" VerticalOptions="Center" />
+                    <Label Text="{Binding SiteDisplayName}" FontSize="14" FontFamily="OpenSansSemibold"
+                           LineBreakMode="TailTruncation" MaxLines="1"
+                           TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
+                </HorizontalStackLayout>
+                <Border Grid.Column="2" StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,6"
+                        BackgroundColor="{DynamicResource ChipInactiveColor}">
+                    <HorizontalStackLayout Spacing="6">
+                        <Label Text="切换源" FontSize="11.5"
+                               TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
+                        <Label Text="⇄" FontSize="12" TextColor="{DynamicResource PrimaryColor}" VerticalOptions="Center" />
+                    </HorizontalStackLayout>
+                    <Border.GestureRecognizers>
+                        <TapGestureRecognizer Tapped="OnSwitchSiteTapped" />
+                    </Border.GestureRecognizers>
+                </Border>
+            </Grid>
 
             <!-- 分类 chips（真数据：当前源分类目录）
                  注意：此处原用 CollectionView + SelectionMode=Single，Windows 上选中后 item 容器
