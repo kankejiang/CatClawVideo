@@ -64,6 +64,15 @@ public class VodSiteInfo
     /// </summary>
     public string? StatusNote { get; set; }
 
+    /// <summary>
+    /// 站点是否需要账号认证（ext 为 JSON 数组且含 type=global 的 username/password，
+    /// 典型如小雅 Alist 源；无凭据时站点无法取数观看）。
+    /// </summary>
+    public bool NeedsCredentials { get; set; }
+
+    /// <summary>需要认证的服务器地址列表（ext 数组中的 server 字段，凭据按其 authority 存取）</summary>
+    public List<string> CredentialServers { get; set; } = [];
+
     public override string ToString() => Name;
 }
 

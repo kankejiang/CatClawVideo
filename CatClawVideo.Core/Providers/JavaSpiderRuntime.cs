@@ -329,14 +329,14 @@ public class JavaSpiderRuntime : ISpiderRuntime
             var user = global["username"]?.GetValue<string>();
             var pass = global["password"]?.GetValue<string>();
 
-            // 本地凭据文件兜底（按 server host 匹配）
-            var creds = LoadSpiderCreds();
+            // 本地凭据文件兜底（按 server host 匹配，统一走 SpiderCredentials 存储）
+            var creds = SpiderCredentials.Load();
             var servers = arr.OfType<JsonObject>()
                 .Where(o => o["server"] != null)
                 .Select(o => o["server"]!.GetValue<string>().TrimEnd('/'))
                 .Distinct().ToList();
 
-            if ((string.IsNullOrEmpty(user) || string.IsNullOrEmpty(pass)) && creds != null)
+            if ((string.IsNullOrEmpty(user) || string.IsNullOrEmpty(pass)) && creds.Count > 0)
             {
                 foreach (var server in servers)
                 {
@@ -375,28 +375,5 @@ public class JavaSpiderRuntime : ISpiderRuntime
             return arr.ToJsonString();
         }
         catch { return ext; }
-    }
-
-    /// <summary>读取本地 spider 凭据文件（host → 用户名/密码）</summary>
-    private static Dictionary<string, (string User, string Pass)>? LoadSpiderCreds()
-    {
-        try
-        {
-            var path = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "CatClawVideo", "spider-creds.json");
-            if (!File.Exists(path)) return null;
-            var root = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
-            var dict = new Dictionary<string, (string, string)>();
-            foreach (var kv in root)
-            {
-                var u = kv.Value?["username"]?.GetValue<string>();
-                var p = kv.Value?["password"]?.GetValue<string>();
-                if (!string.IsNullOrEmpty(u) && !string.IsNullOrEmpty(p))
-                    dict[kv.Key] = (u, p);
-            }
-            return dict.Count > 0 ? dict : null;
-        }
-        catch { return null; }
     }
 }

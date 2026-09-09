@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using CatClawVideo.Core.Interfaces;
 using CatClawVideo.Core.Models;
+using CatClawVideo.Core.Providers;
 using CatClawVideo.Data;
 using Microsoft.Maui.Controls.Shapes;
 namespace CatClawVideo.Maui.Pages;
@@ -33,10 +34,12 @@ public partial class SourceConfigPage : ContentPage
         public string Type { get; }
         /// <summary>不可播原因（可播为 null）</summary>
         public string? Note { get; }
+        /// <summary>原始站点信息（账号认证判定用）</summary>
+        public VodSiteInfo Site { get; }
         public bool Enabled { get; set; } = true;
-        public SiteRow(string name, string type, string? note)
+        public SiteRow(string name, string type, string? note, VodSiteInfo site)
         {
-            Name = name; Type = type; Note = note;
+            Name = name; Type = type; Note = note; Site = site;
         }
     }
 
@@ -114,7 +117,12 @@ public partial class SourceConfigPage : ContentPage
             var captured = site;
             var row = new Grid
             {
-                ColumnDefinitions = [new ColumnDefinition(GridLength.Star), new ColumnDefinition(GridLength.Auto)],
+                ColumnDefinitions =
+                [
+                    new ColumnDefinition(GridLength.Star),
+                    new ColumnDefinition(GridLength.Auto),
+                    new ColumnDefinition(GridLength.Auto),
+                ],
                 Padding = new Thickness(0, 8),
             };
             var left = new VerticalStackLayout { Spacing = 2 };
@@ -134,9 +142,33 @@ public partial class SourceConfigPage : ContentPage
             });
             row.Add(left, 0);
 
+            // 需账号认证的站点：显示「账号」入口（点击录入/修改凭据）
+            if (site.Site.NeedsCredentials && site.Site.CredentialServers.Count > 0)
+            {
+                var saved = SpiderCredentials.Get(site.Site.CredentialServers[0]) is not null;
+                var credLabel = new Label
+                {
+                    Text = saved ? "账号✓" : "账号",
+                    FontSize = 12,
+                    FontFamily = "OpenSansSemibold",
+                    TextColor = (Color)Application.Current!.Resources["PrimaryColor"],
+                    VerticalOptions = LayoutOptions.Center,
+                    Margin = new Thickness(0, 0, 14, 0),
+                };
+                var credTap = new TapGestureRecognizer();
+                credTap.Tapped += async (_, _) =>
+                {
+                    var dlg = new CredentialsDialogPage(site.Site.Name, site.Site.CredentialServers[0]);
+                    await Navigation.PushModalAsync(dlg);
+                    if (dlg.Saved) RebuildSites(); // 保存后刷新「账号✓」状态
+                };
+                credLabel.GestureRecognizers.Add(credTap);
+                row.Add(credLabel, 1);
+            }
+
             var sw = new Switch { IsToggled = captured.Enabled, HorizontalOptions = LayoutOptions.End, VerticalOptions = LayoutOptions.Center };
             sw.Toggled += (_, e) => captured.Enabled = e.Value;
-            row.Add(sw, 1);
+            row.Add(sw, 2);
 
             SiteList.Children.Add(row);
         }
@@ -172,7 +204,7 @@ public partial class SourceConfigPage : ContentPage
                 _sites.Add(new SiteRow(s.Name, typeName,
                     s.SpiderKind == VodSpiderKind.Script && CatClawVideo.Core.Models.SiteRegistry.JsSpiderAvailable
                         ? null
-                        : s.StatusNote));
+                        : s.StatusNote, s));
                 added++;
             }
             skipped = sites.Count - added;
@@ -189,6 +221,15 @@ public partial class SourceConfigPage : ContentPage
 
             RebuildSites();
             SubEntry.Text = "";
+
+            // 需要账号认证的站点（alist 类）：逐个弹窗录入凭据，无凭据无法观看
+            var credSite = sites.FirstOrDefault(x => x.NeedsCredentials);
+            foreach (var server in SpiderCredentials.MissingServers(sites))
+            {
+                var dlg = new CredentialsDialogPage(credSite?.Name ?? "站点", server);
+                await Navigation.PushModalAsync(dlg);
+            }
+
             var playableCount = sites.Count(s => s.Playable);
             await DisplayAlertAsync("订阅已添加",
                 $"解析到 {sites.Count} 个站点，新增 {added} 个" +

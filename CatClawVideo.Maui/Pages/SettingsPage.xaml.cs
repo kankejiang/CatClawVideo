@@ -151,6 +151,14 @@ public partial class SettingsPage : ContentView, ITabView
                 await _db.AddSubscriptionAsync(new VodSubscription { Name = name, SourceUrl = url, Kind = "tvbox" });
 
             SubEntry.Text = "";
+
+            // 需要账号认证的站点（alist 类）：逐个弹窗录入凭据，无凭据无法观看
+            foreach (var server in Core.Providers.SpiderCredentials.MissingServers(sites))
+            {
+                var dlg = new CredentialsDialogPage(name, server);
+                await Shell.Current.Navigation.PushModalAsync(dlg);
+            }
+
             var playableCount = sites.Count(s => s.Playable);
             await Shell.Current.DisplayAlertAsync("订阅已添加",
                 $"解析到 {sites.Count} 个站点，其中可播 {playableCount} 个。", "确定");

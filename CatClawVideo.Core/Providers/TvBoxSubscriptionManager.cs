@@ -89,6 +89,7 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
             var quickSearchFlag = ReadFlag(s, "quickSearch");
 
             var (spiderKind, statusNote) = Classify(type, api);
+            var (needsCreds, credServers) = DetectCredentials(ext);
 
             bool playable = spiderKind == VodSpiderKind.None &&
                             type == 1 &&
@@ -110,6 +111,8 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
                 Searchable = searchableFlag ?? playable,
                 QuickSearch = quickSearchFlag ?? playable,
                 StatusNote = playable ? null : statusNote,
+                NeedsCredentials = needsCreds,
+                CredentialServers = credServers,
             });
         }
         return Task.FromResult(sites);
@@ -138,6 +141,51 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
             1 => (VodSpiderKind.None, "MacCMS json · 地址不可用"),
             _ => (VodSpiderKind.None, $"type {type} · 暂不支持"),
         };
+    }
+
+    /// <summary>
+    /// 检测站点是否需要账号认证（alist 类）：ext 为 JSON 数组、首个元素 type=global 且含
+    /// username/password 字段、无现成 token 时成立；同时收集数组内全部 server 地址。
+    /// </summary>
+    private static (bool Needs, List<string> Servers) DetectCredentials(string? ext)
+    {
+        var servers = new List<string>();
+        var trimmed = ext?.TrimStart();
+        if (string.IsNullOrEmpty(trimmed) || !trimmed.StartsWith('[')) return (false, servers);
+
+        try
+        {
+            using var doc = JsonDocument.Parse(trimmed);
+            var arr = doc.RootElement;
+            if (arr.ValueKind != JsonValueKind.Array || arr.GetArrayLength() == 0) return (false, servers);
+
+            bool hasCredField = false, hasToken = false;
+            foreach (var item in arr.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object) continue;
+
+                if (item.TryGetProperty("server", out var sv) && sv.ValueKind == JsonValueKind.String)
+                {
+                    var server = sv.GetString();
+                    if (!string.IsNullOrEmpty(server) && !servers.Contains(server)) servers.Add(server);
+                }
+
+                if (item.TryGetProperty("type", out var tp) && tp.ValueKind == JsonValueKind.String &&
+                    tp.GetString() == "global")
+                {
+                    if (item.TryGetProperty("username", out _) || item.TryGetProperty("password", out _))
+                        hasCredField = true;
+                    if (item.TryGetProperty("token", out var tk) &&
+                        tk.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(tk.GetString()))
+                        hasToken = true;
+                }
+            }
+            return (hasCredField && !hasToken && servers.Count > 0, servers);
+        }
+        catch
+        {
+            return (false, servers);
+        }
     }
 
     /// <summary>读取布尔标记，兼容 true/false、1/0、"1"/"0" 四种写法；字段缺失或类型异常返回 null。</summary>
