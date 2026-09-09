@@ -53,6 +53,13 @@ public partial class HomeViewModel : ObservableObject
     [ObservableProperty]
     private string _selectedCategoryId = string.Empty;
 
+    /// <summary>分页状态：当前页 / 是否还有下一页（滚动到底自动加载）</summary>
+    [ObservableProperty]
+    private bool _hasMoreItems = true;
+    private int _currentPage = 1;
+    private bool _loadingMore;
+    private VodCategory? _currentCategory;
+
     partial void OnUrlInputChanged(string value) => CanPlay = !string.IsNullOrWhiteSpace(value);
 
     public ObservableCollection<VodCategory> Categories { get; } = new();
@@ -173,12 +180,15 @@ public partial class HomeViewModel : ObservableObject
         await SelectCategoryAsync(cats[0]);
     }
 
-    /// <summary>切换分类并拉取第一页影片（仅当前站点）</summary>
+    /// <summary>切换分类并拉取第一页影片（仅当前站点）；分页状态复位</summary>
     [RelayCommand]
     public async Task SelectCategoryAsync(VodCategory? category)
     {
         if (category == null) return;
         SelectedCategoryId = category.Id;
+        _currentCategory = category;
+        _currentPage = 1;
+        HasMoreItems = true;
         IsHomeLoading = true;
         HomeStatus = $"正在加载「{category.Name}」…";
         Items.Clear();
@@ -193,9 +203,46 @@ public partial class HomeViewModel : ObservableObject
         foreach (var it in items) Items.Add(it);
         HomeStatus = Items.Count == 0
             ? $"{CurrentSite?.Name ?? "当前源"} · {category.Name} · 暂无影片"
-            : $"{CurrentSite!.Name} · {category.Name} · 共 {Items.Count} 部";
+            : $"{CurrentSite!.Name} · {category.Name} · 已加载 {Items.Count} 部";
         IsHomeLoading = false;
     }
+
+    /// <summary>滚动到底自动加载下一页（CollectionView RemainingItemsThresholdReached）</summary>
+    [RelayCommand(CanExecute = nameof(CanLoadMore))]
+    public async Task LoadMoreAsync()
+    {
+        if (_loadingMore || CurrentSite == null || _currentCategory == null) return;
+        _loadingMore = true;
+        LoadMoreCommand.NotifyCanExecuteChanged();
+        try
+        {
+            var next = _currentPage + 1;
+            HomeStatus = $"{CurrentSite.Name} · {_currentCategory.Name} · 加载第 {next} 页…";
+            var items = await _provider.GetItemsAsync(CurrentSite, _currentCategory, next);
+
+            if (items.Count == 0)
+            {
+                HasMoreItems = false;
+                HomeStatus = $"{CurrentSite.Name} · {_currentCategory.Name} · 已全部加载（{Items.Count} 部）";
+                return;
+            }
+
+            _currentPage = next;
+            foreach (var it in items) Items.Add(it);
+            HomeStatus = $"{CurrentSite.Name} · {_currentCategory.Name} · 已加载 {Items.Count} 部";
+        }
+        catch
+        {
+            HasMoreItems = false;
+        }
+        finally
+        {
+            _loadingMore = false;
+            LoadMoreCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    private bool CanLoadMore() => !_loadingMore && HasMoreItems && !IsHomeLoading;
 
     [RelayCommand]
     private async Task PlayAsync()

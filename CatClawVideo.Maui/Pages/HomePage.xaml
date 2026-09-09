@@ -55,8 +55,10 @@
             <Label Text="{Binding HomeStatus}" FontSize="12"
                    TextColor="{DynamicResource TextHintColor}" />
 
-            <!-- 海报网格（真数据：当前源影片列表，Windows 6 列 / 安卓横屏 4 列） -->
-            <CollectionView x:Name="PosterGrid" SelectionMode="Single" ItemsSource="{Binding Items}">
+            <!-- 海报网格（真数据：当前源影片列表，Windows 6 列 / 安卓横屏 4 列；滚动到底自动加载下一页） -->
+            <CollectionView x:Name="PosterGrid" SelectionMode="Single" ItemsSource="{Binding Items}"
+                            RemainingItemsThresholdReachedCommand="{Binding LoadMoreCommand}"
+                            RemainingItemsThreshold="8">
                 <CollectionView.ItemsLayout>
                     <GridItemsLayout Orientation="Vertical" Span="6" VerticalItemSpacing="18" HorizontalItemSpacing="14" />
                 </CollectionView.ItemsLayout>
