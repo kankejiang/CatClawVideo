@@ -7,6 +7,9 @@ public partial class App : Application
 #if WINDOWS
     private static IntPtr _appHwnd;
     private static Microsoft.UI.Windowing.AppWindow? _appWindow;
+
+    /// <summary>主窗口句柄（原生对话框 owner 用；窗口创建前为 Zero）</summary>
+    public static IntPtr MainWindowHwnd => _appHwnd;
 #endif
 
     public App()

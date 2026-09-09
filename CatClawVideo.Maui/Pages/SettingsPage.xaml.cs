@@ -141,30 +141,98 @@ public partial class SettingsPage : ContentView, ITabView
         await AddSubscriptionCoreAsync(url);
     }
 
-    /// <summary>导入本地源文件（猫爪源 ccs / TVBox json）：文件选择器 → 同链路解析入库</summary>
+    /// <summary>导入本地源文件（猫爪源 ccs / TVBox json）：文件对话框 → 同链路解析入库</summary>
     private async void OnImportFileClicked(object? sender, EventArgs e)
     {
         try
         {
-            var fileTypes = new FilePickerFileType(new Dictionary<DevicePlatform, IEnumerable<string>>
-            {
-                [DevicePlatform.WinUI] = new[] { ".json", ".ccs", ".txt" },
-                [DevicePlatform.Android] = new[] { "application/json", "text/plain", "application/octet-stream" },
-            });
-            var result = await FilePicker.PickAsync(new PickOptions
+#if WINDOWS
+            // Win32 原生对话框：未打包环境下 WinRT FilePicker 可能抛 COM 异常，桌面端直接用 comdlg32
+            var path = PickFileWin32();
+#else
+            var picked = await FilePicker.PickAsync(new PickOptions
             {
                 PickerTitle = "选择猫爪源 / TVBox 订阅文件",
-                FileTypes = fileTypes,
+                FileTypes = new FilePickerFileType(new Dictionary<DevicePlatform, IEnumerable<string>>
+                {
+                    [DevicePlatform.Android] = new[] { "application/json", "text/plain", "application/octet-stream" },
+                }),
             });
-            if (result is null || string.IsNullOrEmpty(result.FullPath)) return;
+            var path = picked?.FullPath;
+#endif
+            if (string.IsNullOrEmpty(path)) return;
 
-            await AddSubscriptionCoreAsync(result.FullPath);
+            await AddSubscriptionCoreAsync(path);
         }
         catch (Exception ex)
         {
             await Shell.Current.DisplayAlertAsync("导入失败", ex.Message, "确定");
         }
     }
+
+#if WINDOWS
+    [System.Runtime.InteropServices.DllImport("comdlg32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern bool GetOpenFileNameW(ref OpenFileNameW ofn);
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private struct OpenFileNameW
+    {
+        public uint lStructSize;
+        public nint hwndOwner;
+        public nint hInstance;
+        public string lpstrFilter;
+        public nint lpstrCustomFilter;
+        public uint nMaxCustFilter;
+        public uint nFilterIndex;
+        public nint lpstrFile;
+        public uint nMaxFile;
+        public nint lpstrFileTitle;
+        public uint nMaxFileTitle;
+        public string lpstrInitialDir;
+        public string lpstrTitle;
+        public uint Flags;
+        public ushort nFileOffset;
+        public ushort nFileExtension;
+        public string lpstrDefExt;
+        public nint lCustData;
+        public nint lpfnHook;
+        public string lpTemplateName;
+        public nint pvReserved;
+        public uint dwReserved;
+        public uint FlagsEx;
+    }
+
+    /// <summary>Win32 打开文件对话框（返回所选完整路径；取消返回 null）</summary>
+    private static string? PickFileWin32()
+    {
+        const uint OFN_PATHMUSTEXIST = 0x800, OFN_FILEMUSTEXIST = 0x1000, OFN_HIDEREADONLY = 0x4;
+
+        var buffer = System.Runtime.InteropServices.Marshal.AllocHGlobal(65536);
+        try
+        {
+            // 写入空终止（缓冲区清零）
+            System.Runtime.InteropServices.Marshal.WriteInt16(buffer, 0);
+
+            var ofn = new OpenFileNameW
+            {
+                lStructSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<OpenFileNameW>(),
+                hwndOwner = App.MainWindowHwnd,
+                lpstrFilter = "源文件 (*.json;*.ccs;*.txt)\0*.json;*.ccs;*.txt\0所有文件 (*.*)\0*.*\0",
+                lpstrFile = buffer,
+                nMaxFile = 32768,
+                lpstrTitle = "选择猫爪源 / TVBox 订阅文件",
+                Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_HIDEREADONLY,
+            };
+
+            if (!GetOpenFileNameW(ref ofn)) return null; // 用户取消
+            return System.Runtime.InteropServices.Marshal.PtrToStringUni(buffer);
+        }
+        finally
+        {
+            System.Runtime.InteropServices.Marshal.FreeHGlobal(buffer);
+        }
+    }
+#endif
 
     /// <summary>订阅添加核心流程（地址/本地文件共用）：解析 → 站点仓库生效 → 入库去重 → 认证弹窗 → 结果反馈</summary>
     private async Task AddSubscriptionCoreAsync(string urlOrPath)
