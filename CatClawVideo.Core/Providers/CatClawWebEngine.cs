@@ -92,7 +92,9 @@ public class CatClawWebEngine
                 var raw = FirstGroupHtml(html, r.DetailDesc, "desc");
                 if (!string.IsNullOrEmpty(raw))
                 {
-                    desc = Decode(Regex.Replace(raw, "<[^>]+>", "")).Trim();
+                    // 去标签 → 实体解码 → &nbsp; 空段/连续空白折叠为单空格
+                    var text = Decode(Regex.Replace(raw, "<[^>]+>", ""));
+                    desc = Regex.Replace(text, @"[\s\u00a0\u3000]+", " ").Trim();
                     if (desc.Length > 800) desc = desc[..800] + "…";
                 }
             }

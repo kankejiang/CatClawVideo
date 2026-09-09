@@ -29,9 +29,10 @@
             <!-- 上区：小窗播放器（58%）+ 信息面板（42%） -->
             <Grid ColumnDefinitions="58*,42*" ColumnSpacing="18">
 
-                <!-- 小窗播放器（16:9）+ 控制条 -->
-                <Border Grid.Column="0" StrokeThickness="0" StrokeShape="RoundRectangle 12" BackgroundColor="Black">
-                    <Grid HeightRequest="300">
+                <!-- 小窗播放器（16:9，高度随宽度自适应）+ 控制条 -->
+                <Border Grid.Column="0" StrokeThickness="0" StrokeShape="RoundRectangle 12" BackgroundColor="Black"
+                        VerticalOptions="Start">
+                    <Grid x:Name="PlayerHost" HeightRequest="340">
                         <controls:VideoPlayerView x:Name="Player"
                                                   Aspect="AspectFit"
                                                   ShouldKeepScreenOn="True" />

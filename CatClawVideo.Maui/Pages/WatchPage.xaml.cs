@@ -50,8 +50,26 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         var meta = $"{(_item.Year.Length > 0 ? _item.Year + " · " : "")}{(_item.Remarks.Length > 0 ? _item.Remarks + " · " : "")}{_site.Name}";
         MetaLabel.Text = meta;
         DescLabel.Text = _item.Description is { Length: > 0 } descText
-            ? System.Net.WebUtility.HtmlDecode(descText)
+            ? CleanDesc(descText)
             : "暂无简介";
+    }
+
+    /// <summary>布局完成按播放器实际宽度设置 16:9 高度（窗口缩放自适应）</summary>
+    protected override void OnSizeAllocated(double width, double height)
+    {
+        base.OnSizeAllocated(width, height);
+        // 页面宽 - 左右 padding(48)，播放器占 58% 减列间距
+        var playerWidth = (width - 48) * 0.58 - 18;
+        if (playerWidth > 100)
+            PlayerHost.HeightRequest = Math.Clamp(playerWidth * 9.0 / 16.0, 200, 560);
+    }
+
+    /// <summary>简介清洗：HTML 实体解码 + &nbsp; 空段/连续空白折叠为单空格</summary>
+    private static string CleanDesc(string text)
+    {
+        var decoded = System.Net.WebUtility.HtmlDecode(text);
+        var cleaned = System.Text.RegularExpressions.Regex.Replace(decoded, @"[\s\u00a0\u3000]+", " ").Trim();
+        return cleaned.Length > 0 ? cleaned : "暂无简介";
     }
 
     protected override void OnAppearing()
