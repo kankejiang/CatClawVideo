@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>猫爪影视 · 观看页布局原型（主流播放器对齐）</title>
+<style>
+  :root {
+    --bg: #0f0e1a;
+    --card: #232042;
+    --card-hover: #2c2850;
+    --primary: #9b7ed8;
+    --primary-soft: rgba(155, 126, 216, .35);
+    --text: #f5f6ff;
+    --text-2: #bcc0dd;
+    --text-3: #868cae;
+    --divider: rgba(255, 255, 255, .08);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 14px;
+  }
+
+  /* ═══ 顶栏 ═══ */
+  .topbar {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 24px;
+  }
+  .back-btn {
+    width: 34px; height: 34px; border-radius: 10px;
+    background: var(--card); border: none; color: var(--text);
+    font-size: 16px; cursor: pointer;
+  }
+  .brand { font-weight: 600; font-size: 14px; color: var(--text-2); }
+  .topbar .spacer { flex: 1; }
+  .btn-fullscreen {
+    background: var(--primary-soft); color: #fff; border: none;
+    padding: 7px 14px; border-radius: 8px; font-size: 12px; cursor: pointer;
+  }
+
+  /* ═══ 主区：播放器 + 右侧选集栏（主流形态） ═══ */
+  .main {
+    display: flex; gap: 16px;
+    padding: 0 24px;
+    align-items: stretch;
+  }
+  .player-wrap {
+    flex: 1; min-width: 0;
+    background: #000; border-radius: 14px; overflow: hidden;
+    position: relative;
+    aspect-ratio: 16 / 9;
+  }
+  .player-cover {
+    position: absolute; inset: 0;
+    background: radial-gradient(ellipse at center, #3d1a3d 0%, #1a0f1e 60%, #000 100%);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .play-btn {
+    width: 64px; height: 64px; border-radius: 50%;
+    background: rgba(0,0,0,.55); border: 2px solid rgba(255,255,255,.75);
+    color: #fff; font-size: 22px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .player-controls {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    background: linear-gradient(transparent, rgba(0,0,0,.85));
+    padding: 24px 14px 10px;
+  }
+  .progress { height: 4px; background: rgba(255,255,255,.25); border-radius: 2px; position: relative; }
+  .progress .played { position: absolute; inset: 0; width: 6%; background: var(--primary); border-radius: 2px; }
+  .progress .thumb { position: absolute; left: 6%; top: 50%; transform: translate(-50%, -50%);
+    width: 12px; height: 12px; border-radius: 50%; background: #fff; }
+  .ctrl-row { display: flex; align-items: center; gap: 12px; margin-top: 8px; font-size: 11px; color: #ddd; }
+  .ctrl-row .spacer { flex: 1; }
+
+  /* ═══ 右侧选集栏 ═══ */
+  .side-panel {
+    width: 300px; flex-shrink: 0;
+    background: var(--card); border-radius: 14px;
+    display: flex; flex-direction: column;
+    max-height: calc(100vw * 9 / 16 * 0.72);
+    overflow: hidden;
+  }
+  .side-tabs { display: flex; gap: 4px; padding: 12px 14px 0; }
+  .side-tab {
+    padding: 7px 16px; border-radius: 8px; font-size: 13px;
+    color: var(--text-2); cursor: pointer; border: none; background: transparent;
+  }
+  .side-tab.active { background: var(--primary); color: #fff; font-weight: 600; }
+  .side-count { padding: 8px 14px 4px; font-size: 11.5px; color: var(--text-3); }
+  .ep-list { flex: 1; overflow-y: auto; padding: 4px 10px 12px; }
+  .ep-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 10px; border-radius: 8px; cursor: pointer;
+    color: var(--text-2); font-size: 13px;
+  }
+  .ep-row:hover { background: var(--card-hover); }
+  .ep-row.active { background: var(--primary-soft); color: #fff; }
+  .ep-num {
+    width: 26px; height: 26px; border-radius: 6px; flex-shrink: 0;
+    background: rgba(255,255,255,.07);
+    display: flex; align-items: center; justify-content: center; font-size: 11px;
+  }
+  .ep-row.active .ep-num { background: var(--primary); }
+  .ep-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ep-badge { font-size: 10px; color: var(--text-3); }
+
+  /* ═══ 下方信息区 ═══ */
+  .info-section { padding: 14px 24px 8px; }
+  .title-row { display: flex; align-items: center; gap: 14px; }
+  .title-row h1 { font-size: 20px; font-weight: 600; }
+  .badge {
+    font-size: 11px; padding: 3px 8px; border-radius: 6px;
+    background: var(--card); color: var(--text-2);
+  }
+  .action-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--card); border: none; color: var(--text-2);
+    padding: 7px 16px; border-radius: 8px; font-size: 12.5px; cursor: pointer;
+  }
+  .action-btn:hover { background: var(--card-hover); color: var(--text); }
+  .title-row .spacer { flex: 1; }
+
+  .meta-line { margin-top: 8px; font-size: 12px; color: var(--text-3); }
+  .meta-line span { margin-right: 14px; }
+
+  .desc { margin-top: 10px; font-size: 13px; line-height: 1.7; color: var(--text-2);
+    max-width: 900px;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .desc.expand { -webkit-line-clamp: unset; }
+  .desc-toggle { margin-top: 6px; background: none; border: none; color: var(--primary); font-size: 12px; cursor: pointer; }
+
+  /* ═══ 相关推荐 ═══ */
+  .rec-section { padding: 18px 24px 30px; }
+  .rec-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; color: var(--text); }
+  .rec-row { display: flex; gap: 12px; }
+  .rec-card { width: 168px; cursor: pointer; }
+  .rec-card .thumb {
+    aspect-ratio: 16/10; border-radius: 10px;
+    background: linear-gradient(135deg, #2c2850, #1a1733);
+    margin-bottom: 7px; position: relative; overflow: hidden;
+  }
+  .rec-card .thumb::after { content: attr(data-rem); position: absolute; right: 6px; top: 6px;
+    font-size: 10px; background: rgba(0,0,0,.6); color: #ffd76e; padding: 2px 6px; border-radius: 5px; }
+  .rec-card .name { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rec-card .sub { font-size: 11px; color: var(--text-3); margin-top: 2px; }
+
+  /* 线路小行（播放器左下角内嵌） */
+  .line-chips { position: absolute; left: 14px; top: 12px; display: flex; gap: 6px; }
+  .line-chip { font-size: 11px; padding: 4px 10px; border-radius: 6px;
+    background: rgba(0,0,0,.5); color: #ccc; cursor: pointer; }
+  .line-chip.active { background: var(--primary); color: #fff; }
+</style>
+</head>
+<body>
+
+  <!-- 顶栏 -->
+  <div class="topbar">
+    <button class="back-btn">←</button>
+    <span class="brand">猫爪影视</span>
+    <span class="spacer"></span>
+    <button class="btn-fullscreen">⛶ 全屏播放</button>
+  </div>
+
+  <!-- 主区：播放器 + 右侧选集栏 -->
+  <div class="main">
+    <div class="player-wrap">
+      <div class="player-cover">
+        <div class="play-btn">▶</div>
+      </div>
+      <div class="line-chips">
+        <span class="line-chip active">在线播放</span>
+        <span class="line-chip">磁力下载</span>
+      </div>
+      <div class="player-controls">
+        <div class="progress"><div class="played"></div><div class="thumb"></div></div>
+        <div class="ctrl-row">
+          <span>▶</span><span>🔊</span>
+          <span>00:02</span>
+          <span class="spacer"></span>
+          <span>27:26</span>
+          <span>⚙</span><span>⛶</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 右侧选集栏 -->
+    <div class="side-panel">
+      <div class="side-tabs">
+        <button class="side-tab active">选集</button>
+        <button class="side-tab">线路</button>
+      </div>
+      <div class="side-count">共 13 集 · 更新至13</div>
+      <div class="ep-list">
+        <div class="ep-row active"><span class="ep-num">1</span><span class="ep-name">光阴之外_01</span><span class="ep-badge">2160P</span></div>
+        <div class="ep-row"><span class="ep-num">2</span><span class="ep-name">光阴之外_02</span><span class="ep-badge">2160P</span></div>
+        <div class="ep-row"><span class="ep-num">3</span><span class="ep-name">光阴之外_03</span></div>
+        <div class="ep-row"><span class="ep-num">4</span><span class="ep-name">光阴之外_04</span></div>
+        <div class="ep-row"><span class="ep-num">5</span><span class="ep-name">光阴之外_05</span></div>
+        <div class="ep-row"><span class="ep-num">6</span><span class="ep-name">光阴之外_06</span></div>
+        <div class="ep-row"><span class="ep-num">7</span><span class="ep-name">光阴之外_07</span></div>
+        <div class="ep-row"><span class="ep-num">8</span><span class="ep-name">光阴之外_08</span></div>
+        <div class="ep-row"><span class="ep-num">9</span><span class="ep-name">光阴之外_09</span></div>
+        <div class="ep-row"><span class="ep-num">10</span><span class="ep-name">光阴之外_10</span></div>
+        <div class="ep-row"><span class="ep-num">11</span><span class="ep-name">光阴之外_11</span></div>
+        <div class="ep-row"><span class="ep-num">12</span><span class="ep-name">光阴之外_12</span></div>
+        <div class="ep-row"><span class="ep-num">13</span><span class="ep-name">光阴之外_13</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 下方信息区 -->
+  <div class="info-section">
+    <div class="title-row">
+      <h1>光阴之外</h1>
+      <span class="badge">2160P</span>
+      <span class="badge">2026</span>
+      <span class="badge">国产动漫</span>
+      <span class="spacer"></span>
+      <button class="action-btn">♥ 收藏</button>
+      <button class="action-btn">⇪ 分享</button>
+    </div>
+    <div class="meta-line">
+      <span>主演：耳根原著</span>
+      <span>地区：中国大陆</span>
+      <span>来源：6V电影</span>
+    </div>
+    <p class="desc" id="desc">
+      天地是万物众生的容器，光阴是古往今来的过客。苍天残面板开诡异之眼，所视之处生灵涂炭，化为永恒的禁区。末世之中，因果横行，死后再生……许青于末世中挣扎求存，一次次穿越死地，踏上光阴长河，追寻超脱之路。这是一段关于坚守与超脱的故事，也是一场与天争命的修行。
+    </p>
+    <button class="desc-toggle" onclick="document.getElementById('desc').classList.toggle('expand')">展开 ▾</button>
+  </div>
+
+  <!-- 相关推荐 -->
+  <div class="rec-section">
+    <div class="rec-title">相关推荐</div>
+    <div class="rec-row">
+      <div class="rec-card"><div class="thumb" data-rem="1080P"></div><div class="name">完美世界动画版</div><div class="sub">动画 · 2021</div></div>
+      <div class="rec-card"><div class="thumb" data-rem="HD"></div><div class="name">吞噬星空</div><div class="sub">动画 · 2025</div></div>
+      <div class="rec-card"><div class="thumb" data-rem="2160P"></div><div class="name">牧神记</div><div class="sub">动画 · 2024</div></div>
+      <div class="rec-card"><div class="thumb" data-rem="1080P"></div><div class="name">财神窦占龙</div><div class="sub">电影 · 2026</div></div>
+      <div class="rec-card"><div class="thumb" data-rem="HD"></div><div class="name">阴风诡影</div><div class="sub">剧情 · 2026</div></div>
+      <div class="rec-card"><div class="thumb" data-rem="4K"></div><div class="name">光阴之外·特别篇</div><div class="sub">动画 · 2026</div></div>
+    </div>
+  </div>
+
+</body>
+</html>
