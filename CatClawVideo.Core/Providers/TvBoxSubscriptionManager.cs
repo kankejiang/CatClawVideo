@@ -25,13 +25,23 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
         var contentType = resp.Content.Headers.ContentType?.MediaType ?? "";
         var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
 
-        // 二进制/图片响应：这类订阅地址（如饭太硬 /tv）返回的是 logo 或二维码图，配置已防直连
+        // 图片响应：饭太硬等防直连源把 base64 配置隐写在图片尾部（JPEG FFD9 之后），
+        // 先尝试提取隐写配置，失败再抛明确异常
+        string text;
         if (contentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase) || IsBinary(bytes))
-            throw new NotSupportedException(
-                "该订阅地址返回的是图片/二进制内容（多为防白嫖的二维码或 logo），无法直接解析。\n" +
-                "请使用明文 TVBox json 或 MacCMS 直连地址。");
+        {
+            var steganography = TryExtractConfigFromImage(bytes);
+            if (steganography is null)
+                throw new NotSupportedException(
+                    "该订阅地址返回的是图片/二进制内容，且未在图片中找到隐藏配置。\n" +
+                    "请使用明文 TVBox json 或 MacCMS 直连地址。");
+            text = steganography;
+        }
+        else
+        {
+            text = System.Text.Encoding.UTF8.GetString(bytes);
+        }
 
-        var text = System.Text.Encoding.UTF8.GetString(bytes);
         var sites = await ParseConfigTextAsync(text, subscriptionName: new Uri(subscriptionUrl).Host, ct);
 
         // 相对路径解析：小雅等站点 jar 写作 ./libs/x.jar（相对订阅源目录）
@@ -50,13 +60,19 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
     {
         var trimmed = jsonText.TrimStart();
 
-        // 加密配置识别：base64 大块无 { 开头 / 2423 前缀（$$ 加密标记）/ 非 JSON 结构
+        // 加密配置识别：base64 大块无 { 开头 / 非 JSON 结构
         if (!trimmed.StartsWith('{') && !trimmed.StartsWith('['))
             throw new NotSupportedException(
                 "该订阅返回的是加密/混淆配置（非明文 JSON），暂不支持自动解密。\n" +
                 "可改用明文 TVBox json 或 MacCMS 直连地址。");
 
-        using var doc = JsonDocument.Parse(jsonText);
+        // 容忍行注释与尾逗号（饭太硬等源的配置常带 // 注释行）
+        var options = new JsonDocumentOptions
+        {
+            CommentHandling = JsonCommentHandling.Skip,
+            AllowTrailingCommas = true,
+        };
+        using var doc = JsonDocument.Parse(jsonText, options);
         var root = doc.RootElement;
 
         var sites = new List<VodSiteInfo>();
@@ -218,5 +234,52 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
         return (bytes[0] == 0xFF && bytes[1] == 0xD8) ||
                (bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47) ||
                (bytes[0] == 0x42 && bytes[1] == 0x4D);
+    }
+
+    /// <summary>
+    /// 从图片中提取隐写配置（饭太硬防直连机制）：真实 base64 配置附加在图片结束标记之后。
+    /// 流程：定位图片结束标记（JPEG FFD9 / PNG IEND）→ 清洗非 base64 字符 →
+    /// 前缀可能混入干扰字符，按 4 字符对齐逐偏移尝试解码，取能解出 JSON 的起点。
+    /// </summary>
+    private static string? TryExtractConfigFromImage(byte[] bytes)
+    {
+        var end = FindImageEnd(bytes);
+        if (end < 0 || end + 8 >= bytes.Length) return null;
+
+        var tail = System.Text.Encoding.ASCII.GetString(bytes, end, bytes.Length - end);
+        var clean = System.Text.RegularExpressions.Regex.Replace(tail, "[^A-Za-z0-9+/]", "");
+        if (clean.Length < 16) return null;
+
+        for (int skip = 0; skip < Math.Min(256, clean.Length - 4); skip += 4)
+        {
+            var seg = clean[skip..];
+            if (seg.Length % 4 != 0) seg += new string('=', 4 - seg.Length % 4);
+            try
+            {
+                var decoded = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(seg));
+                var trimmed = decoded.TrimStart('\0').TrimStart();
+                if (trimmed.StartsWith('{') || trimmed.StartsWith('['))
+                    return trimmed;
+            }
+            catch { }
+        }
+        return null;
+    }
+
+    /// <summary>定位图片结束标记位置（JPEG 最后一个 FFD9 / PNG IEND 块尾），未识别返回 -1</summary>
+    private static int FindImageEnd(byte[] bytes)
+    {
+        // PNG：IEND + 4 字节 CRC
+        for (int i = 0; i + 8 <= bytes.Length; i++)
+        {
+            if (bytes[i] == 'I' && bytes[i + 1] == 'E' && bytes[i + 2] == 'N' && bytes[i + 3] == 'D')
+                return i + 8;
+        }
+        // JPEG：从尾往前找 FFD9
+        for (int i = bytes.Length - 2; i >= 0; i--)
+        {
+            if (bytes[i] == 0xFF && bytes[i + 1] == 0xD9) return i + 2;
+        }
+        return -1;
     }
 }
