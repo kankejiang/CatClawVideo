@@ -77,38 +77,6 @@
                 </VerticalStackLayout>
             </Border>
 
-            <!-- ═══ 外观 ═══ -->
-            <Border StrokeThickness="1"
-                    StrokeShape="RoundRectangle 20"
-                    BackgroundColor="{DynamicResource CardBackgroundColor}"
-                    Stroke="{DynamicResource DividerColor}"
-                    Padding="20">
-                <VerticalStackLayout Spacing="16">
-
-                    <Label Text="外观"
-                           FontSize="16"
-                           FontFamily="OpenSansSemibold"
-                           TextColor="{DynamicResource TextPrimaryColor}" />
-
-                    <!-- 主题色 -->
-                    <VerticalStackLayout Spacing="10">
-                        <Label Text="主题色"
-                               FontSize="13"
-                               TextColor="{DynamicResource TextSecondaryColor}" />
-                        <HorizontalStackLayout x:Name="ThemeSwatches" Spacing="14" />
-                    </VerticalStackLayout>
-
-                    <!-- 深浅模式 -->
-                    <VerticalStackLayout Spacing="10">
-                        <Label Text="深浅模式"
-                               FontSize="13"
-                               TextColor="{DynamicResource TextSecondaryColor}" />
-                        <HorizontalStackLayout x:Name="DarkModeChips" Spacing="10" />
-                    </VerticalStackLayout>
-
-                </VerticalStackLayout>
-            </Border>
-
             <!-- ═══ 关于 ═══ -->
             <Border StrokeThickness="1"
                     StrokeShape="RoundRectangle 20"

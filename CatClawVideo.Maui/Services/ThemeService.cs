@@ -131,18 +131,9 @@ public class ThemeService : IThemeService
 
     private void LoadSettings()
     {
-        try
-        {
-            _currentTheme = (CoreAppTheme)Preferences.Default.Get(KeyTheme, 0);
-            DarkModeSetting = (DarkModeSetting)Preferences.Default.Get(KeyDarkMode, 2);
-            if (!ThemeMap.ContainsKey(_currentTheme))
-                _currentTheme = CoreAppTheme.Purple;
-        }
-        catch
-        {
-            _currentTheme = CoreAppTheme.Purple;
-            DarkModeSetting = DarkModeSetting.FollowSystem;
-        }
+        // 主题锁死：仅蓝色主题 + 深色模式（外观设置项已移除，历史存储值一律覆盖）
+        _currentTheme = CoreAppTheme.Blue;
+        DarkModeSetting = DarkModeSetting.Dark;
     }
 
     private static void ApplyDarkPalette(ResourceDictionary res, ThemeColors colors)
