@@ -6,11 +6,16 @@
              BackgroundColor="{DynamicResource WindowBackgroundColor}"
              NavigationPage.HasNavigationBar="False">
 
+    <!-- 隐藏 Shell 系统返回键（页面自带自定义返回，避免左上角双返回按钮） -->
+    <Shell.BackButtonBehavior>
+        <BackButtonBehavior IsVisible="False" />
+    </Shell.BackButtonBehavior>
+
     <ScrollView>
         <VerticalStackLayout Padding="24,14,24,28" Spacing="14">
 
-            <!-- 顶栏：返回 + 品牌（延续顶部导航视觉） -->
-            <Grid ColumnDefinitions="Auto,Auto,*,Auto" ColumnSpacing="12">
+            <!-- 顶栏：返回 + 品牌（全屏按钮在播放器控制条内，避开窗口控件区） -->
+            <Grid ColumnDefinitions="Auto,Auto" ColumnSpacing="12">
                 <Border Grid.Column="0" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
                         StrokeShape="RoundRectangle 12" WidthRequest="38" HeightRequest="38">
                     <Label Text="←" FontSize="20" TextColor="{DynamicResource TextPrimaryColor}"
@@ -21,9 +26,6 @@
                 </Border>
                 <Label Grid.Column="1" Text="猫爪影视" FontSize="14.5" FontFamily="OpenSansSemibold"
                        TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
-                <Button Grid.Column="3" Text="⛶ 全屏播放" FontSize="12" TextColor="White"
-                        BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
-                        CornerRadius="8" Padding="12,5" Clicked="OnPlayFullClicked" />
             </Grid>
 
             <!-- ═══ 主区：播放器 + 右侧选集栏（主流播放器形态） ═══ -->
@@ -59,21 +61,32 @@
                                          HorizontalOptions="Center" VerticalOptions="Center"
                                          Clicked="OnPlayPauseClicked" />
                             <Grid VerticalOptions="End"
-                                  ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10"
+                                  ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto" ColumnSpacing="12"
                                   Padding="12,6,12,10"
                                   BackgroundColor="#99000000">
-                                <Label Grid.Column="0" x:Name="PositionLabel" Text="00:00"
+                                <ImageButton Grid.Column="0" x:Name="SmallPlayButton"
+                                             Source="ic_pause.svg"
+                                             WidthRequest="20" HeightRequest="20"
+                                             BackgroundColor="Transparent"
+                                             VerticalOptions="Center"
+                                             Clicked="OnPlayPauseClicked" />
+                                <Label Grid.Column="1" x:Name="PositionLabel" Text="00:00"
                                        FontSize="10.5" FontFamily="OpenSansSemibold" TextColor="White"
                                        VerticalOptions="Center" />
-                                <Slider Grid.Column="1" x:Name="ProgressBar"
+                                <Slider Grid.Column="2" x:Name="ProgressBar"
                                         Minimum="0" Maximum="100" Value="0"
                                         MinimumTrackColor="{DynamicResource PrimaryColor}"
                                         MaximumTrackColor="#40FFFFFF" ThumbColor="White"
                                         VerticalOptions="Center"
                                         DragStarted="OnSeekStarted" DragCompleted="OnSeekCompleted" />
-                                <Label Grid.Column="2" x:Name="DurationLabel" Text="--:--"
+                                <Label Grid.Column="3" x:Name="DurationLabel" Text="--:--"
                                        FontSize="10.5" FontFamily="OpenSansSemibold" TextColor="White"
                                        VerticalOptions="Center" />
+                                <Button Grid.Column="4" Text="⛶" FontSize="15" Padding="0"
+                                        WidthRequest="30" HeightRequest="26"
+                                        TextColor="White" BackgroundColor="Transparent"
+                                        VerticalOptions="Center"
+                                        Clicked="OnPlayFullClicked" />
                             </Grid>
                         </Grid>
                     </Grid>

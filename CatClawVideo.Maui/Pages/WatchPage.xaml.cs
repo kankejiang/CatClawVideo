@@ -383,7 +383,9 @@ public partial class WatchPage : ContentPage, IQueryAttributable
 
     private void UpdatePlayIcon()
     {
-        CenterPlayButton.Source = _playing ? "ic_pause.svg" : "ic_play.svg";
+        var icon = _playing ? "ic_pause.svg" : "ic_play.svg";
+        CenterPlayButton.Source = icon;
+        SmallPlayButton.Source = icon;
     }
 
     private void UpdateProgress()
