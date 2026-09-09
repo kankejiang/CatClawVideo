@@ -67,6 +67,10 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
             text = decrypted;
         }
 
+        // 猫爪源（CatClaw Source，自建生态）：单地址即一个原生数据源（type=100，全平台可播）
+        if (text.Contains(CatClawSourceDoc.ProtocolMagic, StringComparison.OrdinalIgnoreCase))
+            return [BuildCatClawSite(text, subscriptionUrl)];
+
         var sites = await ParseConfigTextAsync(text, subscriptionName: new Uri(subscriptionUrl).Host, ct);
 
         // 相对路径解析：小雅等站点 jar 写作 ./libs/x.jar（相对订阅源目录）
@@ -132,10 +136,13 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
             var (spiderKind, statusNote) = Classify(type, api);
             var (needsCreds, credServers) = DetectCredentials(ext);
 
-            bool playable = spiderKind == VodSpiderKind.None &&
-                            type == 1 &&
-                            api.StartsWith("http", StringComparison.OrdinalIgnoreCase) &&
-                            !api.Contains("csp_", StringComparison.OrdinalIgnoreCase);
+            // 猫爪源（type=100）：原生数据源，地址有效即可播
+            bool playable = type == CatClawSourceDoc.SiteType
+                ? api.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+                : spiderKind == VodSpiderKind.None &&
+                  type == 1 &&
+                  api.StartsWith("http", StringComparison.OrdinalIgnoreCase) &&
+                  !api.Contains("csp_", StringComparison.OrdinalIgnoreCase);
 
             sites.Add(new VodSiteInfo
             {
@@ -165,6 +172,9 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
     /// </summary>
     private static (VodSpiderKind Kind, string Note) Classify(int type, string api)
     {
+        if (type == CatClawSourceDoc.SiteType)
+            return (VodSpiderKind.None, "");
+
         if (type == 3)
         {
             if (api.StartsWith("csp_", StringComparison.OrdinalIgnoreCase))
@@ -181,6 +191,30 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
             0 => (VodSpiderKind.None, "xml 源 · 暂不支持"),
             1 => (VodSpiderKind.None, "MacCMS json · 地址不可用"),
             _ => (VodSpiderKind.None, $"type {type} · 暂不支持"),
+        };
+    }
+
+    /// <summary>把猫爪源文档包装为单站点（type=100，由 CatClawSourceProvider 承接取数）</summary>
+    private static VodSiteInfo BuildCatClawSite(string json, string url)
+    {
+        var name = "猫爪源";
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String)
+                name = n.GetString() ?? name;
+        }
+        catch { }
+        return new VodSiteInfo
+        {
+            Key = "catclaw",
+            Name = name,
+            Api = url,
+            Type = CatClawSourceDoc.SiteType,
+            SubscriptionName = new Uri(url).Host,
+            Playable = true,
+            Searchable = true,
+            QuickSearch = true,
         };
     }
 

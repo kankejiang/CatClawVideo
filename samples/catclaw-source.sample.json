@@ -1,0 +1,52 @@
+{
+  "magic": "catclaw-source",
+  "version": 1,
+  "name": "猫爪官方示例源",
+  "updated": "2026-09-09T22:00:00",
+  "categories": [
+    { "id": "test", "name": "测试片源" },
+    { "id": "demo", "name": "演示" }
+  ],
+  "items": [
+    {
+      "id": "v001",
+      "title": "BipBop 自适应码率测试流",
+      "cover": null,
+      "category": "test",
+      "year": "2026",
+      "area": "Apple",
+      "remarks": "HLS",
+      "score": 0,
+      "description": "Apple 官方 HLS 测试流，用于验证猫爪源播放链路（m3u8 自适应码率）。",
+      "sources": [
+        {
+          "name": "默认线路",
+          "episodes": [
+            { "name": "正片", "url": "https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_fmp4/master.m3u8" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "v002",
+      "title": "Sintel 开源短片",
+      "cover": null,
+      "category": "demo",
+      "year": "2010",
+      "area": "Blender",
+      "remarks": "MP4",
+      "score": 7.9,
+      "actors": "Halina Reijn",
+      "director": "Colin Levy",
+      "description": "Blender 基金会开源动画短片，MP4 直链播放演示。",
+      "sources": [
+        {
+          "name": "默认线路",
+          "episodes": [
+            { "name": "正片", "url": "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8" }
+          ]
+        }
+      ]
+    }
+  ]
+}
