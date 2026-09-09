@@ -7,8 +7,8 @@ using CommunityToolkit.Mvvm.Input;
 namespace CatClawVideo.Maui.ViewModels;
 
 /// <summary>
-/// 首页 ViewModel：MacCMS 真实源数据（分类 + 影片列表）+ URL 快速播放入口。
-/// 内置量子/非凡双源：加载失败自动切换备用源（量子源连接间歇性不稳，实测有时 SSL/超时）。
+/// 首页 ViewModel：影片数据全部来自订阅源（设置 → 订阅源管理添加），不内置任何源。
+/// 站点仓库见 <see cref="SiteRegistry"/>；仅 type=1 MacCMS 等可播站点参与首页聚合。
 /// </summary>
 public partial class HomeViewModel : ObservableObject
 {
@@ -18,18 +18,11 @@ public partial class HomeViewModel : ObservableObject
     public const string TestStreamUrl =
         "https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_fmp4/master.m3u8";
 
-    /// <summary>内置双源（按优先级排序，失败自动切换）</summary>
-    private static readonly VodSiteInfo[] BuiltinSites =
-    [
-        new() { Key = "liangzi", Name = "量子资源", Api = "https://cj.lziapi.com/api.php/provide/vod", Type = 1, Playable = true },
-        new() { Key = "feifan", Name = "非凡资源", Api = "http://cj.ffzyapi.com/api.php/provide/vod", Type = 1, Playable = true },
-    ];
-
-    /// <summary>当前生效站点（UI 显示/详情页拉取用）</summary>
-    public VodSiteInfo Site => CurrentSite;
+    /// <summary>当前生效站点（UI 显示/详情页拉取用；无可用源时为 null）</summary>
+    public VodSiteInfo? Site => CurrentSite;
 
     [ObservableProperty]
-    private VodSiteInfo _currentSite = BuiltinSites[0];
+    private VodSiteInfo? _currentSite;
 
     [ObservableProperty]
     private string _urlInput = string.Empty;
@@ -44,6 +37,10 @@ public partial class HomeViewModel : ObservableObject
     [ObservableProperty]
     private string _homeStatus = string.Empty;
 
+    /// <summary>当前选中分类 ID（分类 chip 高亮用；改用 BindableLayout 后由本属性驱动）</summary>
+    [ObservableProperty]
+    private string _selectedCategoryId = string.Empty;
+
     partial void OnUrlInputChanged(string value) => CanPlay = !string.IsNullOrWhiteSpace(value);
 
     public ObservableCollection<VodCategory> Categories { get; } = new();
@@ -52,9 +49,12 @@ public partial class HomeViewModel : ObservableObject
     public HomeViewModel(IVodSourceProvider provider)
     {
         _provider = provider;
+        // 订阅变化后允许首页重新拉一次（常驻页，之前以 Categories.Count>0 跳过）
+        SiteRegistry.Changed += () =>
+            MainThread.BeginInvokeOnMainThread(() => { if (!IsHomeLoading) _ = LoadHomeCommand.ExecuteAsync(null); });
     }
 
-    /// <summary>首页首载：双源 failover 拉分类目录 → 选第一个分类拉列表</summary>
+    /// <summary>首页首载：逐个可用站点拉分类目录，取第一个成功者 → 选第一个分类拉列表</summary>
     [RelayCommand]
     public async Task LoadHomeAsync()
     {
@@ -62,22 +62,31 @@ public partial class HomeViewModel : ObservableObject
         IsHomeLoading = true;
         HomeStatus = "正在加载影片…";
 
-        var cats = new List<VodCategory>();
-        var usedSite = BuiltinSites[0];
-        try
+        var sites = SiteRegistry.Playable.ToList();
+        if (sites.Count == 0)
         {
-            // 双源 failover：量子失败自动切非凡
-            for (int attempt = 0; attempt < BuiltinSites.Length && cats.Count == 0; attempt++)
-            {
-                usedSite = BuiltinSites[attempt];
-                cats = await _provider.GetCategoriesAsync(usedSite);
-            }
+            Categories.Clear();
+            Items.Clear();
+            HomeStatus = "暂无可用影片源，请在 设置 → 源配置 添加订阅";
+            IsHomeLoading = false;
+            return;
         }
-        catch { }
 
-        if (cats.Count == 0)
+        var cats = new List<VodCategory>();
+        VodSiteInfo? usedSite = null;
+        foreach (var site in sites)
         {
-            HomeStatus = "所有影视源加载失败，请检查网络后重进页面";
+            try
+            {
+                cats = await _provider.GetCategoriesAsync(site);
+                if (cats.Count > 0) { usedSite = site; break; }
+            }
+            catch { }
+        }
+
+        if (usedSite == null)
+        {
+            HomeStatus = "订阅站点均拉取失败，请检查网络或在源配置中更换订阅";
             IsHomeLoading = false;
             return;
         }
@@ -90,37 +99,27 @@ public partial class HomeViewModel : ObservableObject
         await SelectCategoryAsync(cats[0]);
     }
 
-    /// <summary>切换分类并拉取第一页影片（当前源失败自动切备用源重试一次）</summary>
+    /// <summary>切换分类并拉取第一页影片（仅当前站点）</summary>
     [RelayCommand]
     public async Task SelectCategoryAsync(VodCategory? category)
     {
         if (category == null) return;
+        SelectedCategoryId = category.Id;
         IsHomeLoading = true;
         HomeStatus = $"正在加载「{category.Name}」…";
         Items.Clear();
 
         var items = new List<VodItem>();
-        var failed = new List<string>();
-        for (int attempt = 0; attempt < BuiltinSites.Length && items.Count == 0; attempt++)
+        if (CurrentSite != null)
         {
-            var site = attempt == 0
-                ? CurrentSite
-                : BuiltinSites.First(s => s.Key != CurrentSite.Key);
-            if (failed.Contains(site.Name)) continue;
-            try
-            {
-                items = await _provider.GetItemsAsync(site, category, 1);
-                if (items.Count == 0) failed.Add(site.Name);
-                else CurrentSite = site;
-            }
-            catch { failed.Add(site.Name); }
+            try { items = await _provider.GetItemsAsync(CurrentSite, category, 1); }
+            catch { }
         }
 
         foreach (var it in items) Items.Add(it);
-        OnPropertyChanged(nameof(Site));
         HomeStatus = Items.Count == 0
-            ? $"暂无影片（{string.Join("、", failed)} 均无数据）"
-            : $"{CurrentSite.Name} · {category.Name} · 共 {Items.Count} 部";
+            ? $"{CurrentSite?.Name ?? "当前源"} · {category.Name} · 暂无影片"
+            : $"{CurrentSite!.Name} · {category.Name} · 共 {Items.Count} 部";
         IsHomeLoading = false;
     }
 
