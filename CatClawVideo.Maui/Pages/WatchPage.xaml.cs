@@ -52,6 +52,20 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         DescLabel.Text = _item.Description is { Length: > 0 } descText
             ? CleanDesc(descText)
             : "暂无简介";
+
+        // 简介排版诊断（临时）：记录原始/清洗后文本的不可见字符分布，定位空隙根因后移除
+        try
+        {
+            var dir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CatClawVideo");
+            Directory.CreateDirectory(dir);
+            var raw = _item.Description ?? "";
+            var odd = string.Concat(raw.Where(c => c == '\n' || c == '\r' || c == '\u00a0' || c == '\u3000' || c == '\u200b' || c == '\ufeff')
+                .Select(c => $"U+{(int)c:X4} "));
+            File.WriteAllText(System.IO.Path.Combine(dir, "desc-debug.log"),
+                $"[{DateTime.Now:HH:mm:ss}] 原始长度={raw.Length} 清洗后长度={DescLabel.Text.Length} 特殊字符=[{odd}]\n" +
+                $"原始前200(转义)={System.Text.RegularExpressions.Regex.Escape(raw.Length > 200 ? raw[..200] : raw)}\n");
+        }
+        catch { }
     }
 
     /// <summary>布局完成按播放器实际宽度设置 16:9 高度（窗口缩放自适应）</summary>
