@@ -6,7 +6,8 @@ namespace CatClawVideo.Core.Providers;
 
 /// <summary>
 /// TVBox / 影视仓订阅解析器（明文 JSON 配置），带 okhttp UA（防直连源按 UA 发配置）。
-/// 图片响应（饭太硬 /tv）自动提取图片尾部的 base64 隐写配置。
+/// 加密源三重解密通道：图片尾部隐写提取（饭太硬 /tv）、饭太硬官方解密接口
+/// （饭太硬.net/jm/jiemi.php，2423 前缀密文等）、明文直读。
 /// 站点类型映射：type 1 = MacCMS json（MacCmsJsonProvider 可播）、0 = xml（暂不支持）、
 /// 3 = spider 爬虫源，再按 api 细分为：
 ///   · csp_Xxx    → Java jar/dex 爬虫（依赖订阅全局 spider 或站点自带 jar）
@@ -52,6 +53,18 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
         else
         {
             text = System.Text.Encoding.UTF8.GetString(bytes);
+        }
+
+        // 加密/混淆配置（非 JSON 开头，如 2423 前缀密文）：回退饭太硬官方解密接口取明文
+        var probe = text.TrimStart();
+        if (!probe.StartsWith('{') && !probe.StartsWith('['))
+        {
+            var decrypted = await TryOfficialDecryptAsync(subscriptionUrl, ct);
+            if (decrypted is null)
+                throw new NotSupportedException(
+                    "该订阅返回的是加密/混淆配置，且官方解密通道不可用。\n" +
+                    "可改用明文 TVBox json 或 MacCMS 直连地址。");
+            text = decrypted;
         }
 
         var sites = await ParseConfigTextAsync(text, subscriptionName: new Uri(subscriptionUrl).Host, ct);
@@ -246,6 +259,30 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
         return (bytes[0] == 0xFF && bytes[1] == 0xD8) ||
                (bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47) ||
                (bytes[0] == 0x42 && bytes[1] == 0x4D);
+    }
+
+    /// <summary>
+    /// 饭太硬官方解密通道（饭太硬.net/jm）：GET jiemi.php?url=&lt;订阅地址&gt;，
+    /// 返回「// 注释头 + 明文 JSON」。订阅为加密配置（2423 前缀密文等）时作为回退通道；
+    /// 解密失败或结果仍非 JSON 返回 null。
+    /// </summary>
+    private static async Task<string?> TryOfficialDecryptAsync(string subscriptionUrl, CancellationToken ct)
+    {
+        try
+        {
+            var jm = "http://www.xn--sss604efuw.net/jm/jiemi.php?url=" + Uri.EscapeDataString(subscriptionUrl);
+            using var resp = await Http.GetAsync(jm, ct);
+            resp.EnsureSuccessStatusCode();
+            var text = await resp.Content.ReadAsStringAsync(ct);
+            var idx = text.IndexOf('{');
+            if (idx < 0) return null;
+            var json = text[idx..].TrimStart();
+            return json.StartsWith('{') || json.StartsWith('[') ? json : null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>
