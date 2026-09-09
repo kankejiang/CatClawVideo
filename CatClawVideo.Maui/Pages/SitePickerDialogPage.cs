@@ -5,11 +5,13 @@ namespace CatClawVideo.Maui.Pages;
 /// <summary>
 /// 首页数据源选择弹窗（参考影视仓「请选择首页数据源」）：
 /// 半透明遮罩 + 居中卡片，两列站点按钮，当前站点主题色描边高亮；
+/// 切换失败过的站点置灰标注「不可用」（仍可点击重试）；
 /// 点击站点回调 onSelected 并关闭。
 /// </summary>
 public partial class SitePickerDialogPage : ContentPage
 {
-    public SitePickerDialogPage(IEnumerable<VodSiteInfo> sites, string? currentKey, Action<VodSiteInfo> onSelected)
+    public SitePickerDialogPage(IEnumerable<VodSiteInfo> sites, string? currentKey,
+        Action<VodSiteInfo> onSelected, IReadOnlySet<string>? failedKeys = null)
     {
         BackgroundColor = Color.FromArgb("#B3000000");
 
@@ -52,6 +54,7 @@ public partial class SitePickerDialogPage : ContentPage
         {
             var site = list[i];
             bool current = site.Key == currentKey;
+            bool failed = failedKeys?.Contains(site.Key) == true;
 
             var btn = new Border
             {
@@ -60,15 +63,18 @@ public partial class SitePickerDialogPage : ContentPage
                 StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 10 },
                 BackgroundColor = (Color)res["ChipInactiveColor"],
                 Padding = new Thickness(10, 12),
+                Opacity = failed ? 0.55 : 1,
             };
             btn.Content = new Label
             {
-                Text = site.Name,
+                Text = failed ? site.Name + "（不可用）" : site.Name,
                 FontSize = 13.5,
                 MaxLines = 1,
                 LineBreakMode = LineBreakMode.TailTruncation,
                 HorizontalTextAlignment = TextAlignment.Center,
-                TextColor = current ? (Color)res["PrimaryColor"] : (Color)res["TextPrimaryColor"],
+                TextColor = current ? (Color)res["PrimaryColor"]
+                    : failed ? (Color)res["TextHintColor"]
+                    : (Color)res["TextPrimaryColor"],
             };
 
             var tap = new TapGestureRecognizer();

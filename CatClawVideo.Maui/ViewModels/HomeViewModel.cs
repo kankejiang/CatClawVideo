@@ -30,6 +30,9 @@ public partial class HomeViewModel : ObservableObject
     /// <summary>用户首选站点 Key（Preferences 持久记忆，跨启动生效）</summary>
     private const string PreferredSiteKey = "home_preferred_site";
 
+    /// <summary>本会话内切换失败过的站点（弹窗置灰标注；重试成功会移除）</summary>
+    public HashSet<string> FailedSites { get; } = new();
+
     [ObservableProperty]
     private VodSiteInfo? _currentSite;
 
@@ -124,7 +127,10 @@ public partial class HomeViewModel : ObservableObject
         await SelectCategoryAsync(cats[0]);
     }
 
-    /// <summary>切换首页数据源（数据源弹窗选择后）：记忆首选 → 清空当前 → 重载分类与列表</summary>
+    /// <summary>
+    /// 切换首页数据源（数据源弹窗选择后）：记忆首选 → 清空当前 → 直接加载所选站点。
+    /// 失败不静默回退（回退会让用户以为切换无效），停在所选站点并给出具体原因。
+    /// </summary>
     [RelayCommand]
     public async Task SelectSiteAsync(VodSiteInfo? site)
     {
@@ -138,8 +144,33 @@ public partial class HomeViewModel : ObservableObject
         OnPropertyChanged(nameof(Site));
         OnPropertyChanged(nameof(SiteDisplayName));
 
-        IsHomeLoading = false; // 复位后 LoadHome 可重入
-        await LoadHomeAsync();
+        IsHomeLoading = true;
+        HomeStatus = $"正在切换到「{site.Name}」…";
+
+        List<VodCategory> cats;
+        try
+        {
+            cats = await _provider.GetCategoriesAsync(site);
+            if (cats.Count == 0)
+            {
+                FailedSites.Add(site.Key);
+                HomeStatus = $"「{site.Name}」未返回分类，该站点可能不可用";
+                IsHomeLoading = false;
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            FailedSites.Add(site.Key);
+            var reason = ex is NotSupportedException ? ex.Message : $"拉取失败：{ex.Message}";
+            HomeStatus = $"「{site.Name}」不可用 · {reason}";
+            IsHomeLoading = false;
+            return;
+        }
+
+        FailedSites.Remove(site.Key);
+        foreach (var c in cats) Categories.Add(c);
+        await SelectCategoryAsync(cats[0]);
     }
 
     /// <summary>切换分类并拉取第一页影片（仅当前站点）</summary>

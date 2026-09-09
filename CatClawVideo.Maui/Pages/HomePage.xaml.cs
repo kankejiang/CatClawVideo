@@ -39,7 +39,8 @@ public partial class HomePage : ContentView, ITabView
             return;
         }
         var dialog = new SitePickerDialogPage(sites, _vm.Site?.Key,
-            site => MainThread.BeginInvokeOnMainThread(() => _ = _vm.SelectSiteCommand.ExecuteAsync(site)));
+            site => MainThread.BeginInvokeOnMainThread(() => _ = _vm.SelectSiteCommand.ExecuteAsync(site)),
+            _vm.FailedSites);
         await Shell.Current.Navigation.PushModalAsync(dialog);
     }
 
