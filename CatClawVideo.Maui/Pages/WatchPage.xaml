@@ -26,16 +26,20 @@
                         CornerRadius="8" Padding="12,5" Clicked="OnPlayFullClicked" />
             </Grid>
 
-            <!-- 上区：小窗播放器（58%）+ 信息面板（42%） -->
-            <Grid ColumnDefinitions="58*,42*" ColumnSpacing="18">
+            <!-- ═══ 主区：播放器 + 右侧选集栏（主流播放器形态） ═══ -->
+            <Grid ColumnDefinitions="*,300" ColumnSpacing="16">
 
-                <!-- 小窗播放器（16:9，高度随宽度自适应）+ 控制条 -->
+                <!-- 播放器（16:9 高度随宽自适应）+ 线路芯片 + 控制条 -->
                 <Border Grid.Column="0" StrokeThickness="0" StrokeShape="RoundRectangle 12" BackgroundColor="Black"
                         VerticalOptions="Start">
                     <Grid x:Name="PlayerHost" HeightRequest="340">
                         <controls:VideoPlayerView x:Name="Player"
                                                   Aspect="AspectFit"
                                                   ShouldKeepScreenOn="True" />
+
+                        <!-- 线路芯片（左上角内嵌） -->
+                        <HorizontalStackLayout x:Name="LinesHost" Spacing="6"
+                                               Margin="12,10,12,0" VerticalOptions="Start" />
 
                         <Grid x:Name="BufferingIndicator" IsVisible="False">
                             <ActivityIndicator IsRunning="True" Color="{DynamicResource PrimaryColor}"
@@ -75,46 +79,71 @@
                     </Grid>
                 </Border>
 
-                <!-- 信息面板 -->
-                <VerticalStackLayout Grid.Column="1" Spacing="0">
-                    <Label x:Name="TitleLabel" FontSize="21" FontFamily="OpenSansSemibold"
-                           LineBreakMode="TailTruncation" MaxLines="2"
-                           TextColor="{DynamicResource TextPrimaryColor}" />
-                    <Label x:Name="MetaLabel" FontSize="12.5" Margin="0,8,0,0"
-                           TextColor="{DynamicResource TextSecondaryColor}" />
-                    <Label x:Name="DescLabel" FontSize="12.5"
-                           LineBreakMode="WordWrap"
-                           TextColor="{DynamicResource TextSecondaryColor}" />
-                    <Label Text="播放线路" FontSize="13.5" FontFamily="OpenSansSemibold" Margin="0,16,0,0"
-                           TextColor="{DynamicResource TextPrimaryColor}" />
-                    <HorizontalStackLayout x:Name="LinesHost" Spacing="8" Margin="0,8,0,0" />
-                    <HorizontalStackLayout Spacing="10" Margin="0,14,0,0">
-                        <Button Text="♥ 收藏" FontSize="12.5"
-                                TextColor="{DynamicResource TextPrimaryColor}"
-                                BackgroundColor="{DynamicResource ChipInactiveColor}"
-                                CornerRadius="8" Padding="16,7" />
-                    </HorizontalStackLayout>
-                </VerticalStackLayout>
+                <!-- 右侧选集栏（与播放器等高，内部滚动） -->
+                <Border Grid.Column="1" StrokeThickness="0" StrokeShape="RoundRectangle 14"
+                        BackgroundColor="{DynamicResource CardBackgroundColor}"
+                        VerticalOptions="Fill" Padding="0">
+                    <Grid RowDefinitions="Auto,Auto,*" Padding="0">
+                        <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Padding="14,12,14,0">
+                            <Label Grid.Column="0" Text="选集" FontSize="14" FontFamily="OpenSansSemibold"
+                                   TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
+                            <Label Grid.Column="1" x:Name="EpisodeCountLabel" FontSize="11"
+                                   TextColor="{DynamicResource TextHintColor}" VerticalOptions="Center" />
+                        </Grid>
+                        <ScrollView Grid.Row="1" Padding="10,8,10,12">
+                            <VerticalStackLayout x:Name="EpisodeListHost" Spacing="4" />
+                        </ScrollView>
+                    </Grid>
+                </Border>
             </Grid>
 
-            <!-- 选集 -->
-            <Label Text="选集" FontSize="13.5" FontFamily="OpenSansSemibold" Margin="0,10,0,0"
-                   TextColor="{DynamicResource TextPrimaryColor}" />
-            <CollectionView x:Name="EpisodeGrid" SelectionMode="Single">
-                <CollectionView.ItemsLayout>
-                    <GridItemsLayout Orientation="Vertical" Span="9" VerticalItemSpacing="8" HorizontalItemSpacing="8" />
-                </CollectionView.ItemsLayout>
-                <CollectionView.ItemTemplate>
-                    <DataTemplate>
-                        <Border StrokeThickness="0" StrokeShape="RoundRectangle 8"
-                                BackgroundColor="{DynamicResource ChipInactiveColor}" Padding="0,8">
-                            <Label Text="{Binding Name}" FontSize="12" HorizontalTextAlignment="Center"
-                                   MaxLines="1" LineBreakMode="TailTruncation"
-                                   TextColor="{DynamicResource TextSecondaryColor}" />
-                        </Border>
-                    </DataTemplate>
-                </CollectionView.ItemTemplate>
-            </CollectionView>
+            <!-- ═══ 信息区（播放器下方全宽） ═══ -->
+            <Grid RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="0" Padding="0,2,0,0">
+                <!-- 标题行：片名 + 徽章 + 操作 -->
+                <Grid Grid.Row="0" ColumnDefinitions="Auto,Auto,Auto,Auto,*,Auto,Auto" ColumnSpacing="10">
+                    <Label Grid.Column="0" x:Name="TitleLabel" FontSize="20" FontFamily="OpenSansSemibold"
+                           LineBreakMode="TailTruncation" MaxLines="1"
+                           TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
+                    <Border Grid.Column="1" x:Name="RemarksBadge" StrokeThickness="0" StrokeShape="RoundRectangle 6"
+                            BackgroundColor="{DynamicResource ChipInactiveColor}" Padding="8,3" IsVisible="False"
+                            VerticalOptions="Center">
+                        <Label x:Name="RemarksBadgeLabel" FontSize="11" TextColor="#FFD76E" />
+                    </Border>
+                    <Border Grid.Column="2" x:Name="YearBadge" StrokeThickness="0" StrokeShape="RoundRectangle 6"
+                            BackgroundColor="{DynamicResource ChipInactiveColor}" Padding="8,3" IsVisible="False"
+                            VerticalOptions="Center">
+                        <Label x:Name="YearBadgeLabel" FontSize="11" TextColor="{DynamicResource TextSecondaryColor}" />
+                    </Border>
+                    <Border Grid.Column="3" x:Name="CategoryBadge" StrokeThickness="0" StrokeShape="RoundRectangle 6"
+                            BackgroundColor="{DynamicResource ChipInactiveColor}" Padding="8,3" IsVisible="False"
+                            VerticalOptions="Center">
+                        <Label x:Name="CategoryBadgeLabel" FontSize="11" TextColor="{DynamicResource TextSecondaryColor}" />
+                    </Border>
+                    <Button Grid.Column="5" Text="♥ 收藏" FontSize="12.5"
+                            TextColor="{DynamicResource TextPrimaryColor}"
+                            BackgroundColor="{DynamicResource ChipInactiveColor}"
+                            CornerRadius="8" Padding="16,7" Clicked="OnFavoriteClicked" />
+                    <Button Grid.Column="6" Text="⇪ 分享" FontSize="12.5"
+                            TextColor="{DynamicResource TextPrimaryColor}"
+                            BackgroundColor="{DynamicResource ChipInactiveColor}"
+                            CornerRadius="8" Padding="16,7" Clicked="OnShareClicked" />
+                </Grid>
+
+                <!-- 元数据行 -->
+                <Label Grid.Row="1" x:Name="MetaLabel" FontSize="12" Margin="0,8,0,0"
+                       TextColor="{DynamicResource TextHintColor}" />
+
+                <!-- 简介（两行截断 + 展开） -->
+                <Label Grid.Row="2" x:Name="DescLabel" FontSize="12.5" Margin="0,10,0,0"
+                       LineBreakMode="WordWrap" MaxLines="2"
+                       TextColor="{DynamicResource TextSecondaryColor}" />
+                <Label Grid.Row="3" x:Name="DescToggle" Text="展开 ▾" FontSize="12"
+                       TextColor="{DynamicResource PrimaryColor}" Margin="0,6,0,0" IsVisible="False">
+                    <Label.GestureRecognizers>
+                        <TapGestureRecognizer Tapped="OnDescToggleTapped" />
+                    </Label.GestureRecognizers>
+                </Label>
+            </Grid>
 
             <!-- 相关推荐占位（接入推荐接口后填充） -->
             <Label Text="相关推荐随后续推荐接口上线" FontSize="11" Margin="0,14,0,0"
