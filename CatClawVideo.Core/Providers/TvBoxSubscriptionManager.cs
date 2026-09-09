@@ -5,7 +5,8 @@ using CatClawVideo.Core.Models;
 namespace CatClawVideo.Core.Providers;
 
 /// <summary>
-/// TVBox / 影视仓订阅解析器（明文 JSON 配置）。
+/// TVBox / 影视仓订阅解析器（明文 JSON 配置），带 okhttp UA（防直连源按 UA 发配置）。
+/// 图片响应（饭太硬 /tv）自动提取图片尾部的 base64 隐写配置。
 /// 站点类型映射：type 1 = MacCMS json（MacCmsJsonProvider 可播）、0 = xml（暂不支持）、
 /// 3 = spider 爬虫源，再按 api 细分为：
 ///   · csp_Xxx    → Java jar/dex 爬虫（依赖订阅全局 spider 或站点自带 jar）
@@ -15,7 +16,18 @@ namespace CatClawVideo.Core.Providers;
 /// </summary>
 public class TvBoxSubscriptionManager : ISubscriptionManager
 {
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(15) };
+    private static readonly HttpClient Http = CreateHttp();
+
+    /// <summary>
+    /// 饭太硬等防直连源按 UA 区分响应：无 UA → 302 跳 HTML 页面；
+    /// okhttp/4.x（TVBox/影视仓标准 UA）→ 返回带隐写配置的图片。
+    /// </summary>
+    private static HttpClient CreateHttp()
+    {
+        var client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("okhttp/4.x");
+        return client;
+    }
 
     public async Task<List<VodSiteInfo>> LoadSubscriptionAsync(string subscriptionUrl, CancellationToken ct = default)
     {
