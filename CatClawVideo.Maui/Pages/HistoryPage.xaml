@@ -5,17 +5,40 @@
              BackgroundColor="Transparent">
 
     <!-- 根用 Grid：海报墙占 * 行获得有界高度（内部滚动 + 虚拟化） -->
-    <Grid RowDefinitions="Auto,*" Padding="24,16,24,20" RowSpacing="12">
+    <Grid RowDefinitions="Auto,Auto,*" Padding="24,16,24,20" RowSpacing="12">
 
-        <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
+        <!-- 勾选删除模式顶栏（进入删除模式才显示） -->
+        <Grid Grid.Row="0" x:Name="SelectBar" ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10"
+              IsVisible="False">
+            <Label Grid.Column="0" x:Name="SelectCountLabel" Text="已选 0 项" FontSize="13"
+                   FontFamily="OpenSansSemibold" TextColor="{DynamicResource TextPrimaryColor}"
+                   VerticalOptions="Center" />
+            <Button Grid.Column="2" x:Name="ConfirmDeleteButton" Text="确定删除" FontSize="11.5"
+                    HeightRequest="30" CornerRadius="15" Padding="14,0"
+                    BackgroundColor="{DynamicResource PrimaryColor}" TextColor="White"
+                    Clicked="OnConfirmDeleteClicked" />
+            <Button Grid.Column="3" x:Name="CancelDeleteButton" Text="取消" FontSize="11.5"
+                    HeightRequest="30" CornerRadius="15" Padding="14,0"
+                    BackgroundColor="{DynamicResource ChipInactiveColor}"
+                    TextColor="{DynamicResource TextSecondaryColor}"
+                    Clicked="OnCancelDeleteClicked" />
+        </Grid>
+
+        <!-- 页头：标题 + 提示 + 删除入口 -->
+        <Grid Grid.Row="1" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="10">
             <Label Grid.Column="0" Text="播放历史" FontSize="17" FontFamily="OpenSansSemibold"
                    TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
-            <Label Grid.Column="1" Text="最近 50 条 · 点击续看" FontSize="11"
+            <Label Grid.Column="1" x:Name="HeaderHint" Text="最近 50 条 · 点击续看" FontSize="11"
                    TextColor="{DynamicResource TextHintColor}" VerticalOptions="Center" />
+            <Button Grid.Column="2" x:Name="DeleteEntryButton" Text="删除" FontSize="11.5"
+                    HeightRequest="30" CornerRadius="15" Padding="14,0"
+                    BackgroundColor="{DynamicResource ChipInactiveColor}"
+                    TextColor="{DynamicResource TextSecondaryColor}"
+                    Clicked="OnDeleteModeClicked" />
         </Grid>
 
         <!-- 海报墙（真数据：播放历史，无封面时猫爪前景图标占位） -->
-        <CollectionView Grid.Row="1" x:Name="Wall" SelectionMode="Single"
+        <CollectionView Grid.Row="2" x:Name="Wall" SelectionMode="Single"
                         SelectionChanged="OnCardSelected">
             <CollectionView.ItemsLayout>
                 <GridItemsLayout Orientation="Vertical" Span="6" VerticalItemSpacing="16" HorizontalItemSpacing="14" />
@@ -36,6 +59,21 @@
                                         </DataTrigger>
                                     </Image.Triggers>
                                 </Image>
+                                <!-- 勾选圈（删除模式显示，勾选后实心） -->
+                                <Border x:Name="CheckCircle" WidthRequest="26" HeightRequest="26"
+                                        HorizontalOptions="Start" VerticalOptions="Start" Margin="8,8,0,0"
+                                        BackgroundColor="#99000000" StrokeThickness="2" Stroke="#CCFFFFFF"
+                                        StrokeShape="RoundRectangle 13"
+                                        IsVisible="{Binding SelectMode}">
+                                    <Border.Triggers>
+                                        <DataTrigger TargetType="Border" Binding="{Binding IsSelected}" Value="True">
+                                            <Setter Property="BackgroundColor" Value="{DynamicResource PrimaryColor}" />
+                                        </DataTrigger>
+                                    </Border.Triggers>
+                                    <Label Text="✓" FontSize="15" TextColor="White" FontFamily="OpenSansSemibold"
+                                           HorizontalOptions="Center" VerticalOptions="Center"
+                                           IsVisible="{Binding IsSelected}" />
+                                </Border>
                                 <Border HorizontalOptions="End" VerticalOptions="Start" Margin="0,7,7,0"
                                         StrokeThickness="0" BackgroundColor="#80000000" StrokeShape="RoundRectangle 8" Padding="6,1"
                                         IsVisible="{Binding HasRemark}">
@@ -54,7 +92,7 @@
             </CollectionView.ItemTemplate>
         </CollectionView>
 
-        <Label Grid.Row="1" x:Name="HistoryEmpty"
+        <Label Grid.Row="2" x:Name="HistoryEmpty"
                Text="暂无播放记录，去首页挑一部影片吧"
                FontSize="13" HorizontalTextAlignment="Center" VerticalOptions="Center"
                TextColor="{DynamicResource TextHintColor}" IsVisible="False" />

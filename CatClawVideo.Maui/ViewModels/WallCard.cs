@@ -1,7 +1,9 @@
+using System.ComponentModel;
+
 namespace CatClawVideo.Maui.ViewModels;
 
 /// <summary>海报墙卡片：历史/收藏共用的展示模型（点击行为由 OnOpen 决定）</summary>
-public sealed class WallCard
+public sealed class WallCard : INotifyPropertyChanged
 {
     public required string Title { get; init; }
     public string? Cover { get; init; }
@@ -14,6 +16,27 @@ public sealed class WallCard
     public bool HasRemark => !string.IsNullOrEmpty(Remark);
 
     public Action OnOpen { get; init; } = static () => { };
+
+    /// <summary>携带的负载（历史页删除模式用来回查数据库 Id）</summary>
+    public object? Tag { get; init; }
+
+    private bool _selectMode;
+    /// <summary>批量删除模式：卡片左上角显示勾选圈</summary>
+    public bool SelectMode
+    {
+        get => _selectMode;
+        set { if (_selectMode == value) return; _selectMode = value; PropertyChanged?.Invoke(this, new(nameof(SelectMode))); }
+    }
+
+    private bool _isSelected;
+    /// <summary>批量删除模式下是否被勾选</summary>
+    public bool IsSelected
+    {
+        get => _isSelected;
+        set { if (_isSelected == value) return; _isSelected = value; PropertyChanged?.Invoke(this, new(nameof(IsSelected))); }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
 }
 
 /// <summary>海报墙分组（CollectionView IsGrouped 头部：最近播放 / 我的收藏）</summary>

@@ -196,6 +196,13 @@ public class VideoDatabase
 
     public Task<int> ClearHistoryAsync() => _db.DeleteAllAsync<PlayHistoryEntry>();
 
+    /// <summary>批量删除播放历史（勾选删除）</summary>
+    public async Task DeleteHistoryAsync(IEnumerable<int> ids)
+    {
+        foreach (var id in ids)
+            await _db.DeleteAsync<PlayHistoryEntry>(id);
+    }
+
     // ══════════════════════ 收藏 ══════════════════════
 
     public Task<List<FavoriteEntry>> GetFavoritesAsync() =>
