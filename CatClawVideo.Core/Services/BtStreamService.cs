@@ -384,39 +384,82 @@ public sealed class BtStreamService : IAsyncDisposable
             var path = Path.Combine(engineCacheDir, "dht_nodes.cache");
             Directory.CreateDirectory(engineCacheDir);
 
-            var nodes = new Dictionary<string, byte[]>(StringComparer.Ordinal);
-            if (File.Exists(path))
-            {
-                var raw = File.ReadAllBytes(path);
-                for (int i = 0; i + 26 <= raw.Length; i += 26)
-                {
-                    var key = NodeKey(raw.AsSpan(i));
-                    if (key != null) nodes[key] = raw[i..(i + 26)];
-                }
-            }
+            var raw = File.Exists(path) ? File.ReadAllBytes(path) : [];
+            var nodes = ParseDhtNodeCache(raw);
 
             int before = nodes.Count;
-            for (int i = 0; i + 26 <= DhtSeedNodes.Length; i += 26)
-            {
-                var key = NodeKey(DhtSeedNodes.AsSpan(i));
-                if (key != null) nodes.TryAdd(key, DhtSeedNodes[i..(i + 26)]);
-            }
+            foreach (var seed in SplitNodes(DhtSeedNodes))
+                nodes.TryAdd(NodeKey(seed), seed);
             if (nodes.Count == before) return;
 
-            var merged = new byte[nodes.Count * 26];
-            int off = 0;
-            foreach (var n in nodes.Values)
-            {
-                Buffer.BlockCopy(n, 0, merged, off, 26);
-                off += 26;
-            }
-            File.WriteAllBytes(path, merged);
+            File.WriteAllBytes(path, EncodeDhtNodeCache(nodes.Values));
             Log($"DHT 节点缓存并入 {nodes.Count - before} 个内置种子（{before} → {nodes.Count} 个节点）");
         }
         catch (Exception ex)
         {
             Log($"播种 DHT 种子节点失败（不影响其他功能）：{ex.Message}");
         }
+    }
+
+    /// <summary>把紧凑节点流按 26 字节切成单节点</summary>
+    private static List<byte[]> SplitNodes(byte[] blob)
+    {
+        var list = new List<byte[]>(blob.Length / 26);
+        for (int i = 0; i + 26 <= blob.Length; i += 26)
+            list.Add(blob[i..(i + 26)]);
+        return list;
+    }
+
+    /// <summary>
+    /// 解析 DHT 节点缓存，<b>两种格式都要兼容</b>：
+    /// <list type="bullet">
+    /// <item>MonoTorrent 自己写回的是 BEncode 列表：<c>l</c> + 若干 <c>26:&lt;节点&gt;</c> + <c>e</c>（实测 2235 字节 = 77 个节点）</item>
+    /// <item>我们播种时写的是纯紧凑流：连续的 26 字节组（260 字节 = 10 个节点）</item>
+    /// </list>
+    /// 早期版本只按 26 字节硬切，遇到 BEncode 文件会切出一堆垃圾节点污染路由表。
+    /// </summary>
+    private static Dictionary<string, byte[]> ParseDhtNodeCache(byte[] raw)
+    {
+        var nodes = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+        if (raw.Length < 26) return nodes;
+
+        if (raw[0] == (byte)'l' && raw[^1] == (byte)'e')
+        {
+            int i = 1;
+            while (i < raw.Length - 1)
+            {
+                int j = i;
+                while (j < raw.Length && raw[j] != (byte)':') j++;
+                if (j >= raw.Length) break;
+                if (!int.TryParse(System.Text.Encoding.ASCII.GetString(raw, i, j - i), out int len) || len != 26) break;
+                int start = j + 1;
+                if (start + 26 > raw.Length) break;
+                var node = raw[start..(start + 26)];
+                nodes[NodeKey(node)] = node;
+                i = start + 26;
+            }
+        }
+        else
+        {
+            foreach (var node in SplitNodes(raw))
+                nodes[NodeKey(node)] = node;
+        }
+        return nodes;
+    }
+
+    /// <summary>编码为 BEncode 列表 —— 与 MonoTorrent 自身写出的格式保持一致</summary>
+    private static byte[] EncodeDhtNodeCache(IEnumerable<byte[]> nodes)
+    {
+        using var ms = new MemoryStream();
+        ms.WriteByte((byte)'l');
+        var prefix = System.Text.Encoding.ASCII.GetBytes("26:");
+        foreach (var n in nodes)
+        {
+            ms.Write(prefix);
+            ms.Write(n);
+        }
+        ms.WriteByte((byte)'e');
+        return ms.ToArray();
     }
 
     /// <summary>紧凑节点（26 字节）→ "ip:port" 去重键；长度不足返回 null</summary>
