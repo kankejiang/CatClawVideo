@@ -308,10 +308,17 @@ public class BitTorrentDownloadService : IDisposable
     }
 
     /// <summary>继续任务</summary>
-    public async Task ResumeAsync(string taskId)
+    /// <summary>
+    /// 恢复已暂停的下载会话。
+    /// 返回 false 表示引擎里已无该任务的 manager（典型场景：App 重启后从持久化恢复的任务），
+    /// 调用方应退回完整重跑路径（重新 AddAsync 并校验已下数据后续传）。
+    /// </summary>
+    public async Task<bool> ResumeAsync(string taskId)
     {
         var m = GetManager(taskId);
-        if (m != null) await m.StartAsync();
+        if (m == null) return false;
+        await m.StartAsync();
+        return true;
     }
 
     /// <summary>移除任务（停止下载并清理会话，已下载文件保留）</summary>

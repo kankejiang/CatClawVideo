@@ -416,11 +416,21 @@ public class DownloadManager : IDisposable
     public void Resume(string id)
     {
         var task = Find(id);
-        if (task == null || task.Status != DownloadStatus.Paused) return;
+        // 磁力任务的 Queued 是"死状态"：它不走并发槽位队列，一旦进入且无人推回
+        // Downloading 就永远卡在"排队中"且三个操作按钮都不显示。
+        // 所以磁力任务允许从 Paused / Queued 两种状态继续（Queued 覆盖 App 重启后
+        // 从持久化恢复的任务——它们的管理器已不存在，必须走完整重跑）。
+        if (task == null) return;
+        if (task.Kind == "magnet")
+        {
+            if (task.Status is not (DownloadStatus.Paused or DownloadStatus.Queued)) return;
+        }
+        else if (task.Status != DownloadStatus.Paused) return;
+
         if (task.Kind == "magnet")
         {
             UpdateTask(task, t => { t.Status = DownloadStatus.Queued; t.IsPaused = false; t.Error = ""; });
-            _ = Bt?.ResumeAsync(id);
+            _ = ResumeMagnetAsync(task);
             return;
         }
         UpdateTask(task, t =>
@@ -430,6 +440,33 @@ public class DownloadManager : IDisposable
             t.Error = "";
         });
         _ = RunAsync(task);
+    }
+
+    /// <summary>
+    /// 磁力任务继续：优先原地恢复引擎会话（保留已连 peer 与校验进度，秒级生效）；
+    /// 引擎里已无该会话（如 App 重启后从持久化恢复）则退回完整重跑（重新 AddAsync，
+    /// 会先校验已下数据再续传）。
+    /// 此前的实现只把状态置为 Queued，而回调只刷字节/速度、无人推回 Downloading，
+    /// 导致任务永远卡在"排队中"且暂停/继续/重试三个按钮全都不显示。
+    /// </summary>
+    private async Task ResumeMagnetAsync(DownloadTaskItem task)
+    {
+        var bt = Bt;
+        if (bt == null)
+        {
+            MarkFailed(task, "磁力下载引擎未初始化");
+            return;
+        }
+
+        var resumed = await bt.ResumeAsync(task.Id);
+        if (resumed)
+        {
+            // 引擎会话还在：manager 已 Start，原有周期回调会继续刷进度，这里只补状态
+            UpdateTask(task, t => { t.Status = DownloadStatus.Downloading; t.Error = ""; });
+            return;
+        }
+
+        await RunMagnetAsync(task, task.Url, task.LocalPath);
     }
 
     /// <summary>取消任务（删除临时文件，任务标记已取消）</summary>
