@@ -436,3 +436,33 @@ HTTP 条目可占满 6 个。UDP 侧保留 8 个槽位，恢复后仍可用。
 
 **诊断提示**：「候选=0 且不再补充」= announce 断供；「候选高、实连低」= 出站被拒
 （第 11 节）。两者修复方向完全不同，先分清再动手。
+
+---
+
+## 13. 排障实录：fast-resume 是「重启后 0 连接」的元凶（2026-09-10 深夜，第 12 节续）
+
+**现象链**：当天所有重启（22:04 / 22:16 / 22:21 / 22:37 / 22:54）之后全部 0 连接、0 候选，
+而**任务首次创建的那次**（21:41，无 fast-resume）却拿到 68~84 个候选。第 12 节修完
+UDP 限流后，应用仍复现 0 连接——排除列表因素后指向 fast-resume。
+
+**决定性对照**（独立 MonoTorrent 3.0.1 对照程序 `diag/btrepro/`）：
+
+| 引擎状态 | 结果 |
+|---|---|
+| 空目录 + 空 cache（无 fast-resume） | 5s **157 候选** → 44 连接 → 1.3MB/s |
+| **应用真实数据目录 + 应用 cache（有 fast-resume）** | **0 候选 / 0 连接**，announce 显示 [Ok] |
+| 应用真实数据 + 删除 `.fresume` 后重启应用 | **65 连接 → 6.7MB/s** → 完成 |
+
+三次实验同一台机器、同一分钟级时间窗，唯一变量就是 fast-resume 文件。
+
+**结论**：MonoTorrent 3.0.1 加载 fast-resume 后，manager 的 announce 虽然"成功"（[Ok]），
+但**不请求/不接纳 peer**（Peers.Available 恒 0）。首次创建任务（无 fast-resume）时
+一切正常；一旦重启走 fast-resume，peer 发现就静默失效。
+
+**临时处置**（本次已用）：删除 `btcache/engine/fastresume/<infoHash>.fresume` 重启，
+manager 走全量校验（4.5GB 约 1~2 分钟）后 peer 正常到位。
+
+**待修（结构性）**：下载中若持续 N 分钟 `state=Downloading && Peers.Available==0 &&
+OpenConnections==0`，自动删除对应 `.fresume` 并按 infoHash 清扫重加（复用
+`ForceRemoveStaleManagersAsync` 路径），把这次的人工处置变成自动自愈。
+另可评估升级 MonoTorrent（NuGet 缓存里有 3.9.0-alpha）验证是否已修。
