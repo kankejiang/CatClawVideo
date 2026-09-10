@@ -294,3 +294,50 @@ manager = await _engine.AddAsync(link, saveDir, torrentSettings);
 **诊断要点（新增）**：判断「下载不动」时**不要只看 state**。
 `state=Downloading` + `实连` 很少（≤4）+ `候选` 从上百衰减到 0 + `已下 0 字节`
 = manager 根本没在干活，优先怀疑 **TorrentSettings 没传/传错**，而不是网络。
+
+---
+
+## 10. 排障实录：端口冲突导致 BT/DHT 完全失效（2026-09-10 已修复，真正的元凶）
+
+**症状**：前面几节都修完后，磁力仍然「完全没有速度」——`state=Downloading`、
+`候选 peer=0`、DHT 永远 0 节点，流式会话永久卡在「等待 metadata…」直到超时。
+
+**根因**：`bt-settings.json` 里配了
+
+```json
+"BtListenPort": 21301,
+"DhtListenPort": 26701
+```
+
+而这两个端口**被 Motrix 的 aria2c 占用**（`netstat -ano` 确认 TCP 21301 / UDP 26701
+均属 aria2c）。MonoTorrent 在监听端口绑定失败时**不会报错**，引擎照常报「就绪」，但：
+
+- BT 监听失效 → 无法接受任何入站 peer 连接
+- DHT 端口绑定失败 → DHT 直接失效
+- 出站 tracker announce 也凑不出可用 peer → `Peers.Available` 恒为 0
+
+**为什么一直没怀疑到端口**：排障用的那两个对照程序传的都是 `settings: null`
+（→ 端口 0 = 随机端口），所以它们**永远正常**（候选 178~192、峰值 15.7MB/s），
+于是「应用 vs 对照」的差异被一路归因到 TorrentSettings、saveDir、magnet、
+tracker 源等地方，唯独漏了「端口」这个默认值本身就是隐藏变量。
+**教训：做 A/B 对照时，配置项要逐项对齐，否则默认值会掩盖真因。**
+
+**修复**（`BtStreamService.EnsureEngineAndProxyAsync`）：引擎创建前探测端口可绑定性
+（TCP 用 `TcpListener.Start()` 试绑、UDP 用 `UdpClient` 试绑），被占用则回退端口 0，
+并打印明确日志：
+
+```
+[bt] BT 监听端口 21301 已被其他程序占用，改用随机端口
+[bt] DHT 端口 26701 已被其他程序占用，改用随机端口
+```
+
+**实测效果**：
+
+| | 修复前 | 修复后 |
+|---|---|---|
+| 日志 | 永久停在「等待 metadata…」 | 12 秒「metadata 就绪」 |
+| 会话建立 | 从未成功 | 21 秒 |
+| 数据写入 | 0 字节 | 持续增长 |
+
+**排查提示**：今后遇到「引擎就绪但完全没有 peer」，**先确认设置里的 BT/DHT 端口是否已被
+其他下载器（Motrix / qBittorrent / 迅雷等）占用** —— 这是一个零成本、高命中率的检查。
