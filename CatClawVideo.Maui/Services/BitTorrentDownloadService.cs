@@ -185,7 +185,10 @@ public class BitTorrentDownloadService : IDisposable
                     // 注意：DownloadSpeed 已过时且 :B0 是**二进制**格式（会把 927B/s 打成 1110011111B/s，
                     // 排障时极易误判），统一用 DownloadRate + 默认十进制。
                     if (++tick % 10 == 0)
+                    {
                         Log($"任务 {taskId} state={m.State} 已下={downloaded} 总量={total} 速度={m.Monitor.DownloadRate}B/s 实连={m.OpenConnections} 候选={m.Peers.Available}");
+                        Log(TrackerDiagnostics(m));
+                    }
                     await Task.Delay(500);
                 }
             });
@@ -359,6 +362,38 @@ public class BitTorrentDownloadService : IDisposable
                 _infoHashToTask.Remove(infoHex);
             }
         }
+    }
+
+    /// <summary>
+    /// 诊断：打印 tracker 分层与每个 tracker 的 announce 状态。
+    /// 排障「候选 peer 恒为 0」用 —— 多个 tracker 挤在同一 tier 时 announce 是**串行**的，
+    /// 前面的超时会拖垮整轮（docs 第 6 节的教训）；Status / FailureMessage 直接给出失败原因。
+    /// </summary>
+    private static string TrackerDiagnostics(TorrentManager m)
+    {
+        try
+        {
+            var tiers = m.TrackerManager.Tiers;
+            var sb = new System.Text.StringBuilder($"[诊断] tracker tiers={tiers.Count}");
+            int idx = 0;
+            foreach (var tier in tiers)
+            {
+                if (tier.GetType().GetProperty("Trackers")?.GetValue(tier) is not System.Collections.IEnumerable list)
+                    continue;
+                foreach (var tr in list)
+                {
+                    if (idx++ >= 6) { sb.Append(" …"); break; }
+                    var t = tr.GetType();
+                    var uri = t.GetProperty("Uri")?.GetValue(tr)?.ToString() ?? "?";
+                    var st = t.GetProperty("Status")?.GetValue(tr)?.ToString() ?? "?";
+                    var fm = t.GetProperty("FailureMessage")?.GetValue(tr)?.ToString();
+                    sb.Append($" | {uri} [{st}{(string.IsNullOrEmpty(fm) ? "" : ": " + fm)}]");
+                }
+                if (idx > 6) break;
+            }
+            return sb.ToString();
+        }
+        catch (Exception ex) { return "[诊断] tracker 读取失败：" + ex.Message; }
     }
 
     /// <summary>状态文本映射</summary>

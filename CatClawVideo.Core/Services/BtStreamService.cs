@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net;
+using System.Net.Sockets;
 using MonoTorrent;
 using MonoTorrent.Client;
 
@@ -325,6 +326,22 @@ public sealed class BtStreamService : IAsyncDisposable
 
         var btPort = _settings?.BtListenPort ?? 0;      // 0 = 随机端口
         var dhtPort = _settings?.DhtListenPort ?? 0;
+
+        // ⚠ 端口被别的程序占用时必须回退到随机端口（0）。
+        // 监听端口绑不上时 MonoTorrent 引擎照常报「就绪」，但 BT 无法接受入站连接、DHT 直接失效，
+        // 表现是「state=Downloading 但候选 peer 恒为 0、速度恒为 0」，极难往端口冲突上联想。
+        // 实测 2026-09-10：Motrix(aria2c) 占用 21301/TCP + 26701/UDP —— 恰是 bt-settings.json 里的
+        // BtListenPort/DhtListenPort —— 猫爪完全无速度；改用端口 0 的对照实验立刻正常（候选 178、15.7MB/s）。
+        if (btPort != 0 && !IsTcpPortFree(btPort))
+        {
+            Log($"BT 监听端口 {btPort} 已被其他程序占用，改用随机端口");
+            btPort = 0;
+        }
+        if (dhtPort != 0 && !IsUdpPortFree(dhtPort))
+        {
+            Log($"DHT 端口 {dhtPort} 已被其他程序占用，改用随机端口");
+            dhtPort = 0;
+        }
         var upnp = _settings?.UpnpNatPmp ?? false;
         var maxConn = _settings?.MaxConnPerServer ?? MaxConnections;
         var uploadLimit = _settings?.UploadLimitBytesPerSec ?? MaxUploadRate;   // 0 = 不限
@@ -361,6 +378,30 @@ public sealed class BtStreamService : IAsyncDisposable
             TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
         Log($"引擎就绪（缓存 {_cacheRoot}，代理端口 {_proxy.Port}）");
         await Task.CompletedTask;
+    }
+
+    /// <summary>TCP 端口是否空闲（能绑定成功即视为空闲）</summary>
+    private static bool IsTcpPortFree(int port)
+    {
+        try
+        {
+            var listener = new TcpListener(IPAddress.Any, port);
+            listener.Start();
+            listener.Stop();
+            return true;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>UDP 端口是否空闲</summary>
+    private static bool IsUdpPortFree(int port)
+    {
+        try
+        {
+            using var udp = new UdpClient(new IPEndPoint(IPAddress.Any, port));
+            return true;
+        }
+        catch { return false; }
     }
 
     /// <summary>
