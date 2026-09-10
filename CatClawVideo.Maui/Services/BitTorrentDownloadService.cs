@@ -85,10 +85,24 @@ public class BitTorrentDownloadService : IDisposable
             _engine = await _bt.GetEngineAsync();
             lock (_lock) Log($"引擎就绪（本服务已托管 {_managers.Count} 个任务）");
 
+            // ⚠⚠ 必须显式传 TorrentSettings，不能用 AddAsync(magnet, saveDir) 的**默认**值。
+            // 实测（2026-09-10，MonoTorrent 3.0.1）：默认 TorrentSettings 下 manager 完全下不动 ——
+            // 连接数恒为 1~4、候选 peer 从 104 一路衰减到 0、已下始终 0 字节，但 state 仍显示
+            // Downloading（极具迷惑性，容易误判成"网络问题"）；同一时刻换成这里的 settings 后
+            // 立刻跑满带宽（13~17 连接 / 峰值 15.7MB/s）。流式路径一直显式传 settings，
+            // 所以只有整包下载会中招。
+            var torrentSettings = new TorrentSettingsBuilder
+            {
+                MaximumConnections = Math.Min(_bt.MaxConnections, 200),
+                UploadSlots = 6,
+                AllowDht = true,
+                AllowPeerExchange = true,
+            }.ToSettings();
+
             TorrentManager manager;
             try
             {
-                manager = await _engine.AddAsync(link, saveDir);
+                manager = await _engine.AddAsync(link, saveDir, torrentSettings);
             }
             catch (Exception ex) when (ex.Message.Contains("already been registered", StringComparison.OrdinalIgnoreCase))
             {
@@ -102,7 +116,7 @@ public class BitTorrentDownloadService : IDisposable
                 Log("AddAsync 注册冲突，按 infoHash 清扫引擎中的残留 manager 后重试");
                 await ForceRemoveStaleManagersAsync(infoHex);
                 await Task.Delay(500);
-                manager = await _engine.AddAsync(link, saveDir);
+                manager = await _engine.AddAsync(link, saveDir, torrentSettings);
             }
             catch (Exception ex)
             {

@@ -95,9 +95,6 @@ public sealed class BtStreamService : IAsyncDisposable
         "AEA078D24FA6E93E167552BF981A1C6F9D13624F729AB8652988" +
         "AC321188F153E8EA14666B210DD79DA10F6BF0AF0E9853971AE5");
 
-    /// <summary>缓存里节点数少于该值就认为「未播种/已失效」，需要补种</summary>
-    private const int DhtSeedThresholdNodes = 8;
-
     /// <summary>tracker 列表供给（可空：空则只用保底列表）</summary>
     private readonly BtTrackerSource? _trackerSource;
 
@@ -367,25 +364,66 @@ public sealed class BtStreamService : IAsyncDisposable
     }
 
     /// <summary>
-    /// 首次运行（或缓存被清空）时把内置种子节点写进 <c>dht_nodes.cache</c>，绕过被 DNS 污染的
-    /// bootstrap 域名让 DHT 能启动。已有足够节点则不动（保留 DHT 自行爬升的结果）。
+    /// 确保 <c>dht_nodes.cache</c> 里有内置种子节点，绕过被 DNS 污染的 bootstrap 域名让 DHT 能启动。
+    /// <para>
+    /// 做法是 <b>并入</b> 而非覆盖：解析现有缓存（26 字节/组 = 20 字节 node-id + 4 字节 IP + 2 字节端口），
+    /// 把内置种子按 IP:端口 去重后合并进去。这样既保住 DHT 自己爬升出来的高质量节点表，
+    /// 又保证每次启动都有种子可用。
+    /// </para>
+    /// <para>
+    /// ⚠ 早期版本只在「缓存为空」时播种，踩了坑：MonoTorrent 退出时会把**当前路由表**写回缓存，
+    /// 一旦某次 DHT 没能爬起来（例如那批节点恰好大面积失效），写回的就是 2 字节空表；
+    /// 但如果残留的是一批**非空但已全死**的节点，长度检查会误判为"够用"而跳过播种 →
+    /// DHT 从此再也起不来。实测 19:00 那次就是这个原因。
+    /// </para>
     /// </summary>
     private void SeedDhtNodeCache(string engineCacheDir)
     {
         try
         {
             var path = Path.Combine(engineCacheDir, "dht_nodes.cache");
-            if (File.Exists(path) && new FileInfo(path).Length >= DhtSeedThresholdNodes * 26L)
-                return;
-
             Directory.CreateDirectory(engineCacheDir);
-            File.WriteAllBytes(path, DhtSeedNodes);
-            Log($"DHT 节点缓存不足，播种 {DhtSeedNodes.Length / 26} 个种子节点（bootstrap 域名在国内被污染，须绕开）");
+
+            var nodes = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+            if (File.Exists(path))
+            {
+                var raw = File.ReadAllBytes(path);
+                for (int i = 0; i + 26 <= raw.Length; i += 26)
+                {
+                    var key = NodeKey(raw.AsSpan(i));
+                    if (key != null) nodes[key] = raw[i..(i + 26)];
+                }
+            }
+
+            int before = nodes.Count;
+            for (int i = 0; i + 26 <= DhtSeedNodes.Length; i += 26)
+            {
+                var key = NodeKey(DhtSeedNodes.AsSpan(i));
+                if (key != null) nodes.TryAdd(key, DhtSeedNodes[i..(i + 26)]);
+            }
+            if (nodes.Count == before) return;
+
+            var merged = new byte[nodes.Count * 26];
+            int off = 0;
+            foreach (var n in nodes.Values)
+            {
+                Buffer.BlockCopy(n, 0, merged, off, 26);
+                off += 26;
+            }
+            File.WriteAllBytes(path, merged);
+            Log($"DHT 节点缓存并入 {nodes.Count - before} 个内置种子（{before} → {nodes.Count} 个节点）");
         }
         catch (Exception ex)
         {
             Log($"播种 DHT 种子节点失败（不影响其他功能）：{ex.Message}");
         }
+    }
+
+    /// <summary>紧凑节点（26 字节）→ "ip:port" 去重键；长度不足返回 null</summary>
+    private static string? NodeKey(ReadOnlySpan<byte> node)
+    {
+        if (node.Length < 26) return null;
+        return $"{node[20]}.{node[21]}.{node[22]}.{node[23]}:{(node[24] << 8) | node[25]}";
     }
 
     /// <summary>获取/复用 manager：新会话注入公共 tracker、启动、等 metadata</summary>
