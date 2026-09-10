@@ -28,10 +28,17 @@ public partial class HistoryPage : ContentView, ITabView
                 // 网页直链/本地播放等无来源记录 → 沿用直接播放（老数据仍可用）
                 var hasSource = !string.IsNullOrEmpty(e.SourceKey) && !string.IsNullOrEmpty(e.ItemId);
                 var posParam = $"&pos={Math.Max(0, (int)e.PositionSeconds)}";
-                var watchQuery = $"watch?sourceKey={Uri.EscapeDataString(e.SourceKey)}&type={e.ItemType}" +
+                // 影片标题 = 「影片 · 集名」去掉集名部分；极端情况退化用集名（标题栏不能为空）
+                var itemTitle = e.Title.Contains(" · ")
+                    ? e.Title.Split(" · ")[0]
+                    : e.Title;
+                if (string.IsNullOrWhiteSpace(itemTitle)) itemTitle = e.EpisodeName;
+                var watchQuery = $"watch?title={Uri.EscapeDataString(itemTitle)}" +
+                    $"&sourceKey={Uri.EscapeDataString(e.SourceKey)}&type={e.ItemType}" +
                     $"&api={Uri.EscapeDataString(e.ItemApi)}&itemId={Uri.EscapeDataString(e.ItemId)}" +
                     (string.IsNullOrEmpty(e.EpisodeName) ? "" : $"&resumeEp={Uri.EscapeDataString(e.EpisodeName)}") +
-                    posParam;
+                    posParam +
+                    (string.IsNullOrEmpty(e.Cover) ? "" : $"&cover={Uri.EscapeDataString(e.Cover)}");
                 var playerQuery = $"player?title={Uri.EscapeDataString(e.Title)}&url={Uri.EscapeDataString(e.Url)}" +
                     posParam +
                     (string.IsNullOrEmpty(e.Cover) ? "" : $"&cover={Uri.EscapeDataString(e.Cover)}");

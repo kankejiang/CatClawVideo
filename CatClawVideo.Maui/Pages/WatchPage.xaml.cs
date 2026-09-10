@@ -92,6 +92,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable
             {
                 var pos = _resumePosition;
                 _resumePosition = 0;
+                _resumeEpisodeName = null;
                 if (Player.Duration == TimeSpan.Zero || pos < Player.Duration.TotalSeconds - 1)
                     Player.Seek(TimeSpan.FromSeconds(pos));
             }
@@ -174,6 +175,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable
             _site.Type = type;
         if (query.TryGetValue("api", out var apiObj) && apiObj is string api) _site.Api = api;
         if (query.TryGetValue("itemId", out var idObj) && idObj is string itemId) _item.Id = itemId;
+        if (query.TryGetValue("cover", out var cv) && cv is string cover && cover.Length > 0) _item.Cover = cover;
         if (query.TryGetValue("year", out var y) && y is string year && year.Length > 0) _item.Year = year;
         if (query.TryGetValue("remarks", out var r) && r is string remarks && remarks.Length > 0) _item.Remarks = remarks;
         if (query.TryGetValue("desc", out var d) && d is string desc && desc.Length > 0) _item.Description = desc;
@@ -375,13 +377,29 @@ public partial class WatchPage : ContentPage, IQueryAttributable
 
         if (source.Episodes.Count > 0)
         {
-            // 播放历史跳转：优先自动选中续看的那一集，否则从第一集开始
+            // 播放历史跳转：只**高亮**上次看的集，不自动播——让用户先看到选集列表，
+            // 点高亮集才续到上次位置（点其它集则作废续看位置，从头播该集）
             var resumeRow = _resumeEpisodeName is { Length: > 0 }
                 ? _episodeRows.FirstOrDefault(r =>
                       string.Equals(r.Name.Trim(), _resumeEpisodeName.Trim(), StringComparison.Ordinal))
                 : null;
-            PlayEpisodeByRow(resumeRow ?? _episodeRows[0]);
-            _resumeEpisodeName = null;
+            if (resumeRow != null)
+            {
+                foreach (var r in _episodeRows) r.IsCurrent = false;
+                resumeRow.IsCurrent = true;
+                _currentEpisodeIndex = resumeRow.Index;
+                int targetPage = resumeRow.Index / EpisodesPerPage;
+                if (targetPage != _episodePage)
+                {
+                    _episodePage = targetPage;
+                    RenderEpisodePage();
+                }
+            }
+            else
+            {
+                PlayEpisodeByRow(_episodeRows[0]);
+                _resumeEpisodeName = null; // 找不到续看集（换线路选集名不同）：作废，避免误 seek
+            }
         }
         else
             _ = ShowTipAsync("该线路暂无选集");
@@ -605,6 +623,14 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     /// <summary>小窗播放指定集：统一走 ResolvePlayUrlAsync（web 源实时解析直链/BT 流式代理）</summary>
     private async Task PlayEpisodeAsync(VodEpisode episode)
     {
+        // 播放历史续看：只有播的正是续看集才应用上次位置；换集则作废
+        if (_resumeEpisodeName is { Length: > 0 } &&
+            !string.Equals(episode.Name.Trim(), _resumeEpisodeName.Trim(), StringComparison.Ordinal))
+        {
+            _resumeEpisodeName = null;
+            _resumePosition = 0;
+        }
+
         _currentEpisode = episode;
         var generation = ++_playGeneration;
         ShowBuffering(true);

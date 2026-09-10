@@ -152,7 +152,8 @@ public partial class SearchPage : ContentPage
                     $"&itemId={Uri.EscapeDataString(item.Id)}" +
                     $"&year={Uri.EscapeDataString(item.Year ?? "")}" +
                     $"&remarks={Uri.EscapeDataString(item.Remarks ?? "")}" +
-                    $"&desc={Uri.EscapeDataString(item.Description ?? "")}";
+                    $"&desc={Uri.EscapeDataString(item.Description ?? "")}" +
+                    $"&cover={Uri.EscapeDataString(item.Cover ?? "")}";
         Shell.Current.GoToAsync(query);
     }
 }

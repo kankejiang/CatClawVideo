@@ -83,7 +83,9 @@ public partial class HomePage : ContentView, ITabView
                     $"&itemId={Uri.EscapeDataString(item.Id)}" +
                     $"&year={Uri.EscapeDataString(item.Year ?? "")}" +
                     $"&remarks={Uri.EscapeDataString(item.Remarks ?? "")}" +
-                    $"&desc={Uri.EscapeDataString(item.Description ?? "")}";
+                    $"&desc={Uri.EscapeDataString(item.Description ?? "")}" +
+                    // 封面透传：观看页不再拉详情，播放历史的海报靠它
+                    $"&cover={Uri.EscapeDataString(item.Cover ?? "")}";
         Shell.Current.GoToAsync(query);
     }
 }

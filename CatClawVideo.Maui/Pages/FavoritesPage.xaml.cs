@@ -74,7 +74,8 @@ public partial class FavoritesPage : ContentView, ITabView
                     $"&itemId={Uri.EscapeDataString(fav.ItemId)}" +
                     $"&year={Uri.EscapeDataString(fav.Year ?? "")}" +
                     $"&remarks={Uri.EscapeDataString(fav.Remarks ?? "")}" +
-                    $"&desc={Uri.EscapeDataString(fav.Description ?? "")}";
+                    $"&desc={Uri.EscapeDataString(fav.Description ?? "")}" +
+                    $"&cover={Uri.EscapeDataString(fav.Cover ?? "")}";
         await Shell.Current.GoToAsync(query);
     }
 
