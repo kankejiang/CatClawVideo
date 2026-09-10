@@ -59,6 +59,45 @@ public sealed class BtStreamService : IAsyncDisposable
     /// </summary>
     public static readonly string[] PublicTrackers = BtTrackerSource.BuiltInFallback;
 
+    /// <summary>
+    /// DHT 种子节点（紧凑格式，每组 26 字节：20 字节 node-id + 4 字节 IP + 2 字节端口）。
+    /// <para>
+    /// ⚠ 为什么必须内置（2026-09-10 实测根因）：MonoTorrent 的 DHT bootstrap 只依赖内置
+    /// router 域名，而国内 <c>router.bittorrent.com</c> 被 DNS 污染（解析到 Facebook 的
+    /// 31.13.x.x，实测 ping 超时）、<c>router.utorrent.com</c> 解析结果在两次查询间会跳变，
+    /// 同样不可达。首次运行时 <c>dht_nodes.cache</c> 为空 → DHT 永远停在
+    /// <c>Initialising/0</c> 再退回 <c>NotReady/0</c> → 只剩 tracker 一条 peer 来源。
+    /// </para>
+    /// <para>
+    /// 症状是「tracker 明明返回上百 peer（实测单个 tracker 就有 192 seeds），metadata 也拿得到，
+    /// 但连接数恒为 1、下载恒为 0」——因为 tracker 列表里混着大量 NAT 后不可达的国内节点，
+    /// 没有 DHT 补充分散节点就凑不出可用连接。对照同一磁力下的 Motrix（DHT 正常）有 556KB/s。
+    /// </para>
+    /// <para>
+    /// 实测收益：播种 10 个节点后 DHT 立即 <c>Ready/67</c> 并自主爬升到 71，
+    /// peer 连接 1 → 34，60 秒内从 0 拉到 43MB（3.44MB/s）。
+    /// </para>
+    /// <para>
+    /// 维护：种子节点会失效，但只需能启动——DHT 起来后自行爬升，MonoTorrent 退出时把扩展后的
+    /// 节点表写回 <c>dht_nodes.cache</c>，之后启动直接受益。仅缓存被清空时才需重新播种。
+    /// 节点取自 <c>dht.transmissionbt.com</c>（该域名未被污染，是少数可用的 bootstrap）。
+    /// </para>
+    /// </summary>
+    private static readonly byte[] DhtSeedNodes = Convert.FromHexString(
+        "475D8E050135DA7D6CC27AD753B3246EC5F9684D73EEC93D246F" +
+        "45E5ADEF173F10F7BA5D0E9EC9FBACF09A29D0980E67483AEA74" +
+        "A6CA8B3F1E97F6A801806BD8D8CDF3600F39D3D06F66B3599B2D" +
+        "A6F610D82AE164713247655D531619C3D760B1057057AEB61AE7" +
+        "A7C5488DEE4970778D3A5D9644E7F7ECAA96985C7052A6371AE7" +
+        "A76B397F82FDC409CAA883F50EBE7474F0A8A8CD762D4212A07B" +
+        "A3B9BA1C39C568D9EB33D3BC167BE0275E41F3FD6528A1A956EF" +
+        "A3A11A85F5792F8E321DBD9562C3CE9E7AC794773DA0F2DE247D" +
+        "AEA078D24FA6E93E167552BF981A1C6F9D13624F729AB8652988" +
+        "AC321188F153E8EA14666B210DD79DA10F6BF0AF0E9853971AE5");
+
+    /// <summary>缓存里节点数少于该值就认为「未播种/已失效」，需要补种</summary>
+    private const int DhtSeedThresholdNodes = 8;
+
     /// <summary>tracker 列表供给（可空：空则只用保底列表）</summary>
     private readonly BtTrackerSource? _trackerSource;
 
@@ -222,7 +261,7 @@ public sealed class BtStreamService : IAsyncDisposable
     /// <summary>BT 实时下载速率（B/s；会话不存在/非 BT 返回 0）</summary>
     public long GetDownloadSpeed(string infoHex) =>
         _sessions.TryGetValue(infoHex, out var s)
-            ? (long?)s.Manager.Monitor.DownloadSpeed ?? 0
+            ? s.Manager.Monitor.DownloadRate
             : 0;
 
     /// <summary>从本地流地址提取 infoHash（非 BT 地址返回 null）</summary>
@@ -295,9 +334,12 @@ public sealed class BtStreamService : IAsyncDisposable
         var downloadLimit = _settings?.DownloadLimitBytesPerSec ?? 0;           // 0 = 不限
         var saveMetadata = _settings?.SaveMagnetMetadata ?? true;
 
+        var engineCacheDir = Path.Combine(_cacheRoot, "engine");
+        SeedDhtNodeCache(engineCacheDir);
+
         var settings = new EngineSettingsBuilder
         {
-            CacheDirectory = Path.Combine(_cacheRoot, "engine"), // fast-resume + DHT 缓存
+            CacheDirectory = engineCacheDir, // fast-resume + DHT 缓存
             DiskCacheBytes = MemoryCacheBytes,
             AutoSaveLoadFastResume = true,
             AutoSaveLoadDhtCache = true,
@@ -322,6 +364,28 @@ public sealed class BtStreamService : IAsyncDisposable
             TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
         Log($"引擎就绪（缓存 {_cacheRoot}，代理端口 {_proxy.Port}）");
         await Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// 首次运行（或缓存被清空）时把内置种子节点写进 <c>dht_nodes.cache</c>，绕过被 DNS 污染的
+    /// bootstrap 域名让 DHT 能启动。已有足够节点则不动（保留 DHT 自行爬升的结果）。
+    /// </summary>
+    private void SeedDhtNodeCache(string engineCacheDir)
+    {
+        try
+        {
+            var path = Path.Combine(engineCacheDir, "dht_nodes.cache");
+            if (File.Exists(path) && new FileInfo(path).Length >= DhtSeedThresholdNodes * 26L)
+                return;
+
+            Directory.CreateDirectory(engineCacheDir);
+            File.WriteAllBytes(path, DhtSeedNodes);
+            Log($"DHT 节点缓存不足，播种 {DhtSeedNodes.Length / 26} 个种子节点（bootstrap 域名在国内被污染，须绕开）");
+        }
+        catch (Exception ex)
+        {
+            Log($"播种 DHT 种子节点失败（不影响其他功能）：{ex.Message}");
+        }
     }
 
     /// <summary>获取/复用 manager：新会话注入公共 tracker、启动、等 metadata</summary>

@@ -92,10 +92,16 @@ public class BitTorrentDownloadService : IDisposable
             }
             catch (Exception ex) when (ex.Message.Contains("already been registered", StringComparison.OrdinalIgnoreCase))
             {
-                // 竞态兜底：Close 与 Add 之间，播放器重试流 URL 可能又把同磁力注册回去 → 再接管一次后重试
-                Log("AddAsync 注册冲突（流式会话竞态），接管后重试一次");
-                await _bt.CloseStreamingSessionAsync(infoHex);
-                await Task.Delay(300);
+                // 共享引擎里同一磁力只能注册一个 manager。冲突来源有两条：
+                //   a) 播放器的流式会话 —— CloseStreamingSessionAsync 能清掉；
+                //   b) 本服务此前留下的下载 manager —— 例如用户在列表里删了任务，
+                //      RemoveAsync 内部 engine.RemoveAsync 静默失败时 manager 仍挂在引擎上，
+                //      而 _managers 已经清空、检测不出占用，于是 AddAsync 必然失败且永远无法恢复
+                //      （实测日志：连续两次「AddAsync 注册冲突」→「already been registered」失败）。
+                // 所以这里做「按 infoHash 彻底清扫」，而不是只关流式会话。
+                Log("AddAsync 注册冲突，按 infoHash 清扫引擎中的残留 manager 后重试");
+                await ForceRemoveStaleManagersAsync(infoHex);
+                await Task.Delay(500);
                 manager = await _engine.AddAsync(link, saveDir);
             }
             catch (Exception ex)
@@ -149,8 +155,10 @@ public class BitTorrentDownloadService : IDisposable
                         m.Monitor.DownloadRate, m.Monitor.UploadRate, m.Monitor.DataBytesUploaded,
                         m.OpenConnections, m.Peers.Seeds, m.Peers.Leechs));
                     // 每 5 秒落一行现场证据（速度/节点/状态），排障"下载不动"
+                    // 注意：DownloadSpeed 已过时且 :B0 是**二进制**格式（会把 927B/s 打成 1110011111B/s，
+                    // 排障时极易误判），统一用 DownloadRate + 默认十进制。
                     if (++tick % 10 == 0)
-                        Log($"任务 {taskId} state={m.State} 已下={downloaded} 总量={total} 速度={m.Monitor.DownloadSpeed:B0}B/s 节点={m.OpenConnections}");
+                        Log($"任务 {taskId} state={m.State} 已下={downloaded} 总量={total} 速度={m.Monitor.DownloadRate}B/s 实连={m.OpenConnections} 候选={m.Peers.Available}");
                     await Task.Delay(500);
                 }
             });
@@ -287,7 +295,43 @@ public class BitTorrentDownloadService : IDisposable
             var kv = _infoHashToTask.FirstOrDefault(p => p.Value == taskId);
             if (!string.IsNullOrEmpty(kv.Key)) _infoHashToTask.Remove(kv.Key);
         }
-        try { await _engine.RemoveAsync(m); } catch { }
+        try { await _engine.RemoveAsync(m); }
+        catch (Exception ex) { Log($"从引擎移除 manager 失败（残留会导致同磁力无法重新入队）：{ex.Message}"); }
+    }
+
+    /// <summary>
+    /// 按 infoHash 彻底清除引擎中该磁力的 manager（流式会话 + 残留下载会话），让 AddAsync 能重新注册。
+    /// 共享引擎同一磁力只允许一个 manager，残留会让重试永久失败
+    /// （"A manager for this torrent has already been registered"）。
+    /// </summary>
+    private async Task ForceRemoveStaleManagersAsync(string infoHex)
+    {
+        // 1) 流式会话（播放器正占用）
+        try { await _bt.CloseStreamingSessionAsync(infoHex); } catch { }
+
+        // 2) 引擎里仍在注册的同磁力 manager（含此前没清干净的下载任务）
+        if (_engine == null) return;
+        foreach (var m in _engine.Torrents.ToList())
+        {
+            string? hex = null;
+            try { hex = m.InfoHashes.V1?.ToHex(); } catch { }
+            if (!string.Equals(hex, infoHex, StringComparison.OrdinalIgnoreCase)) continue;
+
+            Log($"清扫残留 manager {hex![..12]}…（state={m.State}）");
+            try { await m.StopAsync(TimeSpan.FromSeconds(2)); } catch { }
+            try { await _engine.RemoveAsync(m); }
+            catch (Exception ex) { Log($"移除残留 manager 失败：{ex.Message}"); }
+        }
+
+        // 3) 同步本地映射，避免与实际引擎状态脱节
+        lock (_lock)
+        {
+            if (_infoHashToTask.TryGetValue(infoHex, out var staleTask))
+            {
+                _managers.Remove(staleTask);
+                _infoHashToTask.Remove(infoHex);
+            }
+        }
     }
 
     /// <summary>状态文本映射</summary>
