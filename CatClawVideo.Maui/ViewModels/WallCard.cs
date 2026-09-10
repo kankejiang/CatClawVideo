@@ -1,5 +1,7 @@
 using System.ComponentModel;
 
+using System.Collections;
+
 namespace CatClawVideo.Maui.ViewModels;
 
 /// <summary>海报墙卡片：历史/收藏共用的展示模型（点击行为由 OnOpen 决定）</summary>
@@ -39,9 +41,16 @@ public sealed class WallCard : INotifyPropertyChanged
     public event PropertyChangedEventHandler? PropertyChanged;
 }
 
-/// <summary>海报墙分组（CollectionView IsGrouped 头部：最近播放 / 我的收藏）</summary>
-public sealed class WallSection
+/// <summary>
+/// 海报墙分组（CollectionView IsGrouped 头部：最近播放 / 我的收藏）。
+/// ⚠️ 必须实现 IEnumerable&lt;T&gt;：CollectionView 分组直接枚举组对象取条目，
+/// 只暴露 Items 属性的话只渲染组头、组内条目为空（2026-09-10 收藏页踩坑）。
+/// </summary>
+public sealed class WallSection : IEnumerable<WallCard>
 {
     public required string Name { get; init; }
     public required IReadOnlyList<WallCard> Items { get; init; }
+
+    public IEnumerator<WallCard> GetEnumerator() => Items.GetEnumerator();
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 }
