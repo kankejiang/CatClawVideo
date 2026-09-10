@@ -175,8 +175,11 @@ public class BitTorrentDownloadService : IDisposable
                         Log($"metadata 就绪：{m.Files?.Count ?? 0} 个文件，总量 {m.Torrent?.Size ?? 0} 字节");
                     }
                     onProgress(m.Progress);
-                    var downloaded = m.Monitor.DataBytesDownloaded;
                     var total = m.HasMetadata ? m.Torrent!.Size : 0L;
+                    // UI 进度字节数必须按 manager.Progress 折算（含磁盘上已校验的数据）。
+                    // Monitor.DataBytesDownloaded 只是**本次会话**计数器，App 重启即清零——
+                    // 续传中的任务会被显示成"从头下载"（实测 77% 的任务显示 0 B/5.3GB）。
+                    var downloaded = total > 0 ? (long)(m.Progress / 100.0 * total) : 0L;
                     onStats(new Core.Services.BtTaskStats(
                         downloaded, total,
                         m.Monitor.DownloadRate, m.Monitor.UploadRate, m.Monitor.DataBytesUploaded,
