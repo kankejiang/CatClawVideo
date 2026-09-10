@@ -24,13 +24,18 @@ public class VideoPlaybackManager
     public string CurrentItemApi { get; private set; } = string.Empty;
     public string CurrentItemId { get; private set; } = string.Empty;
     public string CurrentEpisodeName { get; private set; } = string.Empty;
+    public string CurrentCategory { get; private set; } = string.Empty;
+    public string CurrentYear { get; private set; } = string.Empty;
+    public string CurrentRemarks { get; private set; } = string.Empty;
+    public string CurrentDescription { get; private set; } = string.Empty;
 
     public VideoPlaybackManager(VideoDatabase db) => _db = db;
 
-    /// <summary>开始一次播放会话（带来源定位：历史卡才能跳回观看页续看）</summary>
+    /// <summary>开始一次播放会话（带来源定位与影片详情：历史卡才能跳回观看页续看并还原信息区）</summary>
     public void BeginSession(string title, string url, string? cover = null,
         string? sourceKey = null, int itemType = 0, string? itemApi = null,
-        string? itemId = null, string? episodeName = null)
+        string? itemId = null, string? episodeName = null,
+        string? category = null, string? year = null, string? remarks = null, string? description = null)
     {
         CurrentTitle = title;
         CurrentUrl = url;
@@ -40,6 +45,10 @@ public class VideoPlaybackManager
         CurrentItemApi = itemApi ?? string.Empty;
         CurrentItemId = itemId ?? string.Empty;
         CurrentEpisodeName = episodeName ?? string.Empty;
+        CurrentCategory = category ?? string.Empty;
+        CurrentYear = year ?? string.Empty;
+        CurrentRemarks = remarks ?? string.Empty;
+        CurrentDescription = description ?? string.Empty;
     }
 
     /// <summary>结束播放会话并记录历史（fire-and-forget，不阻塞页面退出）</summary>
@@ -60,6 +69,10 @@ public class VideoPlaybackManager
             ItemApi = CurrentItemApi,
             ItemId = CurrentItemId,
             EpisodeName = CurrentEpisodeName,
+            Category = CurrentCategory,
+            Year = CurrentYear,
+            Remarks = CurrentRemarks,
+            Description = CurrentDescription,
         };
         var title = CurrentTitle;
         CurrentTitle = string.Empty;
@@ -70,6 +83,10 @@ public class VideoPlaybackManager
         CurrentItemApi = string.Empty;
         CurrentItemId = string.Empty;
         CurrentEpisodeName = string.Empty;
+        CurrentCategory = string.Empty;
+        CurrentYear = string.Empty;
+        CurrentRemarks = string.Empty;
+        CurrentDescription = string.Empty;
         _ = Task.Run(async () =>
         {
             try { await _db.UpsertHistoryAsync(entry); }

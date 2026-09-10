@@ -75,6 +75,13 @@ public class PlayHistoryEntry
 
     /// <summary>集名（用于回跳后自动选中该集，如「第02集」）</summary>
     public string EpisodeName { get; set; } = string.Empty;
+
+    // ── 影片详情字段（跳回观看页时还原完整信息区，与首页进入一致） ──
+
+    public string Category { get; set; } = string.Empty;
+    public string Year { get; set; } = string.Empty;
+    public string Remarks { get; set; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
 }
 
 /// <summary>收藏的影片</summary>
@@ -135,6 +142,12 @@ public class VideoDatabase
         await EnsureColumnAsync(_db, "play_history", "ItemApi", "text");
         await EnsureColumnAsync(_db, "play_history", "ItemId", "text");
         await EnsureColumnAsync(_db, "play_history", "EpisodeName", "text");
+
+        // 播放历史 v3：影片详情列（历史卡跳回观看页时还原完整信息区）
+        await EnsureColumnAsync(_db, "play_history", "Category", "text");
+        await EnsureColumnAsync(_db, "play_history", "Year", "text");
+        await EnsureColumnAsync(_db, "play_history", "Remarks", "text");
+        await EnsureColumnAsync(_db, "play_history", "Description", "text");
 
         // 同影片多集只保留一条历史（清理按「影片 · 集名」分条时期的存量重复）
         await DedupeHistoryAsync();

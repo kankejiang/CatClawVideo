@@ -377,28 +377,19 @@ public partial class WatchPage : ContentPage, IQueryAttributable
 
         if (source.Episodes.Count > 0)
         {
-            // 播放历史跳转：只**高亮**上次看的集，不自动播——让用户先看到选集列表，
-            // 点高亮集才续到上次位置（点其它集则作废续看位置，从头播该集）
+            // 播放历史跳转：与首页进入一致——还原信息区并直接播放；
+            // 差异是播的是**上次看的那集**（高亮），且 MediaOpened 后续到上次位置。
+            // 选集列表在侧栏随时可见，想换集直接点。
             var resumeRow = _resumeEpisodeName is { Length: > 0 }
                 ? _episodeRows.FirstOrDefault(r =>
                       string.Equals(r.Name.Trim(), _resumeEpisodeName.Trim(), StringComparison.Ordinal))
                 : null;
-            if (resumeRow != null)
+            PlayEpisodeByRow(resumeRow ?? _episodeRows[0]);
+            if (resumeRow == null)
             {
-                foreach (var r in _episodeRows) r.IsCurrent = false;
-                resumeRow.IsCurrent = true;
-                _currentEpisodeIndex = resumeRow.Index;
-                int targetPage = resumeRow.Index / EpisodesPerPage;
-                if (targetPage != _episodePage)
-                {
-                    _episodePage = targetPage;
-                    RenderEpisodePage();
-                }
-            }
-            else
-            {
-                PlayEpisodeByRow(_episodeRows[0]);
-                _resumeEpisodeName = null; // 找不到续看集（换线路选集名不同）：作废，避免误 seek
+                // 找不到续看集（换线路选集名不同）：作废续看位置，避免误 seek
+                _resumeEpisodeName = null;
+                _resumePosition = 0;
             }
         }
         else
@@ -653,7 +644,9 @@ public partial class WatchPage : ContentPage, IQueryAttributable
             if (!play.Url.Contains("/stream/", StringComparison.OrdinalIgnoreCase))
                 _playback.BeginSession(_item.Title, play.Url, _item.Cover,
                     sourceKey: _site.Key, itemType: _site.Type, itemApi: _site.Api,
-                    itemId: _item.Id, episodeName: episode.Name);
+                    itemId: _item.Id, episodeName: episode.Name,
+                    category: _item.Category, year: _item.Year,
+                    remarks: _item.Remarks, description: _item.Description);
         }
         catch (NotSupportedException ex)
         {

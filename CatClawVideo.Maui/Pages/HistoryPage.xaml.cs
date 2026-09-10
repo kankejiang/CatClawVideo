@@ -37,6 +37,10 @@ public partial class HistoryPage : ContentView, ITabView
                     $"&sourceKey={Uri.EscapeDataString(e.SourceKey)}&type={e.ItemType}" +
                     $"&api={Uri.EscapeDataString(e.ItemApi)}&itemId={Uri.EscapeDataString(e.ItemId)}" +
                     (string.IsNullOrEmpty(e.EpisodeName) ? "" : $"&resumeEp={Uri.EscapeDataString(e.EpisodeName)}") +
+                    $"&year={Uri.EscapeDataString(e.Year)}" +
+                    $"&remarks={Uri.EscapeDataString(e.Remarks)}" +
+                    $"&desc={Uri.EscapeDataString(e.Description)}" +
+                    $"&category={Uri.EscapeDataString(e.Category)}" +
                     posParam +
                     (string.IsNullOrEmpty(e.Cover) ? "" : $"&cover={Uri.EscapeDataString(e.Cover)}");
                 var playerQuery = $"player?title={Uri.EscapeDataString(e.Title)}&url={Uri.EscapeDataString(e.Url)}" +
