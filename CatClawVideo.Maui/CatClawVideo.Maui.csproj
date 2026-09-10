@@ -74,8 +74,9 @@
 		<MauiIcon Include="Platforms\Android\Resources\mipmap-xxxhdpi\ic_launcher.png" />
 		<MauiSplashScreen Include="Resources\Images\splash_transparent.svg" Color="#0B0D20" BaseSize="128,128" />
 		<MauiImage Include="Resources\Images\*" />
-		<!-- 应用图标同时作为普通图片资源（MainPage 品牌标 / 空态水印用 Source="appicon.svg"）：
-		     AppIcon 目录不在 MauiImage 通配范围，须显式补一条，否则运行期找不到资源 -->
+		<!-- 应用图标同时作为普通图片资源（MainPage 品牌标 / 空态水印用 Source="appicon.png"）：
+		     AppIcon 目录不在 MauiImage 通配范围，须显式补一条，否则运行期找不到资源
+		     注意：SVG 只能出现在本文件里，代码中一律按转换后的 .png 名引用（MAUI 规范） -->
 		<MauiImage Include="Resources\AppIcon\appicon.svg" BaseSize="128,128" />
 		<MauiImage Include="Resources\AppIcon\appiconfg.svg" BaseSize="128,128" />
 		<MauiFont Include="Resources\Fonts\*" />

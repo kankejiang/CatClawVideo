@@ -17,7 +17,7 @@
             <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
                 <Border Grid.Column="0" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
                         StrokeShape="RoundRectangle 12" WidthRequest="38" HeightRequest="38">
-                    <Image Source="ic_back.svg" WidthRequest="18" HeightRequest="18"
+                    <Image Source="ic_back.png" WidthRequest="18" HeightRequest="18"
                            HorizontalOptions="Center" VerticalOptions="Center" />
                     <Border.GestureRecognizers>
                         <TapGestureRecognizer Tapped="OnBackTapped" />
@@ -62,7 +62,7 @@
                                         BackgroundColor="{DynamicResource CardBackgroundColor}" HeightRequest="190">
                                     <Grid>
                                         <Image Source="{Binding Cover}" Aspect="AspectFill" />
-                                        <Image Source="appiconfg.svg" Aspect="AspectFit" Opacity="0.35"
+                                        <Image Source="appiconfg.png" Aspect="AspectFit" Opacity="0.35"
                                                WidthRequest="38" HeightRequest="38"
                                                HorizontalOptions="Center" VerticalOptions="Center">
                                             <Image.Triggers>

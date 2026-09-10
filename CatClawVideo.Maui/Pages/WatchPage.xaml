@@ -18,7 +18,7 @@
             <Grid x:Name="TopBarGrid" ColumnDefinitions="Auto,Auto" ColumnSpacing="12">
                 <Border Grid.Column="0" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
                         StrokeShape="RoundRectangle 12" WidthRequest="38" HeightRequest="38">
-                    <Image Source="ic_back.svg" WidthRequest="18" HeightRequest="18"
+                    <Image Source="ic_back.png" WidthRequest="18" HeightRequest="18"
                            HorizontalOptions="Center" VerticalOptions="Center" />
                     <Border.GestureRecognizers>
                         <TapGestureRecognizer Tapped="OnBackTapped" />
@@ -57,7 +57,7 @@
                                     StrokeShape="RoundRectangle 6" Padding="8,4"
                                     HorizontalOptions="End" VerticalOptions="Start" Margin="0,10,12,0">
                                 <HorizontalStackLayout Spacing="5">
-                                    <Image Source="ic_download_white.svg" WidthRequest="11" HeightRequest="11" VerticalOptions="Center" />
+                                    <Image Source="ic_download_white.png" WidthRequest="11" HeightRequest="11" VerticalOptions="Center" />
                                     <Label x:Name="SpeedLabel" Text="0 KB/s" FontSize="11" TextColor="#FFD76E" VerticalOptions="Center" />
                                 </HorizontalStackLayout>
                             </Border>
@@ -72,7 +72,7 @@
                                   Padding="12,6,12,10"
                                   BackgroundColor="#99000000">
                                 <ImageButton Grid.Column="0" x:Name="SmallPlayButton"
-                                             Source="ic_pause.svg"
+                                             Source="ic_pause.png"
                                              WidthRequest="20" HeightRequest="20"
                                              BackgroundColor="Transparent"
                                              VerticalOptions="Center"
@@ -90,7 +90,7 @@
                                        FontSize="10.5" FontFamily="OpenSansSemibold" TextColor="White"
                                        VerticalOptions="Center" />
                                 <ImageButton Grid.Column="4" x:Name="FullScreenButton"
-                                             Source="ic_fullscreen.svg"
+                                             Source="ic_fullscreen.png"
                                              WidthRequest="30" HeightRequest="26"
                                              BackgroundColor="Transparent"
                                              VerticalOptions="Center"
@@ -129,7 +129,7 @@
                                                HorizontalOptions="Center" Spacing="10" Padding="0,6,0,10">
                             <Button x:Name="PagerPrev" Text="上一页" FontSize="12"
                                     ContentLayout="Left,4"
-                                    ImageSource="ic_arrow_left_white.svg"
+                                    ImageSource="ic_arrow_left_white.png"
                                     TextColor="{DynamicResource TextPrimaryColor}"
                                     BackgroundColor="{DynamicResource ChipInactiveColor}"
                                     CornerRadius="8" Padding="12,6" Clicked="OnPrevPageTapped" />
@@ -137,7 +137,7 @@
                                    TextColor="{DynamicResource TextHintColor}" VerticalOptions="Center" />
                             <Button x:Name="PagerNext" Text="下一页" FontSize="12"
                                     ContentLayout="Right,4"
-                                    ImageSource="ic_arrow_right_white.svg"
+                                    ImageSource="ic_arrow_right_white.png"
                                     TextColor="{DynamicResource TextPrimaryColor}"
                                     BackgroundColor="{DynamicResource ChipInactiveColor}"
                                     CornerRadius="8" Padding="12,6" Clicked="OnNextPageTapped" />
@@ -170,13 +170,13 @@
                     </Border>
                     <Button Grid.Column="5" x:Name="FavoriteButton" Text="收藏" FontSize="12.5"
                             ContentLayout="Left,5"
-                            ImageSource="ic_favorite_border_white.svg"
+                            ImageSource="ic_favorite_border_white.png"
                             TextColor="{DynamicResource TextPrimaryColor}"
                             BackgroundColor="{DynamicResource ChipInactiveColor}"
                             CornerRadius="8" Padding="14,7" Clicked="OnFavoriteClicked" />
                     <Button Grid.Column="6" Text="分享" FontSize="12.5"
                             ContentLayout="Left,5"
-                            ImageSource="ic_share_white.svg"
+                            ImageSource="ic_share_white.png"
                             TextColor="{DynamicResource TextPrimaryColor}"
                             BackgroundColor="{DynamicResource ChipInactiveColor}"
                             CornerRadius="8" Padding="14,7" Clicked="OnShareClicked" />

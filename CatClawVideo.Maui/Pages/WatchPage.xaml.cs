@@ -465,7 +465,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         var stack = (HorizontalStackLayout)chip.Content!;
         stack.Children.Add(new Image
         {
-            Source = icPlay ? "ic_play.svg" : "ic_download_white.svg",
+            Source = icPlay ? "ic_play.png" : "ic_download_white.png",
             WidthRequest = 10, HeightRequest = 10,
             VerticalOptions = LayoutOptions.Center,
         });
@@ -702,7 +702,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable
             ? new ColumnDefinitionCollection { new ColumnDefinition(GridLength.Star) }
             : new ColumnDefinitionCollection { new ColumnDefinition(GridLength.Star), new ColumnDefinition(300) };
         ContentStack.Padding = on ? new Thickness(0) : new Thickness(24, 14, 24, 28);
-        FullScreenButton.Source = on ? "ic_fullscreen_exit.svg" : "ic_fullscreen.svg";
+        FullScreenButton.Source = on ? "ic_fullscreen_exit.png" : "ic_fullscreen.png";
         if (on) _ = ContentScroll.ScrollToAsync(0, 0, false);
 #if WINDOWS
         App.SetWindowFullscreen(on);
@@ -741,7 +741,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable
 
     private void UpdatePlayIcon()
     {
-        var icon = _playing ? "ic_pause.svg" : "ic_play.svg";
+        var icon = _playing ? "ic_pause.png" : "ic_play.png";
         CenterPlayButton.Source = icon;
         SmallPlayButton.Source = icon;
     }

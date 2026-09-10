@@ -132,7 +132,7 @@ public partial class VideoPlayerPage : ContentPage, IQueryAttributable
             is VideoPlayerState.Preparing or VideoPlayerState.Buffering;
 
         // 图标切换
-        var icon = _vm.IsPlaying ? "ic_pause.svg" : "ic_play.svg";
+        var icon = _vm.IsPlaying ? "ic_pause.png" : "ic_play.png";
         CenterPlayButton.Source = icon;
         BottomPlayButton.Source = icon;
 
@@ -150,8 +150,8 @@ public partial class VideoPlayerPage : ContentPage, IQueryAttributable
     {
         _vm.IsPlaying = false;
         _vm.PositionSeconds = _vm.DurationSeconds;
-        CenterPlayButton.Source = "ic_play.svg";
-        BottomPlayButton.Source = "ic_play.svg";
+        CenterPlayButton.Source = "ic_play.png";
+        BottomPlayButton.Source = "ic_play.png";
         _vm.ControlsVisible = true;
     }
 

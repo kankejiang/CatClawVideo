@@ -19,7 +19,7 @@
                             StrokeThickness="0"
                             StrokeShape="RoundRectangle 7"
                             BackgroundColor="{DynamicResource PrimaryColor}">
-                        <Image Source="appicon.svg" Aspect="AspectFill" />
+                        <Image Source="appicon.png" Aspect="AspectFill" />
                     </Border>
                     <Label Text="猫爪影视"
                            FontSize="14.5"
@@ -85,7 +85,7 @@
                 <Border x:Name="TopSearchBox" Grid.Column="2" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
                         StrokeShape="RoundRectangle 16" Padding="14,8" VerticalOptions="Center">
                     <HorizontalStackLayout Spacing="8">
-                        <Image Source="ic_search_gray.svg" WidthRequest="14" HeightRequest="14" VerticalOptions="Center" />
+                        <Image Source="ic_search_gray.png" WidthRequest="14" HeightRequest="14" VerticalOptions="Center" />
                         <Label Text="搜索影片 / 演员" FontSize="12" TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
                     </HorizontalStackLayout>
                     <Border.GestureRecognizers>

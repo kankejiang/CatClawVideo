@@ -13,12 +13,13 @@ public partial class MainViewModel : ObservableObject
 
     public IReadOnlyList<TabDef> Tabs { get; } =
     [
-        new("ic_home.svg", "首页"),
-        new("ic_history.svg", "历史"),
-        new("ic_favorite.svg", "收藏"),
-        new("ic_download_white.svg", "下载"),
-        new("ic_folder.svg", "本地"),
-        new("ic_settings.svg", "设置"),
+        // 引用的是 SVG 经 Resizetizer 转换后的 PNG 资源名（MAUI 规范：SVG 只能用 .png 引用）
+        new("ic_home.png", "首页"),
+        new("ic_history.png", "历史"),
+        new("ic_favorite.png", "收藏"),
+        new("ic_download_white.png", "下载"),
+        new("ic_folder_white.png", "本地"),
+        new("ic_settings.png", "设置"),
     ];
 
     [ObservableProperty]

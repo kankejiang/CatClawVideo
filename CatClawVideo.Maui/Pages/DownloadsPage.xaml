@@ -26,7 +26,7 @@
                         Clicked="OnBtSettingsTapped" />
                 <Button Grid.Column="2" Text="＋ 新建下载" FontSize="12"
                         ContentLayout="Left,4"
-                        ImageSource="ic_add.svg"
+                        ImageSource="ic_add.png"
                         TextColor="White"
                         BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
                         CornerRadius="8" Padding="14,6" Clicked="OnAddDownloadTapped" />
@@ -40,7 +40,7 @@
             <Border Grid.Row="2" StrokeThickness="0" StrokeShape="RoundRectangle 12"
                     BackgroundColor="{DynamicResource CardBackgroundColor}" Padding="14,10">
                 <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
-                    <Image Grid.Column="0" Source="ic_folder_white.svg" WidthRequest="16" HeightRequest="16" VerticalOptions="Center" />
+                    <Image Grid.Column="0" Source="ic_folder_white.png" WidthRequest="16" HeightRequest="16" VerticalOptions="Center" />
                     <VerticalStackLayout Grid.Column="1" Spacing="2" VerticalOptions="Center">
                         <Label Text="下载位置" FontSize="12.5" FontFamily="OpenSansSemibold"
                                TextColor="{DynamicResource TextPrimaryColor}" />
@@ -84,7 +84,7 @@
                                             <Border ClassId="pause" WidthRequest="34" HeightRequest="28" StrokeThickness="0"
                                                     StrokeShape="RoundRectangle 8" BackgroundColor="{DynamicResource ChipInactiveColor}"
                                                     IsVisible="{Binding Status, Converter={StaticResource DownloadStatusConverter}, ConverterParameter=Downloading}">
-                                                <Image Source="ic_pause.svg" WidthRequest="13" HeightRequest="13"
+                                                <Image Source="ic_pause.png" WidthRequest="13" HeightRequest="13"
                                                        HorizontalOptions="Center" VerticalOptions="Center" />
                                                 <Border.GestureRecognizers>
                                                     <TapGestureRecognizer Tapped="OnTaskIconTapped" />
@@ -93,7 +93,7 @@
                                             <Border ClassId="resume" WidthRequest="34" HeightRequest="28" StrokeThickness="0"
                                                     StrokeShape="RoundRectangle 8" BackgroundColor="{DynamicResource ChipInactiveColor}"
                                                     IsVisible="{Binding Status, Converter={StaticResource DownloadStatusConverter}, ConverterParameter=Paused}">
-                                                <Image Source="ic_play.svg" WidthRequest="13" HeightRequest="13"
+                                                <Image Source="ic_play.png" WidthRequest="13" HeightRequest="13"
                                                        HorizontalOptions="Center" VerticalOptions="Center" />
                                                 <Border.GestureRecognizers>
                                                     <TapGestureRecognizer Tapped="OnTaskIconTapped" />
@@ -102,7 +102,7 @@
                                             <Border ClassId="retry" WidthRequest="34" HeightRequest="28" StrokeThickness="0"
                                                     StrokeShape="RoundRectangle 8" BackgroundColor="{DynamicResource ChipInactiveColor}"
                                                     IsVisible="{Binding Status, Converter={StaticResource DownloadStatusConverter}, ConverterParameter='Failed,Completed'}">
-                                                <Image Source="ic_refresh_white.svg" WidthRequest="13" HeightRequest="13"
+                                                <Image Source="ic_refresh_white.png" WidthRequest="13" HeightRequest="13"
                                                        HorizontalOptions="Center" VerticalOptions="Center" />
                                                 <Border.GestureRecognizers>
                                                     <TapGestureRecognizer Tapped="OnTaskIconTapped" />
@@ -110,7 +110,7 @@
                                             </Border>
                                             <Border ClassId="delete" WidthRequest="34" HeightRequest="28" StrokeThickness="0"
                                                     StrokeShape="RoundRectangle 8" BackgroundColor="{DynamicResource ChipInactiveColor}">
-                                                <Image Source="ic_close.svg" WidthRequest="12" HeightRequest="12"
+                                                <Image Source="ic_close.png" WidthRequest="12" HeightRequest="12"
                                                        HorizontalOptions="Center" VerticalOptions="Center" />
                                                 <Border.GestureRecognizers>
                                                     <TapGestureRecognizer Tapped="OnTaskIconTapped" />
@@ -118,7 +118,7 @@
                                             </Border>
                                             <Border ClassId="folder" WidthRequest="34" HeightRequest="28" StrokeThickness="0"
                                                     StrokeShape="RoundRectangle 8" BackgroundColor="{DynamicResource ChipInactiveColor}">
-                                                <Image Source="ic_folder_white.svg" WidthRequest="13" HeightRequest="13"
+                                                <Image Source="ic_folder_white.png" WidthRequest="13" HeightRequest="13"
                                                        HorizontalOptions="Center" VerticalOptions="Center" />
                                                 <Border.GestureRecognizers>
                                                     <TapGestureRecognizer Tapped="OnTaskIconTapped" />
@@ -133,7 +133,7 @@
                                             </Border>
                                             <Border ClassId="info" WidthRequest="34" HeightRequest="28" StrokeThickness="0"
                                                     StrokeShape="RoundRectangle 8" BackgroundColor="{DynamicResource ChipInactiveColor}">
-                                                <Image Source="ic_info.svg" WidthRequest="13" HeightRequest="13"
+                                                <Image Source="ic_info.png" WidthRequest="13" HeightRequest="13"
                                                        HorizontalOptions="Center" VerticalOptions="Center" />
                                                 <Border.GestureRecognizers>
                                                     <TapGestureRecognizer Tapped="OnTaskIconTapped" />
@@ -196,7 +196,7 @@
                         BackgroundColor="{DynamicResource CardBackgroundColor}" Padding="24,20"
                         IsVisible="{Binding IsEmpty}">
                     <VerticalStackLayout Spacing="6" HorizontalOptions="Center">
-                        <Image Source="appiconfg.svg" WidthRequest="56" HeightRequest="56"
+                        <Image Source="appiconfg.png" WidthRequest="56" HeightRequest="56"
                                Opacity="0.4" HorizontalOptions="Center" />
                         <Label Text="下载架还空着喵…" FontSize="15" FontFamily="OpenSansSemibold"
                                TextColor="{DynamicResource TextPrimaryColor}" HorizontalTextAlignment="Center" />

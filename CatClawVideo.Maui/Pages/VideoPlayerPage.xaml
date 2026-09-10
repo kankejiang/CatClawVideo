@@ -74,7 +74,7 @@
                   BackgroundColor="#66000000">
                 <ImageButton Grid.Column="0"
                              x:Name="BackButton"
-                             Source="ic_back.svg"
+                             Source="ic_back.png"
                              WidthRequest="40" HeightRequest="40"
                              CornerRadius="20"
                              BackgroundColor="Transparent"
@@ -91,7 +91,7 @@
                        HorizontalOptions="Center" />
                 <ImageButton Grid.Column="2"
                              x:Name="RotateButton"
-                             Source="ic_rotate.svg"
+                             Source="ic_rotate.png"
                              WidthRequest="40" HeightRequest="40"
                              CornerRadius="20"
                              BackgroundColor="Transparent"
@@ -102,7 +102,7 @@
             <!-- 中央播放/暂停 -->
             <ImageButton Grid.Row="1"
                          x:Name="CenterPlayButton"
-                         Source="ic_play.svg"
+                         Source="ic_play.png"
                          WidthRequest="64" HeightRequest="64"
                          CornerRadius="32"
                          BackgroundColor="#33000000"
@@ -118,7 +118,7 @@
                   BackgroundColor="#66000000">
                 <ImageButton Grid.Column="0"
                              x:Name="BottomPlayButton"
-                             Source="ic_pause.svg"
+                             Source="ic_pause.png"
                              WidthRequest="40" HeightRequest="40"
                              CornerRadius="20"
                              BackgroundColor="Transparent"

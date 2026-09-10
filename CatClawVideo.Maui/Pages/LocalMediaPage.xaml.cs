@@ -47,7 +47,7 @@ public partial class LocalMediaPage : ContentView, ITabView
 
         var playIcon = new Image
         {
-            Source = "ic_play.svg",
+            Source = "ic_play.png",
             WidthRequest = 22,
             HeightRequest = 22,
             HorizontalOptions = LayoutOptions.End,

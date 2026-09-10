@@ -11,7 +11,7 @@
         <!-- 站点条：当前数据源 + 切换入口（参考影视仓首页数据源） -->
         <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto" Margin="0,0,24,0">
             <HorizontalStackLayout Grid.Column="0" Spacing="8" VerticalOptions="Center">
-                <Image Source="ic_library_white.svg" WidthRequest="14" HeightRequest="14" VerticalOptions="Center" />
+                <Image Source="ic_library_white.png" WidthRequest="14" HeightRequest="14" VerticalOptions="Center" />
                 <Label Text="{Binding SiteDisplayName}" FontSize="14" FontFamily="OpenSansSemibold"
                        LineBreakMode="TailTruncation" MaxLines="1"
                        TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
@@ -21,7 +21,7 @@
                 <HorizontalStackLayout Spacing="6">
                     <Label Text="切换源" FontSize="11.5"
                            TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
-                    <Image Source="ic_refresh_white.svg" WidthRequest="12" HeightRequest="12" VerticalOptions="Center" />
+                    <Image Source="ic_refresh_white.png" WidthRequest="12" HeightRequest="12" VerticalOptions="Center" />
                 </HorizontalStackLayout>
                 <Border.GestureRecognizers>
                     <TapGestureRecognizer Tapped="OnSwitchSiteTapped" />
@@ -70,7 +70,7 @@
                                 BackgroundColor="{DynamicResource CardBackgroundColor}" HeightRequest="190">
                             <Grid>
                                 <Image Source="{Binding Cover}" Aspect="AspectFill" />
-                                <Image Source="appiconfg.svg" Aspect="AspectFit" Opacity="0.35"
+                                <Image Source="appiconfg.png" Aspect="AspectFit" Opacity="0.35"
                                        WidthRequest="40" HeightRequest="40"
                                        HorizontalOptions="Center" VerticalOptions="Center">
                                     <Image.Triggers>
