@@ -194,3 +194,61 @@ seek 快速重排"——这正是流畅播放的核心难点，不需要自己�
 持久化 `{AppData}/bt-settings.json`（`BtSettings`）；改端口/限速/连接数保存后 `RecreateEngineAsync()` 重建引擎生效。
 
 **不适用项**（aria2 专属，已在页面注释说明）：RPC 监听端口/密钥、迅雷链接（thunder://）、默认客户端协议。
+
+---
+
+## 8. 排障实录：磁力「有 metadata 但零速度」（2026-09-10 已修复，根因与第 6 节不同）
+
+**症状**：同一个磁力，Motrix 有 556KB/s（748 做种），猫爪 `state=Downloading` 但
+`已下=0 速度=0B/s 节点=1`，几分钟后节点掉到 0 再没恢复。
+
+**关键：这次不是 tracker 的问题**（第 6 节的教训已生效）。逐项实测：
+
+| 检查项 | 结果 |
+|---|---|
+| UDP tracker announce（36 个候选） | 29 个可达；单个 tracker 最高返回 192 seeds，合计 2242 做种 / 2407 条 peer 记录 |
+| MonoTorrent 侧 tracker 状态 | 12 个 `status=Ok`，announce 完全正常 |
+| 防火墙 | `CatClawVideo.Maui` 已有 Allow 规则 |
+| UDP 出站 | 正常（BEP15 connect 有响应） |
+| peer TCP 可达性 | **仅 6/60**，失败集中在端口 15000 的国内 IP |
+| **DHT** | **`Initialising/0` → `NotReady/0`，始终 0 节点** |
+
+**根因：DHT 完全无法 bootstrap。** MonoTorrent 的内置 router 域名在国内均不可用：
+
+- `router.bittorrent.com` → 解析到 **31.13.85.53（Facebook 网段）**，ping 超时
+- `router.utorrent.com` → 两次查询解析结果不同（199.59.149.203 / 108.160.166.148），均超时
+- 只有 `dht.transmissionbt.com`（212.129.33.59、87.98.162.88）能正常响应
+
+首次运行 `dht_nodes.cache` 为空（内容就 2 字节 `le`）→ 没有任何种子节点 → DHT 起不来。
+失去 DHT 后只剩 tracker 一条 peer 来源，而 tracker 列表里混着大量 NAT 后不可达的国内节点，
+凑不出可用连接，于是表现为「元数据拿得到、连接恒为 1、下载恒为 0」。
+
+**修复**（`BtStreamService.SeedDhtNodeCache`）：内置 10 个 DHT 种子节点
+（紧凑格式，26 字节/节点 = 20 字节 node-id + 4 字节 IP + 2 字节端口，取自
+`dht.transmissionbt.com` 的 find_node 响应），引擎创建前若缓存节点数 < 8 则播种。
+
+**实测效果**（同一磁力、同一台机器）：
+
+| 指标 | 修复前 | 修复后 |
+|---|---|---|
+| DHT | `Initialising/0` → `NotReady/0` | **`Ready/67` → 71** |
+| peer 连接数 | 1 | **34** |
+| 下载速率 | 0 B/s | **峰值 3.44 MB/s** |
+| 60 秒已下载 | 0 | **43 MB** |
+
+**维护提示**：种子节点会失效，但只要 DHT 能启动，它会自行爬升，MonoTorrent 退出时把扩展后的
+节点表写回 `dht_nodes.cache`，后续启动直接受益。仅当缓存被清空时才需重新播种。
+若发现 DHT 又长期停在 0 节点，重新从 `dht.transmissionbt.com` 抓一批节点更新
+`BtStreamService.DhtSeedNodes` 即可。
+
+**可复用的诊断路径**（本次用到的顺序）：
+1. 读 `{LocalAppData}/CatClawVideo.Maui/CatClawVideo.Maui/Data/logs/bt.log`，看 `[dl]` 行的
+   已下/速度/节点三个数 —— 「节点恒为 1 且已下为 0」是 DHT 失效的指纹（区别于第 6 节的「节点恒为 0」）
+2. 检查 `{AppData}/CatClawVideo/btcache/engine/dht_nodes.cache` 大小：2 字节 = 从未拿到节点
+3. 用 BEP15 UDP announce 实测 tracker（含热门种子做对照组），排除 tracker 问题
+4. 向 DHT bootstrap 域名发 BEP5 `ping`，确认是否被 DNS 污染
+5. 抓一批可用节点写进 `dht_nodes.cache` 做 A/B 对照，一次就能定位
+
+> 注：第 6 节与本节是两个独立的坑 —— 第 6 节是「tracker 列表混入坏 tracker 拖垮整轮 announce」，
+> 本节是「DHT bootstrap 域名被污染导致 DHT 从未启动」。两者症状相近（都零速度），
+> 但前者看 `tracker 明细` 能发现，后者必须查 DHT 状态与 `dht_nodes.cache`。
