@@ -1,54 +1,82 @@
 using Microsoft.Maui.Controls.Shapes;
-using System.Collections.ObjectModel;
 using CatClawVideo.Core.Interfaces;
 using CatClawVideo.Core.Models;
+using CatClawVideo.Maui.Services;
 using CatClawVideo.Maui.ViewModels;
 
 namespace CatClawVideo.Maui.Pages;
 
 /// <summary>
-/// 搜索页：关键词 + 热门搜索 + 跨源真实搜索（并发搜全部可播站点，聚合结果）。
+/// 搜索页：关键词 + 热搜词（豆瓣热门片单，TVBox 同源）+ 跨源真实搜索（并发搜全部可播站点，聚合结果）。
 /// 结果卡点击 → 观看页（携带 type/api/itemId 路由）。
 /// </summary>
 public partial class SearchPage : ContentPage
 {
-    private static readonly string[] HotWordList =
-        ["漫长的季节", "庆余年", "流浪地球", "三体", "狂飙", "繁花", "宫崎骏", "诺兰", "悬疑", "科幻"];
-
     private readonly IVodSourceProvider _provider;
 
     public Command SearchCommand { get; }
+
+    private bool _searching;
+    private bool _hotLoaded;
 
     public SearchPage(IVodSourceProvider provider)
     {
         InitializeComponent();
         _provider = provider;
-        BindingContext = this;
+
+        // 先建命令再设 BindingContext：页面未实现 INPC，绑定时 SearchCommand 必须已就位，
+        // 否则搜索按钮 / Entry.ReturnCommand 绑定到 null 后永不刷新（点击无反应）
         SearchCommand = new Command(() => _ = DoSearchAsync(SearchEntry.Text), () => !_searching);
 
-        foreach (var w in HotWordList)
-        {
-            var chip = new Border
-            {
-                StrokeThickness = 0,
-                StrokeShape = new RoundRectangle { CornerRadius = 14 },
-                BackgroundColor = Application.Current?.Resources["ChipInactiveColor"] as Color,
-                Padding = new Thickness(14, 6),
-                Margin = new Thickness(0, 0, 8, 8),
-                Content = new Label { Text = w, FontSize = 12, TextColor = Application.Current?.Resources["TextSecondaryColor"] as Color },
-            };
-            var tap = new TapGestureRecognizer();
-            tap.Tapped += (_, _) =>
-            {
-                SearchEntry.Text = w;
-                _ = DoSearchAsync(w);
-            };
-            chip.GestureRecognizers.Add(tap);
-            HotWords.Add(chip);
-        }
+        BindingContext = this;
+
+#if WINDOWS
+        // 无边框窗口内容延伸进标题栏区：顶部留出 caption 按钮（最小化/最大化/关闭）条高度，
+        // 避免顶行右上角的搜索按钮与窗口控件重叠（顶行其他推入页只有左侧返回，无需让位）
+        Padding = new Thickness(0, 48, 0, 0);
+#endif
     }
 
-    private bool _searching;
+    protected override async void OnAppearing()
+    {
+        base.OnAppearing();
+        if (_hotLoaded) return;
+        _hotLoaded = true;
+
+        // 热搜词：豆瓣热门电影+剧集标题（TVBox 同源）；失败隐藏热搜区，不放假数据
+        var words = await DoubanHotService.GetHotWordsAsync();
+        HotStatus.IsVisible = false;
+        if (words.Count == 0)
+        {
+            HotSection.IsVisible = false;
+            return;
+        }
+        foreach (var w in words)
+            HotWords.Add(BuildHotChip(w));
+        HotSection.IsVisible = !ResultSection.IsVisible;
+    }
+
+    /// <summary>热搜词 chip（点击填入并搜索）</summary>
+    private Border BuildHotChip(string word)
+    {
+        var chip = new Border
+        {
+            StrokeThickness = 0,
+            StrokeShape = new RoundRectangle { CornerRadius = 14 },
+            BackgroundColor = Application.Current?.Resources["ChipInactiveColor"] as Color,
+            Padding = new Thickness(14, 6),
+            Margin = new Thickness(0, 0, 8, 8),
+            Content = new Label { Text = word, FontSize = 12, TextColor = Application.Current?.Resources["TextSecondaryColor"] as Color },
+        };
+        var tap = new TapGestureRecognizer();
+        tap.Tapped += (_, _) =>
+        {
+            SearchEntry.Text = word;
+            _ = DoSearchAsync(word);
+        };
+        chip.GestureRecognizers.Add(tap);
+        return chip;
+    }
 
     private void OnBackTapped(object? sender, TappedEventArgs e) => Shell.Current.GoToAsync("..");
 

@@ -1,11 +1,10 @@
-using System.Collections.ObjectModel;
+using CatClawVideo.Core.Models;
 using CatClawVideo.Data;
 using CatClawVideo.Maui.ViewModels;
-using Microsoft.Maui.Controls.Shapes;
 
 namespace CatClawVideo.Maui.Pages;
 
-/// <summary>收藏页：最近播放（断点续看）+ 我的收藏占位。</summary>
+/// <summary>收藏页：最近播放 + 我的收藏，分组海报墙（真数据 VideoDatabase）。</summary>
 public partial class FavoritesPage : ContentView, ITabView
 {
     private readonly FavoritesViewModel _vm;
@@ -20,108 +19,69 @@ public partial class FavoritesPage : ContentView, ITabView
     public async Task OnTabShownAsync()
     {
         await _vm.LoadCommand.ExecuteAsync(null);
-        RebuildHistoryList();
-        EnsureFavCards();
+
+        ClearHistoryButton.IsVisible = _vm.RecentPlays.Count > 0;
+        EmptyLabel.IsVisible = _vm.RecentPlays.Count == 0 && _vm.Favorites.Count == 0;
+
+        var sections = new List<WallSection>();
+
+        if (_vm.RecentPlays.Count > 0)
+            sections.Add(new WallSection
+            {
+                Name = "最近播放",
+                Items = _vm.RecentPlays.Select(e => new WallCard
+                {
+                    Title = e.Title,
+                    Cover = e.Cover,
+                    Meta = e.DurationSeconds > 0
+                        ? $"看到 {VideoPlayerViewModel.FormatTime(e.PositionSeconds)} / {VideoPlayerViewModel.FormatTime(e.DurationSeconds)} · {e.WatchedAt:MM-dd HH:mm}"
+                        : $"{VideoPlayerViewModel.FormatTime(e.PositionSeconds)} · {e.WatchedAt:MM-dd HH:mm}",
+                    OnOpen = () => _ = _vm.PlayAgainCommand.ExecuteAsync(e),
+                }).ToList(),
+            });
+
+        if (_vm.Favorites.Count > 0)
+            sections.Add(new WallSection
+            {
+                Name = "我的收藏",
+                Items = _vm.Favorites.Select(f => new WallCard
+                {
+                    Title = f.Title,
+                    Cover = f.Cover,
+                    Meta = string.Join(" · ", new[] { f.Year, f.Category }.Where(s => !string.IsNullOrEmpty(s))),
+                    Remark = f.Remarks,
+                    OnOpen = () => _ = OpenFavoriteAsync(f),
+                }).ToList(),
+            });
+
+        Wall.ItemsSource = sections;
     }
 
-    /// <summary>我的收藏假数据（订阅源上线后由数据库收藏表替换）</summary>
-    private void EnsureFavCards()
+    /// <summary>收藏卡点击 → 观看页（还原站点 type/api 路由，同搜索结果）</summary>
+    private async Task OpenFavoriteAsync(FavoriteEntry fav)
     {
-        FavGrid.ItemsSource ??= new ObservableCollection<FavCard>
+        var site = SiteRegistry.Find(fav.SourceKey);
+        if (site == null)
         {
-            new("漫长的季节", "9.1", "看到第 4 集 · 追更中"),
-            new("庆余年 第二季", "8.5", "看到第 12 集 · 追更中"),
-            new("流浪地球 2", "8.7", "2023 · 电影"),
-            new("大明王朝 1566", "9.3", "2007 · 剧集"),
-            new("不良人 第七季", "8.3", "看到第 8 集 · 追更中"),
-            new("琅琊榜", "8.6", "2015 · 剧集"),
-        };
-    }
-
-    /// <summary>重建最近播放列表（代码构建卡片，避免 DataTemplate 选择器的兼容性问题）</summary>
-    private void RebuildHistoryList()
-    {
-        HistoryList.Clear();
-
-        var items = _vm.RecentPlays;
-        ClearHistoryButton.IsVisible = items.Count > 0;
-        HistoryEmpty.IsVisible = items.Count == 0;
-
-        foreach (var entry in items)
-        {
-            var card = BuildHistoryCard(entry);
-            HistoryList.Add(card);
+            try { await Shell.Current.DisplayAlertAsync("提示", "该收藏所属源已失效，请重新收藏", "确定"); } catch { }
+            return;
         }
+
+        var query = $"watch?title={Uri.EscapeDataString(fav.Title)}" +
+                    $"&sourceKey={Uri.EscapeDataString(fav.SourceKey)}" +
+                    $"&type={site.Type}" +
+                    $"&api={Uri.EscapeDataString(site.Api)}" +
+                    $"&itemId={Uri.EscapeDataString(fav.ItemId)}" +
+                    $"&year={Uri.EscapeDataString(fav.Year ?? "")}" +
+                    $"&remarks={Uri.EscapeDataString(fav.Remarks ?? "")}" +
+                    $"&desc={Uri.EscapeDataString(fav.Description ?? "")}";
+        await Shell.Current.GoToAsync(query);
     }
 
-    private Border BuildHistoryCard(PlayHistoryEntry entry)
+    private void OnCardSelected(object? sender, SelectionChangedEventArgs e)
     {
-        var title = new Label
-        {
-            Text = entry.Title,
-            FontSize = 15,
-            FontFamily = "OpenSansSemibold",
-            TextColor = (Color)Application.Current!.Resources["TextPrimaryColor"],
-            LineBreakMode = LineBreakMode.TailTruncation,
-        };
-
-        // 进度副标题：看到 mm:ss / 总 mm:ss（总时长未知时仅显示位置）
-        var progress = entry.DurationSeconds > 0
-            ? $"{VideoPlayerViewModel.FormatTime(entry.PositionSeconds)} / {VideoPlayerViewModel.FormatTime(entry.DurationSeconds)}"
-            : $"{VideoPlayerViewModel.FormatTime(entry.PositionSeconds)}";
-        var subtitle = new Label
-        {
-            Text = $"{progress} · {entry.WatchedAt:MM-dd HH:mm}",
-            FontSize = 12,
-            TextColor = (Color)Application.Current!.Resources["TextSecondaryColor"],
-        };
-
-        var info = new VerticalStackLayout { Spacing = 4, VerticalOptions = LayoutOptions.Center };
-        info.Add(title);
-        info.Add(subtitle);
-
-        var playIcon = new Image
-        {
-            Source = "ic_play.svg",
-            WidthRequest = 22,
-            HeightRequest = 22,
-            HorizontalOptions = LayoutOptions.End,
-            VerticalOptions = LayoutOptions.Center,
-            Opacity = 0.9,
-        };
-
-        var grid = new Grid { ColumnDefinitions = [new ColumnDefinition(GridLength.Star), new ColumnDefinition(GridLength.Auto)] };
-        grid.Add(info, 0);
-        grid.Add(playIcon, 1);
-
-        var border = new Border
-        {
-            Content = grid,
-            Padding = new Thickness(16, 12),
-            StrokeThickness = 1,
-            Stroke = (Color)Application.Current!.Resources["DividerColor"],
-            BackgroundColor = (Color)Application.Current!.Resources["CardBackgroundColor"],
-            StrokeShape = new RoundRectangle { CornerRadius = new CornerRadius(16) },
-        };
-
-        var tap = new TapGestureRecognizer();
-        tap.Tapped += (_, _) => _ = _vm.PlayAgainCommand.ExecuteAsync(entry);
-        border.GestureRecognizers.Add(tap);
-        return border;
-    }
-}
-
-/// <summary>收藏网格卡（订阅源上线前假数据）</summary>
-public class FavCard
-{
-    public string Title { get; }
-    public string Score { get; }
-    public string Meta { get; }
-
-    public FavCard(string title, string score, string meta)
-    {
-        Title = title;
-        Score = score;
-        Meta = meta;
+        Wall.SelectedItem = null;
+        if (e.CurrentSelection.FirstOrDefault() is WallCard card)
+            card.OnOpen();
     }
 }

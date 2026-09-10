@@ -5,6 +5,11 @@
              BackgroundColor="{DynamicResource WindowBackgroundColor}"
              NavigationPage.HasNavigationBar="False">
 
+    <!-- 隐藏 Shell 系统返回键（页面自带自定义返回，避免左上角双返回按钮，同 WatchPage） -->
+    <Shell.BackButtonBehavior>
+        <BackButtonBehavior IsVisible="False" />
+    </Shell.BackButtonBehavior>
+
     <ScrollView>
         <VerticalStackLayout Padding="24,14,24,28" Spacing="12">
 
@@ -12,8 +17,8 @@
             <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
                 <Border Grid.Column="0" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
                         StrokeShape="RoundRectangle 12" WidthRequest="38" HeightRequest="38">
-                    <Label Text="←" FontSize="20" TextColor="{DynamicResource TextPrimaryColor}"
-                           HorizontalOptions="Center" VerticalOptions="Center" HorizontalTextAlignment="Center" />
+                    <Image Source="ic_back.svg" WidthRequest="18" HeightRequest="18"
+                           HorizontalOptions="Center" VerticalOptions="Center" />
                     <Border.GestureRecognizers>
                         <TapGestureRecognizer Tapped="OnBackTapped" />
                     </Border.GestureRecognizers>
@@ -30,10 +35,12 @@
                         Command="{Binding SearchCommand}" VerticalOptions="Center" />
             </Grid>
 
-            <!-- 热门搜索（结果为空时显示） -->
+            <!-- 热门搜索（豆瓣热门片单标题，结果为空时显示） -->
             <VerticalStackLayout x:Name="HotSection" Spacing="10" Margin="0,10,0,0">
                 <Label Text="热门搜索" FontSize="13.5" FontFamily="OpenSansSemibold"
                        TextColor="{DynamicResource TextPrimaryColor}" />
+                <Label x:Name="HotStatus" Text="正在加载热搜…" FontSize="12"
+                       TextColor="{DynamicResource TextHintColor}" />
                 <FlexLayout x:Name="HotWords" Wrap="Wrap" JustifyContent="Start" />
             </VerticalStackLayout>
 
@@ -55,14 +62,15 @@
                                         BackgroundColor="{DynamicResource CardBackgroundColor}" HeightRequest="190">
                                     <Grid>
                                         <Image Source="{Binding Cover}" Aspect="AspectFill" />
-                                        <Label Text="🎬" FontSize="26" HorizontalOptions="Center" VerticalOptions="Center"
-                                               TextColor="{DynamicResource TextHintColor}">
-                                            <Label.Triggers>
-                                                <DataTrigger TargetType="Label" Binding="{Binding Cover}" Value="{x:Null}">
+                                        <Image Source="appiconfg.svg" Aspect="AspectFit" Opacity="0.35"
+                                               WidthRequest="38" HeightRequest="38"
+                                               HorizontalOptions="Center" VerticalOptions="Center">
+                                            <Image.Triggers>
+                                                <DataTrigger TargetType="Image" Binding="{Binding Cover}" Value="{x:Null}">
                                                     <Setter Property="IsVisible" Value="True" />
                                                 </DataTrigger>
-                                            </Label.Triggers>
-                                        </Label>
+                                            </Image.Triggers>
+                                        </Image>
                                         <Border HorizontalOptions="End" VerticalOptions="Start" Margin="0,7,7,0"
                                                 StrokeThickness="0" BackgroundColor="#80000000" StrokeShape="RoundRectangle 8" Padding="6,1">
                                             <Label Text="{Binding Remarks}" FontSize="10" TextColor="#FFD76E" MaxLines="1" />

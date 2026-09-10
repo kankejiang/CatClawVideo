@@ -12,6 +12,10 @@ public partial class VideoPlayerViewModel : ObservableObject
     [ObservableProperty]
     private string _url = string.Empty;
 
+    /// <summary>影片封面（路由透传，落库播放历史供海报墙展示，可空）</summary>
+    [ObservableProperty]
+    private string? _cover;
+
     [ObservableProperty]
     private bool _isPlaying;
 

@@ -6,6 +6,11 @@
              BackgroundColor="Black"
              NavigationPage.HasNavigationBar="False">
 
+    <!-- 隐藏 Shell 系统返回键（控制层自带返回按钮，避免左上角双返回按钮，同 WatchPage） -->
+    <Shell.BackButtonBehavior>
+        <BackButtonBehavior IsVisible="False" />
+    </Shell.BackButtonBehavior>
+
     <Grid x:Name="PlayerRoot">
 
         <Grid.GestureRecognizers>

@@ -5,7 +5,7 @@ using CatClawVideo.Maui.ViewModels;
 namespace CatClawVideo.Maui.Pages;
 
 /// <summary>
-/// 首页：MacCMS 真实源（分类 + 影片列表）+ 快速播放入口。
+/// 首页：MacCMS 真实源（分类 + 影片列表）。
 /// 海报卡点击 → 观看页（携带源/影片参数拉真实详情与选集）。
 /// </summary>
 public partial class HomePage : ContentView, ITabView

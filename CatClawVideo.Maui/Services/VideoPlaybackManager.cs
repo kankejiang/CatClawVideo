@@ -15,13 +15,17 @@ public class VideoPlaybackManager
     /// <summary>当前播放地址</summary>
     public string CurrentUrl { get; private set; } = string.Empty;
 
+    /// <summary>当前播放影片封面（海报墙用，可空）</summary>
+    public string? CurrentCover { get; private set; }
+
     public VideoPlaybackManager(VideoDatabase db) => _db = db;
 
     /// <summary>开始一次播放会话</summary>
-    public void BeginSession(string title, string url)
+    public void BeginSession(string title, string url, string? cover = null)
     {
         CurrentTitle = title;
         CurrentUrl = url;
+        CurrentCover = string.IsNullOrEmpty(cover) ? null : cover;
     }
 
     /// <summary>结束播放会话并记录历史（fire-and-forget，不阻塞页面退出）</summary>
@@ -33,6 +37,7 @@ public class VideoPlaybackManager
         {
             Title = CurrentTitle,
             Url = CurrentUrl,
+            Cover = CurrentCover,
             PositionSeconds = positionSeconds,
             DurationSeconds = durationSeconds,
             WatchedAt = DateTime.Now,
@@ -40,6 +45,7 @@ public class VideoPlaybackManager
         var title = CurrentTitle;
         CurrentTitle = string.Empty;
         CurrentUrl = string.Empty;
+        CurrentCover = null;
         _ = Task.Run(async () =>
         {
             try { await _db.UpsertHistoryAsync(entry); }

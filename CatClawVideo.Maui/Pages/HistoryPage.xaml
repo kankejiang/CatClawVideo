@@ -4,24 +4,61 @@
              x:Class="CatClawVideo.Maui.Pages.HistoryPage"
              BackgroundColor="Transparent">
 
-    <ScrollView>
-        <VerticalStackLayout Padding="24,16,24,24" Spacing="12">
+    <!-- 根用 Grid：海报墙占 * 行获得有界高度（内部滚动 + 虚拟化） -->
+    <Grid RowDefinitions="Auto,*" Padding="24,16,24,20" RowSpacing="12">
 
-            <Grid ColumnDefinitions="*,Auto">
-                <Label Grid.Column="0" Text="播放历史" FontSize="17" FontFamily="OpenSansSemibold"
-                       TextColor="{DynamicResource TextPrimaryColor}" Margin="0,8,0,0" />
-                <Label Grid.Column="1" Text="最多保留 50 条" FontSize="11"
-                       TextColor="{DynamicResource TextHintColor}" VerticalOptions="Center" />
-            </Grid>
+        <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
+            <Label Grid.Column="0" Text="播放历史" FontSize="17" FontFamily="OpenSansSemibold"
+                   TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
+            <Label Grid.Column="1" Text="最近 50 条 · 点击续看" FontSize="11"
+                   TextColor="{DynamicResource TextHintColor}" VerticalOptions="Center" />
+        </Grid>
 
-            <VerticalStackLayout x:Name="HistoryList" Spacing="10" />
+        <!-- 海报墙（真数据：播放历史，无封面时猫爪前景图标占位） -->
+        <CollectionView Grid.Row="1" x:Name="Wall" SelectionMode="Single"
+                        SelectionChanged="OnCardSelected">
+            <CollectionView.ItemsLayout>
+                <GridItemsLayout Orientation="Vertical" Span="6" VerticalItemSpacing="16" HorizontalItemSpacing="14" />
+            </CollectionView.ItemsLayout>
+            <CollectionView.ItemTemplate>
+                <DataTemplate>
+                    <VerticalStackLayout Spacing="0">
+                        <Border StrokeThickness="0" StrokeShape="RoundRectangle 10"
+                                BackgroundColor="{DynamicResource CardBackgroundColor}" HeightRequest="190">
+                            <Grid>
+                                <Image Source="{Binding Cover}" Aspect="AspectFill" />
+                                <Image Source="appiconfg.svg" Aspect="AspectFit" Opacity="0.35"
+                                       WidthRequest="40" HeightRequest="40"
+                                       HorizontalOptions="Center" VerticalOptions="Center">
+                                    <Image.Triggers>
+                                        <DataTrigger TargetType="Image" Binding="{Binding Cover}" Value="{x:Null}">
+                                            <Setter Property="IsVisible" Value="True" />
+                                        </DataTrigger>
+                                    </Image.Triggers>
+                                </Image>
+                                <Border HorizontalOptions="End" VerticalOptions="Start" Margin="0,7,7,0"
+                                        StrokeThickness="0" BackgroundColor="#80000000" StrokeShape="RoundRectangle 8" Padding="6,1"
+                                        IsVisible="{Binding HasRemark}">
+                                    <Label Text="{Binding Remark}" FontSize="10" TextColor="#FFD76E" MaxLines="1" />
+                                </Border>
+                            </Grid>
+                        </Border>
+                        <Label Text="{Binding Title}" FontSize="12.5" Margin="0,7,0,0"
+                               LineBreakMode="TailTruncation" MaxLines="1"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                        <Label Text="{Binding Meta}" FontSize="10.5" Margin="0,2,0,0"
+                               LineBreakMode="TailTruncation" MaxLines="1"
+                               TextColor="{DynamicResource TextHintColor}" />
+                    </VerticalStackLayout>
+                </DataTemplate>
+            </CollectionView.ItemTemplate>
+        </CollectionView>
 
-            <Label x:Name="HistoryEmpty"
-                   Text="暂无播放记录，去首页挑一部影片吧"
-                   FontSize="13" HorizontalTextAlignment="Center"
-                   TextColor="{DynamicResource TextHintColor}" Padding="0,16" />
+        <Label Grid.Row="1" x:Name="HistoryEmpty"
+               Text="暂无播放记录，去首页挑一部影片吧"
+               FontSize="13" HorizontalTextAlignment="Center" VerticalOptions="Center"
+               TextColor="{DynamicResource TextHintColor}" IsVisible="False" />
 
-        </VerticalStackLayout>
-    </ScrollView>
+    </Grid>
 
 </ContentView>

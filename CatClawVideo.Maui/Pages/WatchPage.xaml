@@ -11,15 +11,15 @@
         <BackButtonBehavior IsVisible="False" />
     </Shell.BackButtonBehavior>
 
-    <ScrollView>
-        <VerticalStackLayout Padding="24,14,24,28" Spacing="14">
+    <ScrollView x:Name="ContentScroll">
+        <VerticalStackLayout x:Name="ContentStack" Padding="24,14,24,28" Spacing="14">
 
-            <!-- 顶栏：返回 + 品牌（全屏按钮在播放器控制条内，避开窗口控件区） -->
-            <Grid ColumnDefinitions="Auto,Auto" ColumnSpacing="12">
+            <!-- 顶栏：返回 + 品牌（全屏模式下隐藏） -->
+            <Grid x:Name="TopBarGrid" ColumnDefinitions="Auto,Auto" ColumnSpacing="12">
                 <Border Grid.Column="0" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
                         StrokeShape="RoundRectangle 12" WidthRequest="38" HeightRequest="38">
-                    <Label Text="←" FontSize="20" TextColor="{DynamicResource TextPrimaryColor}"
-                           HorizontalOptions="Center" VerticalOptions="Center" HorizontalTextAlignment="Center" />
+                    <Image Source="ic_back.svg" WidthRequest="18" HeightRequest="18"
+                           HorizontalOptions="Center" VerticalOptions="Center" />
                     <Border.GestureRecognizers>
                         <TapGestureRecognizer Tapped="OnBackTapped" />
                     </Border.GestureRecognizers>
@@ -28,8 +28,8 @@
                        TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
             </Grid>
 
-            <!-- ═══ 主区：播放器 + 右侧选集栏（主流播放器形态） ═══ -->
-            <Grid ColumnDefinitions="*,300" ColumnSpacing="16">
+            <!-- ═══ 主区：播放器 + 右侧选集栏（主流播放器形态；全屏模式下选集列隐藏） ═══ -->
+            <Grid x:Name="MainArea" ColumnDefinitions="*,300" ColumnSpacing="16">
 
                 <!-- 播放器（16:9 高度随宽自适应）+ 线路芯片 + 控制条 -->
                 <Border Grid.Column="0" StrokeThickness="0" StrokeShape="RoundRectangle 12" BackgroundColor="Black"
@@ -38,10 +38,6 @@
                         <controls:VideoPlayerView x:Name="Player"
                                                   Aspect="AspectFit"
                                                   ShouldKeepScreenOn="True" />
-
-                        <!-- 线路芯片（左上角内嵌） -->
-                        <HorizontalStackLayout x:Name="LinesHost" Spacing="6"
-                                               Margin="12,10,12,0" VerticalOptions="Start" />
 
                         <Grid x:Name="BufferingIndicator" IsVisible="False">
                             <ActivityIndicator IsRunning="True" Color="{DynamicResource PrimaryColor}"
@@ -54,6 +50,17 @@
                             <Grid.GestureRecognizers>
                                 <TapGestureRecognizer Tapped="OnSurfaceTapped" />
                             </Grid.GestureRecognizers>
+
+                            <!-- 网速徽章：鼠标移入播放画面显示（BT 播放时），右上角 -->
+                            <Border x:Name="SpeedBadge" IsVisible="False" InputTransparent="True"
+                                    StrokeThickness="0" BackgroundColor="#80000000"
+                                    StrokeShape="RoundRectangle 6" Padding="8,4"
+                                    HorizontalOptions="End" VerticalOptions="Start" Margin="0,10,12,0">
+                                <HorizontalStackLayout Spacing="5">
+                                    <Image Source="ic_download_white.svg" WidthRequest="11" HeightRequest="11" VerticalOptions="Center" />
+                                    <Label x:Name="SpeedLabel" Text="0 KB/s" FontSize="11" TextColor="#FFD76E" VerticalOptions="Center" />
+                                </HorizontalStackLayout>
+                            </Border>
                             <ImageButton x:Name="CenterPlayButton"
                                          WidthRequest="56" HeightRequest="56"
                                          CornerRadius="28"
@@ -82,36 +89,65 @@
                                 <Label Grid.Column="3" x:Name="DurationLabel" Text="--:--"
                                        FontSize="10.5" FontFamily="OpenSansSemibold" TextColor="White"
                                        VerticalOptions="Center" />
-                                <Button Grid.Column="4" Text="⛶" FontSize="15" Padding="0"
-                                        WidthRequest="30" HeightRequest="26"
-                                        TextColor="White" BackgroundColor="Transparent"
-                                        VerticalOptions="Center"
-                                        Clicked="OnPlayFullClicked" />
+                                <ImageButton Grid.Column="4" x:Name="FullScreenButton"
+                                             Source="ic_fullscreen.svg"
+                                             WidthRequest="30" HeightRequest="26"
+                                             BackgroundColor="Transparent"
+                                             VerticalOptions="Center"
+                                             Clicked="OnToggleFullscreenClicked" />
                             </Grid>
                         </Grid>
                     </Grid>
                 </Border>
 
-                <!-- 右侧选集栏（与播放器等高，内部滚动） -->
-                <Border Grid.Column="1" StrokeThickness="0" StrokeShape="RoundRectangle 14"
+                <!-- 右侧选集栏（与播放器等高，内部滚动；全屏模式下隐藏） -->
+                <Border x:Name="SidebarPanel" Grid.Column="1" StrokeThickness="0" StrokeShape="RoundRectangle 14"
                         BackgroundColor="{DynamicResource CardBackgroundColor}"
                         VerticalOptions="Fill" Padding="0">
-                    <Grid RowDefinitions="Auto,Auto,*" Padding="0">
+                    <Grid RowDefinitions="Auto,Auto,*,Auto" Padding="0">
                         <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Padding="14,12,14,0">
                             <Label Grid.Column="0" Text="选集" FontSize="14" FontFamily="OpenSansSemibold"
                                    TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
-                            <Label Grid.Column="1" x:Name="EpisodeCountLabel" FontSize="11"
+                            <Label x:Name="EpisodeCountLabel" FontSize="11"
                                    TextColor="{DynamicResource TextHintColor}" VerticalOptions="Center" />
                         </Grid>
-                        <ScrollView Grid.Row="1" Padding="10,8,10,12">
-                            <VerticalStackLayout x:Name="EpisodeListHost" Spacing="4" />
+
+                        <!-- 线路切换（选集栏上方）：芯片 = 线路，点击切换并重载选集 -->
+                        <ScrollView Grid.Row="1" Orientation="Horizontal"
+                                    HorizontalScrollBarVisibility="Never" VerticalScrollBarVisibility="Never"
+                                    Padding="14,8,14,4">
+                            <HorizontalStackLayout x:Name="LinesHost" Spacing="8" />
                         </ScrollView>
+
+                        <ScrollView Grid.Row="2" Padding="10,4,10,4">
+                            <!-- 一页 20 集（2 列 × 10 行），行内容代码后置填充 -->
+                            <Grid x:Name="EpisodeListHost" ColumnDefinitions="*,*" ColumnSpacing="8" RowSpacing="4" />
+                        </ScrollView>
+
+                        <!-- 翻页条：多于 1 页才显示；首页隐藏上一页、末页隐藏下一页（代码后置控制） -->
+                        <HorizontalStackLayout Grid.Row="3" x:Name="EpisodePager" IsVisible="False"
+                                               HorizontalOptions="Center" Spacing="10" Padding="0,6,0,10">
+                            <Button x:Name="PagerPrev" Text="上一页" FontSize="12"
+                                    ContentLayout="Left,4"
+                                    ImageSource="ic_arrow_left_white.svg"
+                                    TextColor="{DynamicResource TextPrimaryColor}"
+                                    BackgroundColor="{DynamicResource ChipInactiveColor}"
+                                    CornerRadius="8" Padding="12,6" Clicked="OnPrevPageTapped" />
+                            <Label x:Name="PagerLabel" FontSize="11"
+                                   TextColor="{DynamicResource TextHintColor}" VerticalOptions="Center" />
+                            <Button x:Name="PagerNext" Text="下一页" FontSize="12"
+                                    ContentLayout="Right,4"
+                                    ImageSource="ic_arrow_right_white.svg"
+                                    TextColor="{DynamicResource TextPrimaryColor}"
+                                    BackgroundColor="{DynamicResource ChipInactiveColor}"
+                                    CornerRadius="8" Padding="12,6" Clicked="OnNextPageTapped" />
+                        </HorizontalStackLayout>
                     </Grid>
                 </Border>
             </Grid>
 
-            <!-- ═══ 信息区（播放器下方全宽） ═══ -->
-            <Grid RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="0" Padding="0,2,0,0">
+            <!-- ═══ 信息区（播放器下方全宽；全屏模式下隐藏） ═══ -->
+            <Grid x:Name="InfoArea" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="0" Padding="0,2,0,0">
                 <!-- 标题行：片名 + 徽章 + 操作 -->
                 <Grid Grid.Row="0" ColumnDefinitions="Auto,Auto,Auto,Auto,*,Auto,Auto" ColumnSpacing="10">
                     <Label Grid.Column="0" x:Name="TitleLabel" FontSize="20" FontFamily="OpenSansSemibold"
@@ -132,14 +168,18 @@
                             VerticalOptions="Center">
                         <Label x:Name="CategoryBadgeLabel" FontSize="11" TextColor="{DynamicResource TextSecondaryColor}" />
                     </Border>
-                    <Button Grid.Column="5" Text="♥ 收藏" FontSize="12.5"
+                    <Button Grid.Column="5" x:Name="FavoriteButton" Text="收藏" FontSize="12.5"
+                            ContentLayout="Left,5"
+                            ImageSource="ic_favorite_border_white.svg"
                             TextColor="{DynamicResource TextPrimaryColor}"
                             BackgroundColor="{DynamicResource ChipInactiveColor}"
-                            CornerRadius="8" Padding="16,7" Clicked="OnFavoriteClicked" />
-                    <Button Grid.Column="6" Text="⇪ 分享" FontSize="12.5"
+                            CornerRadius="8" Padding="14,7" Clicked="OnFavoriteClicked" />
+                    <Button Grid.Column="6" Text="分享" FontSize="12.5"
+                            ContentLayout="Left,5"
+                            ImageSource="ic_share_white.svg"
                             TextColor="{DynamicResource TextPrimaryColor}"
                             BackgroundColor="{DynamicResource ChipInactiveColor}"
-                            CornerRadius="8" Padding="16,7" Clicked="OnShareClicked" />
+                            CornerRadius="8" Padding="14,7" Clicked="OnShareClicked" />
                 </Grid>
 
                 <!-- 元数据行 -->
@@ -158,8 +198,8 @@
                 </Label>
             </Grid>
 
-            <!-- 相关推荐占位（接入推荐接口后填充） -->
-            <Label Text="相关推荐随后续推荐接口上线" FontSize="11" Margin="0,14,0,0"
+            <!-- 相关推荐占位（接入推荐接口后填充；全屏模式下隐藏） -->
+            <Label x:Name="RecommendHint" Text="相关推荐随后续推荐接口上线" FontSize="11" Margin="0,14,0,0"
                    TextColor="{DynamicResource TextHintColor}" />
 
         </VerticalStackLayout>

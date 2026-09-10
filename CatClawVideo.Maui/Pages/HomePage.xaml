@@ -4,127 +4,100 @@
              x:Class="CatClawVideo.Maui.Pages.HomePage"
              BackgroundColor="Transparent">
 
-    <ScrollView>
-        <VerticalStackLayout Padding="24,16,24,24" Spacing="14">
+    <!-- 根用 Grid（不能用 ScrollView 包 CollectionView）：海报墙占 * 行获得有界高度，
+         内部滚动 + 虚拟化 + RemainingItemsThresholdReached 才能触发无限滚动 -->
+    <Grid RowDefinitions="Auto,Auto,Auto,*" Padding="24,16,24,20" RowSpacing="14">
 
-            <!-- 站点条：当前数据源 + 切换入口（参考影视仓首页数据源） -->
-            <Grid ColumnDefinitions="Auto,*,Auto" Margin="0,0,24,0">
-                <HorizontalStackLayout Grid.Column="0" Spacing="8" VerticalOptions="Center">
-                    <Label Text="📺" FontSize="14" VerticalOptions="Center" />
-                    <Label Text="{Binding SiteDisplayName}" FontSize="14" FontFamily="OpenSansSemibold"
-                           LineBreakMode="TailTruncation" MaxLines="1"
-                           TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
+        <!-- 站点条：当前数据源 + 切换入口（参考影视仓首页数据源） -->
+        <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto" Margin="0,0,24,0">
+            <HorizontalStackLayout Grid.Column="0" Spacing="8" VerticalOptions="Center">
+                <Image Source="ic_library_white.svg" WidthRequest="14" HeightRequest="14" VerticalOptions="Center" />
+                <Label Text="{Binding SiteDisplayName}" FontSize="14" FontFamily="OpenSansSemibold"
+                       LineBreakMode="TailTruncation" MaxLines="1"
+                       TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
+            </HorizontalStackLayout>
+            <Border Grid.Column="2" StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,6"
+                    BackgroundColor="{DynamicResource ChipInactiveColor}">
+                <HorizontalStackLayout Spacing="6">
+                    <Label Text="切换源" FontSize="11.5"
+                           TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
+                    <Image Source="ic_refresh_white.svg" WidthRequest="12" HeightRequest="12" VerticalOptions="Center" />
                 </HorizontalStackLayout>
-                <Border Grid.Column="2" StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,6"
-                        BackgroundColor="{DynamicResource ChipInactiveColor}">
-                    <HorizontalStackLayout Spacing="6">
-                        <Label Text="切换源" FontSize="11.5"
-                               TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
-                        <Label Text="⇄" FontSize="12" TextColor="{DynamicResource PrimaryColor}" VerticalOptions="Center" />
-                    </HorizontalStackLayout>
-                    <Border.GestureRecognizers>
-                        <TapGestureRecognizer Tapped="OnSwitchSiteTapped" />
-                    </Border.GestureRecognizers>
-                </Border>
-            </Grid>
-
-            <!-- 分类 chips（真数据：当前源分类目录）
-                 注意：此处原用 CollectionView + SelectionMode=Single，Windows 上选中后 item 容器
-                 未释放指针捕获，会导致后续所有点击（含顶部导航 tab）失效，故改为 BindableLayout + Tap。 -->
-            <ScrollView Orientation="Horizontal"
-                        HorizontalScrollBarVisibility="Never"
-                        VerticalScrollBarVisibility="Never">
-                <HorizontalStackLayout x:Name="CategoryChipHost" Spacing="8" Padding="0,0,24,0"
-                                       BindableLayout.ItemsSource="{Binding Categories}">
-                    <BindableLayout.ItemTemplate>
-                        <DataTemplate>
-                            <Border StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,6"
-                                    BackgroundColor="{DynamicResource ChipInactiveColor}">
-                                <Label Text="{Binding Name}" FontSize="11.5"
-                                       TextColor="{DynamicResource TextSecondaryColor}" />
-                                <Border.GestureRecognizers>
-                                    <TapGestureRecognizer Tapped="OnCategoryTapped" />
-                                </Border.GestureRecognizers>
-                            </Border>
-                        </DataTemplate>
-                    </BindableLayout.ItemTemplate>
-                </HorizontalStackLayout>
-            </ScrollView>
-
-            <!-- 加载状态 -->
-            <Label Text="{Binding HomeStatus}" FontSize="12"
-                   TextColor="{DynamicResource TextHintColor}" />
-
-            <!-- 海报网格（真数据：当前源影片列表，Windows 6 列 / 安卓横屏 4 列；滚动到底自动加载下一页） -->
-            <CollectionView x:Name="PosterGrid" SelectionMode="Single" ItemsSource="{Binding Items}"
-                            RemainingItemsThresholdReachedCommand="{Binding LoadMoreCommand}"
-                            RemainingItemsThreshold="8">
-                <CollectionView.ItemsLayout>
-                    <GridItemsLayout Orientation="Vertical" Span="6" VerticalItemSpacing="18" HorizontalItemSpacing="14" />
-                </CollectionView.ItemsLayout>
-                <CollectionView.ItemTemplate>
-                    <DataTemplate>
-                        <VerticalStackLayout Spacing="0">
-                            <Border StrokeThickness="0" StrokeShape="RoundRectangle 10"
-                                    BackgroundColor="{DynamicResource CardBackgroundColor}" HeightRequest="190">
-                                <Grid>
-                                    <Image Source="{Binding Cover}" Aspect="AspectFill" />
-                                    <Label Text="🎬" FontSize="28" HorizontalOptions="Center" VerticalOptions="Center"
-                                           TextColor="{DynamicResource TextHintColor}">
-                                        <Label.Triggers>
-                                            <DataTrigger TargetType="Label" Binding="{Binding Cover}" Value="{x:Null}">
-                                                <Setter Property="IsVisible" Value="True" />
-                                            </DataTrigger>
-                                        </Label.Triggers>
-                                    </Label>
-                                    <Border HorizontalOptions="End" VerticalOptions="Start" Margin="0,8,8,0"
-                                            StrokeThickness="0" BackgroundColor="#80000000" StrokeShape="RoundRectangle 8" Padding="6,1">
-                                        <Label Text="{Binding Remarks}" FontSize="10" TextColor="#FFD76E" MaxLines="1" />
-                                    </Border>
-                                </Grid>
-                            </Border>
-                            <Label Text="{Binding Title}" FontSize="12.5" Margin="0,7,0,0"
-                                   LineBreakMode="TailTruncation" MaxLines="1"
-                                   TextColor="{DynamicResource TextPrimaryColor}" />
-                            <Label Text="{Binding Year}" FontSize="10.5" Margin="0,2,0,0"
-                                   TextColor="{DynamicResource TextHintColor}" />
-                            <Grid.GestureRecognizers>
-                                <TapGestureRecognizer Tapped="OnPosterTapped" />
-                            </Grid.GestureRecognizers>
-                        </VerticalStackLayout>
-                    </DataTemplate>
-                </CollectionView.ItemTemplate>
-            </CollectionView>
-
-            <!-- 快速播放（开发用播放链路验证入口） -->
-            <Border StrokeThickness="1" Margin="0,18,0,0"
-                    StrokeShape="RoundRectangle 16"
-                    BackgroundColor="{DynamicResource CardBackgroundColor}"
-                    Stroke="{DynamicResource DividerColor}" Padding="18">
-                <VerticalStackLayout Spacing="10">
-                    <Label Text="快速播放（开发用）"
-                           FontSize="14" FontFamily="OpenSansSemibold"
-                           TextColor="{DynamicResource TextPrimaryColor}" />
-                    <Label Text="输入直链地址（m3u8 / mp4）验证播放链路，或播放 HLS 测试流"
-                           FontSize="12" TextColor="{DynamicResource TextSecondaryColor}" />
-                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
-                        <Entry Grid.Column="0"
-                               Placeholder="https://example.com/video.m3u8"
-                               PlaceholderColor="{DynamicResource TextHintColor}"
-                               Text="{Binding UrlInput, Mode=TwoWay}"
-                               TextColor="{DynamicResource TextPrimaryColor}"
-                               Keyboard="Url" ReturnType="Go"
-                               ReturnCommand="{Binding PlayCommand}" />
-                        <Button Grid.Column="1" Text="播放"
-                                Command="{Binding PlayTestStreamCommand}"
-                                FontFamily="OpenSansSemibold" TextColor="White"
-                                BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
-                                CornerRadius="10" Padding="18,6" />
-                    </Grid>
-                </VerticalStackLayout>
+                <Border.GestureRecognizers>
+                    <TapGestureRecognizer Tapped="OnSwitchSiteTapped" />
+                </Border.GestureRecognizers>
             </Border>
+        </Grid>
 
-        </VerticalStackLayout>
-    </ScrollView>
+        <!-- 分类 chips（真数据：当前源分类目录）
+             注意：此处原用 CollectionView + SelectionMode=Single，Windows 上选中后 item 容器
+             未释放指针捕获，会导致后续所有点击（含顶部导航 tab）失效，故改为 BindableLayout + Tap。 -->
+        <ScrollView Grid.Row="1" Orientation="Horizontal"
+                    HorizontalScrollBarVisibility="Never"
+                    VerticalScrollBarVisibility="Never">
+            <HorizontalStackLayout x:Name="CategoryChipHost" Spacing="8" Padding="0,0,24,0"
+                                   BindableLayout.ItemsSource="{Binding Categories}">
+                <BindableLayout.ItemTemplate>
+                    <DataTemplate>
+                        <Border StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,6"
+                                BackgroundColor="{DynamicResource ChipInactiveColor}">
+                            <Label Text="{Binding Name}" FontSize="11.5"
+                                   TextColor="{DynamicResource TextSecondaryColor}" />
+                            <Border.GestureRecognizers>
+                                <TapGestureRecognizer Tapped="OnCategoryTapped" />
+                            </Border.GestureRecognizers>
+                        </Border>
+                    </DataTemplate>
+                </BindableLayout.ItemTemplate>
+            </HorizontalStackLayout>
+        </ScrollView>
+
+        <!-- 加载状态 -->
+        <Label Grid.Row="2" Text="{Binding HomeStatus}" FontSize="12"
+               TextColor="{DynamicResource TextHintColor}" />
+
+        <!-- 海报网格（真数据：当前源影片列表，Windows 6 列 / 安卓横屏 4 列；滚动到底自动加载下一页） -->
+        <CollectionView Grid.Row="3" x:Name="PosterGrid" SelectionMode="Single" ItemsSource="{Binding Items}"
+                        RemainingItemsThresholdReachedCommand="{Binding LoadMoreCommand}"
+                        RemainingItemsThreshold="8">
+            <CollectionView.ItemsLayout>
+                <GridItemsLayout Orientation="Vertical" Span="6" VerticalItemSpacing="18" HorizontalItemSpacing="14" />
+            </CollectionView.ItemsLayout>
+            <CollectionView.ItemTemplate>
+                <DataTemplate>
+                    <VerticalStackLayout Spacing="0">
+                        <Border StrokeThickness="0" StrokeShape="RoundRectangle 10"
+                                BackgroundColor="{DynamicResource CardBackgroundColor}" HeightRequest="190">
+                            <Grid>
+                                <Image Source="{Binding Cover}" Aspect="AspectFill" />
+                                <Image Source="appiconfg.svg" Aspect="AspectFit" Opacity="0.35"
+                                       WidthRequest="40" HeightRequest="40"
+                                       HorizontalOptions="Center" VerticalOptions="Center">
+                                    <Image.Triggers>
+                                        <DataTrigger TargetType="Image" Binding="{Binding Cover}" Value="{x:Null}">
+                                            <Setter Property="IsVisible" Value="True" />
+                                        </DataTrigger>
+                                    </Image.Triggers>
+                                </Image>
+                                <Border HorizontalOptions="End" VerticalOptions="Start" Margin="0,8,8,0"
+                                        StrokeThickness="0" BackgroundColor="#80000000" StrokeShape="RoundRectangle 8" Padding="6,1">
+                                    <Label Text="{Binding Remarks}" FontSize="10" TextColor="#FFD76E" MaxLines="1" />
+                                </Border>
+                            </Grid>
+                        </Border>
+                        <Label Text="{Binding Title}" FontSize="12.5" Margin="0,7,0,0"
+                               LineBreakMode="TailTruncation" MaxLines="1"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                        <Label Text="{Binding Year}" FontSize="10.5" Margin="0,2,0,0"
+                               TextColor="{DynamicResource TextHintColor}" />
+                        <Grid.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnPosterTapped" />
+                        </Grid.GestureRecognizers>
+                    </VerticalStackLayout>
+                </DataTemplate>
+            </CollectionView.ItemTemplate>
+        </CollectionView>
+
+    </Grid>
 
 </ContentView>

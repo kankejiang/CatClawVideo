@@ -16,6 +16,9 @@ public partial class VideoPlayerPage : ContentPage, IQueryAttributable
     /// <summary>控制层自动隐藏计时器（播放中 3.5s 无操作隐藏）</summary>
     private IDispatcherTimer? _hideTimer;
 
+    /// <summary>断点续播起始位置（秒）：观看页全屏入口携带，MediaOpened 后 seek（0 = 从头播）</summary>
+    private double _startPosition;
+
     public VideoPlayerPage(VideoPlayerViewModel vm, VideoPlaybackManager playback)
     {
         InitializeComponent();
@@ -47,6 +50,11 @@ public partial class VideoPlayerPage : ContentPage, IQueryAttributable
             _vm.Title = title;
         if (query.TryGetValue("url", out var urlObj) && urlObj is string url)
             _vm.Url = url;
+        if (query.TryGetValue("pos", out var posObj) && posObj is string posStr &&
+            double.TryParse(posStr, System.Globalization.CultureInfo.InvariantCulture, out var pos) && pos > 0)
+            _startPosition = pos;
+        if (query.TryGetValue("cover", out var coverObj) && coverObj is string cover && cover.Length > 0)
+            _vm.Cover = cover;
     }
 
     protected override void OnAppearing()
@@ -85,7 +93,7 @@ public partial class VideoPlayerPage : ContentPage, IQueryAttributable
         _vm.ControlsVisible = true;
 
         Player.Source = _vm.Url;
-        _playback.BeginSession(_vm.Title, _vm.Url);
+        _playback.BeginSession(_vm.Title, _vm.Url, _vm.Cover);
         RestartHideTimer();
     }
 
@@ -95,6 +103,18 @@ public partial class VideoPlayerPage : ContentPage, IQueryAttributable
     {
         if (Player.Duration != TimeSpan.Zero)
             _vm.DurationSeconds = Player.Duration.TotalSeconds;
+
+        // 断点续播：媒体就绪（时长已知）后一次性 seek；越界（接近片尾）则放弃从头播
+        if (_startPosition > 0)
+        {
+            var target = _startPosition;
+            _startPosition = 0;
+            if (Player.Duration == TimeSpan.Zero || target < Player.Duration.TotalSeconds - 1)
+            {
+                Player.Seek(TimeSpan.FromSeconds(target));
+                _vm.PositionSeconds = target;
+            }
+        }
     }
 
     private void OnPositionChanged(object? sender, EventArgs e)

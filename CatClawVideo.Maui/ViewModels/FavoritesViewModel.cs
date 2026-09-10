@@ -15,9 +15,12 @@ public partial class FavoritesViewModel : ObservableObject
     private IReadOnlyList<PlayHistoryEntry> _recentPlays = [];
 
     [ObservableProperty]
+    private IReadOnlyList<FavoriteEntry> _favorites = [];
+
+    [ObservableProperty]
     private bool _isLoaded;
 
-    /// <summary>刷新最近播放列表</summary>
+    /// <summary>刷新最近播放 + 收藏</summary>
     [RelayCommand]
     private async Task LoadAsync()
     {
@@ -30,19 +33,30 @@ public partial class FavoritesViewModel : ObservableObject
             System.Diagnostics.Debug.WriteLine($"[Favorites] 加载历史失败: {ex.Message}");
             RecentPlays = [];
         }
+        try
+        {
+            Favorites = await _db.GetFavoritesAsync();
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[Favorites] 加载收藏失败: {ex.Message}");
+            Favorites = [];
+        }
         finally
         {
             IsLoaded = true;
         }
     }
 
-    /// <summary>继续观看：跳转播放页</summary>
+    /// <summary>继续观看：跳转播放页（携带断点位置续播）</summary>
     [RelayCommand]
     private async Task PlayAgainAsync(PlayHistoryEntry entry)
     {
         if (string.IsNullOrEmpty(entry.Url)) return;
         await Shell.Current.GoToAsync(
-            $"player?title={Uri.EscapeDataString(entry.Title)}&url={Uri.EscapeDataString(entry.Url)}");
+            $"player?title={Uri.EscapeDataString(entry.Title)}&url={Uri.EscapeDataString(entry.Url)}" +
+            $"&pos={Math.Max(0, (int)entry.PositionSeconds)}" +
+            (string.IsNullOrEmpty(entry.Cover) ? "" : $"&cover={Uri.EscapeDataString(entry.Cover)}"));
     }
 
     /// <summary>清空播放历史</summary>

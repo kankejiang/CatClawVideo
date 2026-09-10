@@ -1,100 +1,75 @@
-﻿<?xml version="1.0" encoding="UTF-8" ?>
+<?xml version="1.0" encoding="UTF-8" ?>
 <ContentView xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
              x:Class="CatClawVideo.Maui.Pages.FavoritesPage"
              BackgroundColor="Transparent">
 
-    <ScrollView>
-        <VerticalStackLayout Padding="24,16,24,24" Spacing="16">
+    <!-- 根用 Grid：分组海报墙（最近播放 / 我的收藏）占 * 行获得有界高度 -->
+    <Grid RowDefinitions="Auto,*" Padding="24,16,24,20" RowSpacing="12">
 
-            <Label Text="收藏"
-                   FontSize="28"
-                   FontFamily="OpenSansSemibold"
-                   TextColor="{DynamicResource TextPrimaryColor}"
-                   Margin="0,8,0,0" />
+        <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
+            <Label Grid.Column="0" Text="我的收藏" FontSize="17" FontFamily="OpenSansSemibold"
+                   TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
+            <Button Grid.Column="1" x:Name="ClearHistoryButton" Text="清空历史" FontSize="12"
+                    Padding="14,6" CornerRadius="14"
+                    TextColor="{DynamicResource TextSecondaryColor}"
+                    BackgroundColor="{DynamicResource ChipInactiveColor}"
+                    Command="{Binding ClearHistoryCommand}"
+                    IsVisible="False" />
+        </Grid>
 
-            <!-- 最近播放 -->
-            <Grid ColumnDefinitions="*,Auto">
-                <Label Grid.Column="0" Text="最近播放"
-                       FontSize="15"
-                       FontFamily="OpenSansSemibold"
-                       TextColor="{DynamicResource TextPrimaryColor}"
-                       VerticalOptions="Center" />
-                <Button Grid.Column="1"
-                        x:Name="ClearHistoryButton"
-                        Text="清空"
-                        FontSize="12"
-                        Padding="14,6"
-                        CornerRadius="14"
-                        TextColor="{DynamicResource TextSecondaryColor}"
-                        BackgroundColor="{DynamicResource ChipInactiveColor}"
-                        Command="{Binding ClearHistoryCommand}"
-                        IsVisible="False" />
-            </Grid>
+        <!-- 分组海报墙（真数据：播放历史 + 收藏表；无封面时猫爪前景图标占位） -->
+        <CollectionView Grid.Row="1" x:Name="Wall" IsGrouped="True" SelectionMode="Single"
+                        SelectionChanged="OnCardSelected">
+            <CollectionView.ItemsLayout>
+                <GridItemsLayout Orientation="Vertical" Span="6" VerticalItemSpacing="16" HorizontalItemSpacing="14" />
+            </CollectionView.ItemsLayout>
+            <CollectionView.GroupHeaderTemplate>
+                <DataTemplate>
+                    <Label Text="{Binding Name}" FontSize="15" FontFamily="OpenSansSemibold"
+                           Margin="0,6,0,4"
+                           TextColor="{DynamicResource TextPrimaryColor}" />
+                </DataTemplate>
+            </CollectionView.GroupHeaderTemplate>
+            <CollectionView.ItemTemplate>
+                <DataTemplate>
+                    <VerticalStackLayout Spacing="0">
+                        <Border StrokeThickness="0" StrokeShape="RoundRectangle 10"
+                                BackgroundColor="{DynamicResource CardBackgroundColor}" HeightRequest="190">
+                            <Grid>
+                                <Image Source="{Binding Cover}" Aspect="AspectFill" />
+                                <Image Source="appiconfg.svg" Aspect="AspectFit" Opacity="0.35"
+                                       WidthRequest="40" HeightRequest="40"
+                                       HorizontalOptions="Center" VerticalOptions="Center">
+                                    <Image.Triggers>
+                                        <DataTrigger TargetType="Image" Binding="{Binding Cover}" Value="{x:Null}">
+                                            <Setter Property="IsVisible" Value="True" />
+                                        </DataTrigger>
+                                    </Image.Triggers>
+                                </Image>
+                                <Border HorizontalOptions="End" VerticalOptions="Start" Margin="0,7,7,0"
+                                        StrokeThickness="0" BackgroundColor="#80000000" StrokeShape="RoundRectangle 8" Padding="6,1"
+                                        IsVisible="{Binding HasRemark}">
+                                    <Label Text="{Binding Remark}" FontSize="10" TextColor="#FFD76E" MaxLines="1" />
+                                </Border>
+                            </Grid>
+                        </Border>
+                        <Label Text="{Binding Title}" FontSize="12.5" Margin="0,7,0,0"
+                               LineBreakMode="TailTruncation" MaxLines="1"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                        <Label Text="{Binding Meta}" FontSize="10.5" Margin="0,2,0,0"
+                               LineBreakMode="TailTruncation" MaxLines="1"
+                               TextColor="{DynamicResource TextHintColor}" />
+                    </VerticalStackLayout>
+                </DataTemplate>
+            </CollectionView.ItemTemplate>
+        </CollectionView>
 
-            <!-- 历史列表 -->
-            <VerticalStackLayout x:Name="HistoryList" Spacing="10" />
+        <Label Grid.Row="1" x:Name="EmptyLabel"
+               Text="暂无收藏与播放记录，去首页挑一部影片吧"
+               FontSize="13" HorizontalTextAlignment="Center" VerticalOptions="Center"
+               TextColor="{DynamicResource TextHintColor}" IsVisible="False" />
 
-            <Label x:Name="HistoryEmpty"
-                   Text="暂无播放记录，去首页播放一个视频吧"
-                   FontSize="13"
-                   HorizontalTextAlignment="Center"
-                   TextColor="{DynamicResource TextHintColor}"
-                   Padding="0,12" />
-
-            <!-- 我的收藏（订阅源上线前假数据骨架） -->
-            <Grid ColumnDefinitions="*,Auto">
-                <Label Grid.Column="0" Text="我的收藏" Margin="0,8,0,0"
-                       FontSize="15"
-                       FontFamily="OpenSansSemibold"
-                       TextColor="{DynamicResource TextPrimaryColor}" />
-            </Grid>
-
-            <HorizontalStackLayout Spacing="8">
-                <Border StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,5" BackgroundColor="#26262f">
-                    <Label Text="全部 (6)" FontSize="11.5" TextColor="White" />
-                </Border>
-                <Border StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,5" BackgroundColor="{DynamicResource ChipInactiveColor}">
-                    <Label Text="电影 (2)" FontSize="11.5" TextColor="{DynamicResource TextSecondaryColor}" />
-                </Border>
-                <Border StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,5" BackgroundColor="{DynamicResource ChipInactiveColor}">
-                    <Label Text="剧集 (4)" FontSize="11.5" TextColor="{DynamicResource TextSecondaryColor}" />
-                </Border>
-                <Border StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,5" BackgroundColor="{DynamicResource ChipInactiveColor}">
-                    <Label Text="追更 (2)" FontSize="11.5" TextColor="{DynamicResource TextSecondaryColor}" />
-                </Border>
-            </HorizontalStackLayout>
-
-            <CollectionView x:Name="FavGrid" SelectionMode="Single">
-                <CollectionView.ItemsLayout>
-                    <GridItemsLayout Orientation="Vertical" Span="6" VerticalItemSpacing="16" HorizontalItemSpacing="14" />
-                </CollectionView.ItemsLayout>
-                <CollectionView.ItemTemplate>
-                    <DataTemplate>
-                        <VerticalStackLayout Spacing="0">
-                            <Border StrokeThickness="0" StrokeShape="RoundRectangle 10"
-                                    BackgroundColor="{DynamicResource CardBackgroundColor}" HeightRequest="190">
-                                <Grid>
-                                    <Label Text="🎬" FontSize="26" HorizontalOptions="Center" VerticalOptions="Center"
-                                           TextColor="{DynamicResource TextHintColor}" />
-                                    <Border HorizontalOptions="End" VerticalOptions="Start" Margin="0,7,7,0"
-                                            StrokeThickness="0" BackgroundColor="#80000000" StrokeShape="RoundRectangle 8" Padding="6,1">
-                                        <Label Text="{Binding Score}" FontSize="10" TextColor="#FFD76E" />
-                                    </Border>
-                                </Grid>
-                            </Border>
-                            <Label Text="{Binding Title}" FontSize="12.5" Margin="0,7,0,0"
-                                   LineBreakMode="TailTruncation" MaxLines="1"
-                                   TextColor="{DynamicResource TextPrimaryColor}" />
-                            <Label Text="{Binding Meta}" FontSize="10.5" Margin="0,2,0,0"
-                                   TextColor="{DynamicResource TextHintColor}" />
-                        </VerticalStackLayout>
-                    </DataTemplate>
-                </CollectionView.ItemTemplate>
-            </CollectionView>
-
-        </VerticalStackLayout>
-    </ScrollView>
+    </Grid>
 
 </ContentView>
-

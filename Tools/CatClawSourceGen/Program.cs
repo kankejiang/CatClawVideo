@@ -227,12 +227,12 @@ static (string Title, string? Cover, string? Year, string? Area, string? Remarks
     var episodes = magnetRx.Matches(html)
         .Select(m => new CatClawSourceEpisode
         {
-            Name = System.Net.WebUtility.HtmlDecode(m.Groups["name"].Value).Trim() is { Length: > 0 } n ? n : "磁力下载",
+            Name = System.Net.WebUtility.HtmlDecode(m.Groups["name"].Value).Trim() is { Length: > 0 } n ? n : "磁力播放",
             Url = System.Net.WebUtility.HtmlDecode(m.Groups["url"].Value),
         })
         .ToList();
     if (episodes.Count > 0)
-        sources.Add(new CatClawSourceGroup { Name = "磁力下载", Episodes = episodes });
+        sources.Add(new CatClawSourceGroup { Name = "磁力播放", Episodes = episodes });
 
     // 元数据行：◎年 代 / ◎产 地 / ◎豆瓣评分
     var text = System.Net.WebUtility.HtmlDecode(Regex.Replace(html, "<[^>]+>", ""));
