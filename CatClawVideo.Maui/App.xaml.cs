@@ -10,6 +10,24 @@ public partial class App : Application
 
     /// <summary>主窗口句柄（原生对话框 owner 用；窗口创建前为 Zero）</summary>
     public static IntPtr MainWindowHwnd => _appHwnd;
+
+    /// <summary>
+    /// 播放页原地全屏：窗口切换 FullScreen/Overlapped presenter（不重建页面/播放器）。
+    /// 非 Windows 平台由各页自行处理（Android 走横屏 + 沉浸式）。
+    /// </summary>
+    public static void SetWindowFullscreen(bool fullscreen)
+    {
+        try
+        {
+            _appWindow?.SetPresenter(Microsoft.UI.Windowing.AppWindowPresenterKind.FullScreen);
+            if (!fullscreen && _appWindow != null)
+                _appWindow.SetPresenter(Microsoft.UI.Windowing.AppWindowPresenterKind.Overlapped);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[App] SetWindowFullscreen({fullscreen}) failed: {ex.Message}");
+        }
+    }
 #endif
 
     public App()
