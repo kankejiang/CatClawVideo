@@ -46,7 +46,9 @@
                         </Grid>
 
                         <!-- 控制覆盖层：中央播放/暂停 + 底部进度 -->
-                        <Grid x:Name="ControlsOverlay">
+                        <!-- BackgroundColor="Transparent" 不可省：WinUI 下 Background=null 的面板
+                             不参与命中测试，指针进出/点击画面事件都会落空（视频控件在它下面） -->
+                        <Grid x:Name="ControlsOverlay" BackgroundColor="Transparent">
                             <Grid.GestureRecognizers>
                                 <TapGestureRecognizer Tapped="OnSurfaceTapped" />
                             </Grid.GestureRecognizers>
@@ -67,7 +69,7 @@
                                          BackgroundColor="#66000000"
                                          HorizontalOptions="Center" VerticalOptions="Center"
                                          Clicked="OnPlayPauseClicked" />
-                            <Grid VerticalOptions="End"
+                            <Grid x:Name="ControlBar" VerticalOptions="End"
                                   ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto" ColumnSpacing="12"
                                   Padding="12,6,12,10"
                                   BackgroundColor="#99000000">

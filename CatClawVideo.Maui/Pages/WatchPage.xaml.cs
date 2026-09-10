@@ -61,6 +61,10 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     private string? _btInfoHex;
     private IDispatcherTimer? _speedTimer;
 
+    /// <summary>控制层自动隐藏：鼠标移出播放框（或手指离开）后 3s 隐藏；播放中且非拖动时才生效</summary>
+    private IDispatcherTimer? _controlsHideTimer;
+    private const double ControlsHideSeconds = 3.0;
+
     /// <summary>原地全屏：同一播放器实例放大铺满，不新开页面/不重新拉流</summary>
     private bool _isFullscreen;
 
@@ -88,18 +92,30 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         });
 
         // 网速徽章：鼠标移入播放画面显示（BT 播放时），0.8s 刷新
+        // 指针手势挂在 ControlsOverlay 上：该层本身**常驻不隐藏**（隐藏的是它的子元素），
+        // 否则控制层一旦隐藏，其自身手势失效，控件就再也唤不出来。
         var pointer = new PointerGestureRecognizer();
         pointer.PointerEntered += OnPlayerPointerEntered;
+        pointer.PointerMoved += OnPlayerPointerMoved;
         pointer.PointerExited += OnPlayerPointerExited;
         ControlsOverlay.GestureRecognizers.Add(pointer);
         _speedTimer = Dispatcher.CreateTimer();
         _speedTimer.Interval = TimeSpan.FromMilliseconds(800);
         _speedTimer.IsRepeating = true;
         _speedTimer.Tick += (_, _) => UpdateSpeedBadge();
+
+        // 控制层自动隐藏：鼠标移出播放框 / 手指离开后 3s 隐藏
+        _controlsHideTimer = Dispatcher.CreateTimer();
+        _controlsHideTimer.Interval = TimeSpan.FromSeconds(ControlsHideSeconds);
+        _controlsHideTimer.IsRepeating = false;
+        _controlsHideTimer.Tick += (_, _) => HideControlsIfIdle();
     }
 
     private void OnPlayerPointerEntered(object? sender, PointerEventArgs e)
     {
+        // 鼠标进入播放框：控制层常亮（取消倒计时，等鼠标离开再重新计时）
+        ShowControls();
+
         _btInfoHex = BtStreamService.ExtractInfoHash(_resolvedPlay?.Url);
         if (_bt == null || _btInfoHex == null) return; // 非 BT 播放不显示
         UpdateSpeedBadge();
@@ -107,10 +123,16 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         _speedTimer?.Start();
     }
 
+    /// <summary>鼠标在播放框内移动：保持控制层可见（离开播放框才开始 3s 倒计时）</summary>
+    private void OnPlayerPointerMoved(object? sender, PointerEventArgs e) => ShowControls();
+
     private void OnPlayerPointerExited(object? sender, PointerEventArgs e)
     {
         SpeedBadge.IsVisible = false;
         _speedTimer?.Stop();
+
+        // 鼠标移出播放框：3s 后隐藏控制层（暂停/拖动中不隐藏）
+        RestartControlsHideTimer();
     }
 
     private void UpdateSpeedBadge()
@@ -564,6 +586,10 @@ public partial class WatchPage : ContentPage, IQueryAttributable
             Player.Play();
             _playing = true;
 
+            // 起播后唤出控制层；鼠标离开播放框（或手指离开）即 3s 后自动隐藏
+            ShowControls();
+            RestartControlsHideTimer();
+
             // 播放历史落库（BT 代理地址是会话内瞬态链接，重启后失效，不落库）
             if (!play.Url.Contains("/stream/", StringComparison.OrdinalIgnoreCase))
                 _playback.BeginSession(_item.Title + " · " + episode.Name, play.Url, _item.Cover);
@@ -594,7 +620,12 @@ public partial class WatchPage : ContentPage, IQueryAttributable
 
     private void OnBackTapped(object? sender, TappedEventArgs e) => Shell.Current.GoToAsync("..");
 
-    private void OnSurfaceTapped(object? sender, TappedEventArgs e) => OnPlayPauseClicked(sender, e);
+    private void OnSurfaceTapped(object? sender, TappedEventArgs e)
+    {
+        // 触摸播放框：先唤出控制层（手指离开后 3s 才隐藏），再切换播放状态
+        ShowControls();
+        OnPlayPauseClicked(sender, e);
+    }
 
     private void OnPlayPauseClicked(object? sender, EventArgs e)
     {
@@ -609,6 +640,10 @@ public partial class WatchPage : ContentPage, IQueryAttributable
             _playing = true;
         }
         UpdatePlayIcon();
+
+        // 动作后控制层保持可见：暂停时常驻，播放中则 3s 后隐藏
+        ShowControls();
+        RestartControlsHideTimer();
     }
 
     /// <summary>简介展开/收起</summary>
@@ -710,6 +745,9 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         if (on) (Application.Current as App)?.ForceLandscape();
         else (Application.Current as App)?.ReleaseLandscape();
 #endif
+
+        // 切换全屏后唤出控制层；鼠标移出播放框即按 3s 倒计时隐藏
+        ShowControls();
     }
 
 #if WINDOWS
@@ -756,7 +794,12 @@ public partial class WatchPage : ContentPage, IQueryAttributable
             ProgressBar.Value = Player.Position.TotalSeconds / total * 100;
     }
 
-    private void OnSeekStarted(object? sender, EventArgs e) => _seeking = true;
+    private void OnSeekStarted(object? sender, EventArgs e)
+    {
+        // 拖动进度中：控制层常驻，倒计时作废
+        _seeking = true;
+        _controlsHideTimer?.Stop();
+    }
 
     private void OnSeekCompleted(object? sender, EventArgs e)
     {
@@ -764,6 +807,43 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         var total = Player.Duration.TotalSeconds;
         if (total > 0)
             Player.Seek(TimeSpan.FromSeconds(ProgressBar.Value / 100 * total));
+
+        // 松手后重新开始 3s 倒计时
+        RestartControlsHideTimer();
+    }
+
+    // ════════════════ 控制层自动隐藏 ════════════════
+
+    /// <summary>显示控制层并取消倒计时（鼠标仍在播放框内时保持常亮）</summary>
+    private void ShowControls()
+    {
+        _controlsHideTimer?.Stop();
+        SetControlsVisible(true);
+    }
+
+    /// <summary>从当前时刻起重新计时 3s（鼠标移出播放框 / 手指离开 / 拖动结束时调用）</summary>
+    private void RestartControlsHideTimer()
+    {
+        _controlsHideTimer?.Stop();
+        if (CanAutoHideControls()) _controlsHideTimer?.Start();
+    }
+
+    /// <summary>仅"播放中且非拖动"才自动隐藏——暂停/拖动时常驻，否则进度条与时长都看不见</summary>
+    private bool CanAutoHideControls() => _playing && !_seeking;
+
+    private void HideControlsIfIdle()
+    {
+        if (CanAutoHideControls()) SetControlsVisible(false);
+    }
+
+    /// <summary>
+    /// 控制层显隐：只切换子元素，ControlsOverlay 本身常驻不隐藏。
+    /// 该层承载指针手势与画面点击，若整体隐藏则手势随之失效，控件层将无法被再次唤出。
+    /// </summary>
+    private void SetControlsVisible(bool on)
+    {
+        ControlBar.IsVisible = on;
+        CenterPlayButton.IsVisible = on;
     }
 
     private static string FormatTime(TimeSpan t) =>
