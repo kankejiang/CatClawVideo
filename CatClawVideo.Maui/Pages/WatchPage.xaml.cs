@@ -68,6 +68,10 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     /// <summary>原地全屏：同一播放器实例放大铺满，不新开页面/不重新拉流</summary>
     private bool _isFullscreen;
 
+    /// <summary>播放历史跳转携带的续看定位：选集加载后自动选该集，MediaOpened 后 seek</summary>
+    private string? _resumeEpisodeName;
+    private double _resumePosition;
+
     public WatchPage(IVodSourceProvider provider, VideoDatabase db, VideoPlaybackManager playback,
         BtStreamService? bt = null, DownloadManager? downloads = null)
     {
@@ -79,7 +83,19 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         _downloads = downloads;
 
         Player.PositionChanged += (_, _) => MainThread.BeginInvokeOnMainThread(UpdateProgress);
-        Player.MediaOpened += (_, _) => MainThread.BeginInvokeOnMainThread(UpdateProgress);
+        Player.MediaOpened += (_, _) => MainThread.BeginInvokeOnMainThread(() =>
+        {
+            UpdateProgress();
+
+            // 播放历史续看：媒体就绪（时长已知）后一次性 seek 到上次位置
+            if (_resumePosition > 0)
+            {
+                var pos = _resumePosition;
+                _resumePosition = 0;
+                if (Player.Duration == TimeSpan.Zero || pos < Player.Duration.TotalSeconds - 1)
+                    Player.Seek(TimeSpan.FromSeconds(pos));
+            }
+        });
         Player.StateChanged += (_, _) => MainThread.BeginInvokeOnMainThread(UpdatePlayIcon);
         // 播放失败必须有可见反馈（此前磁力/解析失败静默，用户以为"没反应"）
         Player.MediaFailed += (_, _) => MainThread.BeginInvokeOnMainThread(async () =>
@@ -161,6 +177,13 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         if (query.TryGetValue("year", out var y) && y is string year && year.Length > 0) _item.Year = year;
         if (query.TryGetValue("remarks", out var r) && r is string remarks && remarks.Length > 0) _item.Remarks = remarks;
         if (query.TryGetValue("desc", out var d) && d is string desc && desc.Length > 0) _item.Description = desc;
+
+        // 播放历史跳转携带的续看定位（选集名 + 上次位置）
+        if (query.TryGetValue("resumeEp", out var re) && re is string resumeEp && resumeEp.Length > 0)
+            _resumeEpisodeName = resumeEp;
+        if (query.TryGetValue("pos", out var posObj) && posObj is string posStr &&
+            double.TryParse(posStr, System.Globalization.CultureInfo.InvariantCulture, out var pos) && pos > 0)
+            _resumePosition = pos;
 
         TitleLabel.Text = _item.Title;
 
@@ -351,7 +374,15 @@ public partial class WatchPage : ContentPage, IQueryAttributable
             : DisplayNameFor(source.Name);
 
         if (source.Episodes.Count > 0)
-            PlayEpisodeByRow(_episodeRows[0]);
+        {
+            // 播放历史跳转：优先自动选中续看的那一集，否则从第一集开始
+            var resumeRow = _resumeEpisodeName is { Length: > 0 }
+                ? _episodeRows.FirstOrDefault(r =>
+                      string.Equals(r.Name.Trim(), _resumeEpisodeName.Trim(), StringComparison.Ordinal))
+                : null;
+            PlayEpisodeByRow(resumeRow ?? _episodeRows[0]);
+            _resumeEpisodeName = null;
+        }
         else
             _ = ShowTipAsync("该线路暂无选集");
     }
@@ -590,9 +621,12 @@ public partial class WatchPage : ContentPage, IQueryAttributable
             ShowControls();
             RestartControlsHideTimer();
 
-            // 播放历史落库（BT 代理地址是会话内瞬态链接，重启后失效，不落库）
+            // 播放历史落库（BT 代理地址是会话内瞬态链接，重启后失效，不落库）。
+            // 带上来源定位与集名：历史卡才能跳回观看页详情并自动选中该集续看。
             if (!play.Url.Contains("/stream/", StringComparison.OrdinalIgnoreCase))
-                _playback.BeginSession(_item.Title + " · " + episode.Name, play.Url, _item.Cover);
+                _playback.BeginSession(_item.Title + " · " + episode.Name, play.Url, _item.Cover,
+                    sourceKey: _site.Key, itemType: _site.Type, itemApi: _site.Api,
+                    itemId: _item.Id, episodeName: episode.Name);
         }
         catch (NotSupportedException ex)
         {

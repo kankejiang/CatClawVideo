@@ -58,6 +58,23 @@ public class PlayHistoryEntry
 
     /// <summary>观看时间</summary>
     public DateTime WatchedAt { get; set; } = DateTime.Now;
+
+    // ── 来源定位（非空时点历史卡可跳回观看页详情续看；网页直链/本地播放为空 → 直接播放） ──
+
+    /// <summary>来源站点 Key（VodSiteInfo.Key）</summary>
+    public string SourceKey { get; set; } = string.Empty;
+
+    /// <summary>来源站点类型（VodSiteInfo.Type）</summary>
+    public int ItemType { get; set; }
+
+    /// <summary>来源站点 Api 地址（VodSiteInfo.Api）</summary>
+    public string ItemApi { get; set; } = string.Empty;
+
+    /// <summary>影片 Id（VodItem.Id）</summary>
+    public string ItemId { get; set; } = string.Empty;
+
+    /// <summary>集名（用于回跳后自动选中该集，如「第02集」）</summary>
+    public string EpisodeName { get; set; } = string.Empty;
 }
 
 /// <summary>收藏的影片</summary>
@@ -103,11 +120,30 @@ public class VideoDatabase
             SQLiteOpenFlags.ReadWrite | SQLiteOpenFlags.Create | SQLiteOpenFlags.SharedCache);
     }
 
-    /// <summary>建表（幂等）</summary>
-    public Task EnsureInitializedAsync() => Task.WhenAll(
-        _db.CreateTableAsync<VodSubscription>(),
-        _db.CreateTableAsync<PlayHistoryEntry>(),
-        _db.CreateTableAsync<FavoriteEntry>());
+    /// <summary>建表（幂等）。PlayHistoryEntry 后加的列需要手工迁移——
+    /// CreateTableAsync 只建缺表、不会给老表加列，老库查询缺列时直接报错。</summary>
+    public async Task EnsureInitializedAsync()
+    {
+        await Task.WhenAll(
+            _db.CreateTableAsync<VodSubscription>(),
+            _db.CreateTableAsync<FavoriteEntry>(),
+            _db.CreateTableAsync<PlayHistoryEntry>());
+
+        // 播放历史 v2：来源定位列（2026-09-10，历史卡跳回观看页续看）
+        await EnsureColumnAsync(_db, "play_history", "SourceKey", "text");
+        await EnsureColumnAsync(_db, "play_history", "ItemType", "integer");
+        await EnsureColumnAsync(_db, "play_history", "ItemApi", "text");
+        await EnsureColumnAsync(_db, "play_history", "ItemId", "text");
+        await EnsureColumnAsync(_db, "play_history", "EpisodeName", "text");
+    }
+
+    /// <summary>缺列则补（sqlite-net 的 MigrateTable 是 internal，只能自己 ALTER）</summary>
+    private static async Task EnsureColumnAsync(SQLiteAsyncConnection db, string table, string column, string decl)
+    {
+        var cols = await db.GetTableInfoAsync(table);
+        if (cols.Any(c => string.Equals(c.Name, column, StringComparison.OrdinalIgnoreCase))) return;
+        await db.ExecuteAsync($"ALTER TABLE {table} ADD COLUMN {column} {decl}");
+    }
 
     // ══════════════════════ 订阅源 ══════════════════════
 
