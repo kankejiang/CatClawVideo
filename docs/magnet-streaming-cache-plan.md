@@ -252,3 +252,45 @@ seek 快速重排"——这正是流畅播放的核心难点，不需要自己�
 > 注：第 6 节与本节是两个独立的坑 —— 第 6 节是「tracker 列表混入坏 tracker 拖垮整轮 announce」，
 > 本节是「DHT bootstrap 域名被污染导致 DHT 从未启动」。两者症状相近（都零速度），
 > 但前者看 `tracker 明细` 能发现，后者必须查 DHT 状态与 `dht_nodes.cache`。
+
+---
+
+## 9. 排障实录：整包下载零速度（2026-09-10 已修复，第 8 节之后又踩的一个坑）
+
+**症状**：第 8 节修完后流式播放正常了（能跑 3MB/s），但**下载管理里的整包下载仍然一点速度都没有**：
+`state=Downloading 已下=0 速度=0B/s 实连=1 候选=0`。
+
+**定位过程**：DHT 明明已是 `Ready/71`、tracker 也注册了 6 个，为什么还是 0？
+最后靠对照实验卡住差异 —— 同一个引擎、同一时刻、同一个磁力：
+
+| 调用方式 | 连接数 | 候选 peer | 速率 | 已下载 |
+|---|---|---|---|---|
+| `AddAsync(magnet, saveDir)`（默认 settings） | 1~4 | 104 → **0** | **0 B/s** | **0 字节** |
+| `AddAsync(magnet, saveDir, settings)` | 13~17 | 173 → 96 | **15.7 MB/s** | **778 MB** |
+
+**根因**：`AddAsync(magnet, saveDir)` 不传 `TorrentSettings` 时用的**默认值**会让 manager 完全下不动。
+最坑的是它的 `state` 依然是 `Downloading`、`AllowDht=True`、tracker 也挂在 `TrackerManager` 上 ——
+所有表面指标都「正常」，只有「已下 0 字节」这一个事实是真的。
+流式路径（`AddStreamingAsync`）一直是显式传 settings 的，所以这个坑只在整包下载上暴露。
+
+**修复**（`BitTorrentDownloadService.StartAsync`）：显式构造并传入 TorrentSettings：
+
+```csharp
+var torrentSettings = new TorrentSettingsBuilder
+{
+    MaximumConnections = Math.Min(_bt.MaxConnections, 200),
+    UploadSlots = 6,
+    AllowDht = true,
+    AllowPeerExchange = true,
+}.ToSettings();
+manager = await _engine.AddAsync(link, saveDir, torrentSettings);
+```
+
+**顺带修掉的 DHT 播种缺陷**：第 8 节的播种逻辑只在「缓存为空」时生效，但 MonoTorrent 退出时
+会把当前路由表写回缓存。若某次 DHT 没能爬起来（或残留一批已全死的节点），长度检查会误判
+「够用」而跳过播种 → DHT 再也起不来（本次 19:00 实测踩到）。现改为**并入**：每次启动解析现有缓存，
+把内置种子按 IP:端口 去重合并进去，既保住 DHT 爬升出的节点表，又保证始终有种子可用。
+
+**诊断要点（新增）**：判断「下载不动」时**不要只看 state**。
+`state=Downloading` + `实连` 很少（≤4）+ `候选` 从上百衰减到 0 + `已下 0 字节`
+= manager 根本没在干活，优先怀疑 **TorrentSettings 没传/传错**，而不是网络。
