@@ -9,5 +9,7 @@
     <!-- Jint JS 引擎：drpy2 爬虫运行时（与猫爪音乐同版本，Acornima 显式锁定） -->
     <PackageReference Include="Jint" Version="4.16.0" />
     <PackageReference Include="Acornima" Version="1.7.0" />
+    <!-- BT 流式引擎：磁力边下边播（纯托管，Android/Windows 同库；流式模式 2.0 起官方内建） -->
+    <PackageReference Include="MonoTorrent" Version="3.0.1" />
   </ItemGroup>
 </Project>

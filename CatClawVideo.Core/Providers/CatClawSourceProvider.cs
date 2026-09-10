@@ -40,6 +40,11 @@ public class CatClawSourceProvider : IVodSourceProvider
     /// <summary>web 模式通用引擎</summary>
     private readonly CatClawWebEngine _engine = new();
 
+    /// <summary>BT 流式引擎（磁力边下边播；未注入时磁力线路保持明确报错）</summary>
+    private readonly Services.BtStreamService? _bt;
+
+    public CatClawSourceProvider(Services.BtStreamService? bt = null) => _bt = bt;
+
     public string Id => "catclaw";
     public string Name => "猫爪源";
 
@@ -111,11 +116,18 @@ public class CatClawSourceProvider : IVodSourceProvider
     {
         var url = episode.Url ?? "";
 
-        // 磁力/电驴链接：播放器无法直播（BT 引擎为后续独立工程），给明确提示而非网络错误
-        if (url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase) ||
-            url.StartsWith("ed2k://", StringComparison.OrdinalIgnoreCase))
-            throw new NotSupportedException(
-                "该集为磁力/电驴下载链接，暂不支持在线播放（BT 引擎规划中）；可复制链接到下载工具");
+        // 电驴：BT 引擎只覆盖 BT 协议，明确提示
+        if (url.StartsWith("ed2k://", StringComparison.OrdinalIgnoreCase))
+            throw new NotSupportedException("该集为电驴(ed2k)下载链接，暂不支持在线播放；可复制链接到下载工具");
+
+        // 磁力：BT 流式引擎边下边播 → 本地 127.0.0.1 代理地址（可 Range 拖动）
+        if (url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase))
+        {
+            if (_bt == null)
+                throw new NotSupportedException("BT 引擎未初始化，磁力线路不可用");
+            var session = await _bt.OpenAsync(url, episode.Name, ct);
+            return new PlayRequest { Title = episode.Name, Url = session.Url };
+        }
 
         // web 模式：非直链 URL（播放入口页）→ 规则引擎实时解析直链（时效签名现取现用）
         if (IsWeb(site) &&

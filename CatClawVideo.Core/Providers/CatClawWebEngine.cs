@@ -122,11 +122,11 @@ public class CatClawWebEngine
                 {
                     var name = m.Groups["name"].Success && Decode(m.Groups["name"].Value).Trim().Length > 0
                         ? Decode(m.Groups["name"].Value).Trim()
-                        : "磁力下载";
+                        : "磁力播放";
                     episodes.Add(new VodEpisode { Name = name, Url = Decode(m.Groups["url"].Value) });
                 }
                 if (episodes.Count > 0)
-                    sources.Add(new VodPlaySource { Name = "磁力下载", Episodes = episodes });
+                    sources.Add(new VodPlaySource { Name = "磁力播放", Episodes = episodes });
             }
         }
 
