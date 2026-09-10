@@ -20,5 +20,14 @@ public partial class AppShell : Shell
 
         // 源配置页（设置 → 站点与源配置）
         Routing.RegisterRoute("sourceconfig", typeof(Pages.SourceConfigPage));
+
+        // 下载管理页（设置 → 下载管理；磁力线路下载入口）
+        Routing.RegisterRoute("downloads", typeof(Pages.DownloadsPage));
+
+        // 下载设置页（下载管理右上角 ⚙ 进入；照搬 Motrix 设置项）
+        Routing.RegisterRoute("btsettings", typeof(Pages.BtSettingsPage));
+
+        // 任务详情页（下载卡片 ℹ 进入；照搬 Motrix 任务详情）
+        Routing.RegisterRoute("downloaddetail", typeof(Pages.DownloadDetailPage));
     }
 }

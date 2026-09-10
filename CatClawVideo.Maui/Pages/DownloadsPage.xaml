@@ -1,0 +1,258 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:controls="clr-namespace:CatClawVideo.Maui.Controls"
+             xmlns:converters="clr-namespace:CatClawVideo.Maui.Converters"
+             xmlns:services="clr-namespace:CatClawVideo.Maui.Services"
+             x:Class="CatClawVideo.Maui.Pages.DownloadsPage"
+             Title="下载管理"
+             BackgroundColor="{DynamicResource WindowBackgroundColor}">
+
+    <ContentPage.Resources>
+        <converters:DownloadStatusConverter x:Key="DownloadStatusConverter" />
+    </ContentPage.Resources>
+
+    <!-- 顶栏返回按钮避免 caption 区重叠：Windows 下留 48px 顶部让位（同搜索页） -->
+    <Grid RowDefinitions="Auto,*" Padding="0">
+        <Grid RowDefinitions="Auto,Auto,Auto" Padding="24,14,24,10" RowSpacing="10" Grid.Row="0">
+
+            <!-- 顶栏：返回 + 标题 + 新建 -->
+            <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="8">
+                <Border Grid.Column="0" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
+                        StrokeShape="RoundRectangle 12" WidthRequest="38" HeightRequest="38">
+                    <Image Source="ic_back.svg" WidthRequest="18" HeightRequest="18"
+                           HorizontalOptions="Center" VerticalOptions="Center" />
+                    <Border.GestureRecognizers>
+                        <TapGestureRecognizer Tapped="OnBackTapped" />
+                    </Border.GestureRecognizers>
+                </Border>
+                <Label Grid.Column="1" Text="下载管理" FontSize="17" FontFamily="OpenSansSemibold"
+                       TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
+                <!-- 下载设置（照搬 Motrix 设置项） -->
+                <Button Grid.Column="2" Text="⚙ 设置" FontSize="12" Padding="12,6" CornerRadius="8"
+                        TextColor="{DynamicResource TextPrimaryColor}"
+                        BackgroundColor="{DynamicResource ChipInactiveColor}"
+                        Clicked="OnBtSettingsTapped" />
+                <Button Grid.Column="3" Text="＋ 新建下载" FontSize="12"
+                        ContentLayout="Left,4"
+                        ImageSource="ic_add.svg"
+                        TextColor="White"
+                        BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
+                        CornerRadius="8" Padding="14,6" Clicked="OnAddDownloadTapped" />
+            </Grid>
+
+            <!-- 统计行 -->
+            <Label Grid.Row="1" Text="{Binding TotalCount, StringFormat='共 {0} 个任务 · 进行中 {1} · 已完成 {2}'}"
+                   FontSize="12" TextColor="{DynamicResource TextHintColor}" />
+
+            <!-- 下载位置 -->
+            <Border Grid.Row="2" StrokeThickness="0" StrokeShape="RoundRectangle 12"
+                    BackgroundColor="{DynamicResource CardBackgroundColor}" Padding="14,10">
+                <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
+                    <Image Grid.Column="0" Source="ic_folder_white.svg" WidthRequest="16" HeightRequest="16" VerticalOptions="Center" />
+                    <VerticalStackLayout Grid.Column="1" Spacing="2" VerticalOptions="Center">
+                        <Label Text="下载位置" FontSize="12.5" FontFamily="OpenSansSemibold"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                        <Label Text="{Binding DownloadPath}"
+                               FontSize="10.5"
+                               TextColor="{DynamicResource TextHintColor}"
+                               LineBreakMode="MiddleTruncation" />
+                    </VerticalStackLayout>
+                    <Button Grid.Column="2" Text="清空已完成" FontSize="11"
+                            HeightRequest="30" CornerRadius="15" Padding="12,0"
+                            BackgroundColor="{DynamicResource ChipInactiveColor}"
+                            TextColor="{DynamicResource TextSecondaryColor}"
+                            Command="{Binding ClearFinishedCommand}" />
+                </Grid>
+            </Border>
+        </Grid>
+
+        <ScrollView Grid.Row="1" Padding="24,4,24,24">
+            <VerticalStackLayout Spacing="10">
+
+                <!-- 下载任务列表（Motrix 风格卡片：标题+图标操作行 / 细进度条 / 统计行） -->
+                <VerticalStackLayout Spacing="10"
+                                     BindableLayout.ItemsSource="{Binding Tasks}">
+                    <BindableLayout.ItemTemplate>
+                        <DataTemplate>
+                            <Border StrokeThickness="0" StrokeShape="RoundRectangle 14"
+                                    BackgroundColor="{DynamicResource CardBackgroundColor}" Padding="16,12">
+                                <Border.GestureRecognizers>
+                                    <TapGestureRecognizer Tapped="OnTaskTapped" />
+                                </Border.GestureRecognizers>
+                                <VerticalStackLayout Spacing="10">
+
+                                    <!-- 标题 + 图标操作行 -->
+                                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+                                        <Label Grid.Column="0" Text="{Binding DisplayName}"
+                                               FontSize="14" FontFamily="OpenSansSemibold"
+                                               TextColor="{DynamicResource TextPrimaryColor}"
+                                               LineBreakMode="TailTruncation" MaxLines="2" />
+
+                                        <HorizontalStackLayout Grid.Column="1" Spacing="4" VerticalOptions="Start">
+                                            <Border ClassId="pause" WidthRequest="34" HeightRequest="28" StrokeThickness="0"
+                                                    StrokeShape="RoundRectangle 8" BackgroundColor="{DynamicResource ChipInactiveColor}"
+                                                    IsVisible="{Binding Status, Converter={StaticResource DownloadStatusConverter}, ConverterParameter=Downloading}">
+                                                <Image Source="ic_pause.svg" WidthRequest="13" HeightRequest="13"
+                                                       HorizontalOptions="Center" VerticalOptions="Center" />
+                                                <Border.GestureRecognizers>
+                                                    <TapGestureRecognizer Tapped="OnTaskIconTapped" />
+                                                </Border.GestureRecognizers>
+                                            </Border>
+                                            <Border ClassId="resume" WidthRequest="34" HeightRequest="28" StrokeThickness="0"
+                                                    StrokeShape="RoundRectangle 8" BackgroundColor="{DynamicResource ChipInactiveColor}"
+                                                    IsVisible="{Binding Status, Converter={StaticResource DownloadStatusConverter}, ConverterParameter=Paused}">
+                                                <Image Source="ic_play.svg" WidthRequest="13" HeightRequest="13"
+                                                       HorizontalOptions="Center" VerticalOptions="Center" />
+                                                <Border.GestureRecognizers>
+                                                    <TapGestureRecognizer Tapped="OnTaskIconTapped" />
+                                                </Border.GestureRecognizers>
+                                            </Border>
+                                            <Border ClassId="retry" WidthRequest="34" HeightRequest="28" StrokeThickness="0"
+                                                    StrokeShape="RoundRectangle 8" BackgroundColor="{DynamicResource ChipInactiveColor}"
+                                                    IsVisible="{Binding Status, Converter={StaticResource DownloadStatusConverter}, ConverterParameter='Failed,Completed'}">
+                                                <Image Source="ic_refresh_white.svg" WidthRequest="13" HeightRequest="13"
+                                                       HorizontalOptions="Center" VerticalOptions="Center" />
+                                                <Border.GestureRecognizers>
+                                                    <TapGestureRecognizer Tapped="OnTaskIconTapped" />
+                                                </Border.GestureRecognizers>
+                                            </Border>
+                                            <Border ClassId="delete" WidthRequest="34" HeightRequest="28" StrokeThickness="0"
+                                                    StrokeShape="RoundRectangle 8" BackgroundColor="{DynamicResource ChipInactiveColor}">
+                                                <Image Source="ic_close.svg" WidthRequest="12" HeightRequest="12"
+                                                       HorizontalOptions="Center" VerticalOptions="Center" />
+                                                <Border.GestureRecognizers>
+                                                    <TapGestureRecognizer Tapped="OnTaskIconTapped" />
+                                                </Border.GestureRecognizers>
+                                            </Border>
+                                            <Border ClassId="folder" WidthRequest="34" HeightRequest="28" StrokeThickness="0"
+                                                    StrokeShape="RoundRectangle 8" BackgroundColor="{DynamicResource ChipInactiveColor}">
+                                                <Image Source="ic_folder_white.svg" WidthRequest="13" HeightRequest="13"
+                                                       HorizontalOptions="Center" VerticalOptions="Center" />
+                                                <Border.GestureRecognizers>
+                                                    <TapGestureRecognizer Tapped="OnTaskIconTapped" />
+                                                </Border.GestureRecognizers>
+                                            </Border>
+                                            <Border ClassId="copy" WidthRequest="34" HeightRequest="28" StrokeThickness="0"
+                                                    StrokeShape="RoundRectangle 8" BackgroundColor="{DynamicResource ChipInactiveColor}">
+                                                <Label Text="🔗" FontSize="12" HorizontalOptions="Center" VerticalOptions="Center" />
+                                                <Border.GestureRecognizers>
+                                                    <TapGestureRecognizer Tapped="OnTaskIconTapped" />
+                                                </Border.GestureRecognizers>
+                                            </Border>
+                                            <Border ClassId="info" WidthRequest="34" HeightRequest="28" StrokeThickness="0"
+                                                    StrokeShape="RoundRectangle 8" BackgroundColor="{DynamicResource ChipInactiveColor}">
+                                                <Image Source="ic_info.svg" WidthRequest="13" HeightRequest="13"
+                                                       HorizontalOptions="Center" VerticalOptions="Center" />
+                                                <Border.GestureRecognizers>
+                                                    <TapGestureRecognizer Tapped="OnTaskIconTapped" />
+                                                </Border.GestureRecognizers>
+                                            </Border>
+                                        </HorizontalStackLayout>
+                                    </Grid>
+
+                                    <!-- 细进度条 -->
+                                    <ProgressBar Progress="{Binding Progress}"
+                                                 ProgressColor="{DynamicResource PrimaryColor}"
+                                                 HeightRequest="4"
+                                                 IsVisible="{Binding Status, Converter={StaticResource DownloadStatusConverter}, ConverterParameter='Queued,Downloading,Paused,Completed'}" />
+
+                                    <!-- 统计行：左=大小；右=↑上传 ↓下载 剩余 ⚡种子 👥连接 / 状态 -->
+                                    <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
+                                        <Label Grid.Column="0" Text="{Binding SizeText}" FontSize="11"
+                                               TextColor="{DynamicResource TextHintColor}" VerticalOptions="Center" />
+                                        <HorizontalStackLayout Grid.Column="2" Spacing="10">
+                                            <Label Text="{Binding UploadSpeedShow}" FontSize="11" TextColor="#7E57C2"
+                                                   VerticalOptions="Center" IsVisible="{Binding IsMagnet}" />
+                                            <Label Text="{Binding DownloadSpeedShow}" FontSize="11" TextColor="#42A5F5"
+                                                   VerticalOptions="Center" IsVisible="{Binding IsMagnet}" />
+                                            <Label Text="{Binding RemainText}" FontSize="11"
+                                                   TextColor="{DynamicResource TextHintColor}" VerticalOptions="Center"
+                                                   IsVisible="{Binding ShowNodeGraph}" />
+                                            <Label Text="{Binding SeedsText}" FontSize="11" TextColor="#4CAF50"
+                                                   VerticalOptions="Center" IsVisible="{Binding IsMagnet}" />
+                                            <Label Text="{Binding ConnectionsText}" FontSize="11" TextColor="#42A5F5"
+                                                   VerticalOptions="Center" IsVisible="{Binding IsMagnet}" />
+                                            <Label Text="{Binding StatusText}" FontSize="11" TextColor="{Binding StatusColor}"
+                                                   VerticalOptions="Center"
+                                                   IsVisible="{Binding Status, Converter={StaticResource DownloadStatusConverter}, ConverterParameter='Queued,Paused,Failed,Canceled'}" />
+                                        </HorizontalStackLayout>
+                                    </Grid>
+
+                                    <!-- 速度曲线（仅下载中的 BT 任务） -->
+                                    <controls:SpeedGraphView HeightRequest="34"
+                                                             Samples="{Binding SpeedHistory}"
+                                                             IsVisible="{Binding ShowNodeGraph}" />
+
+                                    <!-- 保存路径（已完成） -->
+                                    <Label Text="{Binding CompletedText}" FontSize="10.5"
+                                           TextColor="{DynamicResource TextHintColor}"
+                                           LineBreakMode="MiddleTruncation"
+                                           IsVisible="{Binding Status, Converter={StaticResource DownloadStatusConverter}, ConverterParameter=Completed}" />
+
+                                    <!-- 失败原因 -->
+                                    <Label Text="{Binding StatusText}" FontSize="11" TextColor="#F44336"
+                                           LineBreakMode="TailTruncation"
+                                           IsVisible="{Binding Status, Converter={StaticResource DownloadStatusConverter}, ConverterParameter=Failed}" />
+                                </VerticalStackLayout>
+                            </Border>
+                        </DataTemplate>
+                    </BindableLayout.ItemTemplate>
+                </VerticalStackLayout>
+
+                <!-- 空状态 -->
+                <Border StrokeThickness="0" StrokeShape="RoundRectangle 14"
+                        BackgroundColor="{DynamicResource CardBackgroundColor}" Padding="24,20"
+                        IsVisible="{Binding IsEmpty}">
+                    <VerticalStackLayout Spacing="6" HorizontalOptions="Center">
+                        <Image Source="appiconfg.svg" WidthRequest="56" HeightRequest="56"
+                               Opacity="0.4" HorizontalOptions="Center" />
+                        <Label Text="下载架还空着喵…" FontSize="15" FontFamily="OpenSansSemibold"
+                               TextColor="{DynamicResource TextPrimaryColor}" HorizontalTextAlignment="Center" />
+                        <Label Text="在影片详情页点磁力线路旁的下载按钮，或点右上角 ＋ 直接输入 http 直链 / magnet 磁力链接"
+                               FontSize="11"
+                               TextColor="{DynamicResource TextHintColor}"
+                               HorizontalTextAlignment="Center" />
+                    </VerticalStackLayout>
+                </Border>
+
+            </VerticalStackLayout>
+        </ScrollView>
+
+        <!-- 移除任务确认弹层（Motrix 风格：是/否 + 同时删除文件） -->
+        <Grid x:Name="DeleteOverlay" Grid.Row="0" Grid.RowSpan="2" IsVisible="False"
+              BackgroundColor="#66000000">
+            <Border WidthRequest="460" StrokeThickness="1" StrokeShape="RoundRectangle 14" Padding="20"
+                    BackgroundColor="{DynamicResource CardBackgroundColor}" Stroke="{DynamicResource DividerColor}"
+                    HorizontalOptions="Center" VerticalOptions="Center">
+                <VerticalStackLayout Spacing="14">
+                    <Label Text="⚠  移除任务" FontSize="16" FontFamily="OpenSansSemibold"
+                           TextColor="{DynamicResource TextPrimaryColor}" />
+                    <Label x:Name="DeleteConfirmText" FontSize="13" LineBreakMode="WordWrap"
+                           TextColor="{DynamicResource TextSecondaryColor}" />
+                    <VerticalStackLayout Spacing="6">
+                        <Border StrokeThickness="1" StrokeShape="RoundRectangle 8" Padding="12,8"
+                                Stroke="{DynamicResource DividerColor}">
+                            <Label Text="→  是" FontSize="13.5" TextColor="{DynamicResource PrimaryColor}" />
+                            <Border.GestureRecognizers>
+                                <TapGestureRecognizer Tapped="OnDeleteConfirmed" />
+                            </Border.GestureRecognizers>
+                        </Border>
+                        <Border StrokeThickness="1" StrokeShape="RoundRectangle 8" Padding="12,8"
+                                Stroke="{DynamicResource DividerColor}">
+                            <Label Text="→  否" FontSize="13.5" TextColor="{DynamicResource PrimaryColor}" />
+                            <Border.GestureRecognizers>
+                                <TapGestureRecognizer Tapped="OnDeleteCancelled" />
+                            </Border.GestureRecognizers>
+                        </Border>
+                    </VerticalStackLayout>
+                    <HorizontalStackLayout Spacing="8">
+                        <CheckBox x:Name="DeleteFileCheck" Color="{DynamicResource PrimaryColor}" />
+                        <Label Text="同时删除文件" FontSize="12.5" VerticalOptions="Center"
+                               TextColor="{DynamicResource TextSecondaryColor}" />
+                    </HorizontalStackLayout>
+                </VerticalStackLayout>
+            </Border>
+        </Grid>
+    </Grid>
+</ContentPage>

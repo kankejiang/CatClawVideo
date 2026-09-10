@@ -38,6 +38,12 @@ public partial class SettingsPage : ContentView, ITabView
         try { await Shell.Current.GoToAsync("sourceconfig"); } catch { }
     }
 
+    /// <summary>跳转下载管理页（磁力/HTTP 下载任务管理）</summary>
+    private async void OnOpenDownloads(object? sender, EventArgs e)
+    {
+        try { await Shell.Current.GoToAsync("downloads"); } catch { }
+    }
+
     /// <summary>添加订阅：拉取解析 TVBox 配置 → 写库 → 站点仓库立即生效</summary>
     private async void OnAddSubClicked(object? sender, EventArgs e)
     {

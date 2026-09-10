@@ -1,0 +1,220 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="CatClawVideo.Maui.Pages.BtSettingsPage"
+             BackgroundColor="{DynamicResource PageBackgroundColor}"
+             Title="下载设置">
+
+    <Grid RowDefinitions="Auto,*">
+
+        <!-- ═══ 顶栏 ═══ -->
+        <Border Grid.Row="0" StrokeThickness="0" Padding="20,14"
+                BackgroundColor="{DynamicResource PageBackgroundColor}"
+                Stroke="{DynamicResource DividerColor}">
+            <Grid ColumnDefinitions="Auto,*,Auto">
+                <Button Grid.Column="0" Text="←" FontSize="16" Padding="10,4" CornerRadius="8"
+                        BackgroundColor="Transparent" TextColor="{DynamicResource TextPrimaryColor}"
+                        Clicked="OnBackTapped" />
+                <Label Grid.Column="1" Text="下载设置" FontSize="17" FontFamily="OpenSansSemibold"
+                       TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" HorizontalOptions="Center" />
+                <Button Grid.Column="2" x:Name="SaveButton" Text="保存" FontSize="13" Padding="16,6" CornerRadius="8"
+                        BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}" TextColor="White"
+                        Clicked="OnSaveClicked" />
+            </Grid>
+        </Border>
+
+        <ScrollView Grid.Row="1">
+            <VerticalStackLayout Padding="24,8,24,32" Spacing="16">
+
+                <!-- ═══ 默认下载路径 ═══ -->
+                <Border StrokeThickness="1" StrokeShape="RoundRectangle 20" Padding="20"
+                        BackgroundColor="{DynamicResource CardBackgroundColor}" Stroke="{DynamicResource DividerColor}">
+                    <VerticalStackLayout Spacing="12">
+                        <Label Text="默认下载路径" FontSize="15" FontFamily="OpenSansSemibold"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+                            <Entry x:Name="PathEntry" Grid.Column="0" FontSize="12.5"
+                                   Placeholder="下载保存目录"
+                                   PlaceholderColor="{DynamicResource TextHintColor}"
+                                   TextColor="{DynamicResource TextPrimaryColor}" />
+                            <Button Grid.Column="1" Text="📂 选择" FontSize="12.5" Padding="14,6" CornerRadius="8"
+                                    BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}" TextColor="White"
+                                    Clicked="OnPickFolderClicked" />
+                        </Grid>
+                    </VerticalStackLayout>
+                </Border>
+
+                <!-- ═══ 传输设置 ═══ -->
+                <Border StrokeThickness="1" StrokeShape="RoundRectangle 20" Padding="20"
+                        BackgroundColor="{DynamicResource CardBackgroundColor}" Stroke="{DynamicResource DividerColor}">
+                    <VerticalStackLayout Spacing="12">
+                        <Label Text="传输设置" FontSize="15" FontFamily="OpenSansSemibold"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                        <Grid ColumnDefinitions="110,*,60" ColumnSpacing="10">
+                            <Label Grid.Column="0" Text="上传限速" FontSize="13" VerticalOptions="Center"
+                                   TextColor="{DynamicResource TextSecondaryColor}" />
+                            <Entry x:Name="UploadLimitEntry" Grid.Column="1" Keyboard="Numeric" FontSize="12.5" />
+                            <Label Grid.Column="2" Text="KB/s" FontSize="12" VerticalOptions="Center"
+                                   TextColor="{DynamicResource TextHintColor}" />
+                        </Grid>
+                        <Grid ColumnDefinitions="110,*,60" ColumnSpacing="10">
+                            <Label Grid.Column="0" Text="下载限速" FontSize="13" VerticalOptions="Center"
+                                   TextColor="{DynamicResource TextSecondaryColor}" />
+                            <Entry x:Name="DownloadLimitEntry" Grid.Column="1" Keyboard="Numeric" FontSize="12.5" />
+                            <Label Grid.Column="2" Text="KB/s" FontSize="12" VerticalOptions="Center"
+                                   TextColor="{DynamicResource TextHintColor}" />
+                        </Grid>
+                        <Label Text="0 表示不限速。BT 为互惠协议：上传能力过低会被对方限流（choke），进而拖慢下载。"
+                               FontSize="11" TextColor="{DynamicResource TextHintColor}" />
+                    </VerticalStackLayout>
+                </Border>
+
+                <!-- ═══ BT 设置 ═══ -->
+                <Border StrokeThickness="1" StrokeShape="RoundRectangle 20" Padding="20"
+                        BackgroundColor="{DynamicResource CardBackgroundColor}" Stroke="{DynamicResource DividerColor}">
+                    <VerticalStackLayout Spacing="10">
+                        <Label Text="BT 设置" FontSize="15" FontFamily="OpenSansSemibold"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                        <HorizontalStackLayout Spacing="10">
+                            <CheckBox x:Name="SaveMetaCheck" Color="{DynamicResource PrimaryColor}" />
+                            <Label Text="保存磁力链接元数据为种子文件" FontSize="13" VerticalOptions="Center"
+                                   TextColor="{DynamicResource TextSecondaryColor}" />
+                        </HorizontalStackLayout>
+                        <HorizontalStackLayout Spacing="10">
+                            <CheckBox x:Name="AutoStartCheck" Color="{DynamicResource PrimaryColor}" />
+                            <Label Text="自动开始下载磁力链接、种子的文件" FontSize="13" VerticalOptions="Center"
+                                   TextColor="{DynamicResource TextSecondaryColor}" />
+                        </HorizontalStackLayout>
+                        <HorizontalStackLayout Spacing="10">
+                            <CheckBox x:Name="SeedForeverCheck" Color="{DynamicResource PrimaryColor}" />
+                            <Label Text="持续做种，直到手动停止" FontSize="13" VerticalOptions="Center"
+                                   TextColor="{DynamicResource TextSecondaryColor}" />
+                        </HorizontalStackLayout>
+                        <Grid ColumnDefinitions="110,*,60" ColumnSpacing="10">
+                            <Label Grid.Column="0" Text="做种分享率" FontSize="13" VerticalOptions="Center"
+                                   TextColor="{DynamicResource TextSecondaryColor}" />
+                            <Entry x:Name="SeedRatioEntry" Grid.Column="1" Keyboard="Numeric" FontSize="12.5" />
+                            <Label Grid.Column="2" Text="倍" FontSize="12" VerticalOptions="Center"
+                                   TextColor="{DynamicResource TextHintColor}" />
+                        </Grid>
+                        <Grid ColumnDefinitions="110,*,60" ColumnSpacing="10">
+                            <Label Grid.Column="0" Text="做种时间" FontSize="13" VerticalOptions="Center"
+                                   TextColor="{DynamicResource TextSecondaryColor}" />
+                            <Entry x:Name="SeedMinutesEntry" Grid.Column="1" Keyboard="Numeric" FontSize="12.5" />
+                            <Label Grid.Column="2" Text="分钟" FontSize="12" VerticalOptions="Center"
+                                   TextColor="{DynamicResource TextHintColor}" />
+                        </Grid>
+                    </VerticalStackLayout>
+                </Border>
+
+                <!-- ═══ 任务管理 ═══ -->
+                <Border StrokeThickness="1" StrokeShape="RoundRectangle 20" Padding="20"
+                        BackgroundColor="{DynamicResource CardBackgroundColor}" Stroke="{DynamicResource DividerColor}">
+                    <VerticalStackLayout Spacing="10">
+                        <Label Text="任务管理" FontSize="15" FontFamily="OpenSansSemibold"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                        <Grid ColumnDefinitions="*,110" ColumnSpacing="10">
+                            <Label Grid.Column="0" Text="同时下载的最大任务数" FontSize="13" VerticalOptions="Center"
+                                   TextColor="{DynamicResource TextSecondaryColor}" />
+                            <Entry x:Name="MaxTasksEntry" Grid.Column="1" Keyboard="Numeric" FontSize="12.5" />
+                        </Grid>
+                        <Grid ColumnDefinitions="*,110" ColumnSpacing="10">
+                            <Label Grid.Column="0" Text="每个服务器最大连接数" FontSize="13" VerticalOptions="Center"
+                                   TextColor="{DynamicResource TextSecondaryColor}" />
+                            <Entry x:Name="MaxConnEntry" Grid.Column="1" Keyboard="Numeric" FontSize="12.5" />
+                        </Grid>
+                        <HorizontalStackLayout Spacing="10">
+                            <CheckBox x:Name="AutoJumpCheck" Color="{DynamicResource PrimaryColor}" />
+                            <Label Text="新建任务后自动跳转到下载页面" FontSize="13" VerticalOptions="Center"
+                                   TextColor="{DynamicResource TextSecondaryColor}" />
+                        </HorizontalStackLayout>
+                        <HorizontalStackLayout Spacing="10">
+                            <CheckBox x:Name="NotifyCheck" Color="{DynamicResource PrimaryColor}" />
+                            <Label Text="下载完成后通知" FontSize="13" VerticalOptions="Center"
+                                   TextColor="{DynamicResource TextSecondaryColor}" />
+                        </HorizontalStackLayout>
+                        <HorizontalStackLayout Spacing="10">
+                            <CheckBox x:Name="ConfirmDeleteCheck" Color="{DynamicResource PrimaryColor}" />
+                            <Label Text="删除任务前需确认" FontSize="13" VerticalOptions="Center"
+                                   TextColor="{DynamicResource TextSecondaryColor}" />
+                        </HorizontalStackLayout>
+                    </VerticalStackLayout>
+                </Border>
+
+                <!-- ═══ Tracker 服务器 ═══ -->
+                <Border StrokeThickness="1" StrokeShape="RoundRectangle 20" Padding="20"
+                        BackgroundColor="{DynamicResource CardBackgroundColor}" Stroke="{DynamicResource DividerColor}">
+                    <VerticalStackLayout Spacing="10">
+                        <Label Text="Tracker 服务器" FontSize="15" FontFamily="OpenSansSemibold"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                        <Label x:Name="TrackerSourceLabel" FontSize="11.5"
+                               TextColor="{DynamicResource TextSecondaryColor}" />
+                        <Border StrokeThickness="1" StrokeShape="RoundRectangle 10" Padding="10" HeightRequest="120"
+                                BackgroundColor="{DynamicResource ChipInactiveColor}" Stroke="{DynamicResource DividerColor}">
+                            <ScrollView>
+                                <Label x:Name="TrackerListLabel" FontSize="11" LineHeight="1.5"
+                                       TextColor="{DynamicResource TextSecondaryColor}" />
+                            </ScrollView>
+                        </Border>
+                        <Label Text="推荐来源：ngosang/trackerslist（自动拉取 best_ip 列表，并用 BEP15 探测过滤不可达项）"
+                               FontSize="11" TextColor="{DynamicResource TextHintColor}" />
+                        <HorizontalStackLayout Spacing="10">
+                            <CheckBox x:Name="AutoUpdateTrackersCheck" Color="{DynamicResource PrimaryColor}" />
+                            <Label Text="每天自动更新 Tracker 服务器列表" FontSize="13" VerticalOptions="Center"
+                                   TextColor="{DynamicResource TextSecondaryColor}" />
+                        </HorizontalStackLayout>
+                        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
+                            <Button Grid.Column="0" x:Name="UpdateTrackersButton" Text="⟳ 立即更新" FontSize="12.5"
+                                    Padding="14,6" CornerRadius="8"
+                                    BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}" TextColor="White"
+                                    Clicked="OnUpdateTrackersClicked" />
+                            <Label Grid.Column="1" x:Name="TrackerUpdatedAtLabel" FontSize="11.5" VerticalOptions="Center"
+                                   TextColor="{DynamicResource TextHintColor}" />
+                        </Grid>
+                    </VerticalStackLayout>
+                </Border>
+
+                <!-- ═══ 监听端口 ═══ -->
+                <Border StrokeThickness="1" StrokeShape="RoundRectangle 20" Padding="20"
+                        BackgroundColor="{DynamicResource CardBackgroundColor}" Stroke="{DynamicResource DividerColor}">
+                    <VerticalStackLayout Spacing="10">
+                        <Label Text="监听端口" FontSize="15" FontFamily="OpenSansSemibold"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                        <HorizontalStackLayout Spacing="10">
+                            <CheckBox x:Name="UpnpCheck" Color="{DynamicResource PrimaryColor}" />
+                            <Label Text="UPnP / NAT-PMP 端口映射（让外网 peer 主动连入，提速冷门资源）" FontSize="13"
+                                   VerticalOptions="Center" TextColor="{DynamicResource TextSecondaryColor}" />
+                        </HorizontalStackLayout>
+                        <Grid ColumnDefinitions="*,110" ColumnSpacing="10">
+                            <Label Grid.Column="0" Text="BT 监听端口（TCP）" FontSize="13" VerticalOptions="Center"
+                                   TextColor="{DynamicResource TextSecondaryColor}" />
+                            <Entry x:Name="BtPortEntry" Grid.Column="1" Keyboard="Numeric" FontSize="12.5" />
+                        </Grid>
+                        <Grid ColumnDefinitions="*,110" ColumnSpacing="10">
+                            <Label Grid.Column="0" Text="DHT 监听端口（UDP）" FontSize="13" VerticalOptions="Center"
+                                   TextColor="{DynamicResource TextSecondaryColor}" />
+                            <Entry x:Name="DhtPortEntry" Grid.Column="1" Keyboard="Numeric" FontSize="12.5" />
+                        </Grid>
+                        <Label Text="修改端口 / 限速 / 连接数后保存，将自动重建 BT 引擎生效（进行中的任务需重新开始）。"
+                               FontSize="11" TextColor="{DynamicResource TextHintColor}" />
+                    </VerticalStackLayout>
+                </Border>
+
+                <!-- ═══ User-Agent ═══ -->
+                <Border StrokeThickness="1" StrokeShape="RoundRectangle 20" Padding="20"
+                        BackgroundColor="{DynamicResource CardBackgroundColor}" Stroke="{DynamicResource DividerColor}">
+                    <VerticalStackLayout Spacing="10">
+                        <Label Text="模拟用户代理（UA）" FontSize="15" FontFamily="OpenSansSemibold"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                        <Editor x:Name="UserAgentEditor" FontSize="11.5" HeightRequest="70" AutoSize="Disabled" />
+                        <Label Text="HTTP 直链下载与 tracker 请求使用的 UA；部分站点对特定客户端有做种/限速策略。"
+                               FontSize="11" TextColor="{DynamicResource TextHintColor}" />
+                    </VerticalStackLayout>
+                </Border>
+
+                <Label x:Name="HintLabel" FontSize="12" TextColor="{DynamicResource PrimaryColor}" />
+
+            </VerticalStackLayout>
+        </ScrollView>
+    </Grid>
+</ContentPage>

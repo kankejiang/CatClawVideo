@@ -1,0 +1,199 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:controls="clr-namespace:CatClawVideo.Maui.Controls"
+             x:Class="CatClawVideo.Maui.Pages.DownloadDetailPage"
+             BackgroundColor="{DynamicResource WindowBackgroundColor}"
+             Title="任务详情">
+
+    <Grid RowDefinitions="Auto,Auto,*">
+
+        <!-- 顶栏 -->
+        <Grid Grid.Row="0" Padding="24,14,24,6" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+            <Border Grid.Column="0" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
+                    StrokeShape="RoundRectangle 12" WidthRequest="38" HeightRequest="38">
+                <Image Source="ic_back.svg" WidthRequest="18" HeightRequest="18"
+                       HorizontalOptions="Center" VerticalOptions="Center" />
+                <Border.GestureRecognizers>
+                    <TapGestureRecognizer Tapped="OnBackTapped" />
+                </Border.GestureRecognizers>
+            </Border>
+            <Label Grid.Column="1" Text="任务详情" FontSize="17" FontFamily="OpenSansSemibold"
+                   TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
+        </Grid>
+
+        <!-- Tab 栏（Motrix 风格图标 tab） -->
+        <HorizontalStackLayout Grid.Row="1" Padding="24,0,24,6" Spacing="22" x:Name="TabBar">
+            <VerticalStackLayout x:Name="Tab0" Spacing="4">
+                <Label Text="ℹ" FontSize="15" HorizontalOptions="Center" TextColor="{DynamicResource PrimaryColor}" />
+                <BoxView x:Name="TabLine0" HeightRequest="2" WidthRequest="22" Color="{DynamicResource PrimaryColor}" />
+                <VerticalStackLayout.GestureRecognizers>
+                    <TapGestureRecognizer Tapped="OnTabTapped" />
+                </VerticalStackLayout.GestureRecognizers>
+            </VerticalStackLayout>
+            <VerticalStackLayout x:Name="Tab1" Spacing="4">
+                <Label Text="▦" FontSize="15" HorizontalOptions="Center" TextColor="{DynamicResource TextHintColor}" />
+                <BoxView x:Name="TabLine1" HeightRequest="2" WidthRequest="22" Color="Transparent" />
+                <VerticalStackLayout.GestureRecognizers>
+                    <TapGestureRecognizer Tapped="OnTabTapped" />
+                </VerticalStackLayout.GestureRecognizers>
+            </VerticalStackLayout>
+            <VerticalStackLayout x:Name="Tab2" Spacing="4">
+                <Label Text="↻" FontSize="15" HorizontalOptions="Center" TextColor="{DynamicResource TextHintColor}" />
+                <BoxView x:Name="TabLine2" HeightRequest="2" WidthRequest="22" Color="Transparent" />
+                <VerticalStackLayout.GestureRecognizers>
+                    <TapGestureRecognizer Tapped="OnTabTapped" />
+                </VerticalStackLayout.GestureRecognizers>
+            </VerticalStackLayout>
+            <VerticalStackLayout x:Name="Tab3" Spacing="4">
+                <Label Text="👥" FontSize="14" HorizontalOptions="Center" TextColor="{DynamicResource TextHintColor}" />
+                <BoxView x:Name="TabLine3" HeightRequest="2" WidthRequest="22" Color="Transparent" />
+                <VerticalStackLayout.GestureRecognizers>
+                    <TapGestureRecognizer Tapped="OnTabTapped" />
+                </VerticalStackLayout.GestureRecognizers>
+            </VerticalStackLayout>
+            <VerticalStackLayout x:Name="Tab4" Spacing="4">
+                <Label Text="📄" FontSize="14" HorizontalOptions="Center" TextColor="{DynamicResource TextHintColor}" />
+                <BoxView x:Name="TabLine4" HeightRequest="2" WidthRequest="22" Color="Transparent" />
+                <VerticalStackLayout.GestureRecognizers>
+                    <TapGestureRecognizer Tapped="OnTabTapped" />
+                </VerticalStackLayout.GestureRecognizers>
+            </VerticalStackLayout>
+        </HorizontalStackLayout>
+
+        <ScrollView Grid.Row="2" Padding="24,6,24,24">
+            <VerticalStackLayout Spacing="16">
+
+                <!-- ═══ Tab0 基本信息 ═══ -->
+                <VerticalStackLayout x:Name="Panel0" Spacing="14">
+                    <Grid ColumnDefinitions="110,*" ColumnSpacing="10">
+                        <Label Grid.Column="0" Text="任务名称" FontSize="13" TextColor="{DynamicResource TextSecondaryColor}" />
+                        <Label Grid.Column="1" x:Name="InfoName" FontSize="13" LineBreakMode="WordWrap"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                    </Grid>
+                    <Grid ColumnDefinitions="110,*" ColumnSpacing="10">
+                        <Label Grid.Column="0" Text="存储路径" FontSize="13" TextColor="{DynamicResource TextSecondaryColor}" />
+                        <Label Grid.Column="1" x:Name="InfoPath" FontSize="13" LineBreakMode="MiddleTruncation"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                    </Grid>
+                    <Grid ColumnDefinitions="110,*" ColumnSpacing="10">
+                        <Label Grid.Column="0" Text="任务状态" FontSize="13" TextColor="{DynamicResource TextSecondaryColor}" />
+                        <Border Grid.Column="1" HorizontalOptions="Start" StrokeThickness="0" Padding="10,3"
+                                StrokeShape="RoundRectangle 6" BackgroundColor="#E8F5E9">
+                            <Label x:Name="InfoState" Text="ACTIVE" FontSize="11.5" TextColor="#43A047" />
+                        </Border>
+                    </Grid>
+
+                    <BoxView HeightRequest="1" Color="{DynamicResource DividerColor}" Margin="0,6" />
+                    <Label Text="种子信息" FontSize="13.5" FontFamily="OpenSansSemibold"
+                           TextColor="{DynamicResource TextPrimaryColor}" />
+                    <Grid ColumnDefinitions="110,*" ColumnSpacing="10">
+                        <Label Grid.Column="0" Text="Hash" FontSize="13" TextColor="{DynamicResource TextSecondaryColor}" />
+                        <Label Grid.Column="1" x:Name="InfoHash" FontSize="12" LineBreakMode="CharacterWrap"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                    </Grid>
+                    <Grid ColumnDefinitions="110,*" ColumnSpacing="10">
+                        <Label Grid.Column="0" Text="分片大小" FontSize="13" TextColor="{DynamicResource TextSecondaryColor}" />
+                        <Label Grid.Column="1" x:Name="InfoPieceSize" FontSize="13"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                    </Grid>
+                    <Grid ColumnDefinitions="110,*" ColumnSpacing="10">
+                        <Label Grid.Column="0" Text="分片数量" FontSize="13" TextColor="{DynamicResource TextSecondaryColor}" />
+                        <Label Grid.Column="1" x:Name="InfoPieceCount" FontSize="13"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                    </Grid>
+                    <Grid ColumnDefinitions="110,*" ColumnSpacing="10">
+                        <Label Grid.Column="0" Text="总大小" FontSize="13" TextColor="{DynamicResource TextSecondaryColor}" />
+                        <Label Grid.Column="1" x:Name="InfoTotal" FontSize="13"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                    </Grid>
+                </VerticalStackLayout>
+
+                <!-- ═══ Tab1 进度（分片图 + 统计） ═══ -->
+                <VerticalStackLayout x:Name="Panel1" Spacing="14" IsVisible="False">
+                    <Border StrokeThickness="1" StrokeShape="RoundRectangle 10" Padding="10" HeightRequest="130"
+                            BackgroundColor="{DynamicResource ChipInactiveColor}" Stroke="{DynamicResource DividerColor}">
+                        <controls:PieceMapView x:Name="PieceMap" />
+                    </Border>
+                    <Grid ColumnDefinitions="110,*" ColumnSpacing="10">
+                        <Label Grid.Column="0" Text="任务进度" FontSize="13" TextColor="{DynamicResource TextSecondaryColor}" />
+                        <Grid Grid.Column="1" ColumnDefinitions="*,Auto" ColumnSpacing="10">
+                            <ProgressBar x:Name="ProgressBarView" Progress="0" HeightRequest="6" VerticalOptions="Center"
+                                         ProgressColor="{DynamicResource PrimaryColor}" />
+                            <Label Grid.Column="1" x:Name="ProgressText" Text="0%" FontSize="12"
+                                   TextColor="{DynamicResource TextPrimaryColor}" />
+                        </Grid>
+                    </Grid>
+                    <Label x:Name="ProgressBytes" FontSize="13" TextColor="{DynamicResource TextHintColor}" />
+                    <Grid ColumnDefinitions="110,*" ColumnSpacing="10">
+                        <Label Grid.Column="0" Text="种子数" FontSize="13" TextColor="{DynamicResource TextSecondaryColor}" />
+                        <Label Grid.Column="1" x:Name="StatSeeds" FontSize="13" TextColor="{DynamicResource TextPrimaryColor}" />
+                    </Grid>
+                    <Grid ColumnDefinitions="110,*" ColumnSpacing="10">
+                        <Label Grid.Column="0" Text="连接数" FontSize="13" TextColor="{DynamicResource TextSecondaryColor}" />
+                        <Label Grid.Column="1" x:Name="StatConnections" FontSize="13" TextColor="{DynamicResource TextPrimaryColor}" />
+                    </Grid>
+                    <Grid ColumnDefinitions="110,*" ColumnSpacing="10">
+                        <Label Grid.Column="0" Text="下载速度" FontSize="13" TextColor="{DynamicResource TextSecondaryColor}" />
+                        <Label Grid.Column="1" x:Name="StatDown" FontSize="13" TextColor="#42A5F5" />
+                    </Grid>
+                    <Grid ColumnDefinitions="110,*" ColumnSpacing="10">
+                        <Label Grid.Column="0" Text="上传速度" FontSize="13" TextColor="{DynamicResource TextSecondaryColor}" />
+                        <Label Grid.Column="1" x:Name="StatUp" FontSize="13" TextColor="#7E57C2" />
+                    </Grid>
+                    <Grid ColumnDefinitions="110,*" ColumnSpacing="10">
+                        <Label Grid.Column="0" Text="已上传" FontSize="13" TextColor="{DynamicResource TextSecondaryColor}" />
+                        <Label Grid.Column="1" x:Name="StatUploaded" FontSize="13" TextColor="{DynamicResource TextPrimaryColor}" />
+                    </Grid>
+                    <Grid ColumnDefinitions="110,*" ColumnSpacing="10">
+                        <Label Grid.Column="0" Text="分享率" FontSize="13" TextColor="{DynamicResource TextSecondaryColor}" />
+                        <Label Grid.Column="1" x:Name="StatRatio" FontSize="13" TextColor="{DynamicResource TextPrimaryColor}" />
+                    </Grid>
+                </VerticalStackLayout>
+
+                <!-- ═══ Tab2 Tracker ═══ -->
+                <VerticalStackLayout x:Name="Panel2" Spacing="8" IsVisible="False">
+                    <Label x:Name="TrackerHeader" FontSize="12" TextColor="{DynamicResource TextHintColor}" />
+                    <Border StrokeThickness="1" StrokeShape="RoundRectangle 10" Padding="10"
+                            BackgroundColor="{DynamicResource ChipInactiveColor}" Stroke="{DynamicResource DividerColor}">
+                        <VerticalStackLayout x:Name="TrackerListHost" Spacing="6" />
+                    </Border>
+                </VerticalStackLayout>
+
+                <!-- ═══ Tab3 连接（引擎能力说明） ═══ -->
+                <VerticalStackLayout x:Name="Panel3" Spacing="10" IsVisible="False">
+                    <Label x:Name="ConnSummary" FontSize="13" TextColor="{DynamicResource TextPrimaryColor}" />
+                    <Label Text="当前内置 BT 引擎（MonoTorrent）不暴露逐条 peer 连接明细（地址/客户端/单连接速率），仅提供连接数、种子数与下载者数统计。"
+                           FontSize="12" TextColor="{DynamicResource TextHintColor}" LineBreakMode="WordWrap" />
+                </VerticalStackLayout>
+
+                <!-- ═══ Tab4 文件 ═══ -->
+                <VerticalStackLayout x:Name="Panel4" Spacing="10" IsVisible="False">
+                    <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
+                        <Label Grid.Column="0" Text="文件名" FontSize="12" TextColor="{DynamicResource TextHintColor}" />
+                        <Label Grid.Column="1" Text="%" FontSize="12" WidthRequest="64"
+                               HorizontalTextAlignment="End" TextColor="{DynamicResource TextHintColor}" />
+                        <Label Grid.Column="2" Text="大小" FontSize="12" WidthRequest="96"
+                               HorizontalTextAlignment="End" TextColor="{DynamicResource TextHintColor}" />
+                    </Grid>
+                    <VerticalStackLayout x:Name="FileListHost" Spacing="2" />
+                    <HorizontalStackLayout Spacing="8">
+                        <Button Text="全选" FontSize="11.5" HeightRequest="30" CornerRadius="8" Padding="12,0"
+                                BackgroundColor="{DynamicResource ChipInactiveColor}"
+                                TextColor="{DynamicResource TextPrimaryColor}" Clicked="OnSelectAllClicked" />
+                        <Button Text="全不选" FontSize="11.5" HeightRequest="30" CornerRadius="8" Padding="12,0"
+                                BackgroundColor="{DynamicResource ChipInactiveColor}"
+                                TextColor="{DynamicResource TextPrimaryColor}" Clicked="OnSelectNoneClicked" />
+                        <Button Text="反选" FontSize="11.5" HeightRequest="30" CornerRadius="8" Padding="12,0"
+                                BackgroundColor="{DynamicResource ChipInactiveColor}"
+                                TextColor="{DynamicResource TextPrimaryColor}" Clicked="OnInvertSelectionClicked" />
+                    </HorizontalStackLayout>
+                    <Label x:Name="FileSelectionSummary" FontSize="12" HorizontalOptions="End"
+                           TextColor="{DynamicResource TextHintColor}" />
+                </VerticalStackLayout>
+
+                <Label x:Name="HintLabel" FontSize="12" TextColor="{DynamicResource PrimaryColor}" />
+            </VerticalStackLayout>
+        </ScrollView>
+    </Grid>
+</ContentPage>

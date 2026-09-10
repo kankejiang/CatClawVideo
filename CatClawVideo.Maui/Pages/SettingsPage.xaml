@@ -47,6 +47,28 @@
                 </VerticalStackLayout>
             </Border>
 
+            <!-- ═══ 下载管理 ═══ -->
+            <Border StrokeThickness="1"
+                    StrokeShape="RoundRectangle 20"
+                    BackgroundColor="{DynamicResource CardBackgroundColor}"
+                    Stroke="{DynamicResource DividerColor}"
+                    Padding="20">
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+                    <VerticalStackLayout Grid.Column="0" Spacing="4">
+                        <Label Text="下载管理" FontSize="16" FontFamily="OpenSansSemibold"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                        <Label Text="磁力整包 / HTTP 直链下载，断点续传与并发控制；已完成视频可直接播放"
+                               FontSize="12"
+                               TextColor="{DynamicResource TextSecondaryColor}" />
+                    </VerticalStackLayout>
+                    <Button Grid.Column="1" Text="打开" FontSize="12"
+                            HeightRequest="34" CornerRadius="17" Padding="18,0"
+                            BackgroundColor="{DynamicResource PrimaryColor}"
+                            TextColor="White"
+                            Clicked="OnOpenDownloads" />
+                </Grid>
+            </Border>
+
             <!-- ═══ 播放器 ═══ -->
             <Border StrokeThickness="1"
                     StrokeShape="RoundRectangle 20"
