@@ -1,39 +1,30 @@
 <?xml version="1.0" encoding="utf-8" ?>
-<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+<ContentView xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
              xmlns:controls="clr-namespace:CatClawVideo.Maui.Controls"
              xmlns:converters="clr-namespace:CatClawVideo.Maui.Converters"
              xmlns:services="clr-namespace:CatClawVideo.Maui.Services"
              x:Class="CatClawVideo.Maui.Pages.DownloadsPage"
-             Title="下载管理"
              BackgroundColor="{DynamicResource WindowBackgroundColor}">
 
-    <ContentPage.Resources>
+    <ContentView.Resources>
         <converters:DownloadStatusConverter x:Key="DownloadStatusConverter" />
-    </ContentPage.Resources>
+    </ContentView.Resources>
 
-    <!-- 顶栏返回按钮避免 caption 区重叠：Windows 下留 48px 顶部让位（同搜索页） -->
+    <!-- 作为顶部 tab 内容：顶栏去掉返回按钮，标题栏让位由 MainPage 统一处理 -->
     <Grid RowDefinitions="Auto,*" Padding="0">
         <Grid RowDefinitions="Auto,Auto,Auto" Padding="24,14,24,10" RowSpacing="10" Grid.Row="0">
 
-            <!-- 顶栏：返回 + 标题 + 新建 -->
-            <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="8">
-                <Border Grid.Column="0" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
-                        StrokeShape="RoundRectangle 12" WidthRequest="38" HeightRequest="38">
-                    <Image Source="ic_back.svg" WidthRequest="18" HeightRequest="18"
-                           HorizontalOptions="Center" VerticalOptions="Center" />
-                    <Border.GestureRecognizers>
-                        <TapGestureRecognizer Tapped="OnBackTapped" />
-                    </Border.GestureRecognizers>
-                </Border>
-                <Label Grid.Column="1" Text="下载管理" FontSize="17" FontFamily="OpenSansSemibold"
+            <!-- 顶栏：标题 + 设置 + 新建（返回按钮已移除 —— 本页现在是顶部 tab 内容） -->
+            <Grid Grid.Row="0" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
+                <Label Grid.Column="0" Text="下载管理" FontSize="17" FontFamily="OpenSansSemibold"
                        TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
                 <!-- 下载设置（照搬 Motrix 设置项） -->
-                <Button Grid.Column="2" Text="⚙ 设置" FontSize="12" Padding="12,6" CornerRadius="8"
+                <Button Grid.Column="1" Text="⚙ 设置" FontSize="12" Padding="12,6" CornerRadius="8"
                         TextColor="{DynamicResource TextPrimaryColor}"
                         BackgroundColor="{DynamicResource ChipInactiveColor}"
                         Clicked="OnBtSettingsTapped" />
-                <Button Grid.Column="3" Text="＋ 新建下载" FontSize="12"
+                <Button Grid.Column="2" Text="＋ 新建下载" FontSize="12"
                         ContentLayout="Left,4"
                         ImageSource="ic_add.svg"
                         TextColor="White"
@@ -255,4 +246,4 @@
             </Border>
         </Grid>
     </Grid>
-</ContentPage>
+</ContentView>

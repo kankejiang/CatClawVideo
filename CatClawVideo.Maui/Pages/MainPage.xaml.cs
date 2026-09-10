@@ -4,7 +4,7 @@ using AppTheme = CatClawVideo.Core.Interfaces.AppTheme;
 namespace CatClawVideo.Maui.Pages;
 
 /// <summary>
-/// 主页面：顶部导航栏宿主（首页/历史/收藏/本地/设置），tab 内容为 ContentView 从 DI 注入常驻复用。
+/// 主页面：顶部导航栏宿主（首页/历史/收藏/下载/本地/设置），tab 内容为 ContentView 从 DI 注入常驻复用。
 /// 顶部导航 = 电视遥控横向导航友好；安卓横屏与 Windows 共用同款布局。
 /// </summary>
 public partial class MainPage : ContentPage
@@ -24,12 +24,13 @@ public partial class MainPage : ContentPage
     };
 
     public MainPage(MainViewModel vm, IThemeService theme, HomePage home, HistoryPage history,
-        FavoritesPage favorites, LocalMediaPage local, SettingsPage settings)
+        FavoritesPage favorites, DownloadsPage downloads, LocalMediaPage local, SettingsPage settings)
     {
         InitializeComponent();
         _vm = vm;
         _theme = theme;
-        _tabs = [home, history, favorites, local, settings];
+        // 顺序须与 MainViewModel.Tabs 一致：首页 / 历史 / 收藏 / 下载 / 本地 / 设置
+        _tabs = [home, history, favorites, downloads, local, settings];
 
         foreach (var tab in _tabs)
         {
@@ -97,6 +98,8 @@ public partial class MainPage : ContentPage
             Windows.System.VirtualKey.Number3 or Windows.System.VirtualKey.NumberPad3 or Windows.System.VirtualKey.F3 => 2,
             Windows.System.VirtualKey.Number4 or Windows.System.VirtualKey.NumberPad4 or Windows.System.VirtualKey.F4 => 3,
             Windows.System.VirtualKey.Number5 or Windows.System.VirtualKey.NumberPad5 or Windows.System.VirtualKey.F5 => 4,
+            // 第 6 个 tab 只用数字键：F6 另有用途（下方分支直达源配置页）
+            Windows.System.VirtualKey.Number6 or Windows.System.VirtualKey.NumberPad6 => 5,
             _ => -1,
         };
 
@@ -156,6 +159,7 @@ public partial class MainPage : ContentPage
         : (sender == NavBg2) ? 2
         : (sender == NavBg3) ? 3
         : (sender == NavBg4) ? 4
+        : (sender == NavBg5) ? 5
         : 0;
 
     /// <summary>hover 空壳胶囊：未选中 tab 悬停时显示主题色描边 + 文字提亮；选中态样式不覆盖。</summary>
@@ -168,8 +172,8 @@ public partial class MainPage : ContentPage
         var primary = Microsoft.Maui.Graphics.Color.FromArgb($"#{activeHex}");
         b.Stroke = primary;
         b.StrokeThickness = 1;
-        if (index >= 0 && index < 5)
-            ((new[] { NavLabel0, NavLabel1, NavLabel2, NavLabel3, NavLabel4 })[index]).TextColor =
+        if (index >= 0 && index < 6)
+            ((new[] { NavLabel0, NavLabel1, NavLabel2, NavLabel3, NavLabel4, NavLabel5 })[index]).TextColor =
                 (Microsoft.Maui.Graphics.Color)Application.Current!.Resources["TextPrimaryColor"];
     }
 
@@ -179,8 +183,8 @@ public partial class MainPage : ContentPage
         var index = TabIndexOf(b);
         if (_vm.SelectedTabIndex == index) return;
         b.StrokeThickness = 0;
-        if (index >= 0 && index < 5)
-            ((new[] { NavLabel0, NavLabel1, NavLabel2, NavLabel3, NavLabel4 })[index]).TextColor =
+        if (index >= 0 && index < 6)
+            ((new[] { NavLabel0, NavLabel1, NavLabel2, NavLabel3, NavLabel4, NavLabel5 })[index]).TextColor =
                 (Microsoft.Maui.Graphics.Color)Application.Current!.Resources["TextSecondaryColor"];
     }
 
@@ -221,8 +225,8 @@ public partial class MainPage : ContentPage
     {
         var activeHex = ThemeHex.GetValueOrDefault(_theme.CurrentTheme, "9b7ed8");
         var primary = Microsoft.Maui.Graphics.Color.FromArgb($"#{activeHex}");
-        var labels = new[] { NavLabel0, NavLabel1, NavLabel2, NavLabel3, NavLabel4 };
-        var bgs = new[] { NavBg0, NavBg1, NavBg2, NavBg3, NavBg4 };
+        var labels = new[] { NavLabel0, NavLabel1, NavLabel2, NavLabel3, NavLabel4, NavLabel5 };
+        var bgs = new[] { NavBg0, NavBg1, NavBg2, NavBg3, NavBg4, NavBg5 };
 
         for (int i = 0; i < labels.Length; i++)
         {

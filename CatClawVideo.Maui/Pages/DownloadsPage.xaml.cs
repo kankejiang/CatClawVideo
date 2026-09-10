@@ -8,7 +8,7 @@ namespace CatClawVideo.Maui.Pages;
 /// 下载管理页：展示与管理下载任务（新建 URL/磁力下载、暂停/继续/取消/重试/删除、并发设置）。
 /// 复刻猫爪音乐下载管理器（任务模型/事件驱动进度/操作分发），视频化：已完成视频文件点卡片直接进播放页。
 /// </summary>
-public partial class DownloadsPage : ContentPage
+public partial class DownloadsPage : ContentView, ITabView
 {
     private readonly DownloadsViewModel _vm;
     private readonly DownloadManager _manager;
@@ -25,21 +25,14 @@ public partial class DownloadsPage : ContentPage
         _vm = vm;
         _manager = manager;
         BindingContext = vm;
-
-#if WINDOWS
-        // 无边框窗口内容延伸进标题栏区：顶部留出 caption 按钮条高度（同搜索页）
-        Padding = new Thickness(0, 48, 0, 0);
-#endif
     }
 
-    protected override void OnDisappearing()
+    /// <summary>切到本 tab 时刷新统计（任务数 / 下载目录）；列表本身由 DownloadManager 事件驱动</summary>
+    public Task OnTabShownAsync()
     {
-        base.OnDisappearing();
-        // Transient 页面即将销毁：解除事件订阅，避免单例 DownloadManager 长引用本页 VM
-        _vm.Dispose();
+        _vm.RefreshStats();
+        return Task.CompletedTask;
     }
-
-    private void OnBackTapped(object? sender, EventArgs e) => Shell.Current.GoToAsync("..");
 
     /// <summary>右上角 ⚙：打开下载 / BT 设置页</summary>
     private async void OnBtSettingsTapped(object? sender, EventArgs e)
@@ -257,40 +250,39 @@ public partial class DownloadsPage : ContentPage
         catch { return Enumerable.Empty<string>(); }
     }
 
-    // ═══ 弹窗辅助（Windows 嵌入模式本页可能不在窗口视觉树，经窗口根页面调用） ═══
+    // ═══ 弹窗辅助 ═══
+    // 本页现在是顶部 tab 的 ContentView（不是 Page），自身没有 DisplayAlert/Prompt/ActionSheet，
+    // 一律经窗口根 Page 调用。
 
-    private Task<string?> PromptAsync(string title, string message, string accept, string cancel,
+    private static Page? RootPage => Application.Current?.Windows.FirstOrDefault()?.Page;
+
+    private static Task<string?> PromptAsync(string title, string message, string accept, string cancel,
         string placeholder, Keyboard keyboard)
     {
-        var root = Application.Current?.Windows.FirstOrDefault()?.Page;
-        if (root != null && root != this)
-            return root.DisplayPromptAsync(title, message, accept, cancel,
-                placeholder: placeholder, keyboard: keyboard);
-        return DisplayPromptAsync(title, message, accept, cancel, placeholder: placeholder, keyboard: keyboard);
+        var root = RootPage;
+        return root is null
+            ? Task.FromResult<string?>(null)
+            : root.DisplayPromptAsync(title, message, accept, cancel, placeholder: placeholder, keyboard: keyboard);
     }
 
-    private Task AlertAsync(string title, string message, string cancel = "确定")
+    private static Task AlertAsync(string title, string message, string cancel = "确定")
     {
-        var root = Application.Current?.Windows.FirstOrDefault()?.Page;
-        if (root != null && root != this)
-            return root.DisplayAlertAsync(title, message, cancel);
-        return DisplayAlertAsync(title, message, cancel);
+        var root = RootPage;
+        return root is null ? Task.CompletedTask : root.DisplayAlertAsync(title, message, cancel);
     }
 
     /// <summary>确认/取消双按钮弹窗</summary>
-    private Task<bool> ConfirmAsync(string title, string message, string accept, string cancel)
+    private static Task<bool> ConfirmAsync(string title, string message, string accept, string cancel)
     {
-        var root = Application.Current?.Windows.FirstOrDefault()?.Page;
-        if (root != null && root != this)
-            return root.DisplayAlertAsync(title, message, accept, cancel);
-        return DisplayAlertAsync(title, message, accept, cancel);
+        var root = RootPage;
+        return root is null ? Task.FromResult(false) : root.DisplayAlertAsync(title, message, accept, cancel);
     }
 
-    private Task<string?> AlertActionAsync(string title, params string[] buttons)
+    private static Task<string?> AlertActionAsync(string title, params string[] buttons)
     {
-        var root = Application.Current?.Windows.FirstOrDefault()?.Page;
-        if (root != null && root != this)
-            return root.DisplayActionSheetAsync(title, "取消", null, buttons);
-        return DisplayActionSheetAsync(title, "取消", null, buttons);
+        var root = RootPage;
+        return root is null
+            ? Task.FromResult<string?>(null)
+            : root.DisplayActionSheetAsync(title, "取消", null, buttons);
     }
 }

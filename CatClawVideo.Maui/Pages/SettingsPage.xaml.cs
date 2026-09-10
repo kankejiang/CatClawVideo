@@ -12,15 +12,17 @@ public partial class SettingsPage : ContentView, ITabView
     private readonly IThemeService _theme;
     private readonly ISubscriptionManager _subscriptionManager;
     private readonly VideoDatabase _db;
+    private readonly MainViewModel _mainVm;
 
     public SettingsPage(SettingsViewModel vm, IThemeService theme,
-        ISubscriptionManager subscriptionManager, VideoDatabase db)
+        ISubscriptionManager subscriptionManager, VideoDatabase db, MainViewModel mainVm)
     {
         InitializeComponent();
         _vm = vm;
         _theme = theme;
         _subscriptionManager = subscriptionManager;
         _db = db;
+        _mainVm = mainVm;
         BindingContext = _vm;
     }
 
@@ -38,11 +40,8 @@ public partial class SettingsPage : ContentView, ITabView
         try { await Shell.Current.GoToAsync("sourceconfig"); } catch { }
     }
 
-    /// <summary>跳转下载管理页（磁力/HTTP 下载任务管理）</summary>
-    private async void OnOpenDownloads(object? sender, EventArgs e)
-    {
-        try { await Shell.Current.GoToAsync("downloads"); } catch { }
-    }
+    /// <summary>切到顶部「下载」tab（下载管理已从独立 Shell 页面改为 tab，索引见 MainViewModel.Tabs）</summary>
+    private void OnOpenDownloads(object? sender, EventArgs e) => _mainVm.SelectTab(3);
 
     /// <summary>添加订阅：拉取解析 TVBox 配置 → 写库 → 站点仓库立即生效</summary>
     private async void OnAddSubClicked(object? sender, EventArgs e)

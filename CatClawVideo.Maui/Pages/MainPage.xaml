@@ -56,7 +56,7 @@
                     </Border>
 
                     <Border x:Name="NavBg3" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="22,10">
-                        <Label x:Name="NavLabel3" Text="本地" FontSize="13.5" FontFamily="OpenSansSemibold" />
+                        <Label x:Name="NavLabel3" Text="下载" FontSize="13.5" FontFamily="OpenSansSemibold" />
                         <Border.GestureRecognizers>
                             <TapGestureRecognizer Tapped="OnTabTapped" />
                             <PointerGestureRecognizer PointerEntered="OnTabPointerEntered" PointerExited="OnTabPointerExited" />
@@ -64,7 +64,15 @@
                     </Border>
 
                     <Border x:Name="NavBg4" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="22,10">
-                        <Label x:Name="NavLabel4" Text="设置" FontSize="13.5" FontFamily="OpenSansSemibold" />
+                        <Label x:Name="NavLabel4" Text="本地" FontSize="13.5" FontFamily="OpenSansSemibold" />
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnTabTapped" />
+                            <PointerGestureRecognizer PointerEntered="OnTabPointerEntered" PointerExited="OnTabPointerExited" />
+                        </Border.GestureRecognizers>
+                    </Border>
+
+                    <Border x:Name="NavBg5" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="22,10">
+                        <Label x:Name="NavLabel5" Text="设置" FontSize="13.5" FontFamily="OpenSansSemibold" />
                         <Border.GestureRecognizers>
                             <TapGestureRecognizer Tapped="OnTabTapped" />
                             <PointerGestureRecognizer PointerEntered="OnTabPointerEntered" PointerExited="OnTabPointerExited" />
