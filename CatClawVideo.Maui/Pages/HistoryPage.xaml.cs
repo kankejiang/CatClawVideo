@@ -1,3 +1,4 @@
+using CatClawVideo.Core.Models;
 using CatClawVideo.Data;
 using CatClawVideo.Maui.ViewModels;
 
@@ -27,6 +28,14 @@ public partial class HistoryPage : ContentView, ITabView
                 // 有来源定位 → 跳回观看页详情并自动选中该集续看；
                 // 网页直链/本地播放等无来源记录 → 沿用直接播放（老数据仍可用）
                 var hasSource = !string.IsNullOrEmpty(e.SourceKey) && !string.IsNullOrEmpty(e.ItemId);
+
+                // ⚠️ type/api 必须取**当前注册表**的活源定义，不能用记录里存的旧值——
+                // 旧值指向录制时的源（如 v1 静态快照文件），回跳会读到过期数据
+                // （实测：快照里大主宰年番只有 24 集 1 线路，站点实为 4 线路 89 集）
+                var site = SiteRegistry.Find(e.SourceKey);
+                var type = site?.Type ?? e.ItemType;
+                var api = site?.Api ?? e.ItemApi;
+
                 var posParam = $"&pos={Math.Max(0, (int)e.PositionSeconds)}";
                 // 影片标题 = 「影片 · 集名」去掉集名部分；极端情况退化用集名（标题栏不能为空）
                 var itemTitle = e.Title.Contains(" · ")
@@ -34,8 +43,8 @@ public partial class HistoryPage : ContentView, ITabView
                     : e.Title;
                 if (string.IsNullOrWhiteSpace(itemTitle)) itemTitle = e.EpisodeName;
                 var watchQuery = $"watch?title={Uri.EscapeDataString(itemTitle)}" +
-                    $"&sourceKey={Uri.EscapeDataString(e.SourceKey)}&type={e.ItemType}" +
-                    $"&api={Uri.EscapeDataString(e.ItemApi)}&itemId={Uri.EscapeDataString(e.ItemId)}" +
+                    $"&sourceKey={Uri.EscapeDataString(e.SourceKey)}&type={type}" +
+                    $"&api={Uri.EscapeDataString(api)}&itemId={Uri.EscapeDataString(e.ItemId)}" +
                     (string.IsNullOrEmpty(e.EpisodeName) ? "" : $"&resumeEp={Uri.EscapeDataString(e.EpisodeName)}") +
                     $"&year={Uri.EscapeDataString(e.Year)}" +
                     $"&remarks={Uri.EscapeDataString(e.Remarks)}" +

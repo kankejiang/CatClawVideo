@@ -291,6 +291,19 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         {
             _sources = await _provider.GetPlaySourcesAsync(_site, _item);
 
+            // 兜底：旧源（v1 静态快照，id 为哈希）与现行 web 源（id 为文章 URL）的
+            // id 方案不兼容，历史/收藏卡跳转会解析为空 → 按标题跨分类找回影片，
+            // 用新 id 重新定位线路（源切换后的老记录自愈）
+            if (_sources.Count == 0 && !string.IsNullOrWhiteSpace(_item.Title))
+            {
+                var found = await FindItemByTitleAsync(_item.Title);
+                if (found is not null)
+                {
+                    _item = found;
+                    _sources = await _provider.GetPlaySourcesAsync(_site, _item);
+                }
+            }
+
             // 线路芯片（右侧选集栏上方）：点击切换线路并重载选集；多线路时加"线路"前缀提示可切换
             LinesHost.Children.Clear();
             _lineChips.Clear();
@@ -339,6 +352,31 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         {
             BufferingIndicator.IsVisible = false;
         }
+    }
+
+    /// <summary>
+    /// 按标题跨分类查找影片（历史/收藏的旧 id 与现行源 id 方案不兼容时兜底）。
+    /// 每分类最多翻 3 页，找到即返回；找不到返回 null。
+    /// </summary>
+    private async Task<VodItem?> FindItemByTitleAsync(string title)
+    {
+        try
+        {
+            var key = title.Replace(" ", "");
+            foreach (var cat in await _provider.GetCategoriesAsync(_site))
+            {
+                for (var page = 1; page <= 3; page++)
+                {
+                    var items = await _provider.GetItemsAsync(_site, cat, page);
+                    if (items.Count == 0) break;
+                    var hit = items.FirstOrDefault(x =>
+                        x.Title.Replace(" ", "").Contains(key, StringComparison.OrdinalIgnoreCase));
+                    if (hit is not null) return hit;
+                }
+            }
+        }
+        catch { }
+        return null;
     }
 
     /// <summary>切换播放线路：重建右侧选集栏并播第一集</summary>

@@ -102,17 +102,35 @@ public class CatClawWebEngine
 
             if (!string.IsNullOrEmpty(r.DetailPlay))
             {
-                var episodes = new List<VodEpisode>();
-                foreach (Match m in Regex.Matches(html, r.DetailPlay))
+                // 站点常把多条线路各放一个 <h3> 区块（如 6V 的「播放地址一~四」各 89 集）：
+                // 按 h3 区块分组解析，一个区块 = 一条线路；无 h3 分段时退回整体单线路。
+                var segments = SplitByH3(html);
+                if (segments.Count > 1)
                 {
-                    var url = Absolute(detailUrl, Decode(m.Groups["url"].Value));
-                    var name = m.Groups["name"].Success && Decode(m.Groups["name"].Value).Trim().Length > 0
-                        ? Decode(m.Groups["name"].Value).Trim()
-                        : $"播放源{episodes.Count + 1}";
-                    episodes.Add(new VodEpisode { Name = name, Url = url });
+                    var lineNo = 0;
+                    foreach (var seg in segments)
+                    {
+                        var eps = ParseEpisodes(seg, r.DetailPlay, detailUrl);
+                        if (eps.Count == 0) continue;
+                        lineNo++;
+                        sources.Add(new VodPlaySource { Name = $"线路{lineNo}", Episodes = eps });
+                    }
                 }
-                if (episodes.Count > 0)
-                    sources.Add(new VodPlaySource { Name = "在线播放", Episodes = episodes });
+
+                if (sources.Count == 0)
+                {
+                    var episodes = new List<VodEpisode>();
+                    foreach (Match m in Regex.Matches(html, r.DetailPlay))
+                    {
+                        var url = Absolute(detailUrl, Decode(m.Groups["url"].Value));
+                        var name = m.Groups["name"].Success && Decode(m.Groups["name"].Value).Trim().Length > 0
+                            ? Decode(m.Groups["name"].Value).Trim()
+                            : $"播放源{episodes.Count + 1}";
+                        episodes.Add(new VodEpisode { Name = name, Url = url });
+                    }
+                    if (episodes.Count > 0)
+                        sources.Add(new VodPlaySource { Name = "在线播放", Episodes = episodes });
+                }
             }
 
             if (!string.IsNullOrEmpty(r.DetailMagnet))
@@ -131,6 +149,40 @@ public class CatClawWebEngine
         }
 
         return (sources, year, area, desc, sources.Count > 0 && sources[0].Name == "在线播放" ? "在线" : null);
+    }
+
+    /// <summary>
+    /// 按 &lt;h3&gt; 标题把详情页切成区块（每块含标题与其后内容，直到下一个 h3）。
+    /// 无 h3 时返回空列表（调用方退回整体解析）。
+    /// </summary>
+    private static List<string> SplitByH3(string html)
+    {
+        var marks = Regex.Matches(html, "<h3[^>]*>[^<]{1,120}</h3>");
+        if (marks.Count < 2) return [];
+        var segments = new List<string>();
+        for (var i = 0; i < marks.Count; i++)
+        {
+            var start = marks[i].Index;
+            var end = i + 1 < marks.Count ? marks[i + 1].Index : html.Length;
+            segments.Add(html[start..end]);
+        }
+        return segments;
+    }
+
+    /// <summary>对单段 HTML 应用 detailPlay 规则并组装剧集（相对链接以详情页为基址转绝对）</summary>
+    private List<VodEpisode> ParseEpisodes(string html, string rule, string baseUrl)
+    {
+        var episodes = new List<VodEpisode>();
+        foreach (Match m in Regex.Matches(html, rule))
+        {
+            var rawUrl = m.Groups["url"].Success ? m.Groups["url"].Value : "";
+            var url = rawUrl.Length > 0 ? Absolute(baseUrl, Decode(rawUrl)) : "";
+            var name = m.Groups["name"].Success && Decode(m.Groups["name"].Value).Trim().Length > 0
+                ? Decode(m.Groups["name"].Value).Trim()
+                : $"播放源{episodes.Count + 1}";
+            episodes.Add(new VodEpisode { Name = name, Url = url });
+        }
+        return episodes;
     }
 
     // ═══════════════════ 播放解析 ═══════════════════
