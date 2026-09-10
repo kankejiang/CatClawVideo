@@ -4,33 +4,18 @@
              x:Class="CatClawVideo.Maui.Pages.FavoritesPage"
              BackgroundColor="Transparent">
 
-    <!-- 根用 Grid：分组海报墙（最近播放 / 我的收藏）占 * 行获得有界高度 -->
+    <!-- 我的收藏海报墙（最近播放归「历史」页，本页只管收藏） -->
     <Grid RowDefinitions="Auto,*" Padding="24,16,24,20" RowSpacing="12">
 
-        <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
-            <Label Grid.Column="0" Text="我的收藏" FontSize="17" FontFamily="OpenSansSemibold"
-                   TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
-            <Button Grid.Column="1" x:Name="ClearHistoryButton" Text="清空历史" FontSize="12"
-                    Padding="14,6" CornerRadius="14"
-                    TextColor="{DynamicResource TextSecondaryColor}"
-                    BackgroundColor="{DynamicResource ChipInactiveColor}"
-                    Command="{Binding ClearHistoryCommand}"
-                    IsVisible="False" />
-        </Grid>
+        <Label Grid.Row="0" Text="我的收藏" FontSize="17" FontFamily="OpenSansSemibold"
+               TextColor="{DynamicResource TextPrimaryColor}" />
 
-        <!-- 分组海报墙（真数据：播放历史 + 收藏表；无封面时猫爪前景图标占位） -->
-        <CollectionView Grid.Row="1" x:Name="Wall" IsGrouped="True" SelectionMode="Single"
+        <!-- 海报墙（无封面时猫爪前景图标占位） -->
+        <CollectionView Grid.Row="1" x:Name="Wall" SelectionMode="Single"
                         SelectionChanged="OnCardSelected">
             <CollectionView.ItemsLayout>
                 <GridItemsLayout Orientation="Vertical" Span="6" VerticalItemSpacing="16" HorizontalItemSpacing="14" />
             </CollectionView.ItemsLayout>
-            <CollectionView.GroupHeaderTemplate>
-                <DataTemplate>
-                    <Label Text="{Binding Name}" FontSize="15" FontFamily="OpenSansSemibold"
-                           Margin="0,6,0,4"
-                           TextColor="{DynamicResource TextPrimaryColor}" />
-                </DataTemplate>
-            </CollectionView.GroupHeaderTemplate>
             <CollectionView.ItemTemplate>
                 <DataTemplate>
                     <VerticalStackLayout Spacing="0">
@@ -66,7 +51,7 @@
         </CollectionView>
 
         <Label Grid.Row="1" x:Name="EmptyLabel"
-               Text="暂无收藏与播放记录，去首页挑一部影片吧"
+               Text="暂无收藏，在影片详情页点「收藏」添加"
                FontSize="13" HorizontalTextAlignment="Center" VerticalOptions="Center"
                TextColor="{DynamicResource TextHintColor}" IsVisible="False" />
 

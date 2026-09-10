@@ -4,7 +4,7 @@ using CatClawVideo.Maui.ViewModels;
 
 namespace CatClawVideo.Maui.Pages;
 
-/// <summary>收藏页：最近播放 + 我的收藏，分组海报墙（真数据 VideoDatabase）。</summary>
+/// <summary>收藏页：我的收藏海报墙（真数据 VideoDatabase；最近播放归「历史」页）。</summary>
 public partial class FavoritesPage : ContentView, ITabView
 {
     private readonly FavoritesViewModel _vm;
@@ -20,45 +20,15 @@ public partial class FavoritesPage : ContentView, ITabView
     {
         await _vm.LoadCommand.ExecuteAsync(null);
 
-        ClearHistoryButton.IsVisible = _vm.RecentPlays.Count > 0;
-        EmptyLabel.IsVisible = _vm.RecentPlays.Count == 0 && _vm.Favorites.Count == 0;
-
-        var sections = new List<WallSection>();
-
-        if (_vm.RecentPlays.Count > 0)
-            sections.Add(new WallSection
-            {
-                Name = "最近播放",
-                Items = _vm.RecentPlays.Select(e =>
-                {
-                    var ep = string.IsNullOrEmpty(e.EpisodeName) ? "" : e.EpisodeName + " · ";
-                    return new WallCard
-                    {
-                        Title = e.Title,
-                        Cover = e.Cover,
-                        Meta = e.DurationSeconds > 0
-                            ? $"看到 {ep}{VideoPlayerViewModel.FormatTime(e.PositionSeconds)} / {VideoPlayerViewModel.FormatTime(e.DurationSeconds)} · {e.WatchedAt:MM-dd HH:mm}"
-                            : $"{ep}{VideoPlayerViewModel.FormatTime(e.PositionSeconds)} · {e.WatchedAt:MM-dd HH:mm}",
-                        OnOpen = () => _ = _vm.PlayAgainCommand.ExecuteAsync(e),
-                    };
-                }).ToList(),
-            });
-
-        if (_vm.Favorites.Count > 0)
-            sections.Add(new WallSection
-            {
-                Name = "我的收藏",
-                Items = _vm.Favorites.Select(f => new WallCard
-                {
-                    Title = f.Title,
-                    Cover = f.Cover,
-                    Meta = string.Join(" · ", new[] { f.Year, f.Category }.Where(s => !string.IsNullOrEmpty(s))),
-                    Remark = f.Remarks,
-                    OnOpen = () => _ = OpenFavoriteAsync(f),
-                }).ToList(),
-            });
-
-        Wall.ItemsSource = sections;
+        EmptyLabel.IsVisible = _vm.Favorites.Count == 0;
+        Wall.ItemsSource = _vm.Favorites.Select(f => new WallCard
+        {
+            Title = f.Title,
+            Cover = f.Cover,
+            Meta = string.Join(" · ", new[] { f.Year, f.Category }.Where(s => !string.IsNullOrEmpty(s))),
+            Remark = f.Remarks,
+            OnOpen = () => _ = OpenFavoriteAsync(f),
+        }).ToList();
     }
 
     /// <summary>收藏卡点击 → 观看页（还原站点 type/api 路由，同搜索结果）</summary>
