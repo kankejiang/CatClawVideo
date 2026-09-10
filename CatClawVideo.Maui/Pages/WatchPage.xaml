@@ -110,7 +110,8 @@
                         <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Padding="14,12,14,0">
                             <Label Grid.Column="0" Text="选集" FontSize="14" FontFamily="OpenSansSemibold"
                                    TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
-                            <Label x:Name="EpisodeCountLabel" FontSize="11"
+                            <!-- 必须显式指定列：缺省落第 0 列会与「选集」标签重叠 -->
+                            <Label x:Name="EpisodeCountLabel" Grid.Column="1" FontSize="11"
                                    TextColor="{DynamicResource TextHintColor}" VerticalOptions="Center" />
                         </Grid>
 
