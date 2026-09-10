@@ -134,6 +134,19 @@ public class BitTorrentDownloadService : IDisposable
             try { await manager.DhtAnnounceAsync(); } catch { }
             Log("manager 已启动，等待 metadata/节点");
 
+            // 诊断：确认 tracker 是否真的进了这个 manager（排障"候选 peer 恒为 0"用）
+            try
+            {
+                var tiers = manager.TrackerManager.Tiers.ToList();
+                int trTotal = 0;
+                foreach (var tier in tiers)
+                    if (tier.GetType().GetProperty("Trackers")?.GetValue(tier) is System.Collections.IEnumerable list)
+                        foreach (var _ in list) trTotal++;
+                Log($"[诊断] 注入后 magnet 长度={magnet.Length}；manager 里 tracker tiers={tiers.Count} / tracker={trTotal}；" +
+                    $"AllowDht={manager.Settings.AllowDht} MaxConn={manager.Settings.MaximumConnections}");
+            }
+            catch (Exception ex) { Log($"[诊断] 读取 tracker 失败：{ex.Message}"); }
+
             manager.TorrentStateChanged += (_, e) =>
             {
                 onState(StateText(e.NewState));
