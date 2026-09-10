@@ -32,8 +32,27 @@ public sealed class BtTrackerSource
 
     /// <summary>过滤后保留的 tracker 上限（太多反而拖慢 announce）</summary>
     public const int MaxTrackers = 14;
+    /// <summary>
+    /// 其中保留给 HTTP tracker 的槽位数。2026-09-10 实测：UDP 侧被按 IP 限流后
+    /// "connect 通但 announce 返回空"（对照程序验证：同一分钟 UDP 混合列表 0 候选，
+    /// 纯 HTTP 列表 5 秒 157 候选/25 秒 44 连接），HTTP 权重必须高于 UDP。
+    /// </summary>
+    public const int MaxHttpTrackers = 6;
     /// <summary>缓存有效期</summary>
     public static readonly TimeSpan CacheTtl = TimeSpan.FromHours(24);
+
+    /// <summary>
+    /// HTTP tracker 保底（2026-09-10 实测可达且带大种子群）。与 BuiltInFallback 分开维护：
+    /// 无论 UDP 侧状况如何都必须混入 HTTP——UDP 与 HTTP 是两条独立链路，
+    /// UDP 集体"connect 通但 announce 静默丢弃"（限流）时，HTTP 仍能返回 44~73 个做种。
+    /// </summary>
+    public static readonly string[] HttpFallback =
+    [
+        "http://185.126.65.92:6969/announce",
+        "http://140.235.237.23:6969/announce",
+        "http://107.189.2.131:1337/announce",
+        "http://135.125.198.235:2710/announce",
+    ];
 
     private readonly string _cachePath;
     private readonly Action<string>? _log;
@@ -62,6 +81,10 @@ public sealed class BtTrackerSource
     /// </summary>
     public async Task<string[]> GetAsync(bool forceRefresh = false, bool allowFetch = true, CancellationToken ct = default)
     {
+        // 所有出口统一过一道 HTTP 混入：缓存里的旧列表是纯 UDP 的也照样补齐，
+        // 否则修复要等 24h 缓存过期才生效。
+        string[] Finalize(string[] list) => MergeHttpTrackers(list);
+
         if (!forceRefresh && _memory is { Length: > 0 }) return _memory;
 
         await _lock.WaitAsync(ct);
@@ -72,23 +95,23 @@ public sealed class BtTrackerSource
             // ① 文件缓存
             if (TryLoadCache(out var cached, out var updatedAt))
             {
-                _memory = cached;
+                _memory = Finalize(cached);
                 LastUpdatedUtc = updatedAt;
                 if (!forceRefresh && DateTime.UtcNow - updatedAt < CacheTtl)
                 {
-                    Log($"缓存命中（{cached.Length} 个，{updatedAt:MM-dd HH:mm} 更新）");
-                    return cached;
+                    Log($"缓存命中（{cached.Length} 个，{updatedAt:MM-dd HH:mm} 更新，含 HTTP {_memory.Count(IsHttp)} 个）");
+                    return _memory;
                 }
                 if (!allowFetch)
                 {
                     Log("自动更新已关闭：沿用过期缓存");
-                    return cached;
+                    return _memory;
                 }
             }
             else if (!allowFetch)
             {
                 Log("自动更新已关闭且无缓存：使用内置保底列表");
-                _memory = BuiltInFallback;
+                _memory = Finalize(BuiltInFallback);
                 return _memory;
             }
 
@@ -97,7 +120,7 @@ public sealed class BtTrackerSource
             if (raw.Count == 0)
             {
                 Log("拉取失败，使用内置保底列表");
-                _memory = _memory is { Length: > 0 } ? _memory : BuiltInFallback;
+                _memory = Finalize(_memory is { Length: > 0 } ? _memory : BuiltInFallback);
                 return _memory;
             }
 
@@ -109,25 +132,49 @@ public sealed class BtTrackerSource
             if (reachable.Count == 0)
                 Log("探测全失败（可能网络抖动/被限），使用未过滤列表");
 
-            var result = final.Take(MaxTrackers).ToArray();
-            if (result.Length == 0) result = BuiltInFallback;
+            var result = Finalize(final.Take(MaxTrackers).ToArray());
+            if (result.Length == 0) result = Finalize(BuiltInFallback);
 
             _memory = result;
             LastUpdatedUtc = DateTime.UtcNow;
             SaveCache(result);
-            Log($"列表更新：{raw.Count} 个候选 → {reachable.Count} 个可达 → 采用 {result.Length} 个");
+            Log($"列表更新：{raw.Count} 个候选 → {reachable.Count} 个可达 → 采用 {result.Length} 个（含 HTTP {result.Count(IsHttp)} 个）");
             return result;
         }
         catch (Exception ex)
         {
             Log($"更新异常：{ex.Message}，沿用现有列表");
-            _memory ??= BuiltInFallback;
+            _memory = Finalize(_memory ?? BuiltInFallback);
             return _memory;
         }
         finally
         {
             _lock.Release();
         }
+    }
+
+    private static bool IsHttp(string t) => !t.StartsWith("udp://", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 强制混入 HTTP tracker（最多 MaxHttpTrackers 个）并**排在最前**：
+    /// UDP 与 HTTP 是两条独立链路。实测（2026-09-10）ngosang best_ip 的 UDP tracker 会集体
+    /// "connect 通但 announce 被静默丢弃"（疑似按 IP 限流，8 个 tracker 横向对照全部如此，
+    /// 换种子也一样），此时 HTTP tracker 仍正常返回 44~73 个做种；而 best_ip 源天然不含 HTTP 条目，
+    /// 若不强制混入，UDP 一旦限流 peer 发现就整体归零。
+    /// 排序很关键：MonoTorrent 把磁力里的所有 tracker 放进**同一个 tier 串行 announce**，
+    /// 死掉的 UDP 排前面会把每个都拖到超时，排后面的 HTTP 根本轮不到（实测挂 2.5 分钟零候选）。
+    /// HTTP 是单次 GET、响应快且确定性高，放队首让 peer 秒级到位，UDP 随后补齐。
+    /// </summary>
+    public static string[] MergeHttpTrackers(string[] list)
+    {
+        var udp = list.Where(u => !IsHttp(u)).Take(MaxTrackers - MaxHttpTrackers).ToList();
+        var http = list.Where(IsHttp).Take(MaxHttpTrackers).ToList();
+        foreach (var t in HttpFallback)
+        {
+            if (http.Count >= MaxHttpTrackers) break;
+            if (!http.Contains(t, StringComparer.OrdinalIgnoreCase)) http.Add(t);
+        }
+        return http.Concat(udp).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
     // ────────────────────── 拉取 ──────────────────────

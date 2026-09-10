@@ -393,3 +393,46 @@ tracker 源等地方，唯独漏了「端口」这个默认值本身就是隐藏
 **诊断提示**：遇到"我方连接数远小于同类工具"，先看**同一台机器上是否有另一个
 BT 客户端在跑同一种子**——这是会同时废掉入站（端口被占）和出站（per-IP 限制）的
 双杀组合，且症状极具迷惑性（tracker 全 Ok、候选一大把、就是连不上）。
+
+---
+
+## 12. 排障实录：UDP tracker 集体限流 + 同 tier 串行饿死 HTTP（2026-09-10，第 11 节当晚）
+
+**症状**：第 11 节修复当晚，下载再次 0 连接/0 速度（进度 77.58% 卡住）。这次 Motrix 是
+**暂停**的（排除了抢占），tracker 状态全部 [Ok]。
+
+**日志指纹**：`候选=0 实连=0` 从启动起持续——与第 11 节的「候选 84→0」（出站被拒）是
+**两种不同的故障**：这次是 announce 层面断供（一个 peer 候选都拿不到）。
+
+**横向对照实验**（BEP15 announce 探测脚本，含重传）：
+
+| tracker | connect | announce |
+|---|---|---|
+| 8 个 UDP（best_ip 列表） | ✅ 正常响应 | ❌ **全部静默丢弃**（含换种子对照，疑似按 IP 限流） |
+| 4 个 HTTP（Motrix 同款） | — | ✅ **返回 29~53 个 peer，44~73 做种** |
+
+**决定性对照**（独立 MonoTorrent 3.0.1 对照程序，同一分钟同一台机器）：
+
+| 注入列表 | 结果 |
+|---|---|
+| HTTP×4 + UDP×4（混合） | 60s 仍 **0 候选/0 连接**（卡在 Metadata） |
+| **纯 HTTP×4** | 5s **157 候选** → 25s **44 连接** → 1.3MB/s 爬升、34 做种 |
+
+**根因（两个因素叠加）**：
+1. `DefaultSources` 优先 `trackers_best_ip.txt`（**纯 UDP**），HTTP 条目永远进不了列表；
+2. 这批 UDP tracker 当晚对我们 **connect 通但 announce 静默丢弃**（限流）；
+3. MonoTorrent 把磁力里所有 tracker 放进**同一个 tier 串行 announce 且乱序**——
+   一个「成功但返回空」的 tracker 就让本轮宣布"完成"，其余 tracker 要等它的
+   announce 间隔（几十分钟）才轮到。HTTP 排在队尾等于永远轮不到。
+
+**修复**（`BtTrackerSource`）：
+- 新增 `HttpFallback`（4 个实测可达的 HTTP tracker），`MergeHttpTrackers` 在所有
+  出口（含缓存命中路径）强制混入 HTTP，UDP 让出配额（MaxHttpTrackers=6，HTTP 优先排序）。
+- 教训：UDP 的 BEP15 **connect 探测是弱信号**——connect 通≠announce 通；
+  当晚 8 个"可达"UDP 全部给不出 peer。
+
+**遗留**：`MaxHttpTrackers` 目前只有 4 个实证条目（HttpFallback），若拉取列表自带
+HTTP 条目可占满 6 个。UDP 侧保留 8 个槽位，恢复后仍可用。
+
+**诊断提示**：「候选=0 且不再补充」= announce 断供；「候选高、实连低」= 出站被拒
+（第 11 节）。两者修复方向完全不同，先分清再动手。
