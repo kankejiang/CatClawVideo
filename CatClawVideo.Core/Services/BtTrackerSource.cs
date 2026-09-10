@@ -156,25 +156,27 @@ public sealed class BtTrackerSource
     private static bool IsHttp(string t) => !t.StartsWith("udp://", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// 强制混入 HTTP tracker（最多 MaxHttpTrackers 个）并**排在最前**：
-    /// UDP 与 HTTP 是两条独立链路。实测（2026-09-10）ngosang best_ip 的 UDP tracker 会集体
-    /// "connect 通但 announce 被静默丢弃"（疑似按 IP 限流，8 个 tracker 横向对照全部如此，
-    /// 换种子也一样），此时 HTTP tracker 仍正常返回 44~73 个做种；而 best_ip 源天然不含 HTTP 条目，
-    /// 若不强制混入，UDP 一旦限流 peer 发现就整体归零。
-    /// 排序很关键：MonoTorrent 把磁力里的所有 tracker 放进**同一个 tier 串行 announce**，
-    /// 死掉的 UDP 排前面会把每个都拖到超时，排后面的 HTTP 根本轮不到（实测挂 2.5 分钟零候选）。
-    /// HTTP 是单次 GET、响应快且确定性高，放队首让 peer 秒级到位，UDP 随后补齐。
+    /// 强制只注入 HTTP tracker（MaxHttpTrackers 个）。
+    /// UDP 与 HTTP 是两条独立链路。实测（2026-09-10）ngosang best_ip 的 UDP tracker 集体
+    /// "connect 通但 announce 静默丢弃"（按 IP 限流；换种子对照同样被丢），此时 HTTP tracker
+    /// 仍正常返回 44~73 个做种；而 best_ip 源天然不含 HTTP 条目，不强制混入则 peer 发现归零。
+    ///
+    /// ⚠️ 为什么 UDP 一个都不留：MonoTorrent 把磁力内所有 tracker 放进**同一个 tier，
+    /// announce 串行且顺序被随机打乱**（实测注入 HTTP 在前，tier 里顺序完全重排）。
+    /// 只要首个被抽中的 UDP「成功但返回空」，本轮宣布即告完成，其余 tracker（含活的 HTTP）
+    /// 要等它的 announce 间隔——独立对照程序实测：HTTP×4+UDP×4 混合 60s 零候选，
+    /// 纯 HTTP×4 同一分钟 5s 拿到 157 候选、25s 后 44 连接 1.3MB/s。混放 = 抽奖，纯 HTTP 才稳定。
+    /// UDP 恢复后可把 MaxUdpTrackers 调回非零值。
     /// </summary>
     public static string[] MergeHttpTrackers(string[] list)
     {
-        var udp = list.Where(u => !IsHttp(u)).Take(MaxTrackers - MaxHttpTrackers).ToList();
         var http = list.Where(IsHttp).Take(MaxHttpTrackers).ToList();
         foreach (var t in HttpFallback)
         {
             if (http.Count >= MaxHttpTrackers) break;
             if (!http.Contains(t, StringComparer.OrdinalIgnoreCase)) http.Add(t);
         }
-        return http.Concat(udp).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        return http.ToArray();
     }
 
     // ────────────────────── 拉取 ──────────────────────
