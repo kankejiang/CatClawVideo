@@ -46,13 +46,15 @@ public partial class HistoryPage : ContentView, ITabView
                     ? () => _ = Shell.Current.GoToAsync(watchQuery)
                     : () => _ = Shell.Current.GoToAsync(playerQuery);
 
+                // 卡片标题=影片名（历史按影片合并）；集名放进副标题，方便识别看的是哪版
+                var ep = string.IsNullOrEmpty(e.EpisodeName) ? "" : e.EpisodeName + " · ";
                 return new WallCard
                 {
                     Title = e.Title,
                     Cover = e.Cover,
                     Meta = e.DurationSeconds > 0
-                        ? $"看到 {VideoPlayerViewModel.FormatTime(e.PositionSeconds)} / {VideoPlayerViewModel.FormatTime(e.DurationSeconds)} · {e.WatchedAt:MM-dd HH:mm}"
-                        : $"{VideoPlayerViewModel.FormatTime(e.PositionSeconds)} · {e.WatchedAt:MM-dd HH:mm}",
+                        ? $"看到 {ep}{VideoPlayerViewModel.FormatTime(e.PositionSeconds)} / {VideoPlayerViewModel.FormatTime(e.DurationSeconds)} · {e.WatchedAt:MM-dd HH:mm}"
+                        : $"{ep}{VideoPlayerViewModel.FormatTime(e.PositionSeconds)} · {e.WatchedAt:MM-dd HH:mm}",
                     OnOpen = open,
                     SelectMode = _selectMode,
                     Tag = e.Id,

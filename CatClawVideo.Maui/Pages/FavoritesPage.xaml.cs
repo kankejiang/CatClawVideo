@@ -29,14 +29,18 @@ public partial class FavoritesPage : ContentView, ITabView
             sections.Add(new WallSection
             {
                 Name = "最近播放",
-                Items = _vm.RecentPlays.Select(e => new WallCard
+                Items = _vm.RecentPlays.Select(e =>
                 {
-                    Title = e.Title,
-                    Cover = e.Cover,
-                    Meta = e.DurationSeconds > 0
-                        ? $"看到 {VideoPlayerViewModel.FormatTime(e.PositionSeconds)} / {VideoPlayerViewModel.FormatTime(e.DurationSeconds)} · {e.WatchedAt:MM-dd HH:mm}"
-                        : $"{VideoPlayerViewModel.FormatTime(e.PositionSeconds)} · {e.WatchedAt:MM-dd HH:mm}",
-                    OnOpen = () => _ = _vm.PlayAgainCommand.ExecuteAsync(e),
+                    var ep = string.IsNullOrEmpty(e.EpisodeName) ? "" : e.EpisodeName + " · ";
+                    return new WallCard
+                    {
+                        Title = e.Title,
+                        Cover = e.Cover,
+                        Meta = e.DurationSeconds > 0
+                            ? $"看到 {ep}{VideoPlayerViewModel.FormatTime(e.PositionSeconds)} / {VideoPlayerViewModel.FormatTime(e.DurationSeconds)} · {e.WatchedAt:MM-dd HH:mm}"
+                            : $"{ep}{VideoPlayerViewModel.FormatTime(e.PositionSeconds)} · {e.WatchedAt:MM-dd HH:mm}",
+                        OnOpen = () => _ = _vm.PlayAgainCommand.ExecuteAsync(e),
+                    };
                 }).ToList(),
             });
 

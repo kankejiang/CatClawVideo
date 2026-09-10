@@ -135,6 +135,9 @@ public class VideoDatabase
         await EnsureColumnAsync(_db, "play_history", "ItemApi", "text");
         await EnsureColumnAsync(_db, "play_history", "ItemId", "text");
         await EnsureColumnAsync(_db, "play_history", "EpisodeName", "text");
+
+        // 同影片多集只保留一条历史（清理按「影片 · 集名」分条时期的存量重复）
+        await DedupeHistoryAsync();
     }
 
     /// <summary>缺列则补（sqlite-net 的 MigrateTable 是 internal，只能自己 ALTER）</summary>
@@ -169,12 +172,29 @@ public class VideoDatabase
         _db.Table<PlayHistoryEntry>().OrderByDescending(h => h.WatchedAt).Take(limit).ToListAsync();
 
     /// <summary>记录/续看一次播放：同标题的旧记录合并（更新位置与时间），保留最近 N 条</summary>
+    /// <summary>
+    /// 记录/续看一次播放。合并键是**影片**（SourceKey+ItemId），不是「影片 · 集名」——
+    /// 同一部片的不同版本/集数共用一条历史，只更新集名与进度（否则每集一条，历史页没法看）。
+    /// 无来源定位的记录（网页直链/本地）退回按标题合并。
+    /// </summary>
     public async Task UpsertHistoryAsync(PlayHistoryEntry entry)
     {
-        var existing = await _db.Table<PlayHistoryEntry>()
-            .Where(h => h.Title == entry.Title)
-            .OrderByDescending(h => h.WatchedAt)
-            .FirstOrDefaultAsync();
+        PlayHistoryEntry? existing;
+        if (!string.IsNullOrEmpty(entry.SourceKey) && !string.IsNullOrEmpty(entry.ItemId))
+        {
+            existing = await _db.Table<PlayHistoryEntry>()
+                .Where(h => h.SourceKey == entry.SourceKey && h.ItemId == entry.ItemId)
+                .OrderByDescending(h => h.WatchedAt)
+                .FirstOrDefaultAsync();
+        }
+        else
+        {
+            existing = await _db.Table<PlayHistoryEntry>()
+                .Where(h => h.Title == entry.Title)
+                .OrderByDescending(h => h.WatchedAt)
+                .FirstOrDefaultAsync();
+        }
+
         if (existing != null)
         {
             entry.Id = existing.Id;
@@ -192,6 +212,35 @@ public class VideoDatabase
                 foreach (var o in oldest) await _db.DeleteAsync(o);
             }
         }
+    }
+
+    /// <summary>
+    /// 历史按影片去重 + 标题规范化（一次性清理）：同 SourceKey+ItemId 只留最新一条；
+    /// 顺带把「影片 · 集名」时期的老标题清洗回纯影片名（含「 · 集名」开头/结尾两种残缺形态）。
+    /// </summary>
+    public async Task DedupeHistoryAsync()
+    {
+        try
+        {
+            await _db.ExecuteAsync(
+                @"DELETE FROM play_history
+                  WHERE SourceKey <> '' AND Id NOT IN (
+                      SELECT Id FROM (
+                          SELECT Id, MAX(Id) AS MaxId FROM play_history
+                          WHERE SourceKey <> ''
+                          GROUP BY SourceKey || '|' || ItemId
+                      ))");
+
+            // 老标题规范化（仅限带来源与集名的记录）
+            await _db.ExecuteAsync(
+                "UPDATE play_history SET Title = LTRIM(Title, ' ·') WHERE SourceKey <> '' AND EpisodeName <> ''");
+            await _db.ExecuteAsync(
+                @"UPDATE play_history SET Title = RTRIM(SUBSTR(Title, 1, INSTR(Title, ' · ') - 1))
+                  WHERE SourceKey <> '' AND EpisodeName <> '' AND Title LIKE '% · %'");
+            await _db.ExecuteAsync(
+                "UPDATE play_history SET Title = EpisodeName WHERE SourceKey <> '' AND EpisodeName <> '' AND TRIM(Title) = ''");
+        }
+        catch { }
     }
 
     public Task<int> ClearHistoryAsync() => _db.DeleteAllAsync<PlayHistoryEntry>();

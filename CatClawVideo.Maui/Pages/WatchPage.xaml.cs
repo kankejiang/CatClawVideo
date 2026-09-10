@@ -649,8 +649,9 @@ public partial class WatchPage : ContentPage, IQueryAttributable
 
             // 播放历史落库（BT 代理地址是会话内瞬态链接，重启后失效，不落库）。
             // 带上来源定位与集名：历史卡才能跳回观看页详情并自动选中该集续看。
+            // 标题只存影片名（不含集名）——历史按影片合并，集名单独落 EpisodeName 列。
             if (!play.Url.Contains("/stream/", StringComparison.OrdinalIgnoreCase))
-                _playback.BeginSession(_item.Title + " · " + episode.Name, play.Url, _item.Cover,
+                _playback.BeginSession(_item.Title, play.Url, _item.Cover,
                     sourceKey: _site.Key, itemType: _site.Type, itemApi: _site.Api,
                     itemId: _item.Id, episodeName: episode.Name);
         }
