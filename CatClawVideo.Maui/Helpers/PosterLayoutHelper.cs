@@ -18,14 +18,21 @@ public static class PosterLayoutHelper
             if (grid is null || width <= 0 || height <= 0) return;
             if (grid.ItemsLayout is not GridItemsLayout) return;
 
-            var cardH = Math.Clamp(height - 40, 64, cap);
-            if (Application.Current is not null)
-                Application.Current.Resources["PosterCardHeight"] = cardH;
+            // 列数按「目标列宽」反推：窗口变宽先加列；列数到上限后卡片才整体变大（宽高同涨，保持 2:3）
+            var columns = Math.Clamp((int)Math.Round(width / 240.0), 3, 16);
+            if (grid.ItemsLayout is GridItemsLayout g && g.Span != columns)
+                g.Span = columns;
 
-            var target = cardH * 2.0 / 3.0 + 12;   // 单元格目标宽（海报 2:3）+ 列间距
-            var span = (int)Math.Clamp(Math.Round((width + 12) / target), 3, 16);
-            if (grid.ItemsLayout is GridItemsLayout g && g.Span != span)
-                g.Span = span;
+            // 卡片实际宽 = 列宽（扣列间距）；高按 2:3 反推并夹取 → 宽高永远成比例，不会"长胖不长个"
+            var itemW = (width - (columns - 1) * 12) / columns;
+            var cardW = Math.Clamp(itemW, 80, cap * 2.0 / 3.0);
+            var cardH = Math.Clamp(cardW * 1.5, 64, cap);
+
+            if (Application.Current is not null)
+            {
+                Application.Current.Resources["PosterCardHeight"] = cardH;
+                Application.Current.Resources["PosterCardWidth"] = cardW;
+            }
         }
         catch (Exception ex)
         {

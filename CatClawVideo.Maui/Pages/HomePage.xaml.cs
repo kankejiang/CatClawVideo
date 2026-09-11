@@ -69,7 +69,10 @@ public partial class HomePage : ContentView, ITabView
             // DataTemplate 里不生效（三种公式渲染结果纹丝不动的踩坑实录），
             // 应用级字典的变更才会传播到已实例化的模板项。
             if (Application.Current is not null)
+            {
                 Application.Current.Resources["PosterCardHeight"] = cardH;
+                Application.Current.Resources["PosterCardWidth"] = cardH * 2.0 / 3.0;
+            }
 
             var target = cardH * 2.0 / 3.0 + 12;   // 单元格目标宽（海报 2:3）+ 列间距
             var span = (int)Math.Clamp(Math.Round((w + 12) / target), 3, 12);

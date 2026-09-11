@@ -7,6 +7,7 @@
     <!-- 海报卡高度：由代码按可用高度动态改写（横屏高度紧张，写死 190 会把卡片裁掉一半） -->
     <ContentView.Resources>
         <x:Double x:Key="PosterCardHeight">190</x:Double>
+        <x:Double x:Key="PosterCardWidth">127</x:Double>
     </ContentView.Resources>
 
     <!-- 根用 Grid（不能用 ScrollView 包 CollectionView）：海报墙占 * 行获得有界高度，
@@ -78,7 +79,8 @@
                     <VerticalStackLayout Spacing="0">
                         <Border StrokeThickness="0" StrokeShape="RoundRectangle 10"
                                 BackgroundColor="{DynamicResource CardBackgroundColor}"
-                                HeightRequest="{DynamicResource PosterCardHeight}">
+                                HeightRequest="{DynamicResource PosterCardHeight}"
+                                WidthRequest="{DynamicResource PosterCardWidth}" HorizontalOptions="Center">
                             <Grid>
                                 <Image Source="{Binding Cover}" Aspect="AspectFill" />
                                 <Image Source="ic_brand.png" Aspect="AspectFit" Opacity="0.35"
