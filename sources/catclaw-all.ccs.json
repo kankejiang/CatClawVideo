@@ -102,6 +102,49 @@
                                     "playIframe":  "iframe[^\u003e]*?src\\s*=\\s*[\"\u0027](?\u003curl\u003e[^\"\u0027]+)[\"\u0027]",
                                     "playDirect":  "[\"\u0027](?\u003curl\u003e[^\"\u0027\\n]+?\\.(?:m3u8|mp4)[^\"\u0027\\n]*)[\"\u0027]"
                                 }
+                  },
+                  {
+                      "id":  "dushe",
+                      "name":  "毒舌电影",
+                      "site":  "https://www.dushe07.com",
+                      "categories":  [
+                                         {
+                                             "id":  "dianying",
+                                             "name":  "电影",
+                                             "path":  "/show/1------"
+                                         },
+                                         {
+                                             "id":  "lianxuju",
+                                             "name":  "连续剧",
+                                             "path":  "/show/2------"
+                                         },
+                                         {
+                                             "id":  "dongman",
+                                             "name":  "动漫",
+                                             "path":  "/show/3------"
+                                         },
+                                         {
+                                             "id":  "zongyi",
+                                             "name":  "综艺纪录",
+                                             "path":  "/show/4------"
+                                         },
+                                         {
+                                             "id":  "duanju",
+                                             "name":  "短剧",
+                                             "path":  "/show/6------"
+                                         }
+                                     ],
+                      "rules":  {
+                                    "listPageFirst":  "{path}.html",
+                                    "listPage":  "{path}{page}.html",
+                                    "listItem":  "(?s)\u003ca[^\u003e]*href=\"(?\u003curl\u003e/detail/\\d+\\.html)\"[^\u003e]*\u003e(?:(?!\u003c/a\u003e).)*?data-original=\"(?\u003ccover\u003e(?![^\"]*placeholder)[^\"]+)\"(?:(?!\u003c/a\u003e).)*?\u003cdiv class=\"v-item-title\"\u003e(?\u003ctitle\u003e[^\u003c]+)\u003c/div\u003e",
+                                    "detailTitle":  "(?s)detail-title\"\u003e\\s*\u003cstrong\u003e[^\u003c]*\u003c/strong\u003e\\s*\u003cstrong\u003e(?\u003ctitle\u003e[^\u003c]+)\u003c/strong\u003e",
+                                    "detailPlay":  "\u003ca[^\u003e]*href=\"(?\u003curl\u003e/play/\\d+-\\d+-\\d+\\.html)\"[^\u003e]*\u003e\\s*\u003cspan\u003e(?\u003cname\u003e[^\u003c]*)\u003c/span\u003e",
+                                    "detailDesc":  "(?s)detail-desc\"\u003e\\s*\u003cp\u003e\\s*(?\u003cdesc\u003e[^\u003c]+?)\\s*\u003c/p\u003e",
+                                    "detailYear":  "detail-tags-item\"\u003e(?\u003cyear\u003e\\d{4})\u003c/a\u003e",
+                                    "detailArea":  "detail-tags-item\"\u003e(?\u003carea\u003e(?!\\d{4}\u003c)[^\u003c]{1,12})\u003c/a\u003e",
+                                    "playDirect":  "src:\\s*\"(?\u003curl\u003e[^\"]+\\.m3u8[^\"]*)\""
+                                }
                   }
               ]
 }

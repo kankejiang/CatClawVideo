@@ -17,8 +17,14 @@ public class CatClawWebEngine
 
     private static HttpClient CreateHttp()
     {
-        var client = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64) Chrome/124.0");
+        // cookie 容器与破盾器共享：cdndefend 挑战算出的 cookie 对引擎后续请求生效
+        var handler = new HttpClientHandler
+        {
+            CookieContainer = CdnDefendSolver.Cookies,
+            UseCookies = true,
+        };
+        var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0");
         return client;
     }
 
@@ -364,8 +370,20 @@ public class CatClawWebEngine
         try
         {
             using var resp = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
-            if (!resp.IsSuccessStatusCode) return null;
             var html = await resp.Content.ReadAsStringAsync();
+
+            // cdndefend 盾：挑战页可能带非标准状态码（如 850），按内容识别而非状态码；
+            // 本机算 SHA1 PoW cookie 后重取，破盾失败按抓取失败处理，挑战页绝不入缓存
+            if (CdnDefendSolver.IsChallenge(html))
+            {
+                html = await CdnDefendSolver.SolveAsync(new Uri(url), html) ?? "";
+                if (html.Length == 0 || CdnDefendSolver.IsChallenge(html)) return null;
+            }
+            else if (!resp.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
             _htmlCache[url] = (DateTime.Now, html);
             if (_htmlCache.Count > 200) CleanCache();
             return html;
