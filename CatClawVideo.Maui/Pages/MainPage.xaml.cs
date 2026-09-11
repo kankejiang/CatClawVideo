@@ -254,8 +254,8 @@ public partial class MainPage : ContentPage
 
     /// <summary>
     /// 安全区 padding：顶部避开状态栏，底部避开手势导航条。
-    /// 底部不避的话内容（海报墙末行/年份）会伸到手势条底下被遮住（2026-09-11 真机实测）。
-    /// 页面背景仍铺满全屏（Padding 只缩内容区），手势条区域与界面融为一体。
+    /// 这台设备全面屏手势隐藏导航条时系统上报的 BottomInset=0，内容会贴死物理底边
+    /// （2026-09-11 真机实测）——因此保底 16dp 呼吸边距；页面背景仍铺满全屏。
     /// </summary>
     private void ApplySafeAreaPadding() =>
         Padding = new Thickness(0, GetTopSafeArea(), 0, GetBottomSafeArea());
@@ -305,7 +305,7 @@ public partial class MainPage : ContentPage
 
     private static double GetBottomSafeArea() =>
 #if ANDROID
-        SafeAreaHelper.BottomInset;
+        Math.Max(SafeAreaHelper.BottomInset, 16);
 #else
         0;
 #endif
