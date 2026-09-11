@@ -75,45 +75,53 @@
                             <Grid x:Name="ControlBar" VerticalOptions="End" RowDefinitions="Auto,Auto"
                                   RowSpacing="8" Padding="14,8,14,12"
                                   BackgroundColor="#99000000">
-                                <!-- 上排 -->
-                                <Grid Grid.Row="0" ColumnDefinitions="Auto,Auto,*,Auto,*,Auto" ColumnSpacing="28">
-                                    <Grid Grid.Column="0" HorizontalOptions="Start">
-                                        <Grid.GestureRecognizers>
-                                            <TapGestureRecognizer Tapped="OnPrevEpisodeClicked" />
-                                        </Grid.GestureRecognizers>
-                                        <Image Source="ic_arrow_left_white.png" WidthRequest="26" HeightRequest="26" />
+                                <!-- 上排：双层结构——底层左右组（‹ › | «« »»），
+                                     上层播放键全宽居中（与画面中央大键严格同轴，不随两侧宽度漂移） -->
+                                <Grid Grid.Row="0">
+                                    <Grid ColumnDefinitions="Auto,*,Auto">
+                                        <HorizontalStackLayout Grid.Column="0" Spacing="22" VerticalOptions="Center">
+                                            <Grid HorizontalOptions="Center">
+                                                <Grid.GestureRecognizers>
+                                                    <TapGestureRecognizer Tapped="OnPrevEpisodeClicked" />
+                                                </Grid.GestureRecognizers>
+                                                <Image Source="ic_arrow_left_white.png" WidthRequest="26" HeightRequest="26" />
+                                            </Grid>
+                                            <Grid HorizontalOptions="Center">
+                                                <Grid.GestureRecognizers>
+                                                    <TapGestureRecognizer Tapped="OnNextEpisodeClicked" />
+                                                </Grid.GestureRecognizers>
+                                                <Image Source="ic_arrow_right_white.png" WidthRequest="26" HeightRequest="26" />
+                                            </Grid>
+                                        </HorizontalStackLayout>
+                                        <HorizontalStackLayout Grid.Column="2" Spacing="22" VerticalOptions="Center">
+                                            <Grid HorizontalOptions="Center">
+                                                <Grid.GestureRecognizers>
+                                                    <TapGestureRecognizer Tapped="OnRewindClicked" />
+                                                </Grid.GestureRecognizers>
+                                                <HorizontalStackLayout Spacing="-8" VerticalOptions="Center">
+                                                    <Image Source="ic_arrow_left_white.png" WidthRequest="18" HeightRequest="18" />
+                                                    <Image Source="ic_arrow_left_white.png" WidthRequest="18" HeightRequest="18" />
+                                                </HorizontalStackLayout>
+                                            </Grid>
+                                            <Grid HorizontalOptions="Center">
+                                                <Grid.GestureRecognizers>
+                                                    <TapGestureRecognizer Tapped="OnForwardClicked" />
+                                                </Grid.GestureRecognizers>
+                                                <HorizontalStackLayout Spacing="-8" VerticalOptions="Center">
+                                                    <Image Source="ic_arrow_right_white.png" WidthRequest="18" HeightRequest="18" />
+                                                    <Image Source="ic_arrow_right_white.png" WidthRequest="18" HeightRequest="18" />
+                                                </HorizontalStackLayout>
+                                            </Grid>
+                                        </HorizontalStackLayout>
                                     </Grid>
-                                    <Grid Grid.Column="1" HorizontalOptions="Start">
-                                        <Grid.GestureRecognizers>
-                                            <TapGestureRecognizer Tapped="OnNextEpisodeClicked" />
-                                        </Grid.GestureRecognizers>
-                                        <Image Source="ic_arrow_right_white.png" WidthRequest="26" HeightRequest="26" />
-                                    </Grid>
-                                    <ImageButton Grid.Column="3" x:Name="SmallPlayButton"
+                                    <ImageButton x:Name="SmallPlayButton"
                                                  Source="ic_pause.png"
                                                  WidthRequest="32" HeightRequest="32"
                                                  BackgroundColor="Transparent"
                                                  HorizontalOptions="Center" VerticalOptions="Center"
                                                  Clicked="OnPlayPauseClicked" />
-                                    <Grid Grid.Column="4" HorizontalOptions="End">
-                                        <Grid.GestureRecognizers>
-                                            <TapGestureRecognizer Tapped="OnRewindClicked" />
-                                        </Grid.GestureRecognizers>
-                                        <HorizontalStackLayout Spacing="-8" VerticalOptions="Center">
-                                            <Image Source="ic_arrow_left_white.png" WidthRequest="18" HeightRequest="18" />
-                                            <Image Source="ic_arrow_left_white.png" WidthRequest="18" HeightRequest="18" />
-                                        </HorizontalStackLayout>
-                                    </Grid>
-                                    <Grid Grid.Column="5" HorizontalOptions="End">
-                                        <Grid.GestureRecognizers>
-                                            <TapGestureRecognizer Tapped="OnForwardClicked" />
-                                        </Grid.GestureRecognizers>
-                                        <HorizontalStackLayout Spacing="-8" VerticalOptions="Center">
-                                            <Image Source="ic_arrow_right_white.png" WidthRequest="18" HeightRequest="18" />
-                                            <Image Source="ic_arrow_right_white.png" WidthRequest="18" HeightRequest="18" />
-                                        </HorizontalStackLayout>
-                                    </Grid>
                                 </Grid>
+                                <!-- 下排：进度条 + 时间 + 全屏 -->
                                 <!-- 下排：进度条 + 时间 + 全屏 -->
                                 <Grid Grid.Row="1" ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10">
                                     <Label Grid.Column="0" x:Name="PositionLabel" Text="00:00"
