@@ -614,11 +614,17 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         _currentSourceIndex = index;
         var source = _sources[index];
 
-        // 切换线路**立即落库**（线路 + 该线路首集 + 位置归零）：
+        // 切线路：记下当前集序号与位置——不同线路是**同一集的不同源**，位置仍然有效
+        int keepIndex = _currentEpisodeIndex;
+        double keepPos = _playing ? Player.Position.TotalSeconds : 0;
+
+        // 切换线路**立即落库**（新线路 + 同序号集 + 原位置）：
         // 否则要等下一次定时保存，切完就走会留下旧线路（2026-09-12 用户实测）
         _playback.SetRouteName(source.Name);
-        _playback.SetEpisodeName(source.Episodes.FirstOrDefault()?.Name ?? string.Empty);
-        _playback.SaveProgress(0, 0);
+        _playback.SetEpisodeName(keepIndex >= 0 && keepIndex < source.Episodes.Count
+            ? source.Episodes[keepIndex].Name
+            : source.Episodes.FirstOrDefault()?.Name ?? string.Empty);
+        _playback.SaveProgress(keepPos, Player.Duration.TotalSeconds);
 
         // 线路芯片高亮（_lineChips 与 _sources 索引一一对应）
         for (int i = 0; i < _lineChips.Count; i++)
@@ -649,23 +655,30 @@ public partial class WatchPage : ContentPage, IQueryAttributable
 
         if (source.Episodes.Count > 0)
         {
-            // 手动切线路：作废续看上下文（进度属于原线路的集），从新线路第一集起播
-            if (!applyResume)
+            if (applyResume)
             {
-                _resumeEpisodeName = null;
-                _resumePosition = 0;
+                // 首次加载：套用续看集与位置
+                var resumeRow = _resumeEpisodeName is { Length: > 0 }
+                    ? _episodeRows.FirstOrDefault(r =>
+                          string.Equals(r.Name.Trim(), _resumeEpisodeName.Trim(), StringComparison.Ordinal))
+                    : null;
+                PlayEpisodeByRow(resumeRow ?? _episodeRows[0]);
+                if (resumeRow == null)
+                {
+                    // 找不到续看集（换线路选集名不同）：作废续看位置，避免误 seek
+                    _resumeEpisodeName = null;
+                    _resumePosition = 0;
+                }
             }
-
-            var resumeRow = applyResume && _resumeEpisodeName is { Length: > 0 }
-                ? _episodeRows.FirstOrDefault(r =>
-                      string.Equals(r.Name.Trim(), _resumeEpisodeName.Trim(), StringComparison.Ordinal))
-                : null;
-            PlayEpisodeByRow(resumeRow ?? _episodeRows[0]);
-            if (applyResume && resumeRow == null)
+            else
             {
-                // 找不到续看集（换线路选集名不同）：作废续看位置，避免误 seek
+                // 切线路：优先播同序号的集，并沿用上一个线路的播放位置（同一集的不同源）
+                var sameIndexRow = keepIndex >= 0 && keepIndex < _episodeRows.Count
+                    ? _episodeRows[keepIndex]
+                    : null;
                 _resumeEpisodeName = null;
-                _resumePosition = 0;
+                _resumePosition = keepPos > 10 ? keepPos : 0;
+                PlayEpisodeByRow(sameIndexRow ?? _episodeRows[0]);
             }
         }
         else
