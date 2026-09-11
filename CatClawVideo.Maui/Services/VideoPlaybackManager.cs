@@ -60,6 +60,9 @@ public class VideoPlaybackManager
     /// 不依赖该线路是否起播成功（2026-09-11 用户反馈：最后播线路3 却记成线路1）。</summary>
     public void SetRouteName(string? name) => CurrentRouteName = name ?? string.Empty;
 
+    /// <summary>更新当前集名（切线路时同步该线路的集，保证「线路/集/位置」三者一致）。</summary>
+    public void SetEpisodeName(string? name) => CurrentEpisodeName = name ?? string.Empty;
+
     /// <summary>播放中进度落库（不结束会话）：起播即调用（历史立刻置顶）+ 定时器每 10s 调用一次。
     /// WatchedAt 同步刷新，保证「最后播放的影片排历史第一位」。</summary>
     public void SaveProgress(double positionSeconds, double durationSeconds)

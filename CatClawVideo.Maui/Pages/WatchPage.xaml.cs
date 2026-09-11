@@ -614,8 +614,11 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         _currentSourceIndex = index;
         var source = _sources[index];
 
-        // 切换线路立即同步到播放记录（线路名随下次落库生效，不依赖是否起播成功）
+        // 切换线路**立即落库**（线路 + 该线路首集 + 位置归零）：
+        // 否则要等下一次定时保存，切完就走会留下旧线路（2026-09-12 用户实测）
         _playback.SetRouteName(source.Name);
+        _playback.SetEpisodeName(source.Episodes.FirstOrDefault()?.Name ?? string.Empty);
+        _playback.SaveProgress(0, 0);
 
         // 线路芯片高亮（_lineChips 与 _sources 索引一一对应）
         for (int i = 0; i < _lineChips.Count; i++)
@@ -994,11 +997,11 @@ public partial class WatchPage : ContentPage, IQueryAttributable
 
     private IDispatcherTimer? _progressSaveTimer;
 
-    /// <summary>播放中每 10s 落库一次进度（异常退出/杀进程也能续播上次位置）</summary>
+    /// <summary>播放中每 5s 兜底落库一次（切线路/切集/拖进度条/暂停均已即时保存）</summary>
     private void StartProgressAutoSave()
     {
         _progressSaveTimer ??= Dispatcher.CreateTimer();
-        _progressSaveTimer.Interval = TimeSpan.FromSeconds(10);
+        _progressSaveTimer.Interval = TimeSpan.FromSeconds(5);
         _progressSaveTimer.Tick -= OnProgressSaveTick;
         _progressSaveTimer.Tick += OnProgressSaveTick;
         _progressSaveTimer.Start();
@@ -1209,6 +1212,8 @@ public partial class WatchPage : ContentPage, IQueryAttributable
 
     private void OnSeekCompleted(object? sender, EventArgs e)
     {
+        // 拖动进度条结束**立即落库**（不等 5s 定时）
+        _playback.SaveProgress(Player.Position.TotalSeconds, Player.Duration.TotalSeconds);
         _seeking = false;
         var total = Player.Duration.TotalSeconds;
         if (total > 0)
