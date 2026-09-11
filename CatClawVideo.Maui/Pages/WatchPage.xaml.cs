@@ -107,6 +107,8 @@ public partial class WatchPage : ContentPage, IQueryAttributable
             MainThread.BeginInvokeOnMainThread(ApplyTopBarInset);
 #endif
 
+        ContentStack.Padding = NormalContentPadding;
+
         Player.PositionChanged += (_, _) => MainThread.BeginInvokeOnMainThread(UpdateProgress);
 
         // 首帧布局后把面板高度对齐到播放框实际高度
@@ -187,6 +189,16 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     /// 原地全屏隐藏 TopBarGrid 时边距随之消失，不留缝。</summary>
     private void ApplyTopBarInset() =>
         TopBarGrid.Margin = new Thickness(0, Math.Max(0, SafeAreaHelper.TopInset - 12), 0, 0);
+#endif
+
+    /// <summary>非全屏时的内容内边距。Windows 顶栏必须落在窗口标题栏按钮行（最小化/最大化/关闭，
+    /// 绘制在内容之上、约占顶部 32px）之下，故顶部多留 30px，避免返回键/线路芯片与按钮重叠
+    /// （2026-09-11 真机截图核对；同时使播放框与选集框整体下移）。</summary>
+    private static Thickness NormalContentPadding =>
+#if WINDOWS
+        new(24, 44, 24, 28);
+#else
+        new(24, 14, 24, 28);
 #endif
 
 #if WINDOWS
@@ -1019,7 +1031,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         MainArea.ColumnDefinitions = on
             ? new ColumnDefinitionCollection { new ColumnDefinition(GridLength.Star) }
             : new ColumnDefinitionCollection { new ColumnDefinition(GridLength.Star), new ColumnDefinition(300) };
-        ContentStack.Padding = on ? new Thickness(0) : new Thickness(24, 14, 24, 28);
+        ContentStack.Padding = on ? new Thickness(0) : NormalContentPadding;
         FullScreenButton.Source = on ? "ic_fullscreen_exit.png" : "ic_fullscreen.png";
         Dispatcher.StartTimer(TimeSpan.FromMilliseconds(120), () => { SyncSidebarHeight(); return false; });
         if (on) _ = ContentScroll.ScrollToAsync(0, 0, false);
