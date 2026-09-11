@@ -96,6 +96,9 @@ public partial class WatchPage : ContentPage, IQueryAttributable
 #endif
 
         Player.PositionChanged += (_, _) => MainThread.BeginInvokeOnMainThread(UpdateProgress);
+
+        // 首帧布局后把面板高度对齐到播放框实际高度
+        Dispatcher.StartTimer(TimeSpan.FromMilliseconds(600), () => { SyncSidebarHeight(); return false; });
         Player.MediaOpened += (_, _) => MainThread.BeginInvokeOnMainThread(() =>
         {
             UpdateProgress();
@@ -923,6 +926,18 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     /// <summary>全屏切换：同一播放器实例原地放大铺满（不新开页面、不重新拉流、进度天然连续）</summary>
     private void OnToggleFullscreenClicked(object? sender, EventArgs e) => SetFullscreen(!_isFullscreen);
 
+    /// <summary>选集面板高度对齐播放框：MaximumHeightRequest 取播放框（Border）的
+    /// **实际渲染高度**——名义 340 会因圆角/描边/测量差异留下 ~20dp 落差（2026-09-11 真机实测）。</summary>
+    private void SyncSidebarHeight()
+    {
+        try
+        {
+            if (PlayerHost.Parent is VisualElement box && box.Height > 0)
+                SidebarPanel.MaximumHeightRequest = box.Height;
+        }
+        catch { }
+    }
+
     /// <summary>原地全屏：隐藏顶栏/选集/信息区，播放器铺满整页；窗口切 FullScreen（Win）/ 横屏（Android）</summary>
     private void SetFullscreen(bool on)
     {
@@ -936,6 +951,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable
             : new ColumnDefinitionCollection { new ColumnDefinition(GridLength.Star), new ColumnDefinition(300) };
         ContentStack.Padding = on ? new Thickness(0) : new Thickness(24, 14, 24, 28);
         FullScreenButton.Source = on ? "ic_fullscreen_exit.png" : "ic_fullscreen.png";
+        Dispatcher.StartTimer(TimeSpan.FromMilliseconds(120), () => { SyncSidebarHeight(); return false; });
         if (on) _ = ContentScroll.ScrollToAsync(0, 0, false);
 #if WINDOWS
         App.SetWindowFullscreen(on);
