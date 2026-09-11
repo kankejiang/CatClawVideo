@@ -703,9 +703,6 @@ public partial class WatchPage : ContentPage, IQueryAttributable
             Player.Play();
             _playing = true;
 
-            // 顶栏显示当前播放的视频名（播哪集显示哪集）
-            TopBarTitle.Text = episode.Name;
-
             // 起播后唤出控制层；鼠标离开播放框（或手指离开）即 3s 后自动隐藏
             ShowControls();
             RestartControlsHideTimer();
