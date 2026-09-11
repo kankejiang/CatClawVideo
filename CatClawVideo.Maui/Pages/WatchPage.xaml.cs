@@ -781,11 +781,39 @@ public partial class WatchPage : ContentPage, IQueryAttributable
 
     private void OnBackTapped(object? sender, TappedEventArgs e) => Shell.Current.GoToAsync("..");
 
+    private DateTime _lastSurfaceTapTime = DateTime.MinValue;
+    private System.Threading.CancellationTokenSource? _singleTapCts;
+
     private void OnSurfaceTapped(object? sender, TappedEventArgs e)
     {
-        // 触摸播放框：先唤出控制层（手指离开后 3s 才隐藏），再切换播放状态
-        ShowControls();
-        OnPlayPauseClicked(sender, e);
+        // 单击 = 唤出控制层（延迟 300ms 执行，给双击留判定窗口）；
+        // 双击 = 取消单击动作，切换播放/暂停（2026-09-11 用户要求：
+        // 原先单击即切播放，翻控制层时总误触暂停）。
+        var now = DateTime.Now;
+        if ((now - _lastSurfaceTapTime).TotalMilliseconds <= 300)
+        {
+            _lastSurfaceTapTime = DateTime.MinValue;
+            _singleTapCts?.Cancel();
+            _singleTapCts = null;
+            OnPlayPauseClicked(sender, e);
+            return;
+        }
+
+        _lastSurfaceTapTime = now;
+        _singleTapCts?.Cancel();
+        _singleTapCts = new System.Threading.CancellationTokenSource();
+        var cts = _singleTapCts;
+        Task.Run(async () =>
+        {
+            try { await Task.Delay(300, cts.Token); }
+            catch (TaskCanceledException) { return; }
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                if (cts.IsCancellationRequested) return;
+                ShowControls();
+                RestartControlsHideTimer();
+            });
+        });
     }
 
     private void OnPlayPauseClicked(object? sender, EventArgs e)
