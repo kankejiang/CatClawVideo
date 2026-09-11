@@ -171,7 +171,7 @@
                                    TextColor="{DynamicResource TextHintColor}" VerticalOptions="Center" />
                         </Grid>
 
-                        <ScrollView Grid.Row="1" Padding="10,4,10,4">
+                        <ScrollView Grid.Row="1" x:Name="EpisodeScroll" Padding="10,4,10,4">
                             <!-- 一页 20 集（2 列 × 10 行），行内容代码后置填充 -->
                             <Grid x:Name="EpisodeListHost" ColumnDefinitions="*,*" ColumnSpacing="8" RowSpacing="4" />
                         </ScrollView>

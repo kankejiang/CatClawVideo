@@ -33,7 +33,18 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     private static int EpisodeColumnsFor(int episodeCount) =>
         episodeCount <= 10 ? 1 : episodeCount <= 40 ? 2 : 3;
 
-    private static int EpisodesPerPageFor(int episodeCount) => EpisodeColumnsFor(episodeCount) * 10;
+    /// <summary>每页行数按选集框**可视高度**铺满（单行 ≈46dp：格子 42 + 行距 4），
+    /// 不再固定 10 行——面板多高就排多少行，一页正好铺满（2026-09-11 用户要求）。</summary>
+    private int RowsPerPage()
+    {
+        double h = EpisodeScroll.Height;
+        int rows = h > 80 ? (int)Math.Floor(h / 46.0) : 8;   // 未布局时先按 8 行兜底，布局完成会重排
+        return Math.Clamp(rows, 3, 20);
+    }
+
+    private int PerPageFor(int episodeCount) => RowsPerPage() * EpisodeColumnsFor(episodeCount);
+
+    private int _lastRowsPerPage;
     private int _episodePage;
     private readonly List<(Border Border, Label Name, Border Num, EpisodeRow Row)> _pageVisuals = [];
 
@@ -99,6 +110,15 @@ public partial class WatchPage : ContentPage, IQueryAttributable
 
         // 首帧布局后把面板高度对齐到播放框实际高度
         Dispatcher.StartTimer(TimeSpan.FromMilliseconds(600), () => { SyncSidebarHeight(); return false; });
+
+        // 选集框尺寸就绪/变化后按实际高度重排每页集数（一页铺满面板）
+        EpisodeScroll.SizeChanged += (_, _) =>
+        {
+            int rows = RowsPerPage();
+            if (rows == _lastRowsPerPage) return;
+            _lastRowsPerPage = rows;
+            MainThread.BeginInvokeOnMainThread(() => { try { RenderEpisodePage(); } catch { } });
+        };
         Player.MediaOpened += (_, _) => MainThread.BeginInvokeOnMainThread(() =>
         {
             UpdateProgress();
@@ -531,7 +551,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         var source = _sources[_currentSourceIndex];
         int count = source.Episodes.Count;
         int cols = EpisodeColumnsFor(count);
-        int perPage = EpisodesPerPageFor(count);
+        int perPage = PerPageFor(count);
         int totalPages = (int)Math.Ceiling(count / (double)perPage);
 
         EpisodeListHost.Children.Clear();
@@ -699,7 +719,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     private void OnNextPageTapped(object? sender, EventArgs e)
     {
         if (_currentSourceIndex < 0 || _currentSourceIndex >= _sources.Count) return;
-        int totalPages = (int)Math.Ceiling(_sources[_currentSourceIndex].Episodes.Count / (double)EpisodesPerPageFor(_sources[_currentSourceIndex].Episodes.Count));
+        int totalPages = (int)Math.Ceiling(_sources[_currentSourceIndex].Episodes.Count / (double)PerPageFor(_sources[_currentSourceIndex].Episodes.Count));
         if (_episodePage < totalPages - 1)
         {
             _episodePage++;
@@ -720,7 +740,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         _currentEpisodeIndex = row.Index;
 
         // 当前集不在本页时自动翻页（重渲染时按 IsCurrent 应用高亮）
-        int target = row.Index / EpisodesPerPageFor(episodes.Count);
+        int target = row.Index / PerPageFor(episodes.Count);
         if (target != _episodePage)
         {
             _episodePage = target;
