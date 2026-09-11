@@ -151,7 +151,10 @@
                 <!-- 右侧选集栏（与播放器等高，内部滚动；全屏模式下隐藏） -->
                 <Border x:Name="SidebarPanel" Grid.Column="1" StrokeThickness="0" StrokeShape="RoundRectangle 14"
                         BackgroundColor="{DynamicResource CardBackgroundColor}"
-                        VerticalOptions="Fill" Padding="0">
+                        VerticalOptions="Fill" MaximumHeightRequest="340" Padding="0">
+                    <!-- ⚠️ MaximumHeightRequest 必须与 PlayerHost 一致：外层页面是垂直堆叠+
+                         ScrollView，内部 ScrollView 在无界测量下会按全部集数把面板撑高，
+                         造成选集框比播放框高出一大截（2026-09-11 真机实测）。 -->
                     <Grid RowDefinitions="Auto,Auto,*,Auto" Padding="0">
                         <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Padding="14,12,14,0">
                             <Label Grid.Column="0" Text="选集" FontSize="14" FontFamily="OpenSansSemibold"
