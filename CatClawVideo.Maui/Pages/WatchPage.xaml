@@ -15,7 +15,7 @@
         <VerticalStackLayout x:Name="ContentStack" Padding="24,14,24,28" Spacing="14">
 
             <!-- 顶栏：返回 + 品牌（全屏模式下隐藏） -->
-            <Grid x:Name="TopBarGrid" ColumnDefinitions="Auto,Auto" ColumnSpacing="12">
+            <Grid x:Name="TopBarGrid" ColumnDefinitions="Auto,Auto,*,Auto" ColumnSpacing="12">
                 <Border Grid.Column="0" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
                         StrokeShape="RoundRectangle 12" WidthRequest="38" HeightRequest="38">
                     <Image Source="ic_back.png" WidthRequest="18" HeightRequest="18"
@@ -27,6 +27,13 @@
                 <Label Grid.Column="1" x:Name="TopBarTitle" Text="猫爪影视" FontSize="14.5" FontFamily="OpenSansSemibold"
                        LineBreakMode="TailTruncation" MaxLines="1"
                        TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
+
+                <!-- 线路切换（顶栏右侧，填补右上留白；集数多时横向滚动） -->
+                <ScrollView Grid.Column="3" Orientation="Horizontal" HorizontalOptions="End"
+                            HorizontalScrollBarVisibility="Never" VerticalScrollBarVisibility="Never"
+                            VerticalOptions="Center" MaximumWidthRequest="430">
+                    <HorizontalStackLayout x:Name="LinesHost" Spacing="8" />
+                </ScrollView>
             </Grid>
 
             <!-- ═══ 主区：播放器 + 右侧选集栏（主流播放器形态；全屏模式下选集列隐藏） ═══ -->
@@ -155,7 +162,7 @@
                     <!-- ⚠️ MaximumHeightRequest 必须与 PlayerHost 一致：外层页面是垂直堆叠+
                          ScrollView，内部 ScrollView 在无界测量下会按全部集数把面板撑高，
                          造成选集框比播放框高出一大截（2026-09-11 真机实测）。 -->
-                    <Grid RowDefinitions="Auto,Auto,*,Auto" Padding="0">
+                    <Grid RowDefinitions="Auto,*,Auto" Padding="0">
                         <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Padding="14,12,14,0">
                             <Label Grid.Column="0" Text="选集" FontSize="14" FontFamily="OpenSansSemibold"
                                    TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
@@ -164,20 +171,13 @@
                                    TextColor="{DynamicResource TextHintColor}" VerticalOptions="Center" />
                         </Grid>
 
-                        <!-- 线路切换（选集栏上方）：芯片 = 线路，点击切换并重载选集 -->
-                        <ScrollView Grid.Row="1" Orientation="Horizontal"
-                                    HorizontalScrollBarVisibility="Never" VerticalScrollBarVisibility="Never"
-                                    Padding="14,8,14,4">
-                            <HorizontalStackLayout x:Name="LinesHost" Spacing="8" />
-                        </ScrollView>
-
-                        <ScrollView Grid.Row="2" Padding="10,4,10,4">
+                        <ScrollView Grid.Row="1" Padding="10,4,10,4">
                             <!-- 一页 20 集（2 列 × 10 行），行内容代码后置填充 -->
                             <Grid x:Name="EpisodeListHost" ColumnDefinitions="*,*" ColumnSpacing="8" RowSpacing="4" />
                         </ScrollView>
 
                         <!-- 翻页条：多于 1 页才显示；首页隐藏上一页、末页隐藏下一页（代码后置控制） -->
-                        <HorizontalStackLayout Grid.Row="3" x:Name="EpisodePager" IsVisible="False"
+                        <HorizontalStackLayout Grid.Row="2" x:Name="EpisodePager" IsVisible="False"
                                                HorizontalOptions="Center" Spacing="10" Padding="0,6,0,10">
                             <Button x:Name="PagerPrev" Text="上一页" FontSize="12"
                                     ContentLayout="Left,4"
