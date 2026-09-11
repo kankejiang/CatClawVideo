@@ -63,7 +63,7 @@
                                     <Grid>
                                         <Image Source="{Binding Cover}" Aspect="AspectFill" />
                                         <Image Source="ic_brand.png" Aspect="AspectFit" Opacity="0.35"
-                                               WidthRequest="38" HeightRequest="38"
+                                               WidthRequest="38" HeightRequest="38" IsVisible="False"
                                                HorizontalOptions="Center" VerticalOptions="Center">
                                             <Image.Triggers>
                                                 <DataTrigger TargetType="Image" Binding="{Binding Cover}" Value="{x:Null}">
