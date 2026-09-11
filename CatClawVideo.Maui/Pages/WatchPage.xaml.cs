@@ -33,12 +33,13 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     private static int EpisodeColumnsFor(int episodeCount) =>
         episodeCount <= 10 ? 1 : episodeCount <= 40 ? 2 : 3;
 
-    /// <summary>每页行数按选集框**可视高度**铺满（单行 ≈46dp：格子 42 + 行距 4），
-    /// 不再固定 10 行——面板多高就排多少行，一页正好铺满（2026-09-11 用户要求）。</summary>
+    /// <summary>每页行数按选集框**可视高度**铺满（单行 ≈40dp：格子 36 + 行距 4），
+    /// 不再固定 10 行——面板多高就排多少行，一页正好铺满（2026-09-11 用户要求）。
+    /// 注：46dp 估值偏保守会少排一行（真机实测 28 集只排到 8 集/页），取 40dp。</summary>
     private int RowsPerPage()
     {
         double h = EpisodeScroll.Height;
-        int rows = h > 80 ? (int)Math.Floor(h / 46.0) : 8;   // 未布局时先按 8 行兜底，布局完成会重排
+        int rows = h > 80 ? (int)Math.Floor(h / 40.0) : 10;   // 未布局时先按 10 行兜底，布局完成会重排
         return Math.Clamp(rows, 3, 20);
     }
 
