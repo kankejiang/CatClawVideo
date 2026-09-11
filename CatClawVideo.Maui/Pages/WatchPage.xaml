@@ -24,7 +24,8 @@
                         <TapGestureRecognizer Tapped="OnBackTapped" />
                     </Border.GestureRecognizers>
                 </Border>
-                <Label Grid.Column="1" Text="猫爪影视" FontSize="14.5" FontFamily="OpenSansSemibold"
+                <Label Grid.Column="1" x:Name="TopBarTitle" Text="猫爪影视" FontSize="14.5" FontFamily="OpenSansSemibold"
+                       LineBreakMode="TailTruncation" MaxLines="1"
                        TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
             </Grid>
 
