@@ -150,6 +150,9 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     }
 
     /// <summary>鼠标在播放框内移动：保持控制层可见（离开播放框才开始 3s 倒计时）</summary>
+    /// <summary>顶栏避开状态栏：Edge-to-Edge 下页面从 y=0 起绘。取状态栏高度再上收 12dp——
+    /// 完整 inset 会显得过低（用户实测反馈），留一点与状态栏的呼吸感更自然。
+    /// 原地全屏隐藏 TopBarGrid 时边距随之消失，不留缝。</summary>
 #if ANDROID
     /// <summary>顶栏避开状态栏：Edge-to-Edge 下页面从 y=0 起绘。取状态栏高度再上收 12dp——
     /// 完整 inset 会显得过低（用户实测反馈），留一点与状态栏的呼吸感更自然。
@@ -157,6 +160,41 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     private void ApplyTopBarInset() =>
         TopBarGrid.Margin = new Thickness(0, Math.Max(0, SafeAreaHelper.TopInset - 12), 0, 0);
 #endif
+
+    /// <summary>上一集/下一集：沿当前线路按索引跳集；越界提示。</summary>
+    private void OnPrevEpisodeClicked(object? sender, EventArgs e) => SkipEpisode(-1);
+
+    private void OnNextEpisodeClicked(object? sender, EventArgs e) => SkipEpisode(1);
+
+    private void SkipEpisode(int delta)
+    {
+        if (_currentSourceIndex < 0 || _currentSourceIndex >= _sources.Count) return;
+        var episodes = _sources[_currentSourceIndex].Episodes;
+        var target = _currentEpisodeIndex + delta;
+        if (target < 0 || target >= episodes.Count)
+        {
+            _ = ShowTipAsync(delta < 0 ? "已经是第一集了" : "已经是最后一集了");
+            return;
+        }
+        PlayEpisodeByRow(_episodeRows[target]);
+    }
+
+    /// <summary>快退/快进 10s（拖动进度条外的快捷键位）。</summary>
+    private void OnRewindClicked(object? sender, EventArgs e) => SeekRelative(-10);
+
+    private void OnForwardClicked(object? sender, EventArgs e) => SeekRelative(10);
+
+    private void SeekRelative(double deltaSeconds)
+    {
+        var target = Player.Position + TimeSpan.FromSeconds(deltaSeconds);
+        if (target < TimeSpan.Zero) target = TimeSpan.Zero;
+        if (Player.Duration > TimeSpan.Zero && target > Player.Duration)
+            target = Player.Duration - TimeSpan.FromSeconds(1);
+        if (target < TimeSpan.Zero) return;
+        Player.Seek(target);
+        ShowControls();
+        RestartControlsHideTimer();
+    }
 
     private void OnPlayerPointerMoved(object? sender, PointerEventArgs e) => ShowControls();
 

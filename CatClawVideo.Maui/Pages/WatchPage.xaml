@@ -71,28 +71,44 @@
                                          HorizontalOptions="Center" VerticalOptions="Center"
                                          Clicked="OnPlayPauseClicked" />
                             <Grid x:Name="ControlBar" VerticalOptions="End"
-                                  ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto" ColumnSpacing="12"
+                                  ColumnDefinitions="Auto,Auto,Auto,Auto,*,Auto,Auto,Auto,Auto" ColumnSpacing="10"
                                   Padding="12,6,12,10"
                                   BackgroundColor="#99000000">
-                                <ImageButton Grid.Column="0" x:Name="SmallPlayButton"
+                                <Button Grid.Column="0" x:Name="PrevEpisodeButton" Text="上一集" FontSize="10.5"
+                                        TextColor="White" BackgroundColor="Transparent" Padding="0"
+                                        MinimumWidthRequest="0" MinimumHeightRequest="0"
+                                        VerticalOptions="Center" Clicked="OnPrevEpisodeClicked" />
+                                <ImageButton Grid.Column="1" x:Name="SmallPlayButton"
                                              Source="ic_pause.png"
                                              WidthRequest="20" HeightRequest="20"
                                              BackgroundColor="Transparent"
                                              VerticalOptions="Center"
                                              Clicked="OnPlayPauseClicked" />
-                                <Label Grid.Column="1" x:Name="PositionLabel" Text="00:00"
+                                <Button Grid.Column="2" x:Name="RewindButton" Text="«10s" FontSize="10.5"
+                                        TextColor="White" BackgroundColor="Transparent" Padding="0"
+                                        MinimumWidthRequest="0" MinimumHeightRequest="0"
+                                        VerticalOptions="Center" Clicked="OnRewindClicked" />
+                                <Label Grid.Column="3" x:Name="PositionLabel" Text="00:00"
                                        FontSize="10.5" FontFamily="OpenSansSemibold" TextColor="White"
                                        VerticalOptions="Center" />
-                                <Slider Grid.Column="2" x:Name="ProgressBar"
+                                <Slider Grid.Column="4" x:Name="ProgressBar"
                                         Minimum="0" Maximum="100" Value="0"
                                         MinimumTrackColor="{DynamicResource PrimaryColor}"
                                         MaximumTrackColor="#40FFFFFF" ThumbColor="White"
                                         VerticalOptions="Center"
                                         DragStarted="OnSeekStarted" DragCompleted="OnSeekCompleted" />
-                                <Label Grid.Column="3" x:Name="DurationLabel" Text="--:--"
+                                <Label Grid.Column="5" x:Name="DurationLabel" Text="--:--"
                                        FontSize="10.5" FontFamily="OpenSansSemibold" TextColor="White"
                                        VerticalOptions="Center" />
-                                <ImageButton Grid.Column="4" x:Name="FullScreenButton"
+                                <Button Grid.Column="6" x:Name="ForwardButton" Text="10s»" FontSize="10.5"
+                                        TextColor="White" BackgroundColor="Transparent" Padding="0"
+                                        MinimumWidthRequest="0" MinimumHeightRequest="0"
+                                        VerticalOptions="Center" Clicked="OnForwardClicked" />
+                                <Button Grid.Column="7" x:Name="NextEpisodeButton" Text="下一集" FontSize="10.5"
+                                        TextColor="White" BackgroundColor="Transparent" Padding="0"
+                                        MinimumWidthRequest="0" MinimumHeightRequest="0"
+                                        VerticalOptions="Center" Clicked="OnNextEpisodeClicked" />
+                                <ImageButton Grid.Column="8" x:Name="FullScreenButton"
                                              Source="ic_fullscreen.png"
                                              WidthRequest="30" HeightRequest="26"
                                              BackgroundColor="Transparent"
