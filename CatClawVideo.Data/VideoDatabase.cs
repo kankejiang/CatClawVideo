@@ -76,6 +76,9 @@ public class PlayHistoryEntry
     /// <summary>集名（用于回跳后自动选中该集，如「第02集」）</summary>
     public string EpisodeName { get; set; } = string.Empty;
 
+    /// <summary>上次播放的线路名（线路分组名，如「线路3」/「磁力播放」）。续看时优先选中该线路。</summary>
+    public string RouteName { get; set; } = string.Empty;
+
     // ── 影片详情字段（跳回观看页时还原完整信息区，与首页进入一致） ──
 
     public string Category { get; set; } = string.Empty;
@@ -141,6 +144,7 @@ public class VideoDatabase
         await EnsureColumnAsync(_db, "play_history", "ItemType", "integer");
         await EnsureColumnAsync(_db, "play_history", "ItemApi", "text");
         await EnsureColumnAsync(_db, "play_history", "ItemId", "text");
+        await EnsureColumnAsync(_db, "play_history", "RouteName", "text");
         await EnsureColumnAsync(_db, "play_history", "EpisodeName", "text");
 
         // 播放历史 v3：影片详情列（历史卡跳回观看页时还原完整信息区）
@@ -183,6 +187,17 @@ public class VideoDatabase
 
     public Task<List<PlayHistoryEntry>> GetRecentHistoryAsync(int limit = 50) =>
         _db.Table<PlayHistoryEntry>().OrderByDescending(h => h.WatchedAt).Take(limit).ToListAsync();
+
+    /// <summary>按影片定位取历史（续播用）：SourceKey+ItemId 精确匹配，取最近一条。</summary>
+    public Task<PlayHistoryEntry?> FindHistoryAsync(string? sourceKey, string? itemId)
+    {
+        if (string.IsNullOrEmpty(sourceKey) || string.IsNullOrEmpty(itemId))
+            return Task.FromResult<PlayHistoryEntry?>(null);
+        return _db.Table<PlayHistoryEntry>()
+            .Where(h => h.SourceKey == sourceKey && h.ItemId == itemId)
+            .OrderByDescending(h => h.WatchedAt)
+            .FirstOrDefaultAsync()!;
+    }
 
     /// <summary>记录/续看一次播放：同标题的旧记录合并（更新位置与时间），保留最近 N 条</summary>
     /// <summary>

@@ -46,6 +46,7 @@ public partial class HistoryPage : ContentView, ITabView
                     $"&sourceKey={Uri.EscapeDataString(e.SourceKey)}&type={type}" +
                     $"&api={Uri.EscapeDataString(api)}&itemId={Uri.EscapeDataString(e.ItemId)}" +
                     (string.IsNullOrEmpty(e.EpisodeName) ? "" : $"&resumeEp={Uri.EscapeDataString(e.EpisodeName)}") +
+                    (string.IsNullOrEmpty(e.RouteName) ? "" : $"&route={Uri.EscapeDataString(e.RouteName)}") +
                     $"&year={Uri.EscapeDataString(e.Year)}" +
                     $"&remarks={Uri.EscapeDataString(e.Remarks)}" +
                     $"&desc={Uri.EscapeDataString(e.Description)}" +

@@ -29,13 +29,17 @@ public class VideoPlaybackManager
     public string CurrentRemarks { get; private set; } = string.Empty;
     public string CurrentDescription { get; private set; } = string.Empty;
 
+    /// <summary>当前播放线路名（续看时优先恢复上次线路）</summary>
+    public string CurrentRouteName { get; private set; } = string.Empty;
+
     public VideoPlaybackManager(VideoDatabase db) => _db = db;
 
     /// <summary>开始一次播放会话（带来源定位与影片详情：历史卡才能跳回观看页续看并还原信息区）</summary>
     public void BeginSession(string title, string url, string? cover = null,
         string? sourceKey = null, int itemType = 0, string? itemApi = null,
         string? itemId = null, string? episodeName = null,
-        string? category = null, string? year = null, string? remarks = null, string? description = null)
+        string? category = null, string? year = null, string? remarks = null, string? description = null,
+        string? routeName = null)
     {
         CurrentTitle = title;
         CurrentUrl = url;
@@ -49,6 +53,7 @@ public class VideoPlaybackManager
         CurrentYear = year ?? string.Empty;
         CurrentRemarks = remarks ?? string.Empty;
         CurrentDescription = description ?? string.Empty;
+        CurrentRouteName = routeName ?? string.Empty;
     }
 
     /// <summary>播放中进度落库（不结束会话）：起播即调用（历史立刻置顶）+ 定时器每 10s 调用一次。
@@ -81,6 +86,7 @@ public class VideoPlaybackManager
             Year = CurrentYear,
             Remarks = CurrentRemarks,
             Description = CurrentDescription,
+            RouteName = CurrentRouteName,
     };
 
     /// <summary>结束播放会话并记录历史（fire-and-forget，不阻塞页面退出）</summary>
@@ -102,6 +108,7 @@ public class VideoPlaybackManager
         CurrentYear = string.Empty;
         CurrentRemarks = string.Empty;
         CurrentDescription = string.Empty;
+        CurrentRouteName = string.Empty;
         _ = Task.Run(async () =>
         {
             try { await _db.UpsertHistoryAsync(entry); }

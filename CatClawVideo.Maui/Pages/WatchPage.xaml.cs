@@ -86,6 +86,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable
 
     /// <summary>播放历史跳转携带的续看定位：选集加载后自动选该集，MediaOpened 后 seek</summary>
     private string? _resumeEpisodeName;
+    private string? _resumeRouteName;
     private double _resumePosition;
 
     public WatchPage(IVodSourceProvider provider, VideoDatabase db, VideoPlaybackManager playback,
@@ -126,14 +127,15 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         {
             UpdateProgress();
 
-            // 播放历史续看：媒体就绪（时长已知）后一次性 seek 到上次位置
+            // 播放历史续看：媒体就绪（时长已知）后 seek 到上次位置。
+            // 刚 Open 的瞬间部分后端尚不可 seek（Windows 实测直接 Seek 会被丢弃），
+            // 故首次失败后 300ms/900ms 各重试一次（位置明显偏离目标才重试）。
             if (_resumePosition > 0)
             {
                 var pos = _resumePosition;
                 _resumePosition = 0;
                 _resumeEpisodeName = null;
-                if (Player.Duration == TimeSpan.Zero || pos < Player.Duration.TotalSeconds - 1)
-                    Player.Seek(TimeSpan.FromSeconds(pos));
+                TrySeekToResume(pos, retry: 0);
             }
         });
         Player.StateChanged += (_, _) => MainThread.BeginInvokeOnMainThread(UpdatePlayIcon);
@@ -215,6 +217,49 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     }
 #endif
 
+    /// <summary>续看定位：seek 到上次位置；若后端尚未可 seek（位置未生效）则按 300/900/1800ms 重试。</summary>
+    private void TrySeekToResume(double pos, int retry)
+    {
+        var delay = retry switch { 0 => 300, 1 => 900, 2 => 1800, _ => 0 };
+        if (delay == 0) return;
+        Dispatcher.StartTimer(TimeSpan.FromMilliseconds(delay), () =>
+        {
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                try
+                {
+                    if (Player.Duration > TimeSpan.Zero && pos > Player.Duration.TotalSeconds - 1) return;
+                    // 已在目标附近（±15s）视为成功，不再重试
+                    if (Math.Abs(Player.Position.TotalSeconds - pos) <= 15) return;
+                    Player.Seek(TimeSpan.FromSeconds(pos));
+                    TrySeekToResume(pos, retry + 1);
+                }
+                catch { }
+            });
+            return false;
+        });
+    }
+
+    /// <summary>从历史读取本片续播点（首页/收藏等入口进入时也用）：
+    /// 已看完（距结尾 &lt;20s）或位置过短不续；集名不同则仍按集恢复、位置交给 MediaOpened 校验。</summary>
+    private async Task ApplyHistoryResumeAsync()
+    {
+        try
+        {
+            var h = await _db.FindHistoryAsync(_item.SourceKey, _item.Id);
+            if (h == null) return;
+            if (h.PositionSeconds < 10) return;
+            if (h.DurationSeconds > 0 && h.PositionSeconds > h.DurationSeconds - 20) return;
+            _resumeEpisodeName = string.IsNullOrEmpty(h.EpisodeName) ? null : h.EpisodeName;
+            _resumePosition = h.PositionSeconds;
+            if (!string.IsNullOrEmpty(h.RouteName)) _resumeRouteName = h.RouteName;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[Watch] 读取续播点失败: {ex.Message}");
+        }
+    }
+
     /// <summary>上一集/下一集：沿当前线路按索引跳集；越界提示。</summary>
     private void OnPrevEpisodeClicked(object? sender, EventArgs e) => SkipEpisode(-1);
 
@@ -295,6 +340,9 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         if (query.TryGetValue("pos", out var posObj) && posObj is string posStr &&
             double.TryParse(posStr, System.Globalization.CultureInfo.InvariantCulture, out var pos) && pos > 0)
             _resumePosition = pos;
+        // 上次线路（续看优先恢复该线路；找不到则回退第一条）
+        if (query.TryGetValue("route", out var rt) && rt is string routeName && routeName.Length > 0)
+            _resumeRouteName = routeName;
 
         TitleLabel.Text = _item.Title;
         TopBarTitle.Text = _item.Title;
@@ -467,14 +515,23 @@ public partial class WatchPage : ContentPage, IQueryAttributable
                     },
                 };
                 var tap = new TapGestureRecognizer();
-                tap.Tapped += (_, _) => SelectSource(index);
+                tap.Tapped += (_, _) => _ = SelectSourceAsync(index);
                 chip.GestureRecognizers.Add(tap);
                 LinesHost.Children.Add(chip);
                 _lineChips.Add(chip);
             }
 
             if (_sources.Count > 0)
-                SelectSource(0);
+            {
+                // 续看优先恢复上次线路（按线路名匹配；找不到回退第一条）
+                int startIndex = 0;
+                if (_resumeRouteName is { Length: > 0 })
+                {
+                    var idx = _sources.FindIndex(s => string.Equals(s.Name.Trim(), _resumeRouteName.Trim(), StringComparison.Ordinal));
+                    if (idx >= 0) startIndex = idx;
+                }
+                await SelectSourceAsync(startIndex);
+            }
             else
                 await ShowTipAsync("该影片暂无可播放线路");
         }
@@ -514,7 +571,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     }
 
     /// <summary>切换播放线路：重建右侧选集栏并播第一集</summary>
-    private void SelectSource(int index)
+    private async Task SelectSourceAsync(int index)
     {
         if (index < 0 || index >= _sources.Count) return;
         _currentSourceIndex = index;
@@ -549,6 +606,10 @@ public partial class WatchPage : ContentPage, IQueryAttributable
 
         if (source.Episodes.Count > 0)
         {
+            // 无路由续看参数（如从首页海报进入）：查本片历史，自动续播上次的集与位置
+            if (_resumeEpisodeName is null && _resumePosition <= 0)
+                await ApplyHistoryResumeAsync();
+
             // 播放历史跳转：与首页进入一致——还原信息区并直接播放；
             // 差异是播的是**上次看的那集**（高亮），且 MediaOpened 后续到上次位置。
             // 选集列表在侧栏随时可见，想换集直接点。
@@ -827,7 +888,8 @@ public partial class WatchPage : ContentPage, IQueryAttributable
                     sourceKey: _site.Key, itemType: _site.Type, itemApi: _site.Api,
                     itemId: _item.Id, episodeName: episode.Name,
                     category: _item.Category, year: _item.Year,
-                    remarks: _item.Remarks, description: _item.Description);
+                    remarks: _item.Remarks, description: _item.Description,
+                    routeName: _sources[_currentSourceIndex].Name);
         }
         catch (NotSupportedException ex)
         {
