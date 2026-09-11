@@ -17,7 +17,7 @@
             <!-- 顶栏：返回 + 品牌（全屏模式下隐藏） -->
             <Grid x:Name="TopBarGrid" ColumnDefinitions="Auto,Auto,*,Auto" ColumnSpacing="12">
                 <Border Grid.Column="0" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
-                        StrokeShape="RoundRectangle 12" WidthRequest="38" HeightRequest="38">
+                        StrokeShape="RoundRectangle 12" WidthRequest="38" HeightRequest="38" VerticalOptions="Start">
                     <Image Source="ic_back.png" WidthRequest="18" HeightRequest="18"
                            HorizontalOptions="Center" VerticalOptions="Center" />
                     <Border.GestureRecognizers>
@@ -25,17 +25,18 @@
                     </Border.GestureRecognizers>
                 </Border>
                 <Label Grid.Column="1" x:Name="TopBarTitle" Text="猫爪影视" FontSize="14.5" FontFamily="OpenSansSemibold"
-                       LineBreakMode="TailTruncation" MaxLines="1"
-                       TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
+                       LineBreakMode="TailTruncation" MaxLines="1" VerticalOptions="Start"
+                       TextColor="{DynamicResource TextPrimaryColor}" />
 
                 <!-- 线路切换（顶栏右侧，填补右上留白；集数多时横向滚动）
-                     Windows：右侧预留标题栏按钮区（最小化/最大化/关闭的 ~150px），否则芯片会压到按钮上 -->
+                     Windows：顶部下移 48px 脱离窗口拖拽带（拖拽区是窗口级、覆盖顶部 56px 条带，
+                     落在里面的控件收不到点击），下移后即可正常点击且可贴紧右边缘 -->
                 <ScrollView Grid.Column="3" Orientation="Horizontal" HorizontalOptions="End"
                             HorizontalScrollBarVisibility="Never" VerticalScrollBarVisibility="Never"
-                            VerticalOptions="Center" MaximumWidthRequest="430">
+                            VerticalOptions="Start" MaximumWidthRequest="520">
                     <ScrollView.Margin>
                         <OnPlatform x:TypeArguments="Thickness">
-                            <On Platform="WinUI" Value="0,0,150,0" />
+                            <On Platform="WinUI" Value="0,48,0,0" />
                         </OnPlatform>
                     </ScrollView.Margin>
                     <HorizontalStackLayout x:Name="LinesHost" Spacing="8" />
