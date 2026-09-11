@@ -42,8 +42,8 @@ public partial class MainPage : ContentPage
         _vm.TabChanged += OnTabChanged;
         _theme.Applied += UpdateNavTabs;
 
-        // 安全区 padding（Android 透明状态栏下内容避开系统栏）
-        Padding = new Thickness(0, GetTopSafeArea(), 0, 0);
+        // 安全区 padding（Android 透明状态栏/手势条下内容避开系统栏）
+        ApplySafeAreaPadding();
         SafeAreaHelper.SafeAreaChanged += OnSafeAreaChanged;
 #if ANDROID
         // 启动后兜底：窗口稳定后反复强制 Edge-to-Edge，复刻「导航到二级页再返回」的全屏效果
@@ -250,8 +250,15 @@ public partial class MainPage : ContentPage
     }
 
     private void OnSafeAreaChanged(object? sender, EventArgs e) =>
-        MainThread.BeginInvokeOnMainThread(() =>
-            Padding = new Thickness(0, GetTopSafeArea(), 0, 0));
+        MainThread.BeginInvokeOnMainThread(ApplySafeAreaPadding);
+
+    /// <summary>
+    /// 安全区 padding：顶部避开状态栏，底部避开手势导航条。
+    /// 底部不避的话内容（海报墙末行/年份）会伸到手势条底下被遮住（2026-09-11 真机实测）。
+    /// 页面背景仍铺满全屏（Padding 只缩内容区），手势条区域与界面融为一体。
+    /// </summary>
+    private void ApplySafeAreaPadding() =>
+        Padding = new Thickness(0, GetTopSafeArea(), 0, GetBottomSafeArea());
 
 #if ANDROID
     private bool _edgeToEdgeSettling;
@@ -292,6 +299,13 @@ public partial class MainPage : ContentPage
     private static double GetTopSafeArea() =>
 #if ANDROID
         SafeAreaHelper.TopInset;
+#else
+        0;
+#endif
+
+    private static double GetBottomSafeArea() =>
+#if ANDROID
+        SafeAreaHelper.BottomInset;
 #else
         0;
 #endif
