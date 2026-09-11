@@ -37,6 +37,15 @@ public class MainActivity : MauiAppCompatActivity
         AttachEdgeToEdgeReassert();
     }
 
+    /// <summary>窗口获得焦点时再强制一次 Edge-to-Edge：MAUI 可能在任意生命周期点
+    /// （含启动后首帧、二级页返回）把 DecorFitsSystemWindows 重置回 true——
+    /// 旧方案只重申有限次，输给启动时序就会出现「启动底部大片空白、导航返回后消失」。</summary>
+    public override void OnWindowFocusChanged(bool hasFocus)
+    {
+        base.OnWindowFocusChanged(hasFocus);
+        if (hasFocus) SetupEdgeToEdge();
+    }
+
     /// <summary>Activity 创建完成（窗口已附加、MAUI 已完成首轮窗口搭建）后回调。
     /// MAUI 的 AndroidWindow 可能在 OnCreate 之后才真正建立并把 DecorFitsSystemWindows 重置为 true，
     /// 因此这里再次强制 Edge-to-Edge，确保首帧即全屏、启动无底部空白。（同猫爪音乐）</summary>
@@ -66,7 +75,7 @@ public class MainActivity : MauiAppCompatActivity
             var rootView = Window?.DecorView?.FindViewById(Android.Resource.Id.Content);
             if (rootView?.ViewTreeObserver != null)
             {
-                var listener = new EdgeToEdgeGlobalLayoutListener(this, rootView, 2);
+                var listener = new EdgeToEdgeGlobalLayoutListener(this, rootView);
                 rootView.ViewTreeObserver.AddOnGlobalLayoutListener(listener);
             }
         }
@@ -198,36 +207,23 @@ internal class EdgeToEdgeInsets : Java.Lang.Object, IOnApplyWindowInsetsListener
 
 
 /// <summary>
-/// 全局布局监听：每次真实布局后重新强制 Edge-to-Edge（限次后自动注销）。
-/// 用于覆盖「Splash 关闭 / MAUI 窗口建立 / 主题切换」等会把 DecorFitsSystemWindows
-/// 重置回 true 的时机 —— 那会导致内容止于导航栏，底部留出一块不参与布局的区域。
-/// （照搬猫爪音乐同名实现；用 WeakReference 持有 Activity 避免泄漏。）
+/// 全局布局监听：每次真实布局后重新强制 Edge-to-Edge（**常驻不注销**——
+/// MAUI 可能在任意布局时机把 DecorFitsSystemWindows 重置回 true，限次重申
+/// 会输给启动时序，出现「启动底部大片空白、导航返回后消失」；SetupEdgeToEdge
+/// 幂等且廉价，常驻开销可忽略）。（照搬猫爪音乐同名实现；用 WeakReference 持有 Activity 避免泄漏。）
 /// </summary>
 internal class EdgeToEdgeGlobalLayoutListener : Java.Lang.Object, Android.Views.ViewTreeObserver.IOnGlobalLayoutListener
 {
     private readonly System.WeakReference<MainActivity> _activity;
-    private readonly Android.Views.View _view;
-    private int _remaining;
 
-    public EdgeToEdgeGlobalLayoutListener(MainActivity activity, Android.Views.View view, int repeats)
+    public EdgeToEdgeGlobalLayoutListener(MainActivity activity, Android.Views.View view)
     {
         _activity = new System.WeakReference<MainActivity>(activity);
-        _view = view;
-        _remaining = repeats;
     }
 
     public void OnGlobalLayout()
     {
         if (_activity.TryGetTarget(out var activity))
             activity.SetupEdgeToEdge();
-        _remaining--;
-        if (_remaining <= 0)
-        {
-            var observer = _view?.ViewTreeObserver;
-            if (observer != null && observer.IsAlive)
-            {
-                try { observer.RemoveOnGlobalLayoutListener(this); } catch { }
-            }
-        }
     }
 }
