@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="CatClawVideo.Maui.Pages.SplashPage"
+             BackgroundColor="{DynamicResource WindowBackgroundColor}">
+    <!-- 启动页：品牌落位 + 轻过渡。窗口布局稳定后由 App 切换到主界面
+         （复刻「进二级页再返回」触发的完整重排，规避启动竞态的底部空白）。 -->
+    <Grid>
+        <VerticalStackLayout VerticalOptions="Center" Spacing="14" Padding="0,0,0,40">
+            <Image Source="ic_brand.png" WidthRequest="96" HeightRequest="96"
+                   HorizontalOptions="Center" VerticalOptions="Center" />
+            <Label Text="猫爪影视" FontSize="24" FontFamily="OpenSansSemibold"
+                   HorizontalOptions="Center"
+                   TextColor="{DynamicResource TextPrimaryColor}" />
+            <Label Text="加载中…" FontSize="12" HorizontalOptions="Center"
+                   TextColor="{DynamicResource TextHintColor}" />
+        </VerticalStackLayout>
+    </Grid>
+</ContentPage>

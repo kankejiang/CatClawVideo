@@ -53,11 +53,25 @@ public partial class App : Application
     protected override Window CreateWindow(IActivationState? activationState)
     {
         var shell = MauiProgram.Services.GetRequiredService<AppShell>();
+
+#if ANDROID
+        // Android 启动页：窗口先落轻量启动页，布局稳定后切主界面。
+        // 直接以主界面冷启动时，MAUI 的窗口 inset 重置竞态会让底部留一块空白；
+        // 「进二级页再返回」式的页面切换会触发完整重排——把这次切换搬到启动时。
+        var window = new Window(new Pages.SplashPage()) { Title = "" };
+        _ = Task.Run(async () =>
+        {
+            try { await Task.Delay(1500); } catch { }
+            MainThread.BeginInvokeOnMainThread(() => window.Page = shell);
+        });
+        return window;
+#else
         var window = new Window(shell)
         {
             // 清空原生窗口标题文字（避免任务栏/Alt+Tab 显示 "CatClawVideo"）
             Title = "",
         };
+#endif // ANDROID
 
 #if WINDOWS
         window.MinimumWidth = 900;
