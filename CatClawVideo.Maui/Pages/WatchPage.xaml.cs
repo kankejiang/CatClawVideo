@@ -189,6 +189,20 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         TopBarGrid.Margin = new Thickness(0, Math.Max(0, SafeAreaHelper.TopInset - 12), 0, 0);
 #endif
 
+#if WINDOWS
+    /// <summary>把顶栏中间的空白元素声明为窗口拖拽区（照抄猫爪音乐 Window.SetTitleBar 方案）：
+    /// 只有该元素区域参与拖拽，返回键/标题/线路芯片照常可点，顶栏保持沉浸式。</summary>
+    private void AttachTitleBarDragArea()
+    {
+        try
+        {
+            if (TitleBarDragArea?.Handler?.PlatformView is Microsoft.UI.Xaml.UIElement el)
+                App.SetTitleBarDragElement(el);
+        }
+        catch { }
+    }
+#endif
+
     /// <summary>上一集/下一集：沿当前线路按索引跳集；越界提示。</summary>
     private void OnPrevEpisodeClicked(object? sender, EventArgs e) => SkipEpisode(-1);
 
@@ -350,6 +364,9 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         base.OnAppearing();
 #if WINDOWS
         HookEscKey(attach: true);
+        // 顶栏拖拽区（SetTitleBar 指定元素；延迟到 Handler 就绪后再挂）
+        AttachTitleBarDragArea();
+        Dispatcher.StartTimer(TimeSpan.FromMilliseconds(250), () => { AttachTitleBarDragArea(); return false; });
 #endif
         if (!_loaded)
         {
@@ -367,6 +384,14 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         base.OnDisappearing();
 #if WINDOWS
         HookEscKey(attach: false);
+        // 离开本页恢复系统默认标题栏（主页面用 AppWindow 拖拽矩形机制）；
+        // 延迟到导航完成后重算，否则主页面的拖拽矩形会一直处于被清空状态
+        App.SetTitleBarDragElement(null);
+        Dispatcher.StartTimer(TimeSpan.FromMilliseconds(350), () =>
+        {
+            ((App)Application.Current!).RefreshTitleBarDragRegion();
+            return false;
+        });
 #endif
         if (_isFullscreen) SetFullscreen(false);
         Player.Pause();

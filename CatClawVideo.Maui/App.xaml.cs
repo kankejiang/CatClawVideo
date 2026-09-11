@@ -8,6 +8,27 @@ public partial class App : Application
     private static IntPtr _appHwnd;
     private static Microsoft.UI.Windowing.AppWindow? _appWindow;
 
+    /// <summary>原生窗口 / AppWindow 静态访问器（照抄猫爪音乐：页面用 SetTitleBar 指定拖拽区）</summary>
+    public static Microsoft.UI.Xaml.Window? CurrentNativeWindow { get; private set; }
+    public static Microsoft.UI.Windowing.AppWindow? CurrentAppWindow { get; private set; }
+
+    /// <summary>把指定元素的平台视图声明为窗口标题栏拖拽区（WinUI 官方 SetTitleBar）。
+    /// 只影响该元素区域，页面其余控件照常可点、顶栏保持沉浸式；传 null 恢复系统默认。</summary>
+    public static void SetTitleBarDragElement(Microsoft.UI.Xaml.UIElement? dragElement)
+    {
+        try
+        {
+            var win = CurrentNativeWindow;
+            if (win == null) return;
+            win.ExtendsContentIntoTitleBar = true;
+            win.SetTitleBar(dragElement);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[App] SetTitleBar 失败: {ex.Message}");
+        }
+    }
+
     /// <summary>主窗口句柄（原生对话框 owner 用；窗口创建前为 Zero）</summary>
     public static IntPtr MainWindowHwnd => _appHwnd;
 
@@ -86,11 +107,13 @@ public partial class App : Application
         {
             if (window.Handler?.PlatformView is Microsoft.UI.Xaml.Window nativeWindow)
             {
+                CurrentNativeWindow = nativeWindow;
                 var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(nativeWindow);
                 var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(hwnd);
                 var appWindow = Microsoft.UI.Windowing.AppWindow.GetFromWindowId(windowId);
                 _appHwnd = hwnd;
                 _appWindow = appWindow;
+                CurrentAppWindow = appWindow;
 
                 // 启动窗口居中（物理像素 = 逻辑 × DPI）
                 try
@@ -267,9 +290,11 @@ public partial class App : Application
     /// 布局稳定后多次刷新 Passthrough 矩形：标题栏宿主折叠（SetTitleBarVisibility）
     /// 会让顶栏布局在启动后数秒内持续变化，单次计算会拿到旧位置。
     /// </summary>
+    /// <summary>页面切换后重算拖拽矩形（按当前页面计算，需在导航完成后刷新）</summary>
+    public void RefreshTitleBarDragRegion() => SchedulePassthroughRefresh();
+
     private void SchedulePassthroughRefresh()
-    {
-        _ = Task.Run(async () =>
+    {        _ = Task.Run(async () =>
         {
             foreach (var delay in new[] { 200, 400, 800, 1500, 3000 })
             {
@@ -290,6 +315,13 @@ public partial class App : Application
         try
         {
             if (_appWindow == null || _appHwnd == IntPtr.Zero) return;
+            // 非主页面（如观看页）：拖拽交给页面自己的 SetTitleBar 指定元素，
+            // 这里清空 AppWindow 拖拽矩形，避免主页面的区域定义在别的页面上误吞点击
+            if (Microsoft.Maui.Controls.Shell.Current?.CurrentPage is not Pages.MainPage)
+            {
+                try { _appWindow.TitleBar.SetDragRectangles(Array.Empty<Windows.Graphics.RectInt32>()); } catch { }
+                return;
+            }
             var mainPage = MauiProgram.Services.GetService<Pages.MainPage>();
             var rects = mainPage?.GetTitleBarPassthroughRects();
             if (rects is not { Length: > 0 }) return;
