@@ -22,6 +22,7 @@ public partial class SearchPage : ContentPage
     public SearchPage(IVodSourceProvider provider)
     {
         InitializeComponent();
+        ResultGrid.SizeChanged += (_, _) => PosterLayoutHelper.Apply(ResultGrid, ResultGrid.Width, ResultGrid.Height, cap: 260);   // Windows 固定 173×260
         _provider = provider;
 
         // 先建命令再设 BindingContext：页面未实现 INPC，绑定时 SearchCommand 必须已就位，
@@ -40,6 +41,9 @@ public partial class SearchPage : ContentPage
     protected override async void OnAppearing()
     {
         base.OnAppearing();
+#if WINDOWS
+        PosterLayoutHelper.Apply(ResultGrid, ResultGrid.Width, ResultGrid.Height, cap: 260);
+#endif
         if (_hotLoaded) return;
         _hotLoaded = true;
 
