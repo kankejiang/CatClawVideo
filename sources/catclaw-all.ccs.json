@@ -140,6 +140,8 @@
                                     "listItem":  "(?s)\u003ca[^\u003e]*href=\"(?\u003curl\u003e/detail/\\d+\\.html)\"[^\u003e]*\u003e(?:(?!\u003c/a\u003e).)*?data-original=\"(?\u003ccover\u003e(?![^\"]*placeholder)[^\"]+)\"(?:(?!\u003c/a\u003e).)*?\u003cdiv class=\"v-item-title\"\u003e(?\u003ctitle\u003e[^\u003c]+)\u003c/div\u003e",
                                     "detailTitle":  "(?s)detail-title\"\u003e\\s*\u003cstrong\u003e[^\u003c]*\u003c/strong\u003e\\s*\u003cstrong\u003e(?\u003ctitle\u003e[^\u003c]+)\u003c/strong\u003e",
                                     "detailPlay":  "\u003ca[^\u003e]*href=\"(?\u003curl\u003e/play/\\d+-\\d+-\\d+\\.html)\"[^\u003e]*\u003e\\s*\u003cspan\u003e(?\u003cname\u003e[^\u003c]*)\u003c/span\u003e",
+                                    "detailRouteBlock":  "(?s)\u003cdiv class=\"episode-list\"[^\u003e]*\u003e(.*?)\u003c/div\u003e",
+                                    "detailSourceName":  "source-item-label\"\u003e(?\u003cname\u003e[^\u003c]+)\u003c/span\u003e",
                                     "detailDesc":  "(?s)detail-desc\"\u003e\\s*\u003cp\u003e\\s*(?\u003cdesc\u003e[^\u003c]+?)\\s*\u003c/p\u003e",
                                     "detailYear":  "detail-tags-item\"\u003e(?\u003cyear\u003e\\d{4})\u003c/a\u003e",
                                     "detailArea":  "detail-tags-item\"\u003e(?\u003carea\u003e(?!\\d{4}\u003c)[^\u003c]{1,12})\u003c/a\u003e",

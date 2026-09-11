@@ -108,18 +108,50 @@ public class CatClawWebEngine
 
             if (!string.IsNullOrEmpty(r.DetailPlay))
             {
-                // 站点常把多条线路各放一个 <h3> 区块（如 6V 的「播放地址一~四」各 89 集）：
-                // 按 h3 区块分组解析，一个区块 = 一条线路；无 h3 分段时退回整体单线路。
-                var segments = SplitByH3(html);
-                if (segments.Count > 1)
+                // 线路配对分组（v2.2）：detailRouteBlock 逐块枚举各线路剧集区，
+                // detailSourceName 枚举线路名，按 DOM 顺序一一配对。
+                // 覆盖「线路 tab 与剧集列表分处两个容器」的站点（如毒舌电影）。
+                if (!string.IsNullOrEmpty(r.DetailRouteBlock))
                 {
+                    var blocks = Regex.Matches(html, r.DetailRouteBlock, RegexOptions.Singleline);
+                    List<string>? names = null;
+                    if (!string.IsNullOrEmpty(r.DetailSourceName))
+                        names = Regex.Matches(html, r.DetailSourceName)
+                            .Select(m => Decode(m.Groups["name"].Success ? m.Groups["name"].Value : ""))
+                            .ToList();
+
                     var lineNo = 0;
-                    foreach (var seg in segments)
+                    for (var i = 0; i < blocks.Count; i++)
                     {
-                        var eps = ParseEpisodes(seg, r.DetailPlay, detailUrl);
+                        var eps = ParseEpisodes(blocks[i].Value, r.DetailPlay, detailUrl);
                         if (eps.Count == 0) continue;
                         lineNo++;
-                        sources.Add(new VodPlaySource { Name = $"线路{lineNo}", Episodes = eps });
+                        var name = Decode(blocks[i].Groups["name"].Value);
+                        if (name.Length == 0 && names != null && i < names.Count)
+                            name = names[i];
+                        sources.Add(new VodPlaySource
+                        {
+                            Name = name.Length > 0 ? name : $"线路{lineNo}",
+                            Episodes = eps,
+                        });
+                    }
+                }
+
+                // 站点常把多条线路各放一个 <h3> 区块（如 6V 的「播放地址一~四」各 89 集）：
+                // 按 h3 区块分组解析，一个区块 = 一条线路；无 h3 分段时退回整体单线路。
+                if (sources.Count == 0)
+                {
+                    var segments = SplitByH3(html);
+                    if (segments.Count > 1)
+                    {
+                        var lineNo = 0;
+                        foreach (var seg in segments)
+                        {
+                            var eps = ParseEpisodes(seg, r.DetailPlay, detailUrl);
+                            if (eps.Count == 0) continue;
+                            lineNo++;
+                            sources.Add(new VodPlaySource { Name = $"线路{lineNo}", Episodes = eps });
+                        }
                     }
                 }
 

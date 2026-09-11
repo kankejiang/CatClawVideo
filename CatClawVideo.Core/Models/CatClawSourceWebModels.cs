@@ -128,6 +128,21 @@ public class CatClawSourceWebRules
     [JsonPropertyName("detailPlay")]
     public string? DetailPlay { get; set; }
 
+    /// <summary>
+    /// 线路剧集区块枚举正则（可选，v2.2）：每个匹配 = 一条线路的剧集区，
+    /// 区内应用 detailPlay 组装剧集；可选 name 捕获组直接携带线路名。
+    /// 与 detailSourceName 配对覆盖「线路 tab 与剧集列表分处两个容器」的站点。
+    /// </summary>
+    [JsonPropertyName("detailRouteBlock")]
+    public string? DetailRouteBlock { get; set; }
+
+    /// <summary>
+    /// 线路名枚举正则（可选，v2.2）：捕获组 name；与 detailRouteBlock 的匹配按
+    /// DOM 顺序一一配对（区块自带 name 组时优先用区块的）。
+    /// </summary>
+    [JsonPropertyName("detailSourceName")]
+    public string? DetailSourceName { get; set; }
+
     /// <summary>磁力链接正则（捕获组：url / name 可选）</summary>
     [JsonPropertyName("detailMagnet")]
     public string? DetailMagnet { get; set; }
