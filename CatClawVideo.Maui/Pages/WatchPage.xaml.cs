@@ -774,6 +774,10 @@ public partial class WatchPage : ContentPage, IQueryAttributable
             Player.Play();
             _playing = true;
 
+            // 起播即落库一次：最后播放的影片立刻置顶历史第一位
+            _playback.SaveProgress(0, 0);
+            StartProgressAutoSave();
+
             // 起播后唤出控制层；鼠标离开播放框（或手指离开）即 3s 后自动隐藏
             ShowControls();
             RestartControlsHideTimer();
@@ -849,12 +853,32 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         });
     }
 
+    private IDispatcherTimer? _progressSaveTimer;
+
+    /// <summary>播放中每 10s 落库一次进度（异常退出/杀进程也能续播上次位置）</summary>
+    private void StartProgressAutoSave()
+    {
+        _progressSaveTimer ??= Dispatcher.CreateTimer();
+        _progressSaveTimer.Interval = TimeSpan.FromSeconds(10);
+        _progressSaveTimer.Tick -= OnProgressSaveTick;
+        _progressSaveTimer.Tick += OnProgressSaveTick;
+        _progressSaveTimer.Start();
+    }
+
+    private void OnProgressSaveTick(object? sender, EventArgs e)
+    {
+        if (!_playing) return;
+        _playback.SaveProgress(Player.Position.TotalSeconds, Player.Duration.TotalSeconds);
+    }
+
     private void OnPlayPauseClicked(object? sender, EventArgs e)
     {
         if (_playing)
         {
             Player.Pause();
             _playing = false;
+            // 暂停即落库：切走/杀进程也不丢进度
+            _playback.SaveProgress(Player.Position.TotalSeconds, Player.Duration.TotalSeconds);
         }
         else
         {

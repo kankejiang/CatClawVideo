@@ -51,13 +51,21 @@ public class VideoPlaybackManager
         CurrentDescription = description ?? string.Empty;
     }
 
-    /// <summary>结束播放会话并记录历史（fire-and-forget，不阻塞页面退出）</summary>
-    public void EndSession(double positionSeconds, double durationSeconds)
+    /// <summary>播放中进度落库（不结束会话）：起播即调用（历史立刻置顶）+ 定时器每 10s 调用一次。
+    /// WatchedAt 同步刷新，保证「最后播放的影片排历史第一位」。</summary>
+    public void SaveProgress(double positionSeconds, double durationSeconds)
     {
         if (string.IsNullOrEmpty(CurrentUrl)) return;
-
-        var entry = new PlayHistoryEntry
+        var entry = BuildEntry(positionSeconds, durationSeconds);
+        _ = Task.Run(async () =>
         {
+            try { await _db.UpsertHistoryAsync(entry); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[Playback] 进度保存失败: {ex.Message}"); }
+        });
+    }
+
+    private PlayHistoryEntry BuildEntry(double positionSeconds, double durationSeconds) => new()
+    {
             Title = CurrentTitle,
             Url = CurrentUrl,
             Cover = CurrentCover,
@@ -73,7 +81,14 @@ public class VideoPlaybackManager
             Year = CurrentYear,
             Remarks = CurrentRemarks,
             Description = CurrentDescription,
-        };
+    };
+
+    /// <summary>结束播放会话并记录历史（fire-and-forget，不阻塞页面退出）</summary>
+    public void EndSession(double positionSeconds, double durationSeconds)
+    {
+        if (string.IsNullOrEmpty(CurrentUrl)) return;
+
+        var entry = BuildEntry(positionSeconds, durationSeconds);
         var title = CurrentTitle;
         CurrentTitle = string.Empty;
         CurrentUrl = string.Empty;
