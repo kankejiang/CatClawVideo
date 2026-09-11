@@ -25,9 +25,59 @@ public partial class HomePage : ContentView, ITabView
             if (e.PropertyName == nameof(HomeViewModel.SelectedCategoryId))
                 MainThread.BeginInvokeOnMainThread(UpdateChipStyles);
         };
+
+        // 海报墙自适应的触发点（多点兜底）：
+        // 启动时首次布局发生在启动图阶段，窗口尺寸/系统栏 insets 尚未最终确定，
+        // 量到的可用高度偏小（实测 10 列/1 行 + 底部大片空白），且此后未必再有
+        // SizeChanged 兜底 → 只能等用户导航一次才恢复。故除 SizeChanged 外，
+        // 再挂安全区变化、tab 显示与三次延迟重算，保证启动后自愈。
+        PosterGrid.SizeChanged += (_, _) => UpdatePosterLayout();
+        SafeAreaHelper.SafeAreaChanged += (_, _) => MainThread.BeginInvokeOnMainThread(UpdatePosterLayout);
+        foreach (var delay in new[] { 600, 1500, 3000 })
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(delay);
+                MainThread.BeginInvokeOnMainThread(UpdatePosterLayout);
+            });
     }
 
-    public Task OnTabShownAsync() => _vm.LoadHomeCommand.ExecuteAsync(null);
+    /// <summary>
+    /// 海报墙自适应（横屏的核心修复）：
+    /// ① 卡片高度 = 海报墙可视高度 − 标题/年份两行标签(约 40dp)。此前写死 190dp，而横屏
+    ///    可用高度只有 ~110dp，卡片被裁掉一半、下方还留出大片空白（行高与卡片高度不成整数倍）。
+    ///    让「卡片 + 标签」正好占满可视高度，裁切与空白同时消失，其余行靠滚动查看。
+    /// ② 列数按「单元格宽高比 ≈ 海报 2:3」反推。原先 Span=6 写死（与注释"安卓横屏 4 列"不符），
+    ///    在横屏窄高度下卡片会被拉成近似方形。
+    /// </summary>
+    private void UpdatePosterLayout()
+    {
+        try
+        {
+            var w = PosterGrid.Width;
+            var h = PosterGrid.Height;
+            if (w <= 0 || h <= 0) return;
+
+            var cardH = Math.Clamp(h - 40, 64, 190);
+            if (Resources is null) Resources = new ResourceDictionary();
+            Resources["PosterCardHeight"] = cardH;
+
+            var target = cardH * 2.0 / 3.0 + 12;   // 单元格目标宽（海报 2:3）+ 列间距
+            var span = (int)Math.Clamp(Math.Round((w + 12) / target), 3, 12);
+            if (PosterGrid.ItemsLayout is GridItemsLayout g && g.Span != span)
+                g.Span = span;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[Home] 海报墙自适应失败: {ex.Message}");
+        }
+    }
+
+    public Task OnTabShownAsync()
+    {
+        // tab 显示时重算一次：此前若按过小的可视区布局过，这里兜底自愈
+        UpdatePosterLayout();
+        return _vm.LoadHomeCommand.ExecuteAsync(null);
+    }
 
     /// <summary>「切换源」点击 → 数据源选择弹窗（参考影视仓），选择后切换首页数据源</summary>
     private async void OnSwitchSiteTapped(object? sender, TappedEventArgs e)

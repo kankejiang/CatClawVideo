@@ -4,9 +4,16 @@
              x:Class="CatClawVideo.Maui.Pages.HomePage"
              BackgroundColor="Transparent">
 
+    <!-- 海报卡高度：由代码按可用高度动态改写（横屏高度紧张，写死 190 会把卡片裁掉一半） -->
+    <ContentView.Resources>
+        <x:Double x:Key="PosterCardHeight">190</x:Double>
+    </ContentView.Resources>
+
     <!-- 根用 Grid（不能用 ScrollView 包 CollectionView）：海报墙占 * 行获得有界高度，
-         内部滚动 + 虚拟化 + RemainingItemsThresholdReached 才能触发无限滚动 -->
-    <Grid RowDefinitions="Auto,Auto,Auto,*" Padding="24,16,24,20" RowSpacing="14">
+         内部滚动 + 虚拟化 + RemainingItemsThresholdReached 才能触发无限滚动。
+         注意：安卓横屏可用高度很小（约 320dp），故 chrome 只保留「站点条 / 分类」两行
+         （加载状态并入站点条中列），并收紧内边距与行距，把高度尽量让给海报墙。 -->
+    <Grid RowDefinitions="Auto,Auto,*" Padding="24,12,24,14" RowSpacing="10">
 
         <!-- 站点条：当前数据源 + 切换入口（参考影视仓首页数据源） -->
         <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto" Margin="0,0,24,0">
@@ -16,6 +23,12 @@
                        LineBreakMode="TailTruncation" MaxLines="1"
                        TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
             </HorizontalStackLayout>
+
+            <!-- 加载/统计状态：并入站点条中列（原为独立一行，横屏下白占约 27dp） -->
+            <Label Grid.Column="1" Text="{Binding HomeStatus}" FontSize="11.5"
+                   Margin="14,0,14,0" LineBreakMode="TailTruncation" MaxLines="1"
+                   TextColor="{DynamicResource TextHintColor}" VerticalOptions="Center" />
+
             <Border Grid.Column="2" StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,6"
                     BackgroundColor="{DynamicResource ChipInactiveColor}">
                 <HorizontalStackLayout Spacing="6">
@@ -52,25 +65,23 @@
             </HorizontalStackLayout>
         </ScrollView>
 
-        <!-- 加载状态 -->
-        <Label Grid.Row="2" Text="{Binding HomeStatus}" FontSize="12"
-               TextColor="{DynamicResource TextHintColor}" />
-
-        <!-- 海报网格（真数据：当前源影片列表，Windows 6 列 / 安卓横屏 4 列；滚动到底自动加载下一页） -->
-        <CollectionView Grid.Row="3" x:Name="PosterGrid" SelectionMode="Single" ItemsSource="{Binding Items}"
+        <!-- 海报网格（真数据：当前源影片列表；列数与卡片高度由代码按可用空间自适应，
+             保证卡片宽高比贴近海报 2:3 且一整行能完整显示） -->
+        <CollectionView Grid.Row="2" x:Name="PosterGrid" SelectionMode="Single" ItemsSource="{Binding Items}"
                         RemainingItemsThresholdReachedCommand="{Binding LoadMoreCommand}"
                         RemainingItemsThreshold="8">
             <CollectionView.ItemsLayout>
-                <GridItemsLayout Orientation="Vertical" Span="6" VerticalItemSpacing="18" HorizontalItemSpacing="14" />
+                <GridItemsLayout Orientation="Vertical" Span="6" VerticalItemSpacing="14" HorizontalItemSpacing="12" />
             </CollectionView.ItemsLayout>
             <CollectionView.ItemTemplate>
                 <DataTemplate>
                     <VerticalStackLayout Spacing="0">
                         <Border StrokeThickness="0" StrokeShape="RoundRectangle 10"
-                                BackgroundColor="{DynamicResource CardBackgroundColor}" HeightRequest="190">
+                                BackgroundColor="{DynamicResource CardBackgroundColor}"
+                                HeightRequest="{DynamicResource PosterCardHeight}">
                             <Grid>
                                 <Image Source="{Binding Cover}" Aspect="AspectFill" />
-                                <Image Source="appiconfg.png" Aspect="AspectFit" Opacity="0.35"
+                                <Image Source="ic_brand.png" Aspect="AspectFit" Opacity="0.35"
                                        WidthRequest="40" HeightRequest="40"
                                        HorizontalOptions="Center" VerticalOptions="Center">
                                     <Image.Triggers>
