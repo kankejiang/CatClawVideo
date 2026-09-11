@@ -523,6 +523,11 @@ public partial class WatchPage : ContentPage, IQueryAttributable
 
             if (_sources.Count > 0)
             {
+                // 续看上下文（线路/集/位置）必须在选中线路之前解析：
+                // 否则会先默认播线路1并把历史里的线路覆盖掉（2026-09-11 用户实测）
+                if (_resumeRouteName is null && _resumeEpisodeName is null && _resumePosition <= 0)
+                    await ApplyHistoryResumeAsync();
+
                 // 续看优先恢复上次线路（按线路名匹配；找不到回退第一条）
                 int startIndex = 0;
                 if (_resumeRouteName is { Length: > 0 })
@@ -530,7 +535,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable
                     var idx = _sources.FindIndex(s => string.Equals(s.Name.Trim(), _resumeRouteName.Trim(), StringComparison.Ordinal));
                     if (idx >= 0) startIndex = idx;
                 }
-                await SelectSourceAsync(startIndex);
+                await SelectSourceAsync(startIndex, applyResume: true);
             }
             else
                 await ShowTipAsync("该影片暂无可播放线路");
@@ -571,11 +576,16 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     }
 
     /// <summary>切换播放线路：重建右侧选集栏并播第一集</summary>
-    private async Task SelectSourceAsync(int index)
+    /// <param name="applyResume">true = 页面首次加载：套用续看集/位置；
+    /// false = 用户手动切线路：从该线路第一集起播，且不套用其它线路的续看进度。</param>
+    private async Task SelectSourceAsync(int index, bool applyResume = false)
     {
         if (index < 0 || index >= _sources.Count) return;
         _currentSourceIndex = index;
         var source = _sources[index];
+
+        // 切换线路立即同步到播放记录（线路名随下次落库生效，不依赖是否起播成功）
+        _playback.SetRouteName(source.Name);
 
         // 线路芯片高亮（_lineChips 与 _sources 索引一一对应）
         for (int i = 0; i < _lineChips.Count; i++)
@@ -606,19 +616,19 @@ public partial class WatchPage : ContentPage, IQueryAttributable
 
         if (source.Episodes.Count > 0)
         {
-            // 无路由续看参数（如从首页海报进入）：查本片历史，自动续播上次的集与位置
-            if (_resumeEpisodeName is null && _resumePosition <= 0)
-                await ApplyHistoryResumeAsync();
+            // 手动切线路：作废续看上下文（进度属于原线路的集），从新线路第一集起播
+            if (!applyResume)
+            {
+                _resumeEpisodeName = null;
+                _resumePosition = 0;
+            }
 
-            // 播放历史跳转：与首页进入一致——还原信息区并直接播放；
-            // 差异是播的是**上次看的那集**（高亮），且 MediaOpened 后续到上次位置。
-            // 选集列表在侧栏随时可见，想换集直接点。
-            var resumeRow = _resumeEpisodeName is { Length: > 0 }
+            var resumeRow = applyResume && _resumeEpisodeName is { Length: > 0 }
                 ? _episodeRows.FirstOrDefault(r =>
                       string.Equals(r.Name.Trim(), _resumeEpisodeName.Trim(), StringComparison.Ordinal))
                 : null;
             PlayEpisodeByRow(resumeRow ?? _episodeRows[0]);
-            if (resumeRow == null)
+            if (applyResume && resumeRow == null)
             {
                 // 找不到续看集（换线路选集名不同）：作废续看位置，避免误 seek
                 _resumeEpisodeName = null;
