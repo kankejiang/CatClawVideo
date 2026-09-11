@@ -73,25 +73,25 @@
                             <!-- 控制条：上排 = 上一集/下一集（左） + 播放/快退/快进（右）；
                                  下排 = 进度条。图标用白箭头：单箭头=切集，双箭头=±10s 快捷 seek -->
                             <Grid x:Name="ControlBar" VerticalOptions="End" RowDefinitions="Auto,Auto"
-                                  RowSpacing="2" Padding="14,6,14,10"
+                                  RowSpacing="8" Padding="14,8,14,12"
                                   BackgroundColor="#99000000">
                                 <!-- 上排 -->
-                                <Grid Grid.Row="0" ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto" ColumnSpacing="20">
+                                <Grid Grid.Row="0" ColumnDefinitions="Auto,Auto,*,Auto,*,Auto" ColumnSpacing="28">
                                     <Grid Grid.Column="0" HorizontalOptions="Start">
                                         <Grid.GestureRecognizers>
                                             <TapGestureRecognizer Tapped="OnPrevEpisodeClicked" />
                                         </Grid.GestureRecognizers>
-                                        <Image Source="ic_arrow_left_white.png" WidthRequest="20" HeightRequest="20" />
+                                        <Image Source="ic_arrow_left_white.png" WidthRequest="26" HeightRequest="26" />
                                     </Grid>
                                     <Grid Grid.Column="1" HorizontalOptions="Start">
                                         <Grid.GestureRecognizers>
                                             <TapGestureRecognizer Tapped="OnNextEpisodeClicked" />
                                         </Grid.GestureRecognizers>
-                                        <Image Source="ic_arrow_right_white.png" WidthRequest="20" HeightRequest="20" />
+                                        <Image Source="ic_arrow_right_white.png" WidthRequest="26" HeightRequest="26" />
                                     </Grid>
                                     <ImageButton Grid.Column="3" x:Name="SmallPlayButton"
                                                  Source="ic_pause.png"
-                                                 WidthRequest="22" HeightRequest="22"
+                                                 WidthRequest="32" HeightRequest="32"
                                                  BackgroundColor="Transparent"
                                                  HorizontalOptions="Center" VerticalOptions="Center"
                                                  Clicked="OnPlayPauseClicked" />
@@ -99,18 +99,18 @@
                                         <Grid.GestureRecognizers>
                                             <TapGestureRecognizer Tapped="OnRewindClicked" />
                                         </Grid.GestureRecognizers>
-                                        <HorizontalStackLayout Spacing="-7" VerticalOptions="Center">
-                                            <Image Source="ic_arrow_left_white.png" WidthRequest="14" HeightRequest="14" />
-                                            <Image Source="ic_arrow_left_white.png" WidthRequest="14" HeightRequest="14" />
+                                        <HorizontalStackLayout Spacing="-8" VerticalOptions="Center">
+                                            <Image Source="ic_arrow_left_white.png" WidthRequest="18" HeightRequest="18" />
+                                            <Image Source="ic_arrow_left_white.png" WidthRequest="18" HeightRequest="18" />
                                         </HorizontalStackLayout>
                                     </Grid>
                                     <Grid Grid.Column="5" HorizontalOptions="End">
                                         <Grid.GestureRecognizers>
                                             <TapGestureRecognizer Tapped="OnForwardClicked" />
                                         </Grid.GestureRecognizers>
-                                        <HorizontalStackLayout Spacing="-7" VerticalOptions="Center">
-                                            <Image Source="ic_arrow_right_white.png" WidthRequest="14" HeightRequest="14" />
-                                            <Image Source="ic_arrow_right_white.png" WidthRequest="14" HeightRequest="14" />
+                                        <HorizontalStackLayout Spacing="-8" VerticalOptions="Center">
+                                            <Image Source="ic_arrow_right_white.png" WidthRequest="18" HeightRequest="18" />
+                                            <Image Source="ic_arrow_right_white.png" WidthRequest="18" HeightRequest="18" />
                                         </HorizontalStackLayout>
                                     </Grid>
                                 </Grid>
