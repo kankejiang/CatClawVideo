@@ -20,7 +20,7 @@ public partial class FavoritesPage : ContentView, ITabView
     public async Task OnTabShownAsync()
     {
 #if WINDOWS
-        PosterLayoutHelper.Apply(Wall, Wall.Width, Wall.Height, cap: 420);   // 修长 2:3
+        PosterLayoutHelper.Apply(Wall, Wall.Width, Wall.Height, cap: 260);   // 固定尺寸 173×260
 #else
         PosterLayoutHelper.Apply(Wall, Wall.Width, Wall.Height);
 #endif

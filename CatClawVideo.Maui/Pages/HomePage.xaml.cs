@@ -58,8 +58,8 @@ public partial class HomePage : ContentView, ITabView
             if (w <= 0 || h <= 0) return;
 
 #if WINDOWS
-            // 桌面端：上限 420 让海报保持修长 2:3 长方形（300 会把海报压得偏方）
-            PosterLayoutHelper.Apply(PosterGrid, w, h, cap: 420);
+            // 桌面端：固定卡片 260 高（173 宽）——尺寸恒定不再随窗口缩放（420 太大被否）
+            PosterLayoutHelper.Apply(PosterGrid, w, h, cap: 260);
 #else
             var cardH = Math.Clamp(h - 40, 64, 190);
             // 手机横屏垂直空间小：单排放满到底——扣掉底部手势条 inset 与标题/年份块(~46)，
