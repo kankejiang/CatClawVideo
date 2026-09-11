@@ -34,16 +34,12 @@
                 <BoxView x:Name="TitleBarDragArea" Grid.Column="2" Color="Transparent"
                          HorizontalOptions="Fill" VerticalOptions="Fill" />
 
-                <!-- 线路切换（顶栏右侧，填补右上留白；集数多时横向滚动）
-                     Windows：右侧预留 150px 标题栏按钮区（原生最小化/最大化/关闭绘制在内容之上） -->
+                <!-- 线路切换（顶栏右侧；集数多时横向滚动）。
+                     贴紧右边缘：原生窗口按钮在最顶端一行（y≈0-25），芯片在下一行（y≈30+），
+                     垂直不重叠，无需右侧留白（2026-09-11 真机截图核对） -->
                 <ScrollView Grid.Column="3" Orientation="Horizontal" HorizontalOptions="End"
                             HorizontalScrollBarVisibility="Never" VerticalScrollBarVisibility="Never"
                             VerticalOptions="Center" MaximumWidthRequest="520">
-                    <ScrollView.Margin>
-                        <OnPlatform x:TypeArguments="Thickness">
-                            <On Platform="WinUI" Value="0,0,150,0" />
-                        </OnPlatform>
-                    </ScrollView.Margin>
                     <HorizontalStackLayout x:Name="LinesHost" Spacing="8" />
                 </ScrollView>
             </Grid>
