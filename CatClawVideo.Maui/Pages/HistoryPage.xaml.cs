@@ -13,11 +13,13 @@ public partial class HistoryPage : ContentView, ITabView
     public HistoryPage(VideoDatabase db)
     {
         InitializeComponent();
+        Wall.SizeChanged += (_, _) => PosterLayoutHelper.Apply(Wall, Wall.Width, Wall.Height);
         _db = db;
     }
 
     public async Task OnTabShownAsync()
     {
+        PosterLayoutHelper.Apply(Wall, Wall.Width, Wall.Height);
         try
         {
             var items = await _db.GetRecentHistoryAsync(50);

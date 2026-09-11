@@ -12,12 +12,14 @@ public partial class FavoritesPage : ContentView, ITabView
     public FavoritesPage(FavoritesViewModel vm)
     {
         InitializeComponent();
+        Wall.SizeChanged += (_, _) => PosterLayoutHelper.Apply(Wall, Wall.Width, Wall.Height);
         _vm = vm;
         BindingContext = _vm;
     }
 
     public async Task OnTabShownAsync()
     {
+        PosterLayoutHelper.Apply(Wall, Wall.Width, Wall.Height);
         await _vm.LoadCommand.ExecuteAsync(null);
 
         EmptyLabel.IsVisible = _vm.Favorites.Count == 0;
