@@ -59,11 +59,23 @@ public partial class HomePage : ContentView, ITabView
 
             var cardH = Math.Clamp(h - 40, 64, 190);
 #if ANDROID
+            // 手机横屏：单排放满到底（扣标题/年份块与底边距），去除底部空白
+            if (h < 400) cardH = Math.Max(64, h - 62);
+#endif
+            if (Resources is null) Resources = new ResourceDictionary();
+            Resources["PosterCardHeight"] = cardH;
+            // ⚠️ 必须写「应用级」资源：页级 DynamicResource 的更新在 Android 的
+            // DataTemplate 里不生效（三种公式渲染结果纹丝不动的踩坑实录），
+            // 应用级字典的变更才会传播到已实例化的模板项。
+            if (Application.Current is not null)
+                Application.Current.Resources["PosterCardHeight"] = cardH;
+#if ANDROID
             // 手机横屏垂直空间小：单排放满到底——扣掉底部手势条 inset 与标题/年份块(~46)，
             // 否则卡片高度比可用空间小，底部永远剩一块空白（2026-09-11 真机实测）
             if (h < 400) cardH = Math.Max(64, h - SafeAreaHelper.BottomInset - 46);
             Android.Util.Log.Info("PosterLayout",
-                $"w={w:F0} h={h:F0} cardH={cardH:F0} top={SafeAreaHelper.TopInset:F0} bottom={SafeAreaHelper.BottomInset:F0}");
+                $"w={w:F0} h={h:F0} cardH={cardH:F0} top={SafeAreaHelper.TopInset:F0} bottom={SafeAreaHelper.BottomInset:F0}" +
+                $" parent={(Parent as VisualElement)?.Height:F0} win={Window?.Height:F0}");
 #endif
             if (Resources is null) Resources = new ResourceDictionary();
             Resources["PosterCardHeight"] = cardH;

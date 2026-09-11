@@ -44,13 +44,16 @@ public partial class MainPage : ContentPage
 
         // 安全区 padding（Android 透明状态栏/手势条下内容避开系统栏）
         ApplySafeAreaPadding();
-        SafeAreaHelper.SafeAreaChanged += OnSafeAreaChanged;
 #if ANDROID
-        // 启动后兜底：窗口稳定后反复强制 Edge-to-Edge，复刻「导航到二级页再返回」的全屏效果
-        // （MAUI 在窗口就绪前会把 DecorFitsSystemWindows 重置为 true，导致启动首帧底部留白）。
-        // 缩减为 2 次（1s 内），避免过量全页重排压垮主线程。（照搬猫爪音乐）
-        StartEdgeToEdgeSettlingTimer();
+        LogLayoutChain();
 #endif
+#if ANDROID
+        // 关键：Edge-to-Edge 下 MAUI 会把窗口 insets 自动套在页面内容上（SafeAreaEdges 默认值），
+        // 与上面的手动 padding 叠加 → 底部多出一条 ~55dp 的双重空白（2026-09-11 真机 logcat 实锤：
+        // ContentHost 244dp，应为 300dp）。insets 已由 SafeAreaHelper 自管，这里关闭 MAUI 自动行为。
+        SafeAreaEdges = SafeAreaEdges.None;
+#endif
+        SafeAreaHelper.SafeAreaChanged += OnSafeAreaChanged;
 
         // 首个 tab 直接显示（SelectedTabIndex 默认 0 不触发 TabChanged）
         ShowTab(0);
@@ -261,38 +264,29 @@ public partial class MainPage : ContentPage
         Padding = new Thickness(0, GetTopSafeArea(), 0, GetBottomSafeArea());
 
 #if ANDROID
-    private bool _edgeToEdgeSettling;
-    private int _edgeToEdgeTicks;
-
-    /// <summary>启动后兜底：窗口稳定后反复强制 Edge-to-Edge（500ms × 2 次）。
-    /// 复刻「导航到二级页再返回」的全屏效果——MAUI 在窗口就绪前会把
-    /// DecorFitsSystemWindows 重置为 true，导致启动首帧底部留白。（照搬猫爪音乐）</summary>
-    private void StartEdgeToEdgeSettlingTimer()
+    /// <summary>布局追踪 + 底部空白补偿：定位高度分配链（海报墙底部空白的排查入口）。
+    /// 2.5s 后（布局稳定）测量：若 ContentHost 之外仍有「窗口高度 − 页面高度 − 页面垂直
+    /// padding」的差值（= MAUI 在 Window 层套的手势条安全区内嵌，实测 ~56dp），用负
+    /// bottom margin 抵消，让内容延伸到底部系统栏上沿——去除启动时的底部大片空白。</summary>
+    private void LogLayoutChain()
     {
-        if (_edgeToEdgeSettling) return;
-        _edgeToEdgeSettling = true;
-        _edgeToEdgeTicks = 0;
-        Microsoft.Maui.Controls.Device.StartTimer(TimeSpan.FromMilliseconds(500), () =>
+        Dispatcher.StartTimer(TimeSpan.FromMilliseconds(2500), () =>
         {
-            _edgeToEdgeTicks++;
-            ForceFullScreenAfterStartup();
-            if (_edgeToEdgeTicks >= 2)
+            var nav = (ContentHost.Parent is Grid g && g.Children.Count > 0 && g.Children[0] is VisualElement v)
+                ? v.Height : -1;
+            Android.Util.Log.Info("PosterLayout",
+                $"main={Height:F0} padT={Padding.Top:F0} padB={Padding.Bottom:F0} " +
+                $"nav={nav:F0} host={ContentHost.Height:F0} win={Window?.Height:F0}");
+
+            // 底部空白补偿：差值 = 窗口高 − 页面高 − 页面垂直 padding（含保底 8dp 边距）
+            var deficit = (Window?.Height ?? Height) - Height - Padding.Top - Padding.Bottom;
+            if (deficit > 8)
             {
-                _edgeToEdgeSettling = false;
-                return false; // 停止定时器
+                ContentHost.Margin = new Thickness(0, 0, 0, -deficit + 8);
+                Android.Util.Log.Info("PosterLayout", $"补偿底部空白 {deficit:F0}dp");
             }
-            return true; // 继续
+            return false;
         });
-    }
-
-    /// <summary>复刻「导航返回」的全屏效果：重新强制 Edge-to-Edge（幂等）。</summary>
-    private void ForceFullScreenAfterStartup()
-    {
-        try
-        {
-            (Microsoft.Maui.ApplicationModel.Platform.CurrentActivity as MainActivity)?.SetupEdgeToEdge();
-        }
-        catch { }
     }
 #endif
 
@@ -305,7 +299,7 @@ public partial class MainPage : ContentPage
 
     private static double GetBottomSafeArea() =>
 #if ANDROID
-        Math.Max(SafeAreaHelper.BottomInset, 16);
+        Math.Max(SafeAreaHelper.BottomInset, 8);
 #else
         0;
 #endif

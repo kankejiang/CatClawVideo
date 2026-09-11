@@ -86,7 +86,8 @@ public class MainActivity : MauiAppCompatActivity
     /// 可在 OnCreate/OnPostCreate/OnResume 及每次布局后重复调用（幂等）。</summary>
     internal void SetupEdgeToEdge()
     {
-        if (Window == null) return;
+        if (Window == null) { Android.Util.Log.Info("PosterLayout", "SetupEdgeToEdge: Window null"); return; }
+        Android.Util.Log.Info("PosterLayout", "SetupEdgeToEdge: applied decorFits=false");
 
         WindowCompat.SetDecorFitsSystemWindows(Window, false);
         Window.AddFlags(WindowManagerFlags.DrawsSystemBarBackgrounds);
@@ -187,8 +188,10 @@ internal class EdgeToEdgeInsets : Java.Lang.Object, IOnApplyWindowInsetsListener
         if (v == null || insets == null) return insets!;
 
         int top = 0, bottom = 0;
-        try { var sb = insets.GetInsets(WindowInsetsCompat.Type.SystemBars()); top = Math.Max(top, sb.Top); bottom = Math.Max(bottom, sb.Bottom); } catch { }
-        try { var nb = insets.GetInsets(WindowInsetsCompat.Type.NavigationBars()); top = Math.Max(top, nb.Top); bottom = Math.Max(bottom, nb.Bottom); } catch { }
+        try { var sb = insets.GetInsets(WindowInsetsCompat.Type.SystemBars()); top = Math.Max(top, sb.Top); Android.Util.Log.Info("PosterLayout", $"insets px top={top} bottom={bottom}"); } catch { }
+        // ⚠️ 底部 inset 不喂给页面：全面屏手势区若作为 padding，底部会永久留白（用户明确要求去掉）。
+        // 内容直接画到手势区下方，无遮挡无空白。
+        bottom = 0;
 
         v.SetPadding(0, 0, 0, 0);
 
