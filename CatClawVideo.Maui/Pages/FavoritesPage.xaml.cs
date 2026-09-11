@@ -19,7 +19,11 @@ public partial class FavoritesPage : ContentView, ITabView
 
     public async Task OnTabShownAsync()
     {
+#if WINDOWS
+        PosterLayoutHelper.Apply(Wall, Wall.Width, Wall.Height, cap: 420);   // 修长 2:3
+#else
         PosterLayoutHelper.Apply(Wall, Wall.Width, Wall.Height);
+#endif
         await _vm.LoadCommand.ExecuteAsync(null);
 
         EmptyLabel.IsVisible = _vm.Favorites.Count == 0;
