@@ -70,50 +70,71 @@
                                          BackgroundColor="#66000000"
                                          HorizontalOptions="Center" VerticalOptions="Center"
                                          Clicked="OnPlayPauseClicked" />
-                            <Grid x:Name="ControlBar" VerticalOptions="End"
-                                  ColumnDefinitions="Auto,Auto,Auto,Auto,*,Auto,Auto,Auto,Auto" ColumnSpacing="10"
-                                  Padding="12,6,12,10"
+                            <!-- 控制条：上排 = 上一集/下一集（左） + 播放/快退/快进（右）；
+                                 下排 = 进度条。图标用白箭头：单箭头=切集，双箭头=±10s 快捷 seek -->
+                            <Grid x:Name="ControlBar" VerticalOptions="End" RowDefinitions="Auto,Auto"
+                                  RowSpacing="2" Padding="14,6,14,10"
                                   BackgroundColor="#99000000">
-                                <Button Grid.Column="0" x:Name="PrevEpisodeButton" Text="上一集" FontSize="10.5"
-                                        TextColor="White" BackgroundColor="Transparent" Padding="0"
-                                        MinimumWidthRequest="0" MinimumHeightRequest="0"
-                                        VerticalOptions="Center" Clicked="OnPrevEpisodeClicked" />
-                                <ImageButton Grid.Column="1" x:Name="SmallPlayButton"
-                                             Source="ic_pause.png"
-                                             WidthRequest="20" HeightRequest="20"
-                                             BackgroundColor="Transparent"
-                                             VerticalOptions="Center"
-                                             Clicked="OnPlayPauseClicked" />
-                                <Button Grid.Column="2" x:Name="RewindButton" Text="«10s" FontSize="10.5"
-                                        TextColor="White" BackgroundColor="Transparent" Padding="0"
-                                        MinimumWidthRequest="0" MinimumHeightRequest="0"
-                                        VerticalOptions="Center" Clicked="OnRewindClicked" />
-                                <Label Grid.Column="3" x:Name="PositionLabel" Text="00:00"
-                                       FontSize="10.5" FontFamily="OpenSansSemibold" TextColor="White"
-                                       VerticalOptions="Center" />
-                                <Slider Grid.Column="4" x:Name="ProgressBar"
-                                        Minimum="0" Maximum="100" Value="0"
-                                        MinimumTrackColor="{DynamicResource PrimaryColor}"
-                                        MaximumTrackColor="#40FFFFFF" ThumbColor="White"
-                                        VerticalOptions="Center"
-                                        DragStarted="OnSeekStarted" DragCompleted="OnSeekCompleted" />
-                                <Label Grid.Column="5" x:Name="DurationLabel" Text="--:--"
-                                       FontSize="10.5" FontFamily="OpenSansSemibold" TextColor="White"
-                                       VerticalOptions="Center" />
-                                <Button Grid.Column="6" x:Name="ForwardButton" Text="10s»" FontSize="10.5"
-                                        TextColor="White" BackgroundColor="Transparent" Padding="0"
-                                        MinimumWidthRequest="0" MinimumHeightRequest="0"
-                                        VerticalOptions="Center" Clicked="OnForwardClicked" />
-                                <Button Grid.Column="7" x:Name="NextEpisodeButton" Text="下一集" FontSize="10.5"
-                                        TextColor="White" BackgroundColor="Transparent" Padding="0"
-                                        MinimumWidthRequest="0" MinimumHeightRequest="0"
-                                        VerticalOptions="Center" Clicked="OnNextEpisodeClicked" />
-                                <ImageButton Grid.Column="8" x:Name="FullScreenButton"
-                                             Source="ic_fullscreen.png"
-                                             WidthRequest="30" HeightRequest="26"
-                                             BackgroundColor="Transparent"
-                                             VerticalOptions="Center"
-                                             Clicked="OnToggleFullscreenClicked" />
+                                <!-- 上排 -->
+                                <Grid Grid.Row="0" ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto" ColumnSpacing="20">
+                                    <Grid Grid.Column="0" HorizontalOptions="Start">
+                                        <Grid.GestureRecognizers>
+                                            <TapGestureRecognizer Tapped="OnPrevEpisodeClicked" />
+                                        </Grid.GestureRecognizers>
+                                        <Image Source="ic_arrow_left_white.png" WidthRequest="20" HeightRequest="20" />
+                                    </Grid>
+                                    <Grid Grid.Column="1" HorizontalOptions="Start">
+                                        <Grid.GestureRecognizers>
+                                            <TapGestureRecognizer Tapped="OnNextEpisodeClicked" />
+                                        </Grid.GestureRecognizers>
+                                        <Image Source="ic_arrow_right_white.png" WidthRequest="20" HeightRequest="20" />
+                                    </Grid>
+                                    <ImageButton Grid.Column="3" x:Name="SmallPlayButton"
+                                                 Source="ic_pause.png"
+                                                 WidthRequest="22" HeightRequest="22"
+                                                 BackgroundColor="Transparent"
+                                                 HorizontalOptions="Center" VerticalOptions="Center"
+                                                 Clicked="OnPlayPauseClicked" />
+                                    <Grid Grid.Column="4" HorizontalOptions="End">
+                                        <Grid.GestureRecognizers>
+                                            <TapGestureRecognizer Tapped="OnRewindClicked" />
+                                        </Grid.GestureRecognizers>
+                                        <HorizontalStackLayout Spacing="-7" VerticalOptions="Center">
+                                            <Image Source="ic_arrow_left_white.png" WidthRequest="14" HeightRequest="14" />
+                                            <Image Source="ic_arrow_left_white.png" WidthRequest="14" HeightRequest="14" />
+                                        </HorizontalStackLayout>
+                                    </Grid>
+                                    <Grid Grid.Column="5" HorizontalOptions="End">
+                                        <Grid.GestureRecognizers>
+                                            <TapGestureRecognizer Tapped="OnForwardClicked" />
+                                        </Grid.GestureRecognizers>
+                                        <HorizontalStackLayout Spacing="-7" VerticalOptions="Center">
+                                            <Image Source="ic_arrow_right_white.png" WidthRequest="14" HeightRequest="14" />
+                                            <Image Source="ic_arrow_right_white.png" WidthRequest="14" HeightRequest="14" />
+                                        </HorizontalStackLayout>
+                                    </Grid>
+                                </Grid>
+                                <!-- 下排：进度条 + 时间 + 全屏 -->
+                                <Grid Grid.Row="1" ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10">
+                                    <Label Grid.Column="0" x:Name="PositionLabel" Text="00:00"
+                                           FontSize="10.5" FontFamily="OpenSansSemibold" TextColor="White"
+                                           VerticalOptions="Center" />
+                                    <Slider Grid.Column="1" x:Name="ProgressBar"
+                                            Minimum="0" Maximum="100" Value="0"
+                                            MinimumTrackColor="{DynamicResource PrimaryColor}"
+                                            MaximumTrackColor="#40FFFFFF" ThumbColor="White"
+                                            VerticalOptions="Center"
+                                            DragStarted="OnSeekStarted" DragCompleted="OnSeekCompleted" />
+                                    <Label Grid.Column="2" x:Name="DurationLabel" Text="--:--"
+                                           FontSize="10.5" FontFamily="OpenSansSemibold" TextColor="White"
+                                           VerticalOptions="Center" />
+                                    <ImageButton Grid.Column="3" x:Name="FullScreenButton"
+                                                 Source="ic_fullscreen.png"
+                                                 WidthRequest="26" HeightRequest="24"
+                                                 BackgroundColor="Transparent"
+                                                 VerticalOptions="Center"
+                                                 Clicked="OnToggleFullscreenClicked" />
+                                </Grid>
                             </Grid>
                         </Grid>
                     </Grid>
