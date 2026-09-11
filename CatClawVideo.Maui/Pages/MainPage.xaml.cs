@@ -45,6 +45,12 @@ public partial class MainPage : ContentPage
         // 安全区 padding（Android 透明状态栏下内容避开系统栏）
         Padding = new Thickness(0, GetTopSafeArea(), 0, 0);
         SafeAreaHelper.SafeAreaChanged += OnSafeAreaChanged;
+#if ANDROID
+        // 启动后兜底：窗口稳定后反复强制 Edge-to-Edge，复刻「导航到二级页再返回」的全屏效果
+        // （MAUI 在窗口就绪前会把 DecorFitsSystemWindows 重置为 true，导致启动首帧底部留白）。
+        // 缩减为 2 次（1s 内），避免过量全页重排压垮主线程。（照搬猫爪音乐）
+        StartEdgeToEdgeSettlingTimer();
+#endif
 
         // 首个 tab 直接显示（SelectedTabIndex 默认 0 不触发 TabChanged）
         ShowTab(0);
@@ -121,6 +127,7 @@ public partial class MainPage : ContentPage
     }
 #endif
 
+#if WINDOWS
     /// <summary>
     /// 顶部交互元素（导航 tabs + 搜索框）相对窗口客户区的物理像素矩形。
     /// 无边框窗口下顶栏处于系统标题栏语义区，App 宿主把这些区域标记为
@@ -153,6 +160,7 @@ public partial class MainPage : ContentPage
         Add(TopSearchBox);
         return rects.ToArray();
     }
+#endif
 
     private int TabIndexOf(object? sender) =>
         (sender == NavBg1) ? 1
@@ -244,6 +252,42 @@ public partial class MainPage : ContentPage
     private void OnSafeAreaChanged(object? sender, EventArgs e) =>
         MainThread.BeginInvokeOnMainThread(() =>
             Padding = new Thickness(0, GetTopSafeArea(), 0, 0));
+
+#if ANDROID
+    private bool _edgeToEdgeSettling;
+    private int _edgeToEdgeTicks;
+
+    /// <summary>启动后兜底：窗口稳定后反复强制 Edge-to-Edge（500ms × 2 次）。
+    /// 复刻「导航到二级页再返回」的全屏效果——MAUI 在窗口就绪前会把
+    /// DecorFitsSystemWindows 重置为 true，导致启动首帧底部留白。（照搬猫爪音乐）</summary>
+    private void StartEdgeToEdgeSettlingTimer()
+    {
+        if (_edgeToEdgeSettling) return;
+        _edgeToEdgeSettling = true;
+        _edgeToEdgeTicks = 0;
+        Microsoft.Maui.Controls.Device.StartTimer(TimeSpan.FromMilliseconds(500), () =>
+        {
+            _edgeToEdgeTicks++;
+            ForceFullScreenAfterStartup();
+            if (_edgeToEdgeTicks >= 2)
+            {
+                _edgeToEdgeSettling = false;
+                return false; // 停止定时器
+            }
+            return true; // 继续
+        });
+    }
+
+    /// <summary>复刻「导航返回」的全屏效果：重新强制 Edge-to-Edge（幂等）。</summary>
+    private void ForceFullScreenAfterStartup()
+    {
+        try
+        {
+            (Microsoft.Maui.ApplicationModel.Platform.CurrentActivity as MainActivity)?.SetupEdgeToEdge();
+        }
+        catch { }
+    }
+#endif
 
     private static double GetTopSafeArea() =>
 #if ANDROID

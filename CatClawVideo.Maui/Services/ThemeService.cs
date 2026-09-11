@@ -109,6 +109,9 @@ public class ThemeService : IThemeService
                     var controller = AndroidX.Core.View.WindowCompat.GetInsetsController(activity.Window, activity.Window.DecorView);
                     controller.AppearanceLightStatusBars = !isDark;
                     controller.AppearanceLightNavigationBars = !isDark;
+
+                    // 系统栏区域（内容未覆盖处）由窗口背景填充 → 须随主题同步，否则残留旧底色
+                    CatClawVideo.Maui.MainActivity.UpdateWindowChromeColor();
                 }
             }
             catch { }

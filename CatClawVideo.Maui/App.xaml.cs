@@ -149,10 +149,13 @@ public partial class App : Application
     }
 
 #if ANDROID
-    /// <summary>是否由用户锁定横屏（播放页旋转按钮状态）</summary>
-    public bool ManualLandscape { get; private set; }
+    /// <summary>
+    /// 当前是否处于横屏。App 基准方向即横屏（MainActivity 声明 SensorLandscape），
+    /// 故初始为 true —— 播放页旋转按钮首次点击应切到竖屏，而不是"先切一次无效的横屏"。
+    /// </summary>
+    public bool ManualLandscape { get; private set; } = true;
 
-    /// <summary>强制横屏（播放页全屏观看）</summary>
+    /// <summary>切回横屏（基准方向）。播放页旋转按钮 / 退出播放页时用。</summary>
     public void ForceLandscape()
     {
         ManualLandscape = true;
@@ -161,10 +164,10 @@ public partial class App : Application
             if (Microsoft.Maui.ApplicationModel.Platform.CurrentActivity is { } activity)
                 activity.RequestedOrientation = Android.Content.PM.ScreenOrientation.SensorLandscape;
         }
-        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[App] 强制横屏失败: {ex.Message}"); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[App] 切横屏失败: {ex.Message}"); }
     }
 
-    /// <summary>恢复竖屏（退出全屏观看）</summary>
+    /// <summary>临时切竖屏（播放页旋转按钮覆盖基准横屏）。</summary>
     public void ReleaseLandscape()
     {
         ManualLandscape = false;
@@ -173,10 +176,10 @@ public partial class App : Application
             if (Microsoft.Maui.ApplicationModel.Platform.CurrentActivity is { } activity)
                 activity.RequestedOrientation = Android.Content.PM.ScreenOrientation.SensorPortrait;
         }
-        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[App] 恢复竖屏失败: {ex.Message}"); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[App] 切竖屏失败: {ex.Message}"); }
     }
 
-    /// <summary>切换横竖屏（旋转按钮）</summary>
+    /// <summary>切换横竖屏（旋转按钮）：当前横屏则切竖屏，当前竖屏则切回横屏。</summary>
     public void ToggleLandscape()
     {
         if (ManualLandscape) ReleaseLandscape();

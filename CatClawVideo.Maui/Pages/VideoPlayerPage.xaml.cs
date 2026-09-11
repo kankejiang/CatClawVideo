@@ -60,6 +60,10 @@ public partial class VideoPlayerPage : ContentPage, IQueryAttributable
     protected override void OnAppearing()
     {
         base.OnAppearing();
+#if ANDROID
+        // 本页即全屏播放页：隐藏系统栏（状态栏 + 导航栏）
+        MainActivity.SetImmersive(true);
+#endif
         if (!string.IsNullOrEmpty(_vm.Url))
         {
             StartPlayback();
@@ -70,6 +74,15 @@ public partial class VideoPlayerPage : ContentPage, IQueryAttributable
     {
         base.OnDisappearing();
         _hideTimer?.Stop();
+
+#if ANDROID
+        // 恢复系统栏
+        MainActivity.SetImmersive(false);
+
+        // 退出播放页恢复 App 基准横屏：旋转按钮切的竖屏只应在播放页内生效，
+        // 否则返回后整个 App 会停在竖屏，与基准横屏不一致。
+        (Application.Current as App)?.ForceLandscape();
+#endif
 
         try
         {

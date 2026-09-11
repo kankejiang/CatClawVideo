@@ -12,7 +12,11 @@ namespace CatClawVideo.Maui;
     Theme = "@style/Maui.SplashTheme",
     MainLauncher = true,
     LaunchMode = LaunchMode.SingleTop,
-    // 保留全部 ConfigurationChanges：旋转播放页（横屏模式）时 Activity 不重建
+    // App 基准方向 = 横屏（影视类应用，启动即锁定横屏）。
+    // 用 SensorLandscape 而非 Landscape：横屏内允许随重力 180° 翻转，体验更自然。
+    // 播放页的旋转按钮仍可在运行时用 activity.RequestedOrientation 临时覆盖为竖屏。
+    ScreenOrientation = ScreenOrientation.SensorLandscape,
+    // 保留全部 ConfigurationChanges：旋转播放页（横竖屏切换）时 Activity 不重建
     ConfigurationChanges = ConfigChanges.ScreenSize
         | ConfigChanges.Orientation
         | ConfigChanges.UiMode
@@ -27,16 +31,51 @@ public class MainActivity : MauiAppCompatActivity
     {
         base.OnCreate(savedInstanceState);
         SetupEdgeToEdge();
+        // 首帧布局（含 Splash 关闭后的真实布局）后再次强制 Edge-to-Edge：
+        // MAUI 的 AndroidWindow 可能在 OnCreate 之后才真正建立并把 DecorFitsSystemWindows 重置为 true，
+        // 导致「启动有空白、导航返回后变全屏」。GlobalLayout 监听在每次真实布局后都再强制一次，覆盖该时机。
+        AttachEdgeToEdgeReassert();
+    }
+
+    /// <summary>Activity 创建完成（窗口已附加、MAUI 已完成首轮窗口搭建）后回调。
+    /// MAUI 的 AndroidWindow 可能在 OnCreate 之后才真正建立并把 DecorFitsSystemWindows 重置为 true，
+    /// 因此这里再次强制 Edge-to-Edge，确保首帧即全屏、启动无底部空白。（同猫爪音乐）</summary>
+    protected override void OnPostCreate(Bundle? savedInstanceState)
+    {
+        base.OnPostCreate(savedInstanceState);
+        SetupEdgeToEdge();
     }
 
     protected override void OnResume()
     {
         base.OnResume();
         SetupEdgeToEdge();
+        UpdateWindowChromeColor();
     }
 
-    /// <summary>Edge-to-Edge：内容延伸到系统栏下方，insets 上报 SafeAreaHelper 供页面加 padding。</summary>
-    private void SetupEdgeToEdge()
+    /// <summary>
+    /// 挂载一次性（重复数次）全局布局监听：每次真实布局后都重新强制 Edge-to-Edge，
+    /// 覆盖 Splash 关闭、主题切换等可能把窗口重置为「内容止于导航栏」的时机，确保启动即全屏。
+    /// （照搬猫爪音乐——MAUI 的 AndroidWindow 会在 OnCreate 之后把 DecorFitsSystemWindows
+    /// 重置回 true，导致「启动有空白、导航返回后变全屏」，必须每次真实布局后再强制。）
+    /// </summary>
+    private void AttachEdgeToEdgeReassert()
+    {
+        try
+        {
+            var rootView = Window?.DecorView?.FindViewById(Android.Resource.Id.Content);
+            if (rootView?.ViewTreeObserver != null)
+            {
+                var listener = new EdgeToEdgeGlobalLayoutListener(this, rootView, 2);
+                rootView.ViewTreeObserver.AddOnGlobalLayoutListener(listener);
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>Edge-to-Edge：内容延伸到系统栏下方，insets 上报 SafeAreaHelper 供页面加 padding。
+    /// 可在 OnCreate/OnPostCreate/OnResume 及每次布局后重复调用（幂等）。</summary>
+    internal void SetupEdgeToEdge()
     {
         if (Window == null) return;
 
@@ -51,6 +90,12 @@ public class MainActivity : MauiAppCompatActivity
             Window.StatusBarContrastEnforced = false;
         }
 
+        // 系统栏（状态栏/导航栏）区域在内容未覆盖时由「窗口背景」填充。
+        // 本 App 的 Activity 主题是 Maui.SplashTheme，其 windowBackground 是启动图
+        // （颜色 #0B0D20，近黑），与 App 背景不一致 → 底部会露出一条导航栏高度的"黑条"。
+        // 这里把窗口根视图背景同步为 App 的实际背景色，让系统栏区域与界面融为一体。
+        UpdateWindowChromeColor();
+
         var rootView = Window.DecorView.FindViewById(Android.Resource.Id.Content);
         if (rootView == null) return;
 
@@ -60,6 +105,65 @@ public class MainActivity : MauiAppCompatActivity
             ViewCompat.SetOnApplyWindowInsetsListener(rootView, _insetsListener);
         }
         ViewCompat.RequestApplyInsets(rootView);
+    }
+
+    /// <summary>
+    /// 把窗口根视图（DecorView）背景同步为 App 当前的 WindowBackgroundColor。
+    /// 主题（深/浅色）切换后需重新调用，否则系统栏区域会残留旧色。
+    /// </summary>
+    public static void UpdateWindowChromeColor()
+    {
+        try
+        {
+            var activity = Microsoft.Maui.ApplicationModel.Platform.CurrentActivity;
+            if (activity?.Window?.DecorView is not { } decor) return;
+
+            if (Microsoft.Maui.Controls.Application.Current?.Resources["WindowBackgroundColor"]
+                is not Microsoft.Maui.Graphics.Color c) return;
+
+            decor.SetBackgroundColor(Android.Graphics.Color.Argb(
+                (int)Math.Round(c.Alpha * 255),
+                (int)Math.Round(c.Red * 255),
+                (int)Math.Round(c.Green * 255),
+                (int)Math.Round(c.Blue * 255)));
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[Chrome] 窗口背景色同步失败: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 沉浸式开关：隐藏/恢复状态栏与导航栏（播放页全屏用）。
+    /// 隐藏后系统栏可从上/下滑边缘临时唤出（BehaviorShowTransientBarsBySwipe）。
+    /// 注：Android 15+ 已废弃 setStatusBarColor/setNavigationBarColor，控制显隐必须走
+    /// WindowInsetsControllerCompat，不能用旧的 SystemUiVisibility 标志。
+    /// </summary>
+    public static void SetImmersive(bool on)
+    {
+        try
+        {
+            var activity = Microsoft.Maui.ApplicationModel.Platform.CurrentActivity;
+            if (activity?.Window is not { } window) return;
+
+            var controller = WindowCompat.GetInsetsController(window, window.DecorView);
+            if (controller == null) return;
+
+            if (on)
+            {
+                controller.Hide(WindowInsetsCompat.Type.SystemBars());
+                controller.SystemBarsBehavior =
+                    WindowInsetsControllerCompat.BehaviorShowTransientBarsBySwipe;
+            }
+            else
+            {
+                controller.Show(WindowInsetsCompat.Type.SystemBars());
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[Chrome] 沉浸式切换失败: {ex.Message}");
+        }
     }
 }
 
@@ -89,5 +193,41 @@ internal class EdgeToEdgeInsets : Java.Lang.Object, IOnApplyWindowInsetsListener
         catch { }
 
         return WindowInsetsCompat.Consumed;
+    }
+}
+
+
+/// <summary>
+/// 全局布局监听：每次真实布局后重新强制 Edge-to-Edge（限次后自动注销）。
+/// 用于覆盖「Splash 关闭 / MAUI 窗口建立 / 主题切换」等会把 DecorFitsSystemWindows
+/// 重置回 true 的时机 —— 那会导致内容止于导航栏，底部留出一块不参与布局的区域。
+/// （照搬猫爪音乐同名实现；用 WeakReference 持有 Activity 避免泄漏。）
+/// </summary>
+internal class EdgeToEdgeGlobalLayoutListener : Java.Lang.Object, Android.Views.ViewTreeObserver.IOnGlobalLayoutListener
+{
+    private readonly System.WeakReference<MainActivity> _activity;
+    private readonly Android.Views.View _view;
+    private int _remaining;
+
+    public EdgeToEdgeGlobalLayoutListener(MainActivity activity, Android.Views.View view, int repeats)
+    {
+        _activity = new System.WeakReference<MainActivity>(activity);
+        _view = view;
+        _remaining = repeats;
+    }
+
+    public void OnGlobalLayout()
+    {
+        if (_activity.TryGetTarget(out var activity))
+            activity.SetupEdgeToEdge();
+        _remaining--;
+        if (_remaining <= 0)
+        {
+            var observer = _view?.ViewTreeObserver;
+            if (observer != null && observer.IsAlive)
+            {
+                try { observer.RemoveOnGlobalLayoutListener(this); } catch { }
+            }
+        }
     }
 }

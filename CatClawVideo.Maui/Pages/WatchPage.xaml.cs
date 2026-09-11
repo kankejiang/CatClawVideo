@@ -225,19 +225,32 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         badge.IsVisible = true;
     }
 
-    /// <summary>布局完成按播放器实际宽度设置 16:9 高度（窗口缩放自适应；全屏时铺满整页）</summary>
-    protected override void OnSizeAllocated(double width, double height)
+    /// <summary>
+    /// 播放器高度自适应：全屏 = 撑满整页（此时顶栏隐藏、ContentStack padding 为 0）；
+    /// 常规 = 按播放器实际宽度取 16:9（clamp 200~560）。
+    ///
+    /// ⚠️ 必须能被显式调用：进入/退出全屏本身**不改变页面尺寸**（Android 基准方向即横屏，
+    /// 全屏不再切方向），所以 OnSizeAllocated 不会触发 —— 只靠它会导致全屏后播放器仍是
+    /// 16:9 高度、屏幕底部留出大片背景色（全屏没铺满）。
+    /// </summary>
+    private void ApplyPlayerHeight()
     {
-        base.OnSizeAllocated(width, height);
         if (_isFullscreen)
         {
-            PlayerHost.HeightRequest = Math.Max(200, height);
+            PlayerHost.HeightRequest = Math.Max(200, Height);
             return;
         }
         // 页面宽 - 左右 padding(48) - 选集栏(300) - 列间距(16)
-        var playerWidth = width - 48 - 300 - 16;
+        var playerWidth = Width - 48 - 300 - 16;
         if (playerWidth > 100)
             PlayerHost.HeightRequest = Math.Clamp(playerWidth * 9.0 / 16.0, 200, 560);
+    }
+
+    /// <summary>布局完成/窗口缩放时重算播放器高度</summary>
+    protected override void OnSizeAllocated(double width, double height)
+    {
+        base.OnSizeAllocated(width, height);
+        ApplyPlayerHeight();
     }
 
     /// <summary>简介清洗：HTML 实体解码 + &nbsp; 空段/连续空白折叠为单空格</summary>
@@ -834,9 +847,17 @@ public partial class WatchPage : ContentPage, IQueryAttributable
 #if WINDOWS
         App.SetWindowFullscreen(on);
 #elif ANDROID
-        if (on) (Application.Current as App)?.ForceLandscape();
-        else (Application.Current as App)?.ReleaseLandscape();
+        // Android 基准方向已是横屏（MainActivity ScreenOrientation=SensorLandscape），
+        // 全屏进出都保持横屏 → 此处不再改方向。
+        // （原先退全屏调 ReleaseLandscape() 会切 SensorPortrait，基准改横屏后会把整个 App 掰成竖屏；
+        //   切竖屏是播放页旋转按钮的职责。）
+        // 全屏时隐藏系统栏（状态栏 + 导航栏），退出全屏恢复
+        CatClawVideo.Maui.MainActivity.SetImmersive(on);
 #endif
+
+        // 显式重算播放器高度：进/退全屏不改变页面尺寸，OnSizeAllocated 不会触发，
+        // 否则全屏后播放器仍停留在 16:9 高度、底部留出大片背景色。
+        ApplyPlayerHeight();
 
         // 切换全屏后唤出控制层；鼠标移出播放框即按 3s 倒计时隐藏
         ShowControls();
