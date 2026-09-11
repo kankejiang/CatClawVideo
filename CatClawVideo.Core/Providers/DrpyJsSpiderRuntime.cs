@@ -83,26 +83,37 @@ public class DrpyJsSpiderRuntime : ISpiderRuntime
         return CallAsync(site, method, args, ct);
     }
 
-    private async Task<string> CallAsync(VodSiteInfo site, string method, string argsExpr, CancellationToken ct)
-    {
-        var inst = await EnsureSiteAsync(site, ct);
-        lock (inst.Lock)
+    /// <summary>
+    /// 在站点引擎上串行调用协议方法，返回 JSON 字符串。
+    ///
+    /// ⚠️ 整个调用链必须跑在线程池线程上（Task.Run 包裹），否则会冻住 UI：
+    /// ① Jint 的 Evaluate 是纯 CPU 同步执行，且协议方法内部经由宿主桥 fetch 同步发 HTTP，
+    ///    在 UI 线程上执行会直接 ANR；
+    /// ② EnsureSiteAsync 的 lock 块里不能 await（下载/装配期间必须持锁），因此内部用
+    ///    GetAwaiter().GetResult() 同步等待 —— 若从 UI 线程进入，续体又要回 UI 线程，
+    ///    而 UI 线程正被阻塞 → sync-over-async 死锁（表现为导入订阅后整个 App 无响应）。
+    /// </summary>
+    private Task<string> CallAsync(VodSiteInfo site, string method, string argsExpr, CancellationToken ct)
+        => Task.Run(async () =>
         {
-            // drpy2 协议方法有的返回对象、有的已返回 JSON 文本（如 home 部分引擎版本）；
-            // 统一 stringify 一次，C# 侧若发现是双重编码字符串则解包一层。
-            var raw = inst.Engine.Evaluate(
-                $"try{{JSON.stringify(globalThis.drpy.{method}({argsExpr}))}}catch(e){{'{{\"__error\":'+JSON.stringify(String(e&&e.message||e))+'}}'}}").AsString();
-            if (raw.Length > 1 && raw[0] == '"')
+            var inst = await EnsureSiteAsync(site, ct).ConfigureAwait(false);
+            lock (inst.Lock)
             {
-                try
+                // drpy2 协议方法有的返回对象、有的已返回 JSON 文本（如 home 部分引擎版本）；
+                // 统一 stringify 一次，C# 侧若发现是双重编码字符串则解包一层。
+                var raw = inst.Engine.Evaluate(
+                    $"try{{JSON.stringify(globalThis.drpy.{method}({argsExpr}))}}catch(e){{'{{\"__error\":'+JSON.stringify(String(e&&e.message||e))+'}}'}}").AsString();
+                if (raw.Length > 1 && raw[0] == '"')
                 {
-                    raw = System.Text.Json.JsonDocument.Parse(raw).RootElement.GetString() ?? raw;
+                    try
+                    {
+                        raw = System.Text.Json.JsonDocument.Parse(raw).RootElement.GetString() ?? raw;
+                    }
+                    catch { }
                 }
-                catch { }
+                return raw;
             }
-            return raw;
-        }
-    }
+        }, ct);
 
     private static string JsStr(string s) =>
         System.Text.Json.JsonSerializer.Serialize(s ?? "");

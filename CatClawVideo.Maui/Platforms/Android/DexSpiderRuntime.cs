@@ -167,48 +167,56 @@ public class DexSpiderRuntime : ISpiderRuntime
         if (_spiders.TryGetValue(site.Key, out var ready) && ready.Initialized)
             return ready;
 
-        var loader = await GetLoaderAsync(site, ct);
-        var className = site.Api.StartsWith("csp_", StringComparison.OrdinalIgnoreCase)
-            ? site.Api[4..]
-            : site.Api;
+        var loader = await GetLoaderAsync(site, ct).ConfigureAwait(false);
 
-        var cls = TryLoad(loader, className)
-            ?? throw new InvalidOperationException($"jar 中找不到爬虫类: {className}");
-
-        var holder = new SpiderHolder
+        // ⚠️ DexClassLoader 加载 jar + 反射查找/实例化爬虫类 + 调 init()（爬虫内部通常还要建网络、
+        // 解析配置）都是耗时的同步 JNI 操作，必须整体放到线程池执行。
+        // 此前它们直接跑在 await 之后的续体上（即 UI 线程），加载大 jar 时会冻住界面直到 ANR。
+        // 初始化的站点必须原子发布（先建好 holder、置 Initialized 再入字典），避免并发调用拿到半成品。
+        return await Task.Run(() =>
         {
-            Instance = (Java.Lang.Object)cls.GetConstructor().NewInstance(),
-            Init = Find(cls, "init", Java.Lang.Class.FromType(typeof(global::Android.Content.Context)), Java.Lang.Class.FromType(typeof(Java.Lang.String))),
-            Home = Find(cls, "homeContent", Java.Lang.Boolean.Type),
-            Category = Find(cls, "categoryContent",
-                Java.Lang.Class.FromType(typeof(Java.Lang.String)),
-                Java.Lang.Class.FromType(typeof(Java.Lang.String)),
-                Java.Lang.Boolean.Type,
-                Java.Lang.Class.FromType(typeof(HashMap))),
-            Detail = Find(cls, "detailContent", Java.Lang.Class.FromType(typeof(Java.Util.IList))),
-            Search2 = Find(cls, "searchContent",
-                Java.Lang.Class.FromType(typeof(Java.Lang.String)), Java.Lang.Boolean.Type),
-            Search3 = Find(cls, "searchContent",
-                Java.Lang.Class.FromType(typeof(Java.Lang.String)), Java.Lang.Boolean.Type,
-                Java.Lang.Integer.Type),
-            Player = Find(cls, "playerContent",
-                Java.Lang.Class.FromType(typeof(Java.Lang.String)),
-                Java.Lang.Class.FromType(typeof(Java.Lang.String)),
-                Java.Lang.Class.FromType(typeof(Java.Util.IList))),
-        };
+            var className = site.Api.StartsWith("csp_", StringComparison.OrdinalIgnoreCase)
+                ? site.Api[4..]
+                : site.Api;
 
-        if (holder.Init != null)
-        {
-            var ext = site.Ext ?? "";
-            Log($"init {className} ext={ext[..System.Math.Min(60, ext.Length)]}");
-            holder.Init.Invoke(holder.Instance,
-                global::Android.App.Application.Context, new Java.Lang.String(ext));
-        }
+            var cls = TryLoad(loader, className)
+                ?? throw new InvalidOperationException($"jar 中找不到爬虫类: {className}");
 
-        _spiders[site.Key] = holder;
-        holder.Initialized = true;
-        Log($"站点 {site.Key} spider 就绪: {cls.Name}");
-        return holder;
+            var holder = new SpiderHolder
+            {
+                Instance = (Java.Lang.Object)cls.GetConstructor().NewInstance(),
+                Init = Find(cls, "init", Java.Lang.Class.FromType(typeof(global::Android.Content.Context)), Java.Lang.Class.FromType(typeof(Java.Lang.String))),
+                Home = Find(cls, "homeContent", Java.Lang.Boolean.Type),
+                Category = Find(cls, "categoryContent",
+                    Java.Lang.Class.FromType(typeof(Java.Lang.String)),
+                    Java.Lang.Class.FromType(typeof(Java.Lang.String)),
+                    Java.Lang.Boolean.Type,
+                    Java.Lang.Class.FromType(typeof(HashMap))),
+                Detail = Find(cls, "detailContent", Java.Lang.Class.FromType(typeof(Java.Util.IList))),
+                Search2 = Find(cls, "searchContent",
+                    Java.Lang.Class.FromType(typeof(Java.Lang.String)), Java.Lang.Boolean.Type),
+                Search3 = Find(cls, "searchContent",
+                    Java.Lang.Class.FromType(typeof(Java.Lang.String)), Java.Lang.Boolean.Type,
+                    Java.Lang.Integer.Type),
+                Player = Find(cls, "playerContent",
+                    Java.Lang.Class.FromType(typeof(Java.Lang.String)),
+                    Java.Lang.Class.FromType(typeof(Java.Lang.String)),
+                    Java.Lang.Class.FromType(typeof(Java.Util.IList))),
+            };
+
+            if (holder.Init != null)
+            {
+                var ext = site.Ext ?? "";
+                Log($"init {className} ext={ext[..System.Math.Min(60, ext.Length)]}");
+                holder.Init.Invoke(holder.Instance,
+                    global::Android.App.Application.Context, new Java.Lang.String(ext));
+            }
+
+            holder.Initialized = true;
+            _spiders[site.Key] = holder;
+            Log($"站点 {site.Key} spider 就绪: {cls.Name}");
+            return holder;
+        }, ct).ConfigureAwait(false);
     }
 
     private static Java.Lang.Reflect.Method? Find(Class cls, string name, params Class[] sig)
@@ -239,7 +247,8 @@ public class DexSpiderRuntime : ISpiderRuntime
 
     private async Task<string> InvokeAsync(VodSiteInfo site, Func<SpiderHolder, Java.Lang.Object?> call)
     {
-        var h = await EnsureSpiderAsync(site, CancellationToken.None);
+        // ConfigureAwait(false)：避免续体被拉回 UI 线程（爬虫 JNI 调用是重活，且要求与 UI 无关的上下文）
+        var h = await EnsureSpiderAsync(site, CancellationToken.None).ConfigureAwait(false);
         return await Task.Run(() =>
         {
             lock (h.Lock)
@@ -247,6 +256,6 @@ public class DexSpiderRuntime : ISpiderRuntime
                 var result = call(h)?.ToString();
                 return string.IsNullOrEmpty(result) ? "{}" : result;
             }
-        });
+        }).ConfigureAwait(false);
     }
 }
