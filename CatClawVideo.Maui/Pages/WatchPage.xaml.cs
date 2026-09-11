@@ -87,6 +87,10 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     /// <summary>播放历史跳转携带的续看定位：选集加载后自动选该集，MediaOpened 后 seek</summary>
     private string? _resumeEpisodeName;
     private string? _resumeRouteName;
+
+    /// <summary>查询参数就绪信号：Shell 在不同入口下 ApplyQueryAttributes 与 OnAppearing/Load 的
+    /// 先后顺序不保证——若 Load 先跑，续看上下文与 item 身份都还没有，会回落默认线路并覆盖历史。</summary>
+    private readonly TaskCompletionSource _argsReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private double _resumePosition;
 
     public WatchPage(IVodSourceProvider provider, VideoDatabase db, VideoPlaybackManager playback,
@@ -217,6 +221,20 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     }
 #endif
 
+    /// <summary>临时诊断：续看链路关键决策写文件（Windows 无控制台输出），
+    /// 路径 %APPDATA%/CatClawVideo/watch-debug.log</summary>
+    private static void WatchLog(string msg)
+    {
+        try
+        {
+            var dir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CatClawVideo");
+            Directory.CreateDirectory(dir);
+            File.AppendAllText(System.IO.Path.Combine(dir, "watch-debug.log"),
+                $"{DateTime.Now:HH:mm:ss.fff} {msg}{Environment.NewLine}");
+        }
+        catch { }
+    }
+
     /// <summary>续看定位：seek 到上次位置；若后端尚未可 seek（位置未生效）则按 300/900/1800ms 重试。</summary>
     private void TrySeekToResume(double pos, int retry)
     {
@@ -247,6 +265,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         try
         {
             var h = await _db.FindHistoryAsync(_item.SourceKey, _item.Id);
+            WatchLog($"[history] 查到={(h == null ? "无" : $"{h.Title}/{h.EpisodeName}/{h.RouteName}/{h.PositionSeconds:F0}s")}");
             if (h == null) return;
             if (h.PositionSeconds < 10) return;
             if (h.DurationSeconds > 0 && h.PositionSeconds > h.DurationSeconds - 20) return;
@@ -344,6 +363,9 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         if (query.TryGetValue("route", out var rt) && rt is string routeName && routeName.Length > 0)
             _resumeRouteName = routeName;
 
+        WatchLog($"[args] title={_item.Title} sourceKey={_item.SourceKey} itemId={_item.Id} " +
+                 $"route={_resumeRouteName ?? "<null>"} ep={_resumeEpisodeName ?? "<null>"} pos={_resumePosition:F0}");
+
         TitleLabel.Text = _item.Title;
         TopBarTitle.Text = _item.Title;
 
@@ -351,6 +373,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         SetBadge(RemarksBadge, RemarksBadgeLabel, _item.Remarks);
         SetBadge(YearBadge, YearBadgeLabel, _item.Year);
         SetBadge(CategoryBadge, CategoryBadgeLabel, _item.Category);
+        _argsReady.TrySetResult();
 
         MetaLabel.Text = $"来源：{_site.Name}{(_site.Name.Length > 0 ? " · " : "")}{_site.Key}";
         _descFull = _item.Description is { Length: > 0 } raw ? CleanDesc(raw) : "";
@@ -523,6 +546,12 @@ public partial class WatchPage : ContentPage, IQueryAttributable
 
             if (_sources.Count > 0)
             {
+                // 等参数就绪再决定续看（顺序无关；2s 兜底防死等）
+                await Task.WhenAny(_argsReady.Task, Task.Delay(2000));
+
+                WatchLog($"[load] sources={string.Join(",", _sources.Select(s => s.Name))} " +
+                         $"before: route={_resumeRouteName ?? "<null>"} ep={_resumeEpisodeName ?? "<null>"} pos={_resumePosition:F0}");
+
                 // 续看上下文（线路/集/位置）必须在选中线路之前解析：
                 // 否则会先默认播线路1并把历史里的线路覆盖掉（2026-09-11 用户实测）
                 if (_resumeRouteName is null && _resumeEpisodeName is null && _resumePosition <= 0)
@@ -535,6 +564,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable
                     var idx = _sources.FindIndex(s => string.Equals(s.Name.Trim(), _resumeRouteName.Trim(), StringComparison.Ordinal));
                     if (idx >= 0) startIndex = idx;
                 }
+                WatchLog($"[pick] startIndex={startIndex} name={_sources[startIndex].Name} applyResume=true");
                 await SelectSourceAsync(startIndex, applyResume: true);
             }
             else
