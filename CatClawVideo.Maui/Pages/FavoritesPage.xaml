@@ -21,8 +21,7 @@
                     <VerticalStackLayout Spacing="0">
                         <Border StrokeThickness="0" StrokeShape="RoundRectangle 10"
                                 BackgroundColor="{DynamicResource CardBackgroundColor}"
-                                HeightRequest="{DynamicResource PosterCardHeight}"
-                                WidthRequest="{DynamicResource PosterCardWidth}" HorizontalOptions="Center">
+                                HeightRequest="{DynamicResource PosterCardHeight}">
                             <Grid>
                                 <Image Source="{Binding Cover}" Aspect="AspectFill" />
                                 <Image Source="ic_brand.png" Aspect="AspectFit" Opacity="0.35"

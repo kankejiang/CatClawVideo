@@ -18,21 +18,18 @@ public static class PosterLayoutHelper
             if (grid is null || width <= 0 || height <= 0) return;
             if (grid.ItemsLayout is not GridItemsLayout) return;
 
-            // 列数按「目标列宽」反推：窗口变宽先加列；列数到上限后卡片才整体变大（宽高同涨，保持 2:3）
+            // 列数按「目标列宽 240」反推；卡片**撑满列格**（间隔=列间距，紧凑），
+            // 高度由实际列宽按 2:3 反推并夹取 → 间隔小且比例始终≈2:3（2026-09-12 用户要求收紧间隔）。
+            // 注意：不要给卡片设固定宽度居中——列格比卡片宽时两侧留白会显得间隔巨大。
             var columns = Math.Clamp((int)Math.Round(width / 240.0), 3, 16);
             if (grid.ItemsLayout is GridItemsLayout g && g.Span != columns)
                 g.Span = columns;
 
-            // 卡片实际宽 = 列宽（扣列间距）；高按 2:3 反推并夹取 → 宽高永远成比例，不会"长胖不长个"
             var itemW = (width - (columns - 1) * 12) / columns;
-            var cardW = Math.Clamp(itemW, 80, cap * 2.0 / 3.0);
-            var cardH = Math.Clamp(cardW * 1.5, 64, cap);
+            var cardH = Math.Clamp(itemW * 1.5, 64, cap);
 
             if (Application.Current is not null)
-            {
                 Application.Current.Resources["PosterCardHeight"] = cardH;
-                Application.Current.Resources["PosterCardWidth"] = cardW;
-            }
         }
         catch (Exception ex)
         {
