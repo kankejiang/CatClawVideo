@@ -278,12 +278,13 @@ public partial class MainPage : ContentPage
                 $"main={Height:F0} padT={Padding.Top:F0} padB={Padding.Bottom:F0} " +
                 $"nav={nav:F0} host={ContentHost.Height:F0} win={Window?.Height:F0}");
 
-            // 底部空白补偿：差值 = 窗口高 − 页面高 − 页面垂直 padding（含保底 8dp 边距）
-            var deficit = (Window?.Height ?? Height) - Height - Padding.Top - Padding.Bottom;
-            if (deficit > 8)
+            // 底部空白补偿：差值 = 窗口高 − 页面高 − 底部 padding（MAUI 在 Window 层套的
+            // 手势条安全区内嵌，页面内部 padding 够不着）→ 负 margin 把页面延伸到底部系统栏上沿
+            var gap = (Window?.Height ?? Height) - Height - Padding.Bottom;
+            if (gap > 12)
             {
-                ContentHost.Margin = new Thickness(0, 0, 0, -deficit + 8);
-                Android.Util.Log.Info("PosterLayout", $"补偿底部空白 {deficit:F0}dp");
+                ContentHost.Margin = new Thickness(0, 0, 0, -(gap - 8));
+                Android.Util.Log.Info("PosterLayout", $"补偿底部空白 {gap:F0}dp");
             }
             return false;
         });
