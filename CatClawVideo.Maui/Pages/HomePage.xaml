@@ -76,7 +76,8 @@
             </CollectionView.ItemsLayout>
             <CollectionView.ItemTemplate>
                 <DataTemplate>
-                    <VerticalStackLayout Spacing="0">
+                    <VerticalStackLayout Spacing="0" WidthRequest="{DynamicResource PosterCardWidth}"
+                                         HorizontalOptions="Center">
                         <Border StrokeThickness="0" StrokeShape="RoundRectangle 10"
                                 BackgroundColor="{DynamicResource CardBackgroundColor}"
                                 HeightRequest="{DynamicResource PosterCardHeight}"

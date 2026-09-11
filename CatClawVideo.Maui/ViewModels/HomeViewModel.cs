@@ -198,6 +198,7 @@ public partial class HomeViewModel : ObservableObject
     [RelayCommand(CanExecute = nameof(CanLoadMore))]
     public async Task LoadMoreAsync()
     {
+        DiagLog.Write($"[loadmore] 触发 page={_currentPage + 1} loading={_loadingMore} hasMore={HasMoreItems} site={(CurrentSite?.Name ?? "无")} cat={( _currentCategory?.Name ?? "无")}");
         if (_loadingMore || CurrentSite == null || _currentCategory == null) return;
         _loadingMore = true;
         LoadMoreCommand.NotifyCanExecuteChanged();
@@ -207,6 +208,7 @@ public partial class HomeViewModel : ObservableObject
             HomeStatus = $"{CurrentSite.Name} · {_currentCategory.Name} · 加载第 {next} 页…";
             var items = await _provider.GetItemsAsync(CurrentSite, _currentCategory, next);
 
+            DiagLog.Write($"[loadmore] 第 {next} 页取到 {items.Count} 条（现有 {Items.Count} 条）");
             if (items.Count == 0)
             {
                 HasMoreItems = false;
