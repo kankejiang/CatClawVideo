@@ -614,17 +614,23 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         _currentSourceIndex = index;
         var source = _sources[index];
 
-        // 切线路：记下当前集序号与位置——不同线路是**同一集的不同源**，位置仍然有效
-        int keepIndex = _currentEpisodeIndex;
-        double keepPos = _playing ? Player.Position.TotalSeconds : 0;
+        // ⚠️ 仅在**手动切线路**时记忆/落库：首次加载（applyResume=true）不得落库，
+        // 否则进页面瞬间会把历史记录覆盖成「默认集 @ 0s」，续看还没来得及应用。
+        int keepIndex = -1;
+        double keepPos = 0;
+        if (!applyResume)
+        {
+            // 不同线路是**同一集的不同源**，位置仍然有效
+            keepIndex = _currentEpisodeIndex;
+            keepPos = _playing ? Player.Position.TotalSeconds : 0;
 
-        // 切换线路**立即落库**（新线路 + 同序号集 + 原位置）：
-        // 否则要等下一次定时保存，切完就走会留下旧线路（2026-09-12 用户实测）
-        _playback.SetRouteName(source.Name);
-        _playback.SetEpisodeName(keepIndex >= 0 && keepIndex < source.Episodes.Count
-            ? source.Episodes[keepIndex].Name
-            : source.Episodes.FirstOrDefault()?.Name ?? string.Empty);
-        _playback.SaveProgress(keepPos, Player.Duration.TotalSeconds);
+            // 立即落库（新线路 + 同序号集 + 原位置）：切完就走也不会留下旧线路
+            _playback.SetRouteName(source.Name);
+            _playback.SetEpisodeName(keepIndex >= 0 && keepIndex < source.Episodes.Count
+                ? source.Episodes[keepIndex].Name
+                : source.Episodes.FirstOrDefault()?.Name ?? string.Empty);
+            _playback.SaveProgress(keepPos, Player.Duration.TotalSeconds);
+        }
 
         // 线路芯片高亮（_lineChips 与 _sources 索引一一对应）
         for (int i = 0; i < _lineChips.Count; i++)
@@ -928,8 +934,9 @@ public partial class WatchPage : ContentPage, IQueryAttributable
             Player.Play();
             _playing = true;
 
-            // 起播即落库一次：最后播放的影片立刻置顶历史第一位
-            _playback.SaveProgress(0, 0);
+            // 起播即落库一次：最后播放的影片立刻置顶历史第一位。
+            // 带续播位置时先记该位置（避免 seek 生效前退出被记成 0s）
+            _playback.SaveProgress(_resumePosition > 0 ? _resumePosition : 0, 0);
             StartProgressAutoSave();
 
             // 起播后唤出控制层；鼠标离开播放框（或手指离开）即 3s 后自动隐藏
