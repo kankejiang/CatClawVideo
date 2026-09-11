@@ -332,6 +332,31 @@ public class CatClawWebEngine
         return web;
     }
 
+    /// <summary>
+    /// 多站点文件选择站点（v2.1）：sites 非空时按 id 取出单站点视图（缺 id 取首个）；
+    /// 单站点文件原样返回。
+    /// </summary>
+    public static CatClawSourceWeb SelectSite(CatClawSourceWeb root, string? siteId)
+    {
+        if (root.Sites is not { Count: > 0 }) return root;
+        var s = string.IsNullOrEmpty(siteId)
+            ? root.Sites[0]
+            : root.Sites.FirstOrDefault(x => string.Equals(x.Id, siteId, StringComparison.OrdinalIgnoreCase)) ?? root.Sites[0];
+        return new CatClawSourceWeb
+        {
+            Magic = root.Magic,
+            Version = root.Version,
+            Mode = root.Mode,
+            Name = s.Name,
+            Site = s.Site,
+            Updated = root.Updated,
+            Categories = s.Categories,
+            Rules = s.Rules,
+            Id = s.Id,
+            LoadedAt = root.LoadedAt,
+        };
+    }
+
     private async Task<string?> GetHtmlAsync(string url)
     {
         if (_htmlCache.TryGetValue(url, out var cached) && cached.At + CacheTtl > DateTime.Now)

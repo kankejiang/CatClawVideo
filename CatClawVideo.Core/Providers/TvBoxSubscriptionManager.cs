@@ -40,7 +40,7 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
                 : subscriptionUrl;
             var local = await File.ReadAllTextAsync(path, ct);
             if (local.Contains(CatClawSourceDoc.ProtocolMagic, StringComparison.OrdinalIgnoreCase))
-                return [BuildCatClawSite(local, subscriptionUrl)];
+                return BuildCatClawSites(local, subscriptionUrl);
             return await ParseConfigTextAsync(local, System.IO.Path.GetFileNameWithoutExtension(path), ct);
         }
 
@@ -81,7 +81,7 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
 
         // 猫爪源（CatClaw Source，自建生态）：单地址即一个原生数据源（type=100，全平台可播）
         if (text.Contains(CatClawSourceDoc.ProtocolMagic, StringComparison.OrdinalIgnoreCase))
-            return [BuildCatClawSite(text, subscriptionUrl)];
+            return BuildCatClawSites(text, subscriptionUrl);
 
         var sites = await ParseConfigTextAsync(text, subscriptionName: new Uri(subscriptionUrl).Host, ct);
 
@@ -206,31 +206,79 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
         };
     }
 
-    /// <summary>把猫爪源文档包装为单站点（static=type100 / web 规则=type101，由 CatClawSourceProvider 承接）</summary>
-    private static VodSiteInfo BuildCatClawSite(string json, string url)
+    /// <summary>
+    /// 把猫爪源文档展开为站点列表（static=type100 / web 规则=type101，由 CatClawSourceProvider 承接）。
+    /// v2.1 多站点文件（sites 数组）逐站点展开，Key = "catclaw#&lt;id&gt;"；单站点 Key = "catclaw"。
+    /// </summary>
+    private static List<VodSiteInfo> BuildCatClawSites(string json, string url)
     {
-        var name = "猫爪源";
-        var isWeb = false;
+        var result = new List<VodSiteInfo>();
         try
         {
             using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String)
-                name = n.GetString() ?? name;
-            if (doc.RootElement.TryGetProperty("mode", out var m) && m.ValueKind == JsonValueKind.String)
+            var root = doc.RootElement;
+            var host = Uri.TryCreate(url, UriKind.Absolute, out var uri) && !string.IsNullOrEmpty(uri.Host)
+                ? uri.Host : "local";
+
+            // 多站点模式：逐站点展开
+            if (root.TryGetProperty("sites", out var sitesEl) && sitesEl.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var s in sitesEl.EnumerateArray())
+                {
+                    var id = s.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String
+                        ? idEl.GetString() ?? "" : "";
+                    var name = s.TryGetProperty("name", out var nEl) && nEl.ValueKind == JsonValueKind.String
+                        ? nEl.GetString() ?? "" : "";
+                    if (string.IsNullOrEmpty(id) || string.IsNullOrEmpty(name)) continue;
+                    result.Add(new VodSiteInfo
+                    {
+                        Key = $"catclaw#{id}",
+                        Name = name,
+                        Api = url,
+                        Type = CatClawSourceWeb.WebSiteType,
+                        SubscriptionName = host,
+                        Playable = true,
+                        Searchable = true,
+                        QuickSearch = true,
+                    });
+                }
+                if (result.Count > 0) return result;
+            }
+
+            // 单站点模式（向后兼容）
+            var topName = "猫爪源";
+            var isWeb = false;
+            if (root.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String)
+                topName = n.GetString() ?? topName;
+            if (root.TryGetProperty("mode", out var m) && m.ValueKind == JsonValueKind.String)
                 isWeb = m.GetString() == "web";
+            result.Add(new VodSiteInfo
+            {
+                Key = "catclaw",
+                Name = topName,
+                Api = url,
+                Type = isWeb ? CatClawSourceWeb.WebSiteType : CatClawSourceDoc.SiteType,
+                SubscriptionName = host,
+                Playable = true,
+                Searchable = true,
+                QuickSearch = true,
+            });
         }
-        catch { }
-        return new VodSiteInfo
+        catch
         {
-            Key = "catclaw",
-            Name = name,
-            Api = url,
-            Type = isWeb ? CatClawSourceWeb.WebSiteType : CatClawSourceDoc.SiteType,
-            SubscriptionName = new Uri(url).Host,
-            Playable = true,
-            Searchable = true,
-            QuickSearch = true,
-        };
+            result.Add(new VodSiteInfo
+            {
+                Key = "catclaw",
+                Name = "猫爪源",
+                Api = url,
+                Type = CatClawSourceDoc.SiteType,
+                SubscriptionName = "catclaw",
+                Playable = true,
+                Searchable = true,
+                QuickSearch = true,
+            });
+        }
+        return result;
     }
 
     /// <summary>

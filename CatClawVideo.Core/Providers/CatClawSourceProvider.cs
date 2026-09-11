@@ -179,10 +179,20 @@ public class CatClawSourceProvider : IVodSourceProvider
 
     // ═══════════════════ 文档加载 ═══════════════════
 
-    /// <summary>web 规则文档加载（带缓存；本地/远程通吃）</summary>
+    /// <summary>
+    /// web 规则文档加载（带缓存；本地/远程通吃）。
+    /// 多站点文件（v2.1）按 site.Key（"api#siteId"）缓存并选出对应站点视图。
+    /// </summary>
     private async Task<CatClawSourceWeb> LoadWebAsync(VodSiteInfo site)
     {
-        var lazy = _webCache.GetOrAdd(site.Api, key => new Lazy<Task<CatClawSourceWeb>>(() => CatClawWebEngine.LoadWebAsync(key, Http)));
+        var lazy = _webCache.GetOrAdd(site.Key, _ => new Lazy<Task<CatClawSourceWeb>>(async () =>
+        {
+            var root = await CatClawWebEngine.LoadWebAsync(site.Api, Http);
+            var siteId = site.Key.Contains('#', StringComparison.Ordinal)
+                ? site.Key[(site.Key.IndexOf('#', StringComparison.Ordinal) + 1)..]
+                : null;
+            return CatClawWebEngine.SelectSite(root, siteId);
+        }));
         return await lazy.Value;
     }
 

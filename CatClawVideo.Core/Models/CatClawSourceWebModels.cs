@@ -39,6 +39,18 @@ public class CatClawSourceWeb
     [JsonPropertyName("rules")]
     public CatClawSourceWebRules Rules { get; set; } = new();
 
+    /// <summary>
+    /// 多站点模式（v2.1）：一个源文件聚合多个站点（如「奥特影视 + 6V电影」合一）。
+    /// 存在时顶层 name/site/categories/rules 被忽略，按 sites 逐个注册站点，
+    /// 站点 Key = "catclaw#&lt;id&gt;"。缺省为单站点模式（向后兼容）。
+    /// </summary>
+    [JsonPropertyName("sites")]
+    public List<CatClawSourceWebSite>? Sites { get; set; }
+
+    /// <summary>本站点 id（多站点模式下由 SelectSite 填充；单站点为空）</summary>
+    [JsonIgnore]
+    public string? Id { get; set; }
+
     /// <summary>本机加载时间（缓存 TTL 用，不参与序列化）</summary>
     [JsonIgnore]
     public DateTime LoadedAt { get; set; }
@@ -64,6 +76,26 @@ public class CatClawSourceWebCategory
     /// <summary>栏目路径（如 /juqingpian/）</summary>
     [JsonPropertyName("path")]
     public string Path { get; set; } = string.Empty;
+}
+
+/// <summary>多站点模式下的单站点定义（v2.1；结构与顶层单站点一致）</summary>
+public class CatClawSourceWebSite
+{
+    /// <summary>站点 id（站点 Key 后缀，需在文件内唯一）</summary>
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = string.Empty;
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("site")]
+    public string Site { get; set; } = string.Empty;
+
+    [JsonPropertyName("categories")]
+    public List<CatClawSourceWebCategory> Categories { get; set; } = [];
+
+    [JsonPropertyName("rules")]
+    public CatClawSourceWebRules Rules { get; set; } = new();
 }
 
 /// <summary>

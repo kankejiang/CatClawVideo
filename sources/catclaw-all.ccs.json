@@ -1,0 +1,107 @@
+{
+    "magic":  "catclaw-source",
+    "version":  2,
+    "mode":  "web",
+    "name":  "猫爪聚合源",
+    "updated":  "2026-09-11T12:10:00",
+    "sites":  [
+                  {
+                      "id":  "auete",
+                      "name":  "奥特影视",
+                      "site":  "https://www.auete.com",
+                      "categories":  [
+                                         {
+                                             "id":  "movie",
+                                             "name":  "电影",
+                                             "path":  "/Movie/"
+                                         },
+                                         {
+                                             "id":  "tv",
+                                             "name":  "电视剧",
+                                             "path":  "/Tv/"
+                                         },
+                                         {
+                                             "id":  "zy",
+                                             "name":  "综艺",
+                                             "path":  "/Zy/"
+                                         },
+                                         {
+                                             "id":  "dm",
+                                             "name":  "动漫",
+                                             "path":  "/Dm/"
+                                         },
+                                         {
+                                             "id":  "qita",
+                                             "name":  "其他",
+                                             "path":  "/qita/"
+                                         }
+                                     ],
+                      "rules":  {
+                                    "listPageFirst":  "{path}index.html",
+                                    "listPage":  "{path}index-{page}.html",
+                                    "listItem":  "\u003cli[^\u003e]*\u003e\\s*\u003ca[^\u003e]*href=\"(?\u003curl\u003e/[A-Za-z]+/[^\"]+/)\"[^\u003e]*\u003e(?:(?!\u003c/a\u003e).)*?\u003cimg[^\u003e]*src=\"(?\u003ccover\u003e[^\"]+)\"[^\u003e]*title=\"(?\u003ctitle\u003e[^\"]+)\"",
+                                    "detailTitle":  "\u003ch1[^\u003e]*\u003e\u300a?(?\u003ctitle\u003e[^\u003c\u300a\u300b]{2,80})\u300b?\u003c/h1\u003e",
+                                    "detailPlay":  "\u003ca[^\u003e]*href=\"(?\u003curl\u003e[^\"]*play-\\d+-\\d+\\.html)\"[^\u003e]*\u003e(?\u003cname\u003e[^\u003c]*)\u003c/a\u003e",
+                                    "detailDesc":  "(?:◎简\\s*介|剧情简介)[：:\\s]*(?\u003cdesc\u003e.*?)\u003c/div\u003e",
+                                    "detailYear":  "(?:年份|年代|上映)[：:\\s]*(?:\u003c[^\u003e]+\u003e)*(?\u003cyear\u003e\\d{4})",
+                                    "detailArea":  "(?:产地|地区)[：:\\s]*(?:\u003c[^\u003e]+\u003e)*(?\u003carea\u003e[^\u003c\\r\\n◎]{1,20})",
+                                    "playDirect":  "base64decode\\(\"(?\u003curlb64\u003e[^\"]+)\"\\)"
+                                }
+                  },
+                  {
+                      "id":  "xb6v",
+                      "name":  "6V电影",
+                      "site":  "https://www.xb6v.com",
+                      "categories":  [
+                                         {
+                                             "id":  "juqingpian",
+                                             "name":  "剧情片",
+                                             "path":  "/juqingpian/"
+                                         },
+                                         {
+                                             "id":  "aiqingpian",
+                                             "name":  "爱情片",
+                                             "path":  "/aiqingpian/"
+                                         },
+                                         {
+                                             "id":  "zhanzhengpian",
+                                             "name":  "战争片",
+                                             "path":  "/zhanzhengpian/"
+                                         },
+                                         {
+                                             "id":  "xijupian",
+                                             "name":  "喜剧片",
+                                             "path":  "/xijupian/"
+                                         },
+                                         {
+                                             "id":  "donghuapian",
+                                             "name":  "动画片",
+                                             "path":  "/donghuapian/"
+                                         },
+                                         {
+                                             "id":  "dianshiju",
+                                             "name":  "电视剧",
+                                             "path":  "/dianshiju/"
+                                         },
+                                         {
+                                             "id":  "ZongYi",
+                                             "name":  "综艺",
+                                             "path":  "/ZongYi/"
+                                         }
+                                     ],
+                      "rules":  {
+                                    "listPageFirst":  "{path}",
+                                    "listPage":  "{path}index_{page}.html",
+                                    "listItem":  "(?s)\u003cdiv class=\"thumbnail\"\u003e\\s*\u003ca\\s+href=\"(?\u003curl\u003e/[^\"]+\\.html)\"[^\u003e]*title=\"(?\u003ctitle\u003e[^\"]*)\"[^\u003e]*\u003e\\s*\u003cimg\\s+src=\"(?\u003ccover\u003e[^\"]*)\".*?◎年\\s*代[：:\\s]*(?\u003cyear\u003e\\d{4})",
+                                    "detailTitle":  "\u003ch1[^\u003e]*\u003e\\s*(?:\u003ca[^\u003e]*\u003e)?(?\u003ctitle\u003e[^\u003c]{2,80})\u003c/a\u003e\\s*\u003c/h1\u003e",
+                                    "detailPlay":  "\u003ca[^\u003e]*href\\s*=\\s*[\u0027\"](?\u003curl\u003e/e/DownSys/play/[^\u0027\"]+)[\u0027\"][^\u003e]*\u003e(?\u003cname\u003e[^\u003c]*)\u003c/a\u003e",
+                                    "detailMagnet":  "磁力[：:]\\s*\u003ca\\s+href=\"(?\u003curl\u003emagnet:\\?xt=urn:btih:[^\"]+)\"[^\u003e]*\u003e(?\u003cname\u003e[^\u003c]+)\u003c/a\u003e",
+                                    "detailDesc":  "◎简\\s*介(?\u003cdesc\u003e.*?)下载地址",
+                                    "detailYear":  "◎年\\s*代[：:\\s]*(?\u003cyear\u003e\\d{4})",
+                                    "detailArea":  "◎产\\s*地[：:\\s]*(?\u003carea\u003e[^\\r\\n◎]{1,20})",
+                                    "playIframe":  "iframe[^\u003e]*?src\\s*=\\s*[\"\u0027](?\u003curl\u003e[^\"\u0027]+)[\"\u0027]",
+                                    "playDirect":  "[\"\u0027](?\u003curl\u003e[^\"\u0027\\n]+?\\.(?:m3u8|mp4)[^\"\u0027\\n]*)[\"\u0027]"
+                                }
+                  }
+              ]
+}

@@ -285,11 +285,33 @@ internal static class SelfTest
         http.Timeout = TimeSpan.FromSeconds(20);
         http.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64) Chrome/124.0");
 
-        var web = await CatClawWebEngine.LoadWebAsync(ccsPath, http);
-        Console.WriteLine($"源: {web.Name} (v{web.Version}, {web.Mode}) / 分类 {web.Categories.Count} 个");
+        var root = await CatClawWebEngine.LoadWebAsync(ccsPath, http);
+
+        // 多站点文件（v2.1）：逐站点全链路自检
+        if (root.Sites is { Count: > 0 })
+        {
+            Console.WriteLine($"聚合源: {root.Name} (v{root.Version}, {root.Mode}) / 站点 {root.Sites.Count} 个");
+            foreach (var s in root.Sites)
+            {
+                Console.WriteLine($"\n════ 站点 [{s.Id}] {s.Name} ════");
+                var web = CatClawWebEngine.SelectSite(root, s.Id);
+                var rc = await CheckAsync(engine(http), web, s.Name, deep: false);
+                if (rc != 0) return rc;
+            }
+            Console.WriteLine("\n聚合源全链路自检完成 ✔");
+            return 0;
+        }
+
+        return await CheckAsync(engine(http), root, root.Name, deep: true);
+    }
+
+    private static CatClawWebEngine engine(HttpClient http) => new();
+
+    private static async Task<int> CheckAsync(CatClawWebEngine engine, CatClawSourceWeb web, string label, bool deep)
+    {
+        Console.WriteLine($"源: {label} (v{web.Version}, {web.Mode}) / 分类 {web.Categories.Count} 个");
 
         var cat = web.Categories.First();
-        var engine = new CatClawWebEngine();
         Console.WriteLine($"\n── 列表 [{cat.Name}] 第1页 ──");
         var items = await engine.GetItemsAsync(web, cat, 1, "selftest");
         Console.WriteLine($"条目 {items.Count} 个，前 3 部:");
@@ -305,8 +327,9 @@ internal static class SelfTest
         foreach (var src in sources)
             Console.WriteLine($"  线路[{src.Name}] {src.Episodes.Count} 集: {string.Join(", ", src.Episodes.Take(3).Select(e => e.Name))}");
 
-        var online = sources.FirstOrDefault(s => s.Name == "在线播放");
+        var online = sources.FirstOrDefault(s => s.Episodes.Count > 0);
         if (online == null) { Console.WriteLine("\n无在线线路！检查 detailPlay 规则"); return 1; }
+        if (!deep) { Console.WriteLine("列表/详情/线路 OK ✔"); return 0; }
 
         Console.WriteLine($"\n── 播放解析 {online.Episodes[0].Name} ──");
         Console.WriteLine($"入口: {online.Episodes[0].Url}");
@@ -317,6 +340,8 @@ internal static class SelfTest
         // 直链可用性
         try
         {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64) Chrome/124.0");
             using var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, play.Url);
             req.Headers.Referrer = play.Referer != null ? new Uri(play.Referer) : null;
             using var resp = await http.SendAsync(req);
