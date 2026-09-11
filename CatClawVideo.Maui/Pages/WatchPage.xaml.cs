@@ -82,6 +82,15 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         _bt = bt;
         _downloads = downloads;
 
+#if ANDROID
+        // 顶栏避开状态栏：Edge-to-Edge 下页面从 y=0 起绘，返回按钮会顶进状态栏
+        // （2026-09-11 真机实测）。状态栏高度动态取自 SafeAreaHelper；
+        // 原地全屏隐藏 TopBarGrid 时边距随之消失，不留缝。
+        ApplyTopBarInset();
+        SafeAreaHelper.SafeAreaChanged += (_, _) =>
+            MainThread.BeginInvokeOnMainThread(ApplyTopBarInset);
+#endif
+
         Player.PositionChanged += (_, _) => MainThread.BeginInvokeOnMainThread(UpdateProgress);
         Player.MediaOpened += (_, _) => MainThread.BeginInvokeOnMainThread(() =>
         {
@@ -141,6 +150,14 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     }
 
     /// <summary>鼠标在播放框内移动：保持控制层可见（离开播放框才开始 3s 倒计时）</summary>
+#if ANDROID
+    /// <summary>顶栏避开状态栏：Edge-to-Edge 下页面从 y=0 起绘。取状态栏高度再上收 12dp——
+    /// 完整 inset 会显得过低（用户实测反馈），留一点与状态栏的呼吸感更自然。
+    /// 原地全屏隐藏 TopBarGrid 时边距随之消失，不留缝。</summary>
+    private void ApplyTopBarInset() =>
+        TopBarGrid.Margin = new Thickness(0, Math.Max(0, SafeAreaHelper.TopInset - 12), 0, 0);
+#endif
+
     private void OnPlayerPointerMoved(object? sender, PointerEventArgs e) => ShowControls();
 
     private void OnPlayerPointerExited(object? sender, PointerEventArgs e)
