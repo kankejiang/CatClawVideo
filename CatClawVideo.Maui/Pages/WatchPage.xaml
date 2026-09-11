@@ -28,16 +28,28 @@
                        LineBreakMode="TailTruncation" MaxLines="1"
                        TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
 
-                <!-- 线路切换（顶栏右侧，填补右上留白；集数多时横向滚动） -->
+                <!-- 线路切换（顶栏右侧，填补右上留白；集数多时横向滚动）
+                     Windows：右侧预留标题栏按钮区（最小化/最大化/关闭的 ~150px），否则芯片会压到按钮上 -->
                 <ScrollView Grid.Column="3" Orientation="Horizontal" HorizontalOptions="End"
                             HorizontalScrollBarVisibility="Never" VerticalScrollBarVisibility="Never"
                             VerticalOptions="Center" MaximumWidthRequest="430">
+                    <ScrollView.Margin>
+                        <OnPlatform x:TypeArguments="Thickness">
+                            <On Platform="WinUI" Value="0,0,150,0" />
+                        </OnPlatform>
+                    </ScrollView.Margin>
                     <HorizontalStackLayout x:Name="LinesHost" Spacing="8" />
                 </ScrollView>
             </Grid>
 
             <!-- ═══ 主区：播放器 + 右侧选集栏（主流播放器形态；全屏模式下选集列隐藏） ═══ -->
             <Grid x:Name="MainArea" ColumnDefinitions="*,300" ColumnSpacing="16">
+                <!-- Windows：与顶栏留出间距（顶栏即标题栏，播放框贴太近显得局促） -->
+                <Grid.Margin>
+                    <OnPlatform x:TypeArguments="Thickness">
+                        <On Platform="WinUI" Value="0,14,0,0" />
+                    </OnPlatform>
+                </Grid.Margin>
 
                 <!-- 播放器（16:9 高度随宽自适应）+ 线路芯片 + 控制条 -->
                 <Border Grid.Column="0" StrokeThickness="0" StrokeShape="RoundRectangle 12" BackgroundColor="Black"
