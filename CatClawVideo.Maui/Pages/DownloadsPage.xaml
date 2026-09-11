@@ -196,7 +196,7 @@
                         BackgroundColor="{DynamicResource CardBackgroundColor}" Padding="24,20"
                         IsVisible="{Binding IsEmpty}">
                     <VerticalStackLayout Spacing="6" HorizontalOptions="Center">
-                        <Image Source="appiconfg.png" WidthRequest="56" HeightRequest="56"
+                        <Image Source="ic_brand.png" WidthRequest="56" HeightRequest="56"
                                Opacity="0.4" HorizontalOptions="Center" />
                         <Label Text="下载架还空着喵…" FontSize="15" FontFamily="OpenSansSemibold"
                                TextColor="{DynamicResource TextPrimaryColor}" HorizontalTextAlignment="Center" />

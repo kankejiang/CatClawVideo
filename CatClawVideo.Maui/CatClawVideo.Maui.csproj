@@ -45,6 +45,11 @@
 		     退回旧 ListView 处理器（同 CatClawMusic），等上游修复后再开。 -->
 		<UseWindowsCollectionView2Handler Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">false</UseWindowsCollectionView2Handler>
 
+		<!-- Windows 窗口/任务栏/桌面快捷方式图标：resizetizer 从 MauiIcon 生成的 .ico 只含
+		     单帧 64×64，大图标视图（96/256）会发虚 → 显式指定多分辨率版本
+		     （16/24/32/48/64/128/256，由 Pillow 从同一源图生成） -->
+		<ApplicationIcon Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">Resources\AppIcon\appicon.ico</ApplicationIcon>
+
 		<!-- Android release：关闭 AOT/裁剪（.NET 11 Android CoreCLR R2R 报 XALNS7015；裁剪影响后续插件加载） -->
 		<RunAOTCompilation Condition="'$(Configuration)' == 'Release'">false</RunAOTCompilation>
 		<PublishReadyToRun Condition="'$(Configuration)' == 'Release' And $([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">false</PublishReadyToRun>
@@ -71,14 +76,14 @@
 
 	<!-- MAUI resources -->
 	<ItemGroup>
-		<MauiIcon Include="Platforms\Android\Resources\mipmap-xxxhdpi\ic_launcher.png" />
+		<!-- 应用图标：Resources/AppIcon/appicon.png（1024² 满幅出血），resizetizer 据此
+		     生成 Windows .ico 与 Android mipmap 各密度。
+		     应用内展示品牌标用 Resources/Images/ic_brand.png（同图 192²）——resizetizer
+		     要求输出名唯一，同一文件不能既作 MauiIcon 又作 MauiImage。
+		     注意：SVG 只能出现在本文件里，代码中一律按转换后的 .png 名引用（MAUI 规范）。 -->
+		<MauiIcon Include="Resources\AppIcon\appicon.png" />
 		<MauiSplashScreen Include="Resources\Images\splash_transparent.svg" Color="#0B0D20" BaseSize="128,128" />
 		<MauiImage Include="Resources\Images\*" />
-		<!-- 应用图标同时作为普通图片资源（MainPage 品牌标 / 空态水印用 Source="appicon.png"）：
-		     AppIcon 目录不在 MauiImage 通配范围，须显式补一条，否则运行期找不到资源
-		     注意：SVG 只能出现在本文件里，代码中一律按转换后的 .png 名引用（MAUI 规范） -->
-		<MauiImage Include="Resources\AppIcon\appicon.svg" BaseSize="128,128" />
-		<MauiImage Include="Resources\AppIcon\appiconfg.svg" BaseSize="128,128" />
 		<MauiFont Include="Resources\Fonts\*" />
 		<MauiAsset Include="Resources\Raw\**" LogicalName="%(RecursiveDir)%(Filename)%(Extension)" />
 	</ItemGroup>
@@ -101,7 +106,49 @@
 		<PackageReference Include="Xamarin.AndroidX.Media3.UI" Version="1.10.1.1" />
 	</ItemGroup>
 
-	<!-- Android release signing：发布时生成 keystore 后在此配置（暂用默认 Debug 签名） -->
+	<!-- Android signing（同 CatClawMusic）：必须显式 AndroidKeyStore=true，且用 PropertyGroup 属性（非 ItemGroup）。
+	     密码兜底内置（与 SIGNING.md 一致 catclaw123），命令行 -p:CatClawKeyPass=xxx 可覆盖。
+	     keystore 位于仓库根目录 catclaw.keystore（PKCS12 / alias=catclaw / 有效期至 2054）。 -->
+	<PropertyGroup>
+		<CatClawKeyPass Condition="'$(CatClawKeyPass)' == ''">catclaw123</CatClawKeyPass>
+		<CatClawStorePass Condition="'$(CatClawStorePass)' == ''">catclaw123</CatClawStorePass>
+	</PropertyGroup>
+	<PropertyGroup Condition="'$(Configuration)' == 'Release' And $([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">
+		<AndroidKeyStore>true</AndroidKeyStore>
+		<AndroidSigningKeyStore>..\catclaw.keystore</AndroidSigningKeyStore>
+		<AndroidSigningKeyAlias>catclaw</AndroidSigningKeyAlias>
+		<AndroidSigningKeyPass>$(CatClawKeyPass)</AndroidSigningKeyPass>
+		<AndroidSigningStorePass>$(CatClawStorePass)</AndroidSigningStorePass>
+		<!-- 启动闪退修复（同 CatClawMusic）：.NET Android 的 JNI Marshal Methods 在 Release
+		     增量构建/多 ABI 场景下偶发 ACW 原生方法未注册，表现为
+		     java.lang.UnsatisfiedLinkError: No implementation found for ... MauiApplication.n_onCreate()。
+		     显式关闭，回退到传统 RegisterNatives 运行时注册路径。 -->
+		<AndroidEnableMarshalMethods>false</AndroidEnableMarshalMethods>
+	</PropertyGroup>
+
+	<!-- 开发调试（Debug）：关闭 Fast Assembly Deployment，改用完整签名 APK 安装，部署更稳；
+	     签名与 Release 用同一 catclaw.keystore，Debug/Release 交替安装时签名一致，
+	     避免 JNIEnv::RegisterNatives 冲突（否则需清缓存/卸载重装）。 -->
+	<PropertyGroup Condition="'$(Configuration)' == 'Debug' And $([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">
+		<AndroidKeyStore>true</AndroidKeyStore>
+		<AndroidSigningKeyStore>..\catclaw.keystore</AndroidSigningKeyStore>
+		<AndroidSigningKeyAlias>catclaw</AndroidSigningKeyAlias>
+		<AndroidSigningKeyPass>$(CatClawKeyPass)</AndroidSigningKeyPass>
+		<AndroidSigningStorePass>$(CatClawStorePass)</AndroidSigningStorePass>
+	</PropertyGroup>
+
+	<!-- Release 单 ABI 选择（同 CatClawMusic）：build-release.ps1 传 -p:ReleaseAbi=arm64。
+	     在项目局部把 RuntimeIdentifiers 覆盖为单个 RID，让 AndroidSupportedAbis 自动派生为单一
+	     ABI；不用命令行 -p:RuntimeIdentifiers（会级联到引用的 Core/Data 项目导致 MSB3030）。
+	     不传 ReleaseAbi 时维持默认双 RID。 -->
+	<Target Name="SelectReleaseAbi" BeforeTargets="_ResolveAndroidTooling" Condition="'$(Configuration)' == 'Release' And $([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android' And '$(DesignTimeBuild)' != 'true' And '$(ReleaseAbi)' != ''">
+		<PropertyGroup Condition="'$(ReleaseAbi)' == 'arm64'">
+			<RuntimeIdentifiers>android-arm64</RuntimeIdentifiers>
+		</PropertyGroup>
+		<PropertyGroup Condition="'$(ReleaseAbi)' == 'x64'">
+			<RuntimeIdentifiers>android-x64</RuntimeIdentifiers>
+		</PropertyGroup>
+	</Target>
 
 	<!-- Windows XAML 编译修复（同 CatClawMusic）：App.generated.cs 仅 Release 参与编译（DISABLE_XAML_GENERATED_MAIN），
 	     App.InitializeComponent.fallback.cs 默认排除，XamlCompiler 极端异常未产出 App.g.i.cs 时动态启用兜底。 -->

@@ -50,7 +50,7 @@
                                 BackgroundColor="{DynamicResource CardBackgroundColor}" HeightRequest="190">
                             <Grid>
                                 <Image Source="{Binding Cover}" Aspect="AspectFill" />
-                                <Image Source="appiconfg.png" Aspect="AspectFit" Opacity="0.35"
+                                <Image Source="ic_brand.png" Aspect="AspectFit" Opacity="0.35"
                                        WidthRequest="40" HeightRequest="40"
                                        HorizontalOptions="Center" VerticalOptions="Center">
                                     <Image.Triggers>

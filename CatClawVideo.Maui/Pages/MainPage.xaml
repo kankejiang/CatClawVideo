@@ -19,7 +19,7 @@
                             StrokeThickness="0"
                             StrokeShape="RoundRectangle 7"
                             BackgroundColor="{DynamicResource PrimaryColor}">
-                        <Image Source="appicon.png" Aspect="AspectFill" />
+                        <Image Source="ic_brand.png" Aspect="AspectFill" />
                     </Border>
                     <Label Text="猫爪影视"
                            FontSize="14.5"
