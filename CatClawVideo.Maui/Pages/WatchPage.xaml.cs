@@ -29,7 +29,11 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     private readonly List<EpisodeRow> _episodeRows = [];
 
     /// <summary>选集分页：每页 20 集（2 列 × 10 行）/ 当前页（0 基）/ 当前页已渲染格的可视件（高亮用）</summary>
-    private const int EpisodesPerPage = 20;
+    /// <summary>选集列数按集数自适应：少→1 列大按钮，中→2 列，多→3 列密排（每列 10 行）</summary>
+    private static int EpisodeColumnsFor(int episodeCount) =>
+        episodeCount <= 10 ? 1 : episodeCount <= 40 ? 2 : 3;
+
+    private static int EpisodesPerPageFor(int episodeCount) => EpisodeColumnsFor(episodeCount) * 10;
     private int _episodePage;
     private readonly List<(Border Border, Label Name, Border Num, EpisodeRow Row)> _pageVisuals = [];
 
@@ -517,25 +521,30 @@ public partial class WatchPage : ContentPage, IQueryAttributable
             numLabel.TextColor = row.IsCurrent ? Colors.White : (Color)Application.Current.Resources["TextSecondaryColor"];
     }
 
-    /// <summary>渲染当前分页的选集格（一页 20 集：2 列 × 10 行）并刷新翻页条可见性</summary>
+    /// <summary>渲染当前分页的选集格（列数按集数自适应：1-3 列 × 10 行）并刷新翻页条可见性</summary>
     private void RenderEpisodePage()
     {
         if (_currentSourceIndex < 0 || _currentSourceIndex >= _sources.Count) return;
         var source = _sources[_currentSourceIndex];
         int count = source.Episodes.Count;
-        int totalPages = (int)Math.Ceiling(count / (double)EpisodesPerPage);
+        int cols = EpisodeColumnsFor(count);
+        int perPage = EpisodesPerPageFor(count);
+        int totalPages = (int)Math.Ceiling(count / (double)perPage);
 
         EpisodeListHost.Children.Clear();
         EpisodeListHost.RowDefinitions.Clear();
+        EpisodeListHost.ColumnDefinitions.Clear();
+        for (int c = 0; c < cols; c++)
+            EpisodeListHost.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Star));
         _pageVisuals.Clear();
 
-        int start = _episodePage * EpisodesPerPage;
-        int end = Math.Min(count, start + EpisodesPerPage);
+        int start = _episodePage * perPage;
+        int end = Math.Min(count, start + perPage);
         for (int i = start; i < end; i++)
         {
             var row = _episodeRows[i];
             int slot = i - start;
-            int r = slot / 2, c = slot % 2;
+            int r = slot / cols, c = slot % cols;
             if (c == 0) EpisodeListHost.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
             var (cell, border, name, num) = BuildEpisodeCell(i, source.Episodes[i], row);
             EpisodeListHost.Add(cell, c, r);
@@ -687,7 +696,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     private void OnNextPageTapped(object? sender, EventArgs e)
     {
         if (_currentSourceIndex < 0 || _currentSourceIndex >= _sources.Count) return;
-        int totalPages = (int)Math.Ceiling(_sources[_currentSourceIndex].Episodes.Count / (double)EpisodesPerPage);
+        int totalPages = (int)Math.Ceiling(_sources[_currentSourceIndex].Episodes.Count / (double)EpisodesPerPageFor(_sources[_currentSourceIndex].Episodes.Count));
         if (_episodePage < totalPages - 1)
         {
             _episodePage++;
@@ -708,7 +717,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         _currentEpisodeIndex = row.Index;
 
         // 当前集不在本页时自动翻页（重渲染时按 IsCurrent 应用高亮）
-        int target = row.Index / EpisodesPerPage;
+        int target = row.Index / EpisodesPerPageFor(episodes.Count);
         if (target != _episodePage)
         {
             _episodePage = target;
