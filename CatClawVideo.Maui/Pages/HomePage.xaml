@@ -70,7 +70,8 @@
              保证卡片宽高比贴近海报 2:3 且一整行能完整显示） -->
         <CollectionView Grid.Row="2" x:Name="PosterGrid" SelectionMode="Single" ItemsSource="{Binding Items}"
                         RemainingItemsThresholdReachedCommand="{Binding LoadMoreCommand}"
-                        RemainingItemsThreshold="8">
+                        RemainingItemsThreshold="8"
+                        ItemsUpdatingScrollMode="KeepScrollOffset">
             <CollectionView.ItemsLayout>
                 <GridItemsLayout Orientation="Vertical" Span="6" VerticalItemSpacing="14" HorizontalItemSpacing="12" />
             </CollectionView.ItemsLayout>
