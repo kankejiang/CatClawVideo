@@ -30,6 +30,28 @@ public class CatClawWebEngine
 
     private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(5);
 
+    /// <summary>
+    /// 搜索专用客户端：**不保存 cookie**。
+    /// ⚠️ 帝国CMS（6V 电影等）用 cookie <c>tinmklastsearchtime</c> 实施「搜索间隔 60 秒」限流——
+    /// 带 cookie 时只有第 1 次搜索出结果，之后全部返回 1202B 的拒绝页；
+    /// 不带 cookie 时每次搜索都被当作新访客，可正常连搜（实测 4/5，唯一失败是没有该片名）。
+    /// 破盾由 CdnDefendSolver 自带的 cookie 容器完成，不依赖本客户端。
+    /// </summary>
+    private static readonly HttpClient SearchHttp = CreateSearchHttp();
+
+    private static HttpClient CreateSearchHttp()
+    {
+        var handler = new HttpClientHandler
+        {
+            UseCookies = false,
+            AllowAutoRedirect = true,
+            AutomaticDecompression = System.Net.DecompressionMethods.All,
+        };
+        var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0");
+        return client;
+    }
+
     /// <summary>HTML 缓存：url → (时刻, 内容)</summary>
     private readonly ConcurrentDictionary<string, (DateTime At, string Html)> _htmlCache = new();
 
@@ -282,7 +304,10 @@ public class CatClawWebEngine
 
     // ═══════════════════ 搜索 ═══════════════════
 
-    /// <summary>搜索：优先 searchUrl 站点接口；无规则时回退「分类前 N 页 + 标题过滤」本地搜索。</summary>
+    /// <summary>
+    /// 搜索：优先 searchUrl 站点接口（GET，或按 searchMethod=post 走表单 POST）；
+    /// 无规则时回退「分类前 N 页 + 标题过滤」本地搜索。
+    /// </summary>
     public async Task<List<VodItem>> SearchAsync(CatClawSourceWeb web, string keyword, string sourceKey)
     {
         var kw = keyword?.Trim();
@@ -290,8 +315,21 @@ public class CatClawWebEngine
 
         if (!string.IsNullOrEmpty(web.Rules.SearchUrl))
         {
-            var url = web.Rules.SearchUrl.Replace("{kw}", Uri.EscapeDataString(kw));
-            var html = await GetHtmlAsync(Absolute(web, url));
+            var isPost = string.Equals(web.Rules.SearchMethod, "post", StringComparison.OrdinalIgnoreCase);
+            string? html;
+            if (isPost)
+            {
+                // 帝国CMS 之类只接受 POST 搜索（GET 会 404）；{kw} 替换为已 URL 编码的关键词
+                var body = (web.Rules.SearchBody ?? "keyboard={kw}")
+                    .Replace("{kw}", Uri.EscapeDataString(kw));
+                var endpoint = Absolute(web, web.Rules.SearchUrl.Replace("{kw}", Uri.EscapeDataString(kw)));
+                html = await SearchRequestAsync(endpoint, body);
+            }
+            else
+            {
+                var url = web.Rules.SearchUrl.Replace("{kw}", Uri.EscapeDataString(kw));
+                html = await SearchRequestAsync(Absolute(web, url), null);
+            }
             if (html == null) return [];
 
             var itemRule = string.IsNullOrEmpty(web.Rules.SearchItem) ? web.Rules.ListItem : web.Rules.SearchItem;
@@ -428,6 +466,39 @@ public class CatClawWebEngine
         foreach (var kv in _htmlCache)
             if (kv.Value.At + CacheTtl < DateTime.Now)
                 _htmlCache.TryRemove(kv.Key, out _);
+    }
+
+    /// <summary>
+    /// 搜索请求（GET/POST 共用），走**无 cookie** 的 <see cref="SearchHttp"/>。
+    /// 原因见 SearchHttp 注释：帝国CMS 的搜索间隔限流是 cookie 实现的，带 cookie 会只剩第 1 次能搜。
+    /// 破盾仍按内容识别（挑战页 → CdnDefendSolver 解 PoW 后重取）。搜索不缓存。
+    /// formBody 为 null 表示 GET；否则为已 URL 编码的表单体。
+    /// </summary>
+    private static async Task<string?> SearchRequestAsync(string url, string? formBody)
+    {
+        try
+        {
+            using var req = formBody == null
+                ? new HttpRequestMessage(HttpMethod.Get, url)
+                : new HttpRequestMessage(HttpMethod.Post, url)
+                {
+                    Content = new StringContent(formBody, Encoding.UTF8, "application/x-www-form-urlencoded"),
+                };
+            using var resp = await SearchHttp.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
+            var html = await resp.Content.ReadAsStringAsync();
+
+            if (CdnDefendSolver.IsChallenge(html))
+            {
+                html = await CdnDefendSolver.SolveAsync(new Uri(url), html) ?? "";
+                if (html.Length == 0 || CdnDefendSolver.IsChallenge(html)) return null;
+            }
+            else if (!resp.IsSuccessStatusCode)
+            {
+                return null;
+            }
+            return html;
+        }
+        catch { return null; }
     }
 
     /// <summary>执行规则正则并返回命名组（不存在的组返回空串）</summary>

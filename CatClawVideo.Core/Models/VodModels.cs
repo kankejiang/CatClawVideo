@@ -1,3 +1,5 @@
+using System.ComponentModel;
+
 namespace CatClawVideo.Core.Models;
 
 /// <summary>
@@ -55,6 +57,14 @@ public class VodSiteInfo
     /// <summary>是否支持快速搜索</summary>
     public bool QuickSearch { get; set; } = true;
 
+    /// <summary>
+    /// 站点是否**声明了**站内搜索接口（猫爪 web 源的 rules.searchUrl；MacCMS/爬虫源天然有标准搜索 API）。
+    /// 与 <see cref="Searchable"/> 的区别：Searchable 为 true 也可能只是走「扫分类页 + 标题过滤」的
+    /// 慢速回退——那种一次要打十几个请求，**不适合用来做封面兜底**。
+    /// 跨源封面检索只打 DeclaredSearch 的站点。
+    /// </summary>
+    public bool DeclaredSearch { get; set; }
+
     /// <summary>请求超时（秒）。来自订阅配置的 timeout 字段，为空时用全局默认。</summary>
     public int? TimeoutSeconds { get; set; }
 
@@ -87,7 +97,7 @@ public class VodCategory
 }
 
 /// <summary>影片条目（列表/搜索结果中的单部影片）</summary>
-public class VodItem
+public class VodItem : INotifyPropertyChanged
 {
     /// <summary>影片 ID（源站点原生 ID）</summary>
     public string Id { get; set; } = string.Empty;
@@ -98,8 +108,29 @@ public class VodItem
     /// <summary>片名</summary>
     public string Title { get; set; } = string.Empty;
 
-    /// <summary>封面图 URL</summary>
+    /// <summary>封面图 URL（源站原始地址；写历史/收藏用，勿改写成本地路径）</summary>
     public string? Cover { get; set; }
+
+    private string? _coverDisplay;
+
+    /// <summary>
+    /// 封面**展示**源：由 <see cref="Services.CoverImageService"/> 解析出的本地缓存文件路径。
+    /// null = 无可展示封面（界面应显示占位海报，勿留白）。
+    /// 与 <see cref="Cover"/> 分离的原因：本地路径不该被写进播放历史/收藏（换机器即失效）。
+    /// 列表在解析完成后回填此属性（INotifyPropertyChanged 驱动界面刷新）。
+    /// </summary>
+    public string? CoverDisplay
+    {
+        get => _coverDisplay;
+        set
+        {
+            if (string.Equals(_coverDisplay, value, StringComparison.Ordinal)) return;
+            _coverDisplay = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CoverDisplay)));
+        }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
 
     /// <summary>分类（如：动作片 / 国产剧）</summary>
     public string? Category { get; set; }

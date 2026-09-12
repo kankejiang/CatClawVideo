@@ -177,6 +177,20 @@ public class CatClawSourceWebRules
     [JsonPropertyName("searchUrl")]
     public string? SearchUrl { get; set; }
 
+    /// <summary>
+    /// 搜索请求方法："get"（默认）或 "post"。
+    /// 帝国CMS（如 6V 电影 /e/search/NNindex.php）等站点只接受 POST，用 GET 会 404。
+    /// </summary>
+    [JsonPropertyName("searchMethod")]
+    public string? SearchMethod { get; set; }
+
+    /// <summary>
+    /// POST 搜索的表单体模板（含 {kw}，会被替换为**已 URL 编码**的关键词）。
+    /// 例：<c>show=title&amp;tempid=1&amp;tbname=article&amp;mid=1&amp;dopost=search&amp;keyboard={kw}</c>
+    /// </summary>
+    [JsonPropertyName("searchBody")]
+    public string? SearchBody { get; set; }
+
     /// <summary>搜索结果条目正则（缺省用 listItem）</summary>
     [JsonPropertyName("searchItem")]
     public string? SearchItem { get; set; }

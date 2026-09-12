@@ -51,16 +51,19 @@
                                 HeightRequest="{DynamicResource PosterCardHeight}"
                                 WidthRequest="{DynamicResource PosterCardWidth}" HorizontalOptions="Center">
                             <Grid>
-                                <Image Source="{Binding Cover}" Aspect="AspectFill" />
-                                <Image Source="ic_brand.png" Aspect="AspectFit" Opacity="0.35"
-                                       WidthRequest="40" HeightRequest="40" IsVisible="False"
-                                       HorizontalOptions="Center" VerticalOptions="Center">
-                                    <Image.Triggers>
-                                        <DataTrigger TargetType="Image" Binding="{Binding Cover}" Value="{x:Null}">
+                                <Image Source="{Binding CoverDisplay}" Aspect="AspectFill" />
+                                <!-- 占位海报（本地渲染，零网络）：封面解析不到时显示，保证绝不留白 -->
+                                <Border StrokeThickness="0" IsVisible="False" Padding="10"
+                                        Background="{DynamicResource PosterPlaceholderBrush}">
+                                    <Border.Triggers>
+                                        <DataTrigger TargetType="Border" Binding="{Binding CoverDisplay}" Value="{x:Null}">
                                             <Setter Property="IsVisible" Value="True" />
                                         </DataTrigger>
-                                    </Image.Triggers>
-                                </Image>
+                                    </Border.Triggers>
+                                    <Label Text="{Binding Title}" FontSize="12.5" FontAttributes="Bold"
+                                           TextColor="#D8DDF5" HorizontalTextAlignment="Center"
+                                           VerticalOptions="Center" MaxLines="4" LineBreakMode="TailTruncation" />
+                                </Border>
                                 <!-- 勾选圈（删除模式显示，勾选后实心） -->
                                 <Border x:Name="CheckCircle" WidthRequest="26" HeightRequest="26"
                                         HorizontalOptions="Start" VerticalOptions="Start" Margin="8,8,0,0"

@@ -1,6 +1,7 @@
 using Microsoft.Maui.Controls.Shapes;
 using CatClawVideo.Core.Interfaces;
 using CatClawVideo.Core.Models;
+using CatClawVideo.Core.Services;
 using CatClawVideo.Maui.Services;
 using CatClawVideo.Maui.ViewModels;
 
@@ -14,16 +15,20 @@ public partial class SearchPage : ContentPage
 {
     private readonly IVodSourceProvider _provider;
 
+    /// <summary>封面解析（源封面失效 → 豆瓣 → 占位海报）</summary>
+    private readonly CoverImageService _covers;
+
     public Command SearchCommand { get; }
 
     private bool _searching;
     private bool _hotLoaded;
 
-    public SearchPage(IVodSourceProvider provider)
+    public SearchPage(IVodSourceProvider provider, CoverImageService covers)
     {
         InitializeComponent();
         ResultGrid.SizeChanged += (_, _) => PosterLayoutHelper.Apply(ResultGrid, ResultGrid.Width, ResultGrid.Height, cap: 260);   // Windows 固定 173×260
         _provider = provider;
+        _covers = covers;
 
         // 先建命令再设 BindingContext：页面未实现 INPC，绑定时 SearchCommand 必须已就位，
         // 否则搜索按钮 / Entry.ReturnCommand 绑定到 null 后永不刷新（点击无反应）
@@ -121,6 +126,7 @@ public partial class SearchPage : ContentPage
             var results = batches.SelectMany(b => b).ToList();
 
             ResultGrid.ItemsSource = results;
+            CoverResolver.Attach(_covers, results);   // 结果先出，封面异步补齐
             StatusLabel.Text = results.Count > 0
                 ? $"「{kw}」找到 {results.Count} 个结果（{sites.Count} 个站点）"
                 : $"未找到与「{kw}」相关的内容";

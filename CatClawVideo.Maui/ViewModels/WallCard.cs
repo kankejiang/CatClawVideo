@@ -8,7 +8,27 @@ namespace CatClawVideo.Maui.ViewModels;
 public sealed class WallCard : INotifyPropertyChanged
 {
     public required string Title { get; init; }
+
+    /// <summary>封面图 URL（源站原始地址；跳转/落库用，勿改写成本地路径）</summary>
     public string? Cover { get; init; }
+
+    private string? _coverDisplay;
+
+    /// <summary>
+    /// 封面**展示**源：由 CoverImageService 解析出的本地缓存文件路径。
+    /// null = 无可展示封面（界面显示占位海报）。异步解析完成后回填并通知刷新。
+    /// </summary>
+    public string? CoverDisplay
+    {
+        get => _coverDisplay;
+        set
+        {
+            if (string.Equals(_coverDisplay, value, StringComparison.Ordinal)) return;
+            _coverDisplay = value;
+            PropertyChanged?.Invoke(this, new(nameof(CoverDisplay)));
+        }
+    }
+
     public string Meta { get; init; } = string.Empty;
 
     /// <summary>右上角角标（如「更新至12集」），空则不显示</summary>

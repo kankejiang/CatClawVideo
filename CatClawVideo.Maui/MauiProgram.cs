@@ -111,12 +111,56 @@ public static class MauiProgram
             new BitTorrentDownloadService(sp.GetRequiredService<Core.Services.BtStreamService>(), BtFileLog.Write));
         services.AddSingleton(sp => new DownloadManager(btFactory: () => sp.GetService<BitTorrentDownloadService>()));
 
-        services.AddSingleton<IVodSourceProvider>(new CatClawVideo.Core.Providers.CompositeVodSourceProvider(
+        var vodProvider = new CatClawVideo.Core.Providers.CompositeVodSourceProvider(
             new IVodSourceProvider[]
             {
                 new CatClawVideo.Core.Providers.CatClawSourceProvider(btService),
                 new CatClawVideo.Core.Providers.MacCmsJsonProvider(),
                 new CatClawVideo.Core.Providers.SpiderVodProvider(jsRuntime, jarRuntime),
+            });
+        services.AddSingleton<IVodSourceProvider>(vodProvider);
+
+        // ═══════════════════════════════════════════════════
+        // 封面获取与兜底
+        //   源封面取不到（防盗链 / CDN 失效 / JS 盾 / 站点资源损坏，如毒舌电影）时按序兜底：
+        //     ① 跨源检索：用**用户自己订阅的可搜索源**按片名找同名片封面
+        //        （实测一次站内搜索即拿到详情链接+封面，无第三方限流）
+        //     ② 豆瓣海报（会限流，作为补充）
+        //     ③ 返回 null → 界面显示本地渲染的占位海报（绝不空白）
+        //   内置磁盘缓存 + 并发上限 + 超时 + 失败负缓存 + 主机熔断，避免慢站把列表拖死。
+        // ═══════════════════════════════════════════════════
+        services.AddSingleton(new CatClawVideo.Core.Services.CoverImageService(
+            FileSystem.CacheDirectory,
+            DiagLog.Write,
+            crossSourceCover: async (title, ct) =>
+            {
+                // 只打「声明了站内搜索接口」的站：没有搜索接口的站会退化成扫分类页（一次十几个请求），
+                // 不适合做封面兜底。命中要求标题归一后一致，避免借到同名的别的片子。
+                var target = CatClawVideo.Core.Services.CoverImageService.NormalizeTitle(title);
+                if (target.Length < 2) return null;
+
+                foreach (var site in SiteRegistry.Playable)
+                {
+                    if (!site.DeclaredSearch) continue;
+                    ct.ThrowIfCancellationRequested();
+                    try
+                    {
+                        var items = await vodProvider.SearchAsync(site, title, ct);
+                        var hit = items.FirstOrDefault(i =>
+                            CatClawVideo.Core.Services.CoverImageService.NormalizeTitle(i.Title) == target &&
+                            !string.IsNullOrWhiteSpace(i.Cover));
+                        if (hit?.Cover is { Length: > 0 } cover)
+                        {
+                            DiagLog.Write($"[cover] 跨源命中「{title}」← {site.Name}");
+                            return cover;
+                        }
+                    }
+                    catch
+                    {
+                        // 单站失败继续下一站
+                    }
+                }
+                return null;
             }));
 
         // ═══════════════════════════════════════════════════

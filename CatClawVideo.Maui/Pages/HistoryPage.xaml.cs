@@ -1,5 +1,7 @@
 using CatClawVideo.Core.Models;
+using CatClawVideo.Core.Services;
 using CatClawVideo.Data;
+using CatClawVideo.Maui.Services;
 using CatClawVideo.Maui.ViewModels;
 
 namespace CatClawVideo.Maui.Pages;
@@ -8,13 +10,18 @@ namespace CatClawVideo.Maui.Pages;
 public partial class HistoryPage : ContentView, ITabView
 {
     private readonly VideoDatabase _db;
+
+    /// <summary>封面解析（源封面失效 → 豆瓣 → 占位海报）</summary>
+    private readonly CoverImageService _covers;
+
     private bool _selectMode;
 
-    public HistoryPage(VideoDatabase db)
+    public HistoryPage(VideoDatabase db, CoverImageService covers)
     {
         InitializeComponent();
         Wall.SizeChanged += (_, _) => PosterLayoutHelper.Apply(Wall, Wall.Width, Wall.Height);
         _db = db;
+        _covers = covers;
     }
 
     public async Task OnTabShownAsync()
@@ -29,7 +36,7 @@ public partial class HistoryPage : ContentView, ITabView
             var items = await _db.GetRecentHistoryAsync(50);
 
             HistoryEmpty.IsVisible = items.Count == 0;
-            Wall.ItemsSource = items.Select(e =>
+            var cards = items.Select(e =>
             {
                 // 有来源定位 → 跳回观看页详情并自动选中该集续看；
                 // 网页直链/本地播放等无来源记录 → 沿用直接播放（老数据仍可用）
@@ -80,6 +87,9 @@ public partial class HistoryPage : ContentView, ITabView
                     Tag = e.Id,
                 };
             }).ToList();
+
+            Wall.ItemsSource = cards;
+            CoverResolver.Attach(_covers, cards);   // 卡片先出，封面异步补齐（失败 → 占位海报）
         }
         catch
         {

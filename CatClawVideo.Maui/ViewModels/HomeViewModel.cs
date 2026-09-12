@@ -1,6 +1,8 @@
 using System.Collections.ObjectModel;
 using CatClawVideo.Core.Interfaces;
 using CatClawVideo.Core.Models;
+using CatClawVideo.Core.Services;
+using CatClawVideo.Maui.Services;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 
@@ -13,6 +15,9 @@ namespace CatClawVideo.Maui.ViewModels;
 public partial class HomeViewModel : ObservableObject
 {
     private readonly IVodSourceProvider _provider;
+
+    /// <summary>封面解析（源封面失效 → 豆瓣 → 占位海报）</summary>
+    private readonly CoverImageService _covers;
 
     /// <summary>当前生效站点（UI 显示/详情页拉取用；无可用源时为 null）</summary>
     public VodSiteInfo? Site => CurrentSite;
@@ -52,9 +57,10 @@ public partial class HomeViewModel : ObservableObject
     public ObservableCollection<VodCategory> Categories { get; } = new();
     public ObservableCollection<VodItem> Items { get; } = new();
 
-    public HomeViewModel(IVodSourceProvider provider)
+    public HomeViewModel(IVodSourceProvider provider, CoverImageService covers)
     {
         _provider = provider;
+        _covers = covers;
         // 订阅变化后允许首页重新拉一次（常驻页，之前以 Categories.Count>0 跳过）
         SiteRegistry.Changed += () =>
             MainThread.BeginInvokeOnMainThread(() => { if (!IsHomeLoading) _ = LoadHomeCommand.ExecuteAsync(null); });
@@ -188,6 +194,7 @@ public partial class HomeViewModel : ObservableObject
         }
 
         foreach (var it in items) Items.Add(it);
+        CoverResolver.Attach(_covers, items);   // 列表先出，封面异步补齐（失败 → 占位海报）
         HomeStatus = Items.Count == 0
             ? $"{CurrentSite?.Name ?? "当前源"} · {category.Name} · 暂无影片"
             : $"{CurrentSite!.Name} · {category.Name} · 已加载 {Items.Count} 部";
@@ -218,6 +225,7 @@ public partial class HomeViewModel : ObservableObject
 
             _currentPage = next;
             foreach (var it in items) Items.Add(it);
+            CoverResolver.Attach(_covers, items);   // 追加页同样补封面
             HomeStatus = $"{CurrentSite.Name} · {_currentCategory.Name} · 已加载 {Items.Count} 部";
         }
         catch

@@ -35,4 +35,11 @@
     <Color x:Key="TabBarBackgroundColor">#CC1A1838</Color>
     <Color x:Key="ProgressTrackColor">#20FFFFFF</Color>
 
+    <!-- 封面占位海报底纹：封面解析不到时本地渲染（零网络），保证海报墙绝不留白 -->
+    <LinearGradientBrush x:Key="PosterPlaceholderBrush" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#3A3668" Offset="0.0" />
+        <GradientStop Color="#221F45" Offset="0.55" />
+        <GradientStop Color="#16142F" Offset="1.0" />
+    </LinearGradientBrush>
+
 </ResourceDictionary>

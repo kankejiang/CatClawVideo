@@ -1,5 +1,7 @@
 using CatClawVideo.Core.Models;
+using CatClawVideo.Core.Services;
 using CatClawVideo.Data;
+using CatClawVideo.Maui.Services;
 using CatClawVideo.Maui.ViewModels;
 
 namespace CatClawVideo.Maui.Pages;
@@ -9,11 +11,15 @@ public partial class FavoritesPage : ContentView, ITabView
 {
     private readonly FavoritesViewModel _vm;
 
-    public FavoritesPage(FavoritesViewModel vm)
+    /// <summary>封面解析（源封面失效 → 豆瓣 → 占位海报）</summary>
+    private readonly CoverImageService _covers;
+
+    public FavoritesPage(FavoritesViewModel vm, CoverImageService covers)
     {
         InitializeComponent();
         Wall.SizeChanged += (_, _) => PosterLayoutHelper.Apply(Wall, Wall.Width, Wall.Height);
         _vm = vm;
+        _covers = covers;
         BindingContext = _vm;
     }
 
@@ -27,7 +33,7 @@ public partial class FavoritesPage : ContentView, ITabView
         await _vm.LoadCommand.ExecuteAsync(null);
 
         EmptyLabel.IsVisible = _vm.Favorites.Count == 0;
-        Wall.ItemsSource = _vm.Favorites.Select(f => new WallCard
+        var cards = _vm.Favorites.Select(f => new WallCard
         {
             Title = f.Title,
             Cover = f.Cover,
@@ -35,6 +41,9 @@ public partial class FavoritesPage : ContentView, ITabView
             Remark = f.Remarks,
             OnOpen = () => _ = OpenFavoriteAsync(f),
         }).ToList();
+
+        Wall.ItemsSource = cards;
+        CoverResolver.Attach(_covers, cards);   // 卡片先出，封面异步补齐（失败 → 占位海报）
     }
 
     /// <summary>收藏卡点击 → 观看页（还原站点 type/api 路由，同搜索结果）</summary>

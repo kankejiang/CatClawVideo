@@ -170,6 +170,8 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
                 Playable = playable,
                 Searchable = searchableFlag ?? playable,
                 QuickSearch = quickSearchFlag ?? playable,
+                // MacCMS / 爬虫源天然带标准搜索 API（一次请求即可）；猫爪 web 源要看是否声明了 searchUrl
+                DeclaredSearch = playable && type is not (CatClawSourceDoc.SiteType or CatClawSourceWeb.WebSiteType),
                 StatusNote = playable ? null : statusNote,
                 NeedsCredentials = needsCreds,
                 CredentialServers = credServers,
@@ -240,6 +242,8 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
                         Playable = true,
                         Searchable = true,
                         QuickSearch = true,
+                        // 声明了 searchUrl 才算「一次请求可搜」——跨源封面检索靠它筛选
+                        DeclaredSearch = HasSearchUrl(s),
                     });
                 }
                 if (result.Count > 0) return result;
@@ -262,6 +266,7 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
                 Playable = true,
                 Searchable = true,
                 QuickSearch = true,
+                DeclaredSearch = HasSearchUrl(root),
             });
         }
         catch
@@ -323,6 +328,26 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
         catch
         {
             return (false, servers);
+        }
+    }
+
+    /// <summary>
+    /// 站点定义里是否声明了站内搜索接口（猫爪 web 源的 rules.searchUrl）。
+    /// 只有声明了才是一次请求可搜——跨源封面检索靠这个标记避免退化成「扫分类页」。
+    /// </summary>
+    private static bool HasSearchUrl(JsonElement siteEl)
+    {
+        try
+        {
+            return siteEl.TryGetProperty("rules", out var rules)
+                && rules.ValueKind == JsonValueKind.Object
+                && rules.TryGetProperty("searchUrl", out var su)
+                && su.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(su.GetString());
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
         }
     }
 
