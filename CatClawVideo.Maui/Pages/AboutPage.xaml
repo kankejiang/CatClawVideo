@@ -185,11 +185,11 @@
                         <Border.Shadow>
                             <Shadow Brush="#6E4FD0" Opacity="0.40" Radius="24" Offset="0,8" />
                         </Border.Shadow>
-                        <Label Text="⟳  检查更新" FontSize="14.5" FontAttributes="Bold"
+                        <Label Text="{Binding CheckUpdateButtonText}" FontSize="14.5" FontAttributes="Bold"
                                TextColor="White"
                                HorizontalOptions="Center" VerticalOptions="Center" />
                         <Border.GestureRecognizers>
-                            <TapGestureRecognizer Tapped="OnCheckUpdateTapped" />
+                            <TapGestureRecognizer Command="{Binding CheckUpdateCommand}" />
                         </Border.GestureRecognizers>
                     </Border>
 

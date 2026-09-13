@@ -1,3 +1,4 @@
+using CatClawVideo.Core.Services;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 
@@ -5,10 +6,19 @@ namespace CatClawVideo.Maui.ViewModels;
 
 /// <summary>
 /// 关于页 ViewModel：展示应用版本与版权信息，提供免责声明、开源协议、
-/// 猫爪音乐跳转等入口（对齐猫爪音乐 AboutViewModel 的结构）。
+/// 猫爪音乐跳转、检查更新等入口（对齐猫爪音乐 AboutViewModel 的结构）。
 /// </summary>
 public partial class AboutViewModel : ObservableObject
 {
+    private const string ReleasesUrl = "https://github.com/kankejiang/CatClawVideo/releases";
+
+    private readonly IUpdateService? _updateService;
+
+    public AboutViewModel(IUpdateService? updateService = null)
+    {
+        _updateService = updateService;
+    }
+
     /// <summary>应用版本号（带 v 前缀，从 AppInfo 读取，失败回退 v1.0.0）</summary>
     [ObservableProperty]
     private string _version = GetAppVersionString();
@@ -103,5 +113,66 @@ public partial class AboutViewModel : ObservableObject
             await Launcher.OpenAsync(new Uri("https://github.com/kankejiang/CatClawMusic"));
         }
         catch { }
+    }
+
+    /// <summary>是否正在检查更新（检查期间禁用按钮防重复点击）</summary>
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(CheckUpdateCommand))]
+    private bool _isCheckingUpdate;
+
+    /// <summary>检查更新按钮文案（检查中切换为提示语）</summary>
+    [ObservableProperty]
+    private string _checkUpdateButtonText = "⟳  检查更新";
+
+    private bool CanCheckUpdate() => !IsCheckingUpdate;
+
+    /// <summary>
+    /// 检查更新：调用 GitHub Release 接口比较版本。
+    /// 发现新版本时弹窗展示更新说明，确认后打开与当前平台匹配的安装包直链（无则退回 Releases 页）。
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(CanCheckUpdate))]
+    private async Task CheckUpdateAsync()
+    {
+        IsCheckingUpdate = true;
+        CheckUpdateButtonText = "正在检查...";
+        try
+        {
+            if (_updateService is null)
+            {
+                // 无更新服务时退回旧行为：直接打开 Releases 页
+                await Launcher.OpenAsync(new Uri(ReleasesUrl));
+                return;
+            }
+
+            var result = await _updateService.CheckUpdateAsync();
+            if (result is not null)
+            {
+                var notes = string.IsNullOrWhiteSpace(result.ReleaseNotes)
+                    ? ""
+                    : $"\n\n{result.ReleaseNotes}";
+                var go = await Shell.Current.DisplayAlertAsync("发现新版本",
+                    $"最新版本 v{result.LatestVersion}（当前 {Version}）{notes}",
+                    "立即下载", "以后再说");
+                if (go)
+                    await Launcher.OpenAsync(new Uri(result.DownloadUrl ?? result.ReleasePageUrl));
+            }
+            else
+            {
+                await Shell.Current.DisplayAlertAsync("检查更新",
+                    $"已是最新版本（当前 {Version}）", "好的");
+            }
+        }
+        catch
+        {
+            // 网络 / 接口异常（GitHub API 限流、无 Release、超时等）
+            await Shell.Current.DisplayAlertAsync("检查更新",
+                "检查失败，请检查网络连接后重试。\n\n也可前往 GitHub Releases 页面手动查看。",
+                "好的");
+        }
+        finally
+        {
+            IsCheckingUpdate = false;
+            CheckUpdateButtonText = "⟳  检查更新";
+        }
     }
 }

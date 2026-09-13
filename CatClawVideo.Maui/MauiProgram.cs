@@ -166,6 +166,7 @@ public static class MauiProgram
         // ═══════════════════════════════════════════════════
         // ViewModels
         // ═══════════════════════════════════════════════════
+        services.AddSingleton<CatClawVideo.Core.Services.IUpdateService, UpdateService>();
         services.AddSingleton<MainViewModel>();
         services.AddTransient<MainViewModel>();
         services.AddTransient<HomeViewModel>();
