@@ -23,31 +23,10 @@
    "ext": "https://raw.liucn.cc/box/libs/tv/zb.json"
   },
   {
-   "key": "玩偶",
-   "name": "👽玩偶哥哥┃4K弹幕",
-   "type": 3,
-   "api": "https://raw.liucn.cc/box/csp_WoGG",
-   "ext": "https://raw.liucn.cc/box/{\"Cloud-drive\": \"tvfan/Cloud-drive.txt\", \"from\": \"4k|auto\", \"siteUrl\": \"https://www.wogg.net/\", \"danMu\": \"弹\"}"
-  },
-  {
    "key": "YGP",
    "name": "🚀┃叨观┃新片",
    "type": 3,
    "api": "https://raw.liucn.cc/box/csp_YGP"
-  },
-  {
-   "key": "抠搜",
-   "name": "🍄┃抠抠┃搜搜",
-   "type": 3,
-   "api": "https://raw.liucn.cc/box/csp_KkSs",
-   "ext": "https://raw.liucn.cc/box/{\"Cloud-drive\": \"tvfan/Cloud-drive.txt\", \"from\": \"4k|auto\"}"
-  },
-  {
-   "key": "Lib",
-   "name": "🌟┃Lib┃秒播",
-   "type": 3,
-   "api": "https://raw.liucn.cc/box/csp_Libvio",
-   "ext": "https://raw.liucn.cc/box/{\"Cloud-drive\": \"tvfan/Cloud-drive.txt\", \"from\": \"4k|auto\"}"
   },
   {
    "key": "文采",
@@ -312,34 +291,6 @@
    "name": "🚑急救┃教学",
    "type": 3,
    "api": "https://raw.liucn.cc/box/csp_FirstAid"
-  },
-  {
-   "key": "米搜",
-   "name": "🦋米搜┃搜索",
-   "type": 3,
-   "api": "https://raw.liucn.cc/box/csp_MIPanSo",
-   "ext": "https://raw.liucn.cc/box/{\"Cloud-drive\": \"tvfan/Cloud-drive.txt\", \"from\": \"4k|auto\"}"
-  },
-  {
-   "key": "夸搜",
-   "name": "🐌夸搜┃搜索",
-   "type": 3,
-   "api": "https://raw.liucn.cc/box/csp_PanSearch",
-   "ext": "https://raw.liucn.cc/box/{\"pan\": \"quark\", \"Cloud-drive\": \"tvfan/Cloud-drive.txt\", \"from\": \"4k|auto\"}"
-  },
-  {
-   "key": "YiSo",
-   "name": "🎯易搜┃搜索",
-   "type": 3,
-   "api": "https://raw.liucn.cc/box/csp_YiSo",
-   "ext": "https://raw.liucn.cc/box/{\"Cloud-drive\": \"tvfan/Cloud-drive.txt\", \"from\": \"4k|auto\"}"
-  },
-  {
-   "key": "UpYun",
-   "name": "🌤️Up搜┃搜索",
-   "type": 3,
-   "api": "https://raw.liucn.cc/box/csp_UpYun",
-   "ext": "https://raw.liucn.cc/box/{\"Cloud-drive\": \"tvfan/Cloud-drive.txt\", \"from\": \"4k|auto\"}"
   },
   {
    "key": "drpy_js_lf_p2p",
