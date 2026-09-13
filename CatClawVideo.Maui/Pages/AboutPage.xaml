@@ -108,8 +108,8 @@
                                 CornerRadius="14" HeightRequest="46" FontSize="13.5" />
                     </Grid>
 
-                    <!-- 姊妹项目（猫爪音乐） -->
-                    <Button Text="🎵 姊妹项目 · 猫爪音乐"
+                    <!-- 猫爪音乐 -->
+                    <Button Text="🎵 猫爪音乐"
                             Command="{Binding OpenMusicCommand}"
                             BackgroundColor="{DynamicResource CardBackgroundStrongColor}"
                             TextColor="{DynamicResource TextPrimaryColor}"

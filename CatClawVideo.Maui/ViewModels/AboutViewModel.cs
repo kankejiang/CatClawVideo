@@ -5,7 +5,7 @@ namespace CatClawVideo.Maui.ViewModels;
 
 /// <summary>
 /// 关于页 ViewModel：展示应用版本与版权信息，提供免责声明、开源协议、
-/// 姊妹项目跳转等入口（对齐猫爪音乐 AboutViewModel 的结构）。
+/// 猫爪音乐跳转等入口（对齐猫爪音乐 AboutViewModel 的结构）。
 /// </summary>
 public partial class AboutViewModel : ObservableObject
 {
@@ -80,7 +80,7 @@ public partial class AboutViewModel : ObservableObject
         catch { }
     }
 
-    /// <summary>打开姊妹项目猫爪音乐（同作者的音频端）</summary>
+    /// <summary>打开猫爪音乐（同作者的音频端）</summary>
     [RelayCommand]
     private async Task OpenMusicAsync()
     {

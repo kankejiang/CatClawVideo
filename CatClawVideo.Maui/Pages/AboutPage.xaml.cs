@@ -2,7 +2,7 @@ using CatClawVideo.Maui.ViewModels;
 
 namespace CatClawVideo.Maui.Pages;
 
-/// <summary>关于页：品牌信息、简介、免责声明 / 开源协议 / 姊妹项目 / GitHub / 检查更新。</summary>
+/// <summary>关于页：品牌信息、简介、免责声明 / 开源协议 / 猫爪音乐 / GitHub / 检查更新。</summary>
 public partial class AboutPage : ContentPage
 {
     private const string ReleasesUrl = "https://github.com/kankejiang/CatClawVideo/releases";
