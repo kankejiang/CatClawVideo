@@ -1,5 +1,4 @@
 using System.Net.Http;
-using System.Text;
 using System.Text.Json;
 using CatClawVideo.Core.Services;
 
@@ -13,9 +12,6 @@ public class UpdateService : IUpdateService
 
     private const string ReleasePageUrl =
         "https://github.com/kankejiang/CatClawVideo/releases";
-
-    /// <summary>更新说明截断上限（字符）</summary>
-    private const int MaxNotesLength = 400;
 
     private static readonly HttpClient _httpClient = new()
     {
@@ -94,7 +90,7 @@ public class UpdateService : IUpdateService
 #endif
     }
 
-    /// <summary>提取并清理 release body：去掉常见 Markdown 标记、压缩空行、截断到 MaxNotesLength</summary>
+    /// <summary>提取 release body（保留原始 Markdown 行结构，由展示层格式化渲染）</summary>
     private static string? CleanNotes(JsonElement root)
     {
         if (!root.TryGetProperty("body", out var bodyProp) || bodyProp.ValueKind != JsonValueKind.String)
@@ -104,29 +100,7 @@ public class UpdateService : IUpdateService
         if (string.IsNullOrWhiteSpace(body))
             return null;
 
-        var lines = body.Replace("\r\n", "\n").Split('\n');
-        var sb = new StringBuilder();
-        foreach (var raw in lines)
-        {
-            var line = raw.Trim();
-            if (line.StartsWith('#')) line = line.TrimStart('#').Trim();     // 标题
-            line = line.Replace("**", "").Replace("`", "");                  // 加粗 / 行内代码
-            if (line.StartsWith("---")) continue;                            // 分隔线
-            if (line.Length == 0)
-            {
-                if (sb.Length > 0 && sb[sb.Length - 1] != '\n') sb.Append('\n');
-                continue;
-            }
-            if (sb.Length + line.Length + 1 > MaxNotesLength)
-            {
-                sb.Append("…");
-                break;
-            }
-            sb.Append(line).Append('\n');
-        }
-
-        var notes = sb.ToString().TrimEnd();
-        return notes.Length > 0 ? notes : null;
+        return body.Replace("\r\n", "\n").Trim();
     }
 
     private static string GetCurrentVersion()

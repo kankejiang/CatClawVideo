@@ -141,10 +141,15 @@ public partial class AboutViewModel : ObservableObject
 
     private bool CanCheckUpdate() => !IsCheckingUpdate;
 
+    /// <summary>检查完成事件：携带检查结果，由页面展示自定义弹窗（页面构造时订阅）</summary>
+    public event Action<UpdateCheckResult>? UpdateCheckCompleted;
+
+    /// <summary>检查失败事件：携带提示文案</summary>
+    public event Action<string>? UpdateCheckFailed;
+
     /// <summary>
-    /// 检查更新：调用 GitHub Release 接口比较版本。
-    /// 发现新版本时弹窗展示更新说明，确认后打开与当前平台匹配的安装包直链（无则退回 Releases 页）；
-    /// 已是最新时同样展示最新版本的更新日志。
+    /// 检查更新：调用 GitHub Release 接口比较版本，结果通过
+    /// <see cref="UpdateCheckCompleted"/> / <see cref="UpdateCheckFailed"/> 交给页面展示。
     /// </summary>
     [RelayCommand(CanExecute = nameof(CanCheckUpdate))]
     private async Task CheckUpdateAsync()
@@ -163,40 +168,29 @@ public partial class AboutViewModel : ObservableObject
             var result = await _updateService.CheckUpdateAsync();
             if (result is null)
             {
-                await Shell.Current.DisplayAlertAsync("检查更新",
-                    "暂时无法获取版本信息，请稍后重试。", "好的");
+                RaiseUpdateFailed("暂时无法获取版本信息，请稍后重试。");
                 return;
             }
 
-            var notes = string.IsNullOrWhiteSpace(result.ReleaseNotes)
-                ? ""
-                : $"\n\n{result.ReleaseNotes}";
-
-            if (result.HasUpdate)
-            {
-                var go = await Shell.Current.DisplayAlertAsync("发现新版本",
-                    $"最新版本 v{result.LatestVersion}（当前 {Version}）{notes}",
-                    "立即下载", "以后再说");
-                if (go)
-                    await Launcher.OpenAsync(new Uri(result.DownloadUrl ?? result.ReleasePageUrl));
-            }
-            else
-            {
-                await Shell.Current.DisplayAlertAsync("已是最新版本",
-                    $"当前 {Version} 已是最新版本{notes}", "好的");
-            }
+            UpdateCheckCompleted?.Invoke(result);
         }
         catch
         {
             // 网络 / 接口异常（GitHub API 限流、无 Release、超时等）
-            await Shell.Current.DisplayAlertAsync("检查更新",
-                "检查失败，请检查网络连接后重试。\n\n也可前往 GitHub Releases 页面手动查看。",
-                "好的");
+            RaiseUpdateFailed("检查失败，请检查网络连接后重试。\n\n也可前往 GitHub Releases 页面手动查看。");
         }
         finally
         {
             IsCheckingUpdate = false;
             CheckUpdateButtonText = "⟳  检查更新";
         }
+    }
+
+    private void RaiseUpdateFailed(string message)
+    {
+        if (UpdateCheckFailed is not null)
+            UpdateCheckFailed.Invoke(message);
+        else
+            _ = Shell.Current.DisplayAlertAsync("检查更新", message, "好的");
     }
 }

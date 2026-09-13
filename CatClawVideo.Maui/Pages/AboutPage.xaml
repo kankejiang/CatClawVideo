@@ -221,5 +221,66 @@
                 </VerticalStackLayout>
             </ScrollView>
         </Grid>
+
+        <!-- ═══ 检查更新弹窗（自定义卡片，替代系统 DisplayAlert） ═══ -->
+        <Grid x:Name="UpdateOverlay" Grid.RowSpan="2" IsVisible="False" BackgroundColor="#AA0A0A18">
+            <Border x:Name="UpdateCard" WidthRequest="470" HorizontalOptions="Center" VerticalOptions="Center"
+                    StrokeThickness="1" StrokeShape="RoundRectangle 20" Stroke="#22FFFFFF"
+                    BackgroundColor="#FF1E1E30" Padding="24,22">
+                <Border.Shadow>
+                    <Shadow Brush="#000000" Opacity="0.55" Radius="32" Offset="0,10" />
+                </Border.Shadow>
+                <VerticalStackLayout Spacing="12">
+
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+                        <Label x:Name="UpdateTitleLabel" Grid.Column="0" Text="发现新版本" FontSize="17"
+                               FontFamily="OpenSansSemibold" TextColor="{DynamicResource TextPrimaryColor}"
+                               VerticalOptions="Center" />
+                        <Border Grid.Column="1" BackgroundColor="#1F55D6FF" Stroke="#3855D6FF"
+                                StrokeThickness="1" StrokeShape="RoundRectangle 10" Padding="10,3"
+                                VerticalOptions="Center">
+                            <Label x:Name="UpdateVersionLabel" Text="v0.0.0" FontSize="12" FontAttributes="Bold"
+                                   TextColor="#55D6FF" />
+                        </Border>
+                    </Grid>
+
+                    <Label x:Name="UpdateSubtitleLabel" FontSize="12" LineBreakMode="WordWrap"
+                           TextColor="{DynamicResource TextHintColor}" />
+
+                    <BoxView HeightRequest="1" Color="{DynamicResource DividerColor}" />
+
+                    <ScrollView x:Name="UpdateNotesScroll">
+                        <VerticalStackLayout x:Name="UpdateNotesLayout" Spacing="6" />
+                    </ScrollView>
+
+                    <Grid x:Name="UpdateButtonsGrid" ColumnDefinitions="*,140" ColumnSpacing="10">
+                        <Border x:Name="UpdateSecondaryButton" Grid.Column="0" StrokeThickness="1"
+                                StrokeShape="RoundRectangle 12" Stroke="#33FFFFFF" BackgroundColor="#14FFFFFF"
+                                HeightRequest="40">
+                            <Label Text="以后再说" FontSize="13.5" TextColor="{DynamicResource TextPrimaryColor}"
+                                   HorizontalOptions="Center" VerticalOptions="Center" />
+                            <Border.GestureRecognizers>
+                                <TapGestureRecognizer Tapped="OnUpdateSecondaryTapped" />
+                            </Border.GestureRecognizers>
+                        </Border>
+                        <Border x:Name="UpdatePrimaryButton" Grid.Column="1" StrokeThickness="0"
+                                StrokeShape="RoundRectangle 12" HeightRequest="40">
+                            <Border.Background>
+                                <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                    <GradientStop Color="#9B7ED8" Offset="0" />
+                                    <GradientStop Color="#6E4FD0" Offset="1" />
+                                </LinearGradientBrush>
+                            </Border.Background>
+                            <Label x:Name="UpdatePrimaryButtonText" Text="立即下载" FontSize="13.5" FontAttributes="Bold"
+                                   TextColor="White" HorizontalOptions="Center" VerticalOptions="Center" />
+                            <Border.GestureRecognizers>
+                                <TapGestureRecognizer Tapped="OnUpdatePrimaryTapped" />
+                            </Border.GestureRecognizers>
+                        </Border>
+                    </Grid>
+
+                </VerticalStackLayout>
+            </Border>
+        </Grid>
     </Grid>
 </ContentPage>
