@@ -150,6 +150,27 @@
                             </Grid>
                             <BoxView HeightRequest="1" Color="{DynamicResource DividerColor}" />
 
+                            <!-- QQ 交流群 -->
+                            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="14" Padding="18,13">
+                                <Border Grid.Column="0" WidthRequest="40" HeightRequest="40"
+                                        StrokeThickness="0" StrokeShape="RoundRectangle 12"
+                                        BackgroundColor="#241296DB" VerticalOptions="Center">
+                                    <Label Text="💬" FontSize="17" HorizontalOptions="Center" VerticalOptions="Center" />
+                                </Border>
+                                <VerticalStackLayout Grid.Column="1" Spacing="2" VerticalOptions="Center">
+                                    <Label Text="QQ 交流群" FontSize="14.5" FontFamily="OpenSansSemibold"
+                                           TextColor="{DynamicResource TextPrimaryColor}" />
+                                    <Label Text="855383639 · 反馈问题 / 交流片源" FontSize="12"
+                                           TextColor="{DynamicResource TextHintColor}" />
+                                </VerticalStackLayout>
+                                <Label Grid.Column="2" Text="›" FontSize="16" VerticalOptions="Center"
+                                       TextColor="{DynamicResource TextHintColor}" Opacity="0.55" />
+                                <Grid.GestureRecognizers>
+                                    <TapGestureRecognizer Command="{Binding JoinGroupCommand}" />
+                                </Grid.GestureRecognizers>
+                            </Grid>
+                            <BoxView HeightRequest="1" Color="{DynamicResource DividerColor}" />
+
                             <!-- GitHub -->
                             <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="14" Padding="18,13">
                                 <Border Grid.Column="0" WidthRequest="40" HeightRequest="40"

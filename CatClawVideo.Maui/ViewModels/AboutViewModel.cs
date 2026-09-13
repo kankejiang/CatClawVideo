@@ -115,6 +115,21 @@ public partial class AboutViewModel : ObservableObject
         catch { }
     }
 
+    /// <summary>加入 QQ 交流群：尝试通过链接跳转，失败时弹窗提示群号（对齐猫爪音乐）</summary>
+    [RelayCommand]
+    private async Task JoinGroupAsync()
+    {
+        try
+        {
+            await Launcher.OpenAsync(new Uri("https://qm.qq.com/q/Fhu3IEzqa4"));
+        }
+        catch
+        {
+            await Shell.Current.DisplayAlertAsync("QQ 交流群",
+                "QQ 交流群：855383639\n\n可通过 QQ 搜索群号加入", "好的");
+        }
+    }
+
     /// <summary>是否正在检查更新（检查期间禁用按钮防重复点击）</summary>
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(CheckUpdateCommand))]
