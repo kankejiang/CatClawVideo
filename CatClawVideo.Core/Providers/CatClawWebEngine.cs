@@ -17,13 +17,12 @@ public class CatClawWebEngine
 
     private static HttpClient CreateHttp()
     {
-        // cookie 容器与破盾器共享：cdndefend 挑战算出的 cookie 对引擎后续请求生效
-        var handler = new HttpClientHandler
+        // 与破盾器共享 cookie 容器；SocketsHttpHandler 统一全平台行为
+        //（AndroidMessageHandler 对挑战页非标准状态码 850 会抛异常，见 CdnDefendSolver）
+        var client = new HttpClient(CdnDefendSolver.CreateSharedHandler(), disposeHandler: false)
         {
-            CookieContainer = CdnDefendSolver.Cookies,
-            UseCookies = true,
+            Timeout = TimeSpan.FromSeconds(20),
         };
-        var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
         client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0");
         return client;
     }
@@ -458,7 +457,20 @@ public class CatClawWebEngine
             if (_htmlCache.Count > 200) CleanCache();
             return html;
         }
-        catch { return null; }
+        catch (Exception ex)
+        {
+            var sb = new StringBuilder();
+            var cur = ex;
+            var depth = 0;
+            while (cur != null && depth < 4)
+            {
+                sb.Append(' ', depth * 2).Append(cur.GetType().FullName).Append(": ").Append(cur.Message).Append(" | ");
+                cur = cur.InnerException;
+                depth++;
+            }
+            CatClawLog.Write($"[http] 异常 {url[..Math.Min(url.Length, 80)]} → {sb}");
+            return null;
+        }
     }
 
     private void CleanCache()

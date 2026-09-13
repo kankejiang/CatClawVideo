@@ -201,6 +201,9 @@ public static class MauiProgram
 #endif
 
         var app = builder.Build();
+
+        // Core 层日志 → DiagLog（Android 上同时进 logcat，tag=CatClawDiag）
+        CatClawVideo.Core.Providers.CatClawLog.Sink = DiagLog.Write;
         Services = app.Services;
 
         // ═══════════════════════════════════════════════════

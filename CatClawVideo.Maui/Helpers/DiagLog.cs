@@ -6,6 +6,11 @@ public static class DiagLog
 {
     public static void Write(string msg)
     {
+        // Android：同时进 logcat（Release 版文件在内部存储，adb 读不到；logcat 免 root 可取）
+        if (OperatingSystem.IsAndroid())
+        {
+            try { Android.Util.Log.Info("CatClawDiag", msg); } catch { }
+        }
         try
         {
             var dir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CatClawVideo");

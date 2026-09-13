@@ -33,17 +33,23 @@ public static class CdnDefendSolver
         try
         {
             var ch = Parse(challengeHtml);
-            if (ch == null) return null;
+            if (ch == null) { CatClawLog.Write($"[cdndefend] {uri.Host} 挑战解析失败"); return null; }
             var i = BruteForce(ch);
-            if (i < 0) return null;
+            if (i < 0) { CatClawLog.Write($"[cdndefend] {uri.Host} PoW 上限内未命中"); return null; }
+            CatClawLog.Write($"[cdndefend] {uri.Host} PoW i={i} cookie={ch.CookieName} n1={ch.N1}");
 
             Cookies.Add(new Uri(uri.GetLeftPart(UriPartial.Authority) + "/"),
                 new Cookie(ch.CookieName, ch.Token + i.ToString(CultureInfo.InvariantCulture)) { Path = "/" });
 
             var retry = await Http.GetStringAsync(uri);
+            CatClawLog.Write($"[cdndefend] {uri.Host} 重取 len={retry.Length} 仍挑战={IsChallenge(retry)}");
             return IsChallenge(retry) ? null : retry;
         }
-        catch { return null; }
+        catch (Exception ex)
+        {
+            CatClawLog.Write($"[cdndefend] {uri.Host} 异常: {ex.GetType().Name} {ex.Message}");
+            return null;
+        }
     }
 
     // ═══════════════════ 实现 ═══════════════════
@@ -51,11 +57,26 @@ public static class CdnDefendSolver
     /// <summary>共享 cookie 容器（引擎 HttpClient 的 handler 引用同一实例）。</summary>
     public static readonly CookieContainer Cookies = new();
 
-    private static readonly HttpClient Http = CreateHttp();
-
-    private static HttpClient CreateHttp()
+    /// <summary>
+    /// 共享网络 handler：统一用托管 SocketsHttpHandler。
+    /// AndroidMessageHandler 底层 HttpURLConnection 对非 2xx（含挑战页 850）抛
+    /// Java.FileNotFoundException 且对非标准状态码无法映射，导致挑战页体读不到；
+    /// SocketsHttpHandler 全平台行为一致，任意 3 位状态码都能正常读到响应体。
+    /// </summary>
+    public static HttpMessageHandler CreateSharedHandler() => new SocketsHttpHandler
     {
-        var client = new HttpClient(new HttpClientHandler { CookieContainer = Cookies, UseCookies = true })
+        CookieContainer = Cookies,
+        UseCookies = true,
+        AutomaticDecompression = DecompressionMethods.All,
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+        ConnectTimeout = TimeSpan.FromSeconds(20),
+    };
+
+    private static readonly HttpClient Http = CreateClient();
+
+    public static HttpClient CreateClient()
+    {
+        var client = new HttpClient(CreateSharedHandler(), disposeHandler: false)
         {
             Timeout = TimeSpan.FromSeconds(20),
         };
