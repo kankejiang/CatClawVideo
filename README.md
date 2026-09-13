@@ -18,8 +18,8 @@ _Modern cross-platform video player built with .NET MAUI._
 
 ## Welcome
 
-- 猫爪影视是基于 .NET MAUI 的跨平台影视播放器，[猫爪音乐 (CatClawMusic)](https://github.com/kankejiang/CatClawMusic) 的姊妹项目
-  - A modern cross-platform video player built with .NET MAUI, sister project of CatClawMusic
+- 猫爪影视是基于 .NET MAUI 的跨平台影视播放器
+  - A modern cross-platform video player built with .NET MAUI
 
 ## Feature
 
@@ -53,7 +53,7 @@ _Modern cross-platform video player built with .NET MAUI._
 
 | QQ Group | [![QQ 交流群](https://img.shields.io/badge/QQ%E7%BE%A4-855383639-Join-blue)](https://qm.qq.com/q/Fhu3IEzqa4) |
 |:-:|:-:|
-| 姊妹项目 | [![猫爪音乐](https://img.shields.io/badge/%E7%8C%AB%E7%88%AA%E9%9F%B3%E4%B9%90-CatClawMusic-pink)](https://github.com/kankejiang/CatClawMusic) |
+| 相关项目 | [![猫爪音乐](https://img.shields.io/badge/%E7%8C%AB%E7%88%AA%E9%9F%B3%E4%B9%90-CatClawMusic-pink)](https://github.com/kankejiang/CatClawMusic) |
 
 使用问题、片源配置、功能建议都欢迎进群交流；也可以在仓库 [Issues](https://github.com/kankejiang/CatClawVideo/issues) 中反馈。
 
