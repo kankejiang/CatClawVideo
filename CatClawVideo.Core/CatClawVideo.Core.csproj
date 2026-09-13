@@ -3,7 +3,7 @@
     <TargetFramework>net11.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <LangVersion>preview</LangVersion>
+    <LangVersion>15.0</LangVersion>
   </PropertyGroup>
   <ItemGroup>
     <!-- Jint JS 引擎：drpy2 爬虫运行时（与猫爪音乐同版本，Acornima 显式锁定） -->
