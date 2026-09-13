@@ -24,6 +24,9 @@ public partial class AppShell : Shell
         // 下载设置页（下载 tab 右上角 ⚙ 进入；照搬 Motrix 设置项）
         Routing.RegisterRoute("btsettings", typeof(Pages.BtSettingsPage));
 
+        // 关于页（设置 → 关于）
+        Routing.RegisterRoute("about", typeof(Pages.AboutPage));
+
         // 任务详情页（下载卡片 ℹ 进入；照搬 Motrix 任务详情）
         Routing.RegisterRoute("downloaddetail", typeof(Pages.DownloadDetailPage));
     }

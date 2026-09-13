@@ -173,6 +173,7 @@ public static class MauiProgram
         services.AddTransient<SettingsViewModel>();
         services.AddTransient<VideoPlayerViewModel>();
         services.AddTransient<DownloadsViewModel>();
+        services.AddTransient<AboutViewModel>();
 
         // ═══════════════════════════════════════════════════
         // Pages / Shell
@@ -192,6 +193,7 @@ public static class MauiProgram
         services.AddTransient<Pages.SourceConfigPage>();
         services.AddTransient<Pages.HistoryPage>();
         services.AddTransient<Pages.LocalMediaPage>();
+        services.AddTransient<Pages.AboutPage>();
 
 #if DEBUG
         builder.Logging.AddDebug();

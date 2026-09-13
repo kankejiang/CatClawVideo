@@ -31,7 +31,15 @@ public partial class SettingsPage : ContentView, ITabView
         // 主题锁定蓝色 + 深色（外观 UI 已移除，进入设置页即纠正历史存储值）
         _vm.SelectedTheme = Core.Interfaces.AppTheme.Blue;
         _vm.SelectedDarkMode = DarkModeSetting.Dark;
+        // 版本号动态填充（避免硬编码过期）
+        try { AboutVersionLabel.Text = $"猫爪影视 {AppInfo.Current?.VersionString ?? "0.0.0"}"; } catch { }
         return Task.CompletedTask;
+    }
+
+    /// <summary>跳转关于页（品牌信息 / 免责声明 / 开源协议 / 检查更新）</summary>
+    private async void OnAboutClicked(object? sender, TappedEventArgs e)
+    {
+        try { await Shell.Current.GoToAsync("about"); } catch { }
     }
 
     /// <summary>跳转源配置页（订阅源/站点完整管理）</summary>

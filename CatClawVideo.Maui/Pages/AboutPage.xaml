@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="CatClawVideo.Maui.Pages.AboutPage"
+             Title="关于"
+             BackgroundColor="{DynamicResource WindowBackgroundColor}"
+             NavigationPage.HasNavigationBar="False">
+
+    <!-- 隐藏 Shell 系统返回键（页面自带自定义返回，避免左上角双返回按钮，同 SourceConfigPage） -->
+    <Shell.BackButtonBehavior>
+        <BackButtonBehavior IsVisible="False" />
+    </Shell.BackButtonBehavior>
+
+    <ScrollView>
+        <VerticalStackLayout Padding="24,14,24,28" Spacing="14">
+
+            <!-- 顶部：自定义返回 + 标题 -->
+            <Grid ColumnDefinitions="Auto,Auto,*" ColumnSpacing="12">
+                <Border Grid.Column="0" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
+                        StrokeShape="RoundRectangle 12" WidthRequest="38" HeightRequest="38">
+                    <Image Source="ic_back.png" WidthRequest="18" HeightRequest="18"
+                           HorizontalOptions="Center" VerticalOptions="Center" />
+                    <Border.GestureRecognizers>
+                        <TapGestureRecognizer Tapped="OnBackTapped" />
+                    </Border.GestureRecognizers>
+                </Border>
+                <Label Grid.Column="1" Text="关于" FontSize="15" FontFamily="OpenSansSemibold"
+                       TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
+            </Grid>
+
+            <!-- ═══ 品牌卡：图标 + 应用名 + 版本 + 一句话 ═══ -->
+            <Border StrokeThickness="1" StrokeShape="RoundRectangle 20"
+                    BackgroundColor="{DynamicResource CardBackgroundColor}"
+                    Stroke="{DynamicResource DividerColor}" Padding="24,26,24,24">
+                <VerticalStackLayout Spacing="12" HorizontalOptions="Center">
+                    <Border StrokeThickness="0"
+                            StrokeShape="RoundRectangle 24"
+                            BackgroundColor="{DynamicResource CardBackgroundStrongColor}"
+                            WidthRequest="96" HeightRequest="96"
+                            HorizontalOptions="Center" Padding="0">
+                        <Image Source="ic_brand.png" WidthRequest="66" HeightRequest="66"
+                               Aspect="AspectFit"
+                               HorizontalOptions="Center" VerticalOptions="Center" />
+                    </Border>
+                    <Label Text="猫爪影视"
+                           FontSize="24" FontFamily="OpenSansSemibold"
+                           TextColor="{DynamicResource TextPrimaryColor}"
+                           HorizontalOptions="Center" />
+                    <Label Text="{Binding Version}"
+                           FontSize="13"
+                           TextColor="{DynamicResource TextSecondaryColor}"
+                           HorizontalOptions="Center" />
+                    <Label Text="一只会找片的猫爪喵——本地、私域、订阅源，都给你安排好啦"
+                           FontSize="13"
+                           LineBreakMode="WordWrap"
+                           HorizontalTextAlignment="Center"
+                           TextColor="{DynamicResource TextHintColor}"
+                           HorizontalOptions="Center" />
+                    <Border StrokeThickness="0" StrokeShape="RoundRectangle 14"
+                            BackgroundColor="{DynamicResource ChipInactiveColor}"
+                            Padding="14,5" HorizontalOptions="Center">
+                        <Label Text=".NET MAUI Edition"
+                               FontSize="11" FontFamily="OpenSansSemibold"
+                               TextColor="{DynamicResource TextSecondaryColor}"
+                               HorizontalOptions="Center" />
+                    </Border>
+                </VerticalStackLayout>
+            </Border>
+
+            <!-- ═══ 简介 ═══ -->
+            <Border StrokeThickness="1" StrokeShape="RoundRectangle 20"
+                    BackgroundColor="{DynamicResource CardBackgroundColor}"
+                    Stroke="{DynamicResource DividerColor}" Padding="20">
+                <VerticalStackLayout Spacing="8">
+                    <Label Text="简介" FontSize="16" FontFamily="OpenSansSemibold"
+                           TextColor="{DynamicResource TextPrimaryColor}" />
+                    <Label Text="跨平台影视播放器（Android / Windows），支持猫爪源本地文件与 TVBox / 影视仓订阅，提供站点订阅、分类浏览、跨源搜索与多线路播放。"
+                           FontSize="13" LineBreakMode="WordWrap"
+                           TextColor="{DynamicResource TextSecondaryColor}" />
+                    <Grid ColumnDefinitions="*,Auto" Padding="0,4">
+                        <Label Grid.Column="0" Text="包名" FontSize="13"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                        <Label Grid.Column="1" Text="{Binding PackageId}" FontSize="12"
+                               TextColor="{DynamicResource TextHintColor}" />
+                    </Grid>
+                </VerticalStackLayout>
+            </Border>
+
+            <!-- ═══ 链接与操作 ═══ -->
+            <Border StrokeThickness="1" StrokeShape="RoundRectangle 20"
+                    BackgroundColor="{DynamicResource CardBackgroundColor}"
+                    Stroke="{DynamicResource DividerColor}" Padding="20">
+                <VerticalStackLayout Spacing="10">
+
+                    <!-- 免责声明 | 开源协议 -->
+                    <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
+                        <Button Grid.Column="0"
+                                Text="⚠️ 免责声明"
+                                Command="{Binding ViewDisclaimerCommand}"
+                                BackgroundColor="{DynamicResource CardBackgroundStrongColor}"
+                                TextColor="{DynamicResource TextPrimaryColor}"
+                                CornerRadius="14" HeightRequest="46" FontSize="13.5" />
+                        <Button Grid.Column="1"
+                                Text="📄 开源协议"
+                                Command="{Binding ViewLicenseCommand}"
+                                BackgroundColor="{DynamicResource CardBackgroundStrongColor}"
+                                TextColor="{DynamicResource TextPrimaryColor}"
+                                CornerRadius="14" HeightRequest="46" FontSize="13.5" />
+                    </Grid>
+
+                    <!-- 姊妹项目（猫爪音乐） -->
+                    <Button Text="🎵 姊妹项目 · 猫爪音乐"
+                            Command="{Binding OpenMusicCommand}"
+                            BackgroundColor="{DynamicResource CardBackgroundStrongColor}"
+                            TextColor="{DynamicResource TextPrimaryColor}"
+                            CornerRadius="14" HeightRequest="46" FontSize="13.5" />
+
+                    <!-- GitHub -->
+                    <Button Text="⭐ GitHub"
+                            Command="{Binding OpenGitHubCommand}"
+                            BackgroundColor="{DynamicResource CardBackgroundStrongColor}"
+                            TextColor="{DynamicResource TextPrimaryColor}"
+                            CornerRadius="14" HeightRequest="46" FontSize="13.5" />
+
+                    <!-- 检查更新（跳转 GitHub Releases，TODO 待接入更新服务统一比较版本） -->
+                    <Button Text="检查更新"
+                            Clicked="OnCheckUpdateClicked"
+                            BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
+                            TextColor="White"
+                            CornerRadius="14" HeightRequest="46" FontSize="13.5"
+                            FontAttributes="Bold" />
+                </VerticalStackLayout>
+            </Border>
+
+            <Label Text="{Binding Copyright}"
+                   FontSize="12"
+                   TextColor="{DynamicResource TextHintColor}"
+                   HorizontalOptions="Center"
+                   Margin="0,6,0,0" />
+
+        </VerticalStackLayout>
+    </ScrollView>
+</ContentPage>
