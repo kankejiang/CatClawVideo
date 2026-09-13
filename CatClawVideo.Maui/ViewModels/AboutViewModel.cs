@@ -128,7 +128,8 @@ public partial class AboutViewModel : ObservableObject
 
     /// <summary>
     /// 检查更新：调用 GitHub Release 接口比较版本。
-    /// 发现新版本时弹窗展示更新说明，确认后打开与当前平台匹配的安装包直链（无则退回 Releases 页）。
+    /// 发现新版本时弹窗展示更新说明，确认后打开与当前平台匹配的安装包直链（无则退回 Releases 页）；
+    /// 已是最新时同样展示最新版本的更新日志。
     /// </summary>
     [RelayCommand(CanExecute = nameof(CanCheckUpdate))]
     private async Task CheckUpdateAsync()
@@ -145,11 +146,19 @@ public partial class AboutViewModel : ObservableObject
             }
 
             var result = await _updateService.CheckUpdateAsync();
-            if (result is not null)
+            if (result is null)
             {
-                var notes = string.IsNullOrWhiteSpace(result.ReleaseNotes)
-                    ? ""
-                    : $"\n\n{result.ReleaseNotes}";
+                await Shell.Current.DisplayAlertAsync("检查更新",
+                    "暂时无法获取版本信息，请稍后重试。", "好的");
+                return;
+            }
+
+            var notes = string.IsNullOrWhiteSpace(result.ReleaseNotes)
+                ? ""
+                : $"\n\n{result.ReleaseNotes}";
+
+            if (result.HasUpdate)
+            {
                 var go = await Shell.Current.DisplayAlertAsync("发现新版本",
                     $"最新版本 v{result.LatestVersion}（当前 {Version}）{notes}",
                     "立即下载", "以后再说");
@@ -158,8 +167,8 @@ public partial class AboutViewModel : ObservableObject
             }
             else
             {
-                await Shell.Current.DisplayAlertAsync("检查更新",
-                    $"已是最新版本（当前 {Version}）", "好的");
+                await Shell.Current.DisplayAlertAsync("已是最新版本",
+                    $"当前 {Version} 已是最新版本{notes}", "好的");
             }
         }
         catch

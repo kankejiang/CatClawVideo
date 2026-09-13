@@ -47,10 +47,10 @@ public class UpdateService : IUpdateService
             return null;
 
         var latestVersion = latestTag.TrimStart('v');
-        if (CompareVersion(latestVersion, GetCurrentVersion()) <= 0)
-            return null; // 已是最新版本
+        var hasUpdate = CompareVersion(latestVersion, GetCurrentVersion()) > 0;
 
         return new UpdateCheckResult(
+            HasUpdate: hasUpdate,
             LatestVersion: latestVersion,
             ReleaseNotes: CleanNotes(root),
             DownloadUrl: PickAssetUrl(root),
