@@ -54,9 +54,9 @@ $KeyAlias = "catclaw"
 $KeyPass = "catclaw123"
 $StorePass = "catclaw123"
 
-# SDK 路径
+# SDK 路径（Java 实际安装路径：Android Studio 附带的 OpenJDK）
 $AndroidSdk = "C:\Users\$env:USERNAME\AppData\Local\Android\Sdk"
-$JavaSdk = "C:\Program Files\Microsoft\jdk-21.0.11.10-hotspot"
+$JavaSdk = "C:\Program Files\Android\openjdk\jdk-21.0.8"
 $DotNetPath = "C:\Program Files\dotnet\dotnet.exe"
 
 Write-Host "=== 猫爪影视 Release APK 构建 ===" -ForegroundColor Cyan
