@@ -154,8 +154,10 @@ if (-not (Test-Path "$publishDir\CatClawVideo.Maui.exe")) {
     Pause-And-Exit 1
 }
 
-# [1.5/2] 生成 resources.pri（.NET 11 preview.7 下 MakePri 不会自动生成应用 PRI，
-#         缺失会导致安装后加载旧 resources.pri 崩溃 0xC000027B）
+# [1.5/2] 生成 resources.pri（.NET 11 下 MakePri 不会自动把应用 PRI 写进 publish 目录，
+#         缺失会导致安装后启动即退（0xC000027B / 静默退出）。
+#         实测 2026-09-13：CatClawVideo 的 publish 输出确实缺该文件，
+#         补上后安装版可正常启动并渲染首页（PrintWindow 截图验证通过）。
 Write-Msg ""
 Write-Msg "[1.5/2] 生成 resources.pri（MakePri）..." -Color Yellow
 $priconfig = "CatClawVideo.Maui\$ObjDir\priconfig.xml"
