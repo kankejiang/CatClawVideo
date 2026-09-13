@@ -77,10 +77,10 @@
                     <Label Text="跨平台影视播放器（Android / Windows），支持猫爪源本地文件与 TVBox / 影视仓订阅，提供站点订阅、分类浏览、跨源搜索与多线路播放。"
                            FontSize="13" LineBreakMode="WordWrap"
                            TextColor="{DynamicResource TextSecondaryColor}" />
-                    <Grid ColumnDefinitions="*,Auto" Padding="0,4">
-                        <Label Grid.Column="0" Text="包名" FontSize="13"
+                    <Grid ColumnDefinitions="*,Auto" Padding="0,2">
+                        <Label Grid.Column="0" Text="包名" FontSize="13" VerticalOptions="Center"
                                TextColor="{DynamicResource TextPrimaryColor}" />
-                        <Label Grid.Column="1" Text="{Binding PackageId}" FontSize="12"
+                        <Label Grid.Column="1" Text="{Binding PackageId}" FontSize="12" VerticalOptions="Center"
                                TextColor="{DynamicResource TextHintColor}" />
                     </Grid>
                 </VerticalStackLayout>
@@ -108,19 +108,21 @@
                                 CornerRadius="14" HeightRequest="46" FontSize="13.5" />
                     </Grid>
 
-                    <!-- 猫爪音乐 -->
-                    <Button Text="🎵 猫爪音乐"
-                            Command="{Binding OpenMusicCommand}"
-                            BackgroundColor="{DynamicResource CardBackgroundStrongColor}"
-                            TextColor="{DynamicResource TextPrimaryColor}"
-                            CornerRadius="14" HeightRequest="46" FontSize="13.5" />
-
-                    <!-- GitHub -->
-                    <Button Text="⭐ GitHub"
-                            Command="{Binding OpenGitHubCommand}"
-                            BackgroundColor="{DynamicResource CardBackgroundStrongColor}"
-                            TextColor="{DynamicResource TextPrimaryColor}"
-                            CornerRadius="14" HeightRequest="46" FontSize="13.5" />
+                    <!-- 猫爪音乐 | GitHub -->
+                    <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
+                        <Button Grid.Column="0"
+                                Text="🎵 猫爪音乐"
+                                Command="{Binding OpenMusicCommand}"
+                                BackgroundColor="{DynamicResource CardBackgroundStrongColor}"
+                                TextColor="{DynamicResource TextPrimaryColor}"
+                                CornerRadius="14" HeightRequest="46" FontSize="13.5" />
+                        <Button Grid.Column="1"
+                                Text="⭐ GitHub"
+                                Command="{Binding OpenGitHubCommand}"
+                                BackgroundColor="{DynamicResource CardBackgroundStrongColor}"
+                                TextColor="{DynamicResource TextPrimaryColor}"
+                                CornerRadius="14" HeightRequest="46" FontSize="13.5" />
+                    </Grid>
 
                     <!-- 检查更新（跳转 GitHub Releases，TODO 待接入更新服务统一比较版本） -->
                     <Button Text="检查更新"

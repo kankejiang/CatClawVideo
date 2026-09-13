@@ -30,9 +30,17 @@ public partial class AboutViewModel : ObservableObject
         }
     }
 
-    /// <summary>版权声明（年份动态取系统时间，避免硬编码过期）</summary>
+    /// <summary>版权声明（起始年 2026；与当前年同年前只显示一个年份，避免 "2026-2026"）</summary>
     [ObservableProperty]
-    private string _copyright = $"© 2026-{DateTime.Now.Year} CatClawVideo. All rights reserved.";
+    private string _copyright = GetCopyright();
+
+    private static string GetCopyright()
+    {
+        var y = DateTime.Now.Year;
+        return y <= 2026
+            ? "© 2026 CatClawVideo. All rights reserved."
+            : $"© 2026-{y} CatClawVideo. All rights reserved.";
+    }
 
     /// <summary>应用包名（区分 Debug/Release 包）</summary>
     [ObservableProperty]
@@ -40,8 +48,14 @@ public partial class AboutViewModel : ObservableObject
 
     private static string GetPackageId()
     {
+#if WINDOWS
+        // Windows 未打包应用下 AppInfo.PackageName 返回的是 exe 名（CatClawVideo.Maui），
+        // 不是产品包名；直接显示 csproj 里的 ApplicationId
+        return "com.catclaw.video";
+#else
         try { return AppInfo.Current?.PackageName ?? "com.catclaw.video"; }
         catch { return "com.catclaw.video"; }
+#endif
     }
 
     /// <summary>查看免责声明：本项目仅为播放器壳，不内置任何片源</summary>
