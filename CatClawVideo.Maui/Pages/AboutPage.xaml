@@ -11,135 +11,194 @@
         <BackButtonBehavior IsVisible="False" />
     </Shell.BackButtonBehavior>
 
-    <ScrollView>
-        <VerticalStackLayout Padding="24,14,24,28" Spacing="14">
+    <Grid RowDefinitions="Auto,*"
+          BackgroundColor="{DynamicResource WindowBackgroundColor}">
 
-            <!-- 顶部：自定义返回 + 标题 -->
-            <Grid ColumnDefinitions="Auto,Auto,*" ColumnSpacing="12">
-                <Border Grid.Column="0" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
-                        StrokeShape="RoundRectangle 12" WidthRequest="38" HeightRequest="38">
-                    <Image Source="ic_back.png" WidthRequest="18" HeightRequest="18"
+        <!-- 顶部：自定义返回 + 标题 -->
+        <Grid Grid.Row="0" ColumnDefinitions="Auto,Auto,*" ColumnSpacing="12"
+              Padding="24,14,24,6">
+            <Border Grid.Column="0" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
+                    StrokeShape="RoundRectangle 12" WidthRequest="38" HeightRequest="38">
+                <Image Source="ic_back.png" WidthRequest="18" HeightRequest="18"
+                       HorizontalOptions="Center" VerticalOptions="Center" />
+                <Border.GestureRecognizers>
+                    <TapGestureRecognizer Tapped="OnBackTapped" />
+                </Border.GestureRecognizers>
+            </Border>
+            <Label Grid.Column="1" Text="关于" FontSize="15" FontFamily="OpenSansSemibold"
+                   TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
+        </Grid>
+
+        <!-- ═══ 主体：左右分栏（横屏，手机同样使用本布局） ═══
+             左 42%：品牌区（无卡片框，融入背景，图标辉光）
+             右 58%：简介 + 行式操作列表 + 检查更新 + 版权
+             背景：左上紫色径向光晕，像影院幕布灯 -->
+        <Grid Grid.Row="1" ColumnDefinitions="42*,58*">
+            <Grid.Background>
+                <RadialGradientBrush Center="0.16,0.0" Radius="0.72">
+                    <GradientStop Color="#4D9B7ED8" Offset="0" />
+                    <GradientStop Color="#0012102B" Offset="1" />
+                </RadialGradientBrush>
+            </Grid.Background>
+
+            <!-- ─── 左栏：品牌区 ─── -->
+            <VerticalStackLayout Grid.Column="0" VerticalOptions="Center"
+                                 Padding="44,20" HorizontalOptions="Center">
+                <Border WidthRequest="96" HeightRequest="96"
+                        StrokeShape="RoundRectangle 26"
+                        Stroke="#14FFFFFF" StrokeThickness="4"
+                        HorizontalOptions="Center" Padding="0">
+                    <Border.Shadow>
+                        <Shadow Brush="#F55E9C" Opacity="0.40" Radius="44" Offset="0,12" />
+                    </Border.Shadow>
+                    <Image Source="ic_brand.png" Aspect="AspectFit"
                            HorizontalOptions="Center" VerticalOptions="Center" />
-                    <Border.GestureRecognizers>
-                        <TapGestureRecognizer Tapped="OnBackTapped" />
-                    </Border.GestureRecognizers>
                 </Border>
-                <Label Grid.Column="1" Text="关于" FontSize="15" FontFamily="OpenSansSemibold"
-                       TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
-            </Grid>
+                <Label Text="猫爪影视" FontSize="30" FontAttributes="Bold"
+                       TextColor="{DynamicResource TextPrimaryColor}"
+                       HorizontalOptions="Center" Margin="0,18,0,0" />
+                <Border StrokeThickness="1" StrokeShape="RoundRectangle 99"
+                        BackgroundColor="#1F55D6FF" Stroke="#3855D6FF"
+                        HorizontalOptions="Center" Padding="13,3" Margin="0,10,0,0">
+                    <Label Text="{Binding Version}" FontSize="12.5" FontAttributes="Bold"
+                           TextColor="#55D6FF" HorizontalOptions="Center" />
+                </Border>
+                <Label Text="一只会找片的猫爪喵——本地、私域、订阅源，都给你安排好啦"
+                       FontSize="13.5"
+                       HorizontalTextAlignment="Center"
+                       TextColor="{DynamicResource TextSecondaryColor}"
+                       HorizontalOptions="Center" Margin="0,12,0,0" />
+            </VerticalStackLayout>
 
-            <!-- ═══ 品牌卡：图标 + 应用名 + 版本 + 一句话 ═══ -->
-            <Border StrokeThickness="1" StrokeShape="RoundRectangle 20"
-                    BackgroundColor="{DynamicResource CardBackgroundColor}"
-                    Stroke="{DynamicResource DividerColor}" Padding="24,26,24,24">
-                <VerticalStackLayout Spacing="12" HorizontalOptions="Center">
-                    <Border StrokeThickness="0"
-                            StrokeShape="RoundRectangle 24"
-                            BackgroundColor="{DynamicResource CardBackgroundStrongColor}"
-                            WidthRequest="96" HeightRequest="96"
-                            HorizontalOptions="Center" Padding="0">
-                        <Image Source="ic_brand.png" WidthRequest="66" HeightRequest="66"
-                               Aspect="AspectFit"
-                               HorizontalOptions="Center" VerticalOptions="Center" />
-                    </Border>
-                    <Label Text="猫爪影视"
-                           FontSize="24" FontFamily="OpenSansSemibold"
-                           TextColor="{DynamicResource TextPrimaryColor}"
-                           HorizontalOptions="Center" />
-                    <Label Text="{Binding Version}"
-                           FontSize="13"
-                           TextColor="{DynamicResource TextSecondaryColor}"
-                           HorizontalOptions="Center" />
-                    <Label Text="一只会找片的猫爪喵——本地、私域、订阅源，都给你安排好啦"
-                           FontSize="13"
+            <!-- ─── 右栏：简介 + 操作 ─── -->
+            <ScrollView Grid.Column="1">
+                <VerticalStackLayout VerticalOptions="Center"
+                                     Padding="8,20,44,20" Spacing="16">
+
+                    <Label Text="跨平台影视播放器（Android / Windows），支持猫爪源本地文件与 TVBox / 影视仓订阅，提供站点订阅、分类浏览、跨源搜索与多线路播放。"
+                           FontSize="12.5"
                            LineBreakMode="WordWrap"
-                           HorizontalTextAlignment="Center"
+                           TextColor="{DynamicResource TextHintColor}"
+                           Margin="4,0,0,0" />
+
+                    <!-- 行式操作列表 -->
+                    <Border StrokeThickness="1" StrokeShape="RoundRectangle 16"
+                            BackgroundColor="#07FFFFFF" Stroke="{DynamicResource DividerColor}"
+                            Padding="0">
+                        <VerticalStackLayout>
+
+                            <!-- 免责声明 -->
+                            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="14" Padding="18,13">
+                                <Border Grid.Column="0" WidthRequest="40" HeightRequest="40"
+                                        StrokeThickness="0" StrokeShape="RoundRectangle 12"
+                                        BackgroundColor="#24FFC107" VerticalOptions="Center">
+                                    <Label Text="⚠️" FontSize="17" HorizontalOptions="Center" VerticalOptions="Center" />
+                                </Border>
+                                <VerticalStackLayout Grid.Column="1" Spacing="2" VerticalOptions="Center">
+                                    <Label Text="免责声明" FontSize="14.5" FontFamily="OpenSansSemibold"
+                                           TextColor="{DynamicResource TextPrimaryColor}" />
+                                    <Label Text="本项目仅为播放器壳，不内置任何片源" FontSize="12"
+                                           TextColor="{DynamicResource TextHintColor}" />
+                                </VerticalStackLayout>
+                                <Label Grid.Column="2" Text="›" FontSize="16" VerticalOptions="Center"
+                                       TextColor="{DynamicResource TextHintColor}" Opacity="0.55" />
+                                <Grid.GestureRecognizers>
+                                    <TapGestureRecognizer Command="{Binding ViewDisclaimerCommand}" />
+                                </Grid.GestureRecognizers>
+                            </Grid>
+                            <BoxView HeightRequest="1" Color="{DynamicResource DividerColor}" />
+
+                            <!-- 开源协议 -->
+                            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="14" Padding="18,13">
+                                <Border Grid.Column="0" WidthRequest="40" HeightRequest="40"
+                                        StrokeThickness="0" StrokeShape="RoundRectangle 12"
+                                        BackgroundColor="#2255D6FF" VerticalOptions="Center">
+                                    <Label Text="📄" FontSize="17" HorizontalOptions="Center" VerticalOptions="Center" />
+                                </Border>
+                                <VerticalStackLayout Grid.Column="1" Spacing="2" VerticalOptions="Center">
+                                    <Label Text="开源协议" FontSize="14.5" FontFamily="OpenSansSemibold"
+                                           TextColor="{DynamicResource TextPrimaryColor}" />
+                                    <Label Text="MIT License" FontSize="12"
+                                           TextColor="{DynamicResource TextHintColor}" />
+                                </VerticalStackLayout>
+                                <Label Grid.Column="2" Text="›" FontSize="16" VerticalOptions="Center"
+                                       TextColor="{DynamicResource TextHintColor}" Opacity="0.55" />
+                                <Grid.GestureRecognizers>
+                                    <TapGestureRecognizer Command="{Binding ViewLicenseCommand}" />
+                                </Grid.GestureRecognizers>
+                            </Grid>
+                            <BoxView HeightRequest="1" Color="{DynamicResource DividerColor}" />
+
+                            <!-- 猫爪音乐 -->
+                            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="14" Padding="18,13">
+                                <Border Grid.Column="0" WidthRequest="40" HeightRequest="40"
+                                        StrokeThickness="0" StrokeShape="RoundRectangle 12"
+                                        BackgroundColor="#24F55E9C" VerticalOptions="Center">
+                                    <Label Text="🎵" FontSize="17" HorizontalOptions="Center" VerticalOptions="Center" />
+                                </Border>
+                                <VerticalStackLayout Grid.Column="1" Spacing="2" VerticalOptions="Center">
+                                    <Label Text="猫爪音乐" FontSize="14.5" FontFamily="OpenSansSemibold"
+                                           TextColor="{DynamicResource TextPrimaryColor}" />
+                                    <Label Text="同作者的跨平台音乐播放器" FontSize="12"
+                                           TextColor="{DynamicResource TextHintColor}" />
+                                </VerticalStackLayout>
+                                <Label Grid.Column="2" Text="›" FontSize="16" VerticalOptions="Center"
+                                       TextColor="{DynamicResource TextHintColor}" Opacity="0.55" />
+                                <Grid.GestureRecognizers>
+                                    <TapGestureRecognizer Command="{Binding OpenMusicCommand}" />
+                                </Grid.GestureRecognizers>
+                            </Grid>
+                            <BoxView HeightRequest="1" Color="{DynamicResource DividerColor}" />
+
+                            <!-- GitHub -->
+                            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="14" Padding="18,13">
+                                <Border Grid.Column="0" WidthRequest="40" HeightRequest="40"
+                                        StrokeThickness="0" StrokeShape="RoundRectangle 12"
+                                        BackgroundColor="#24FFFFFF" VerticalOptions="Center">
+                                    <Label Text="⭐" FontSize="17" HorizontalOptions="Center" VerticalOptions="Center" />
+                                </Border>
+                                <VerticalStackLayout Grid.Column="1" Spacing="2" VerticalOptions="Center">
+                                    <Label Text="GitHub" FontSize="14.5" FontFamily="OpenSansSemibold"
+                                           TextColor="{DynamicResource TextPrimaryColor}" />
+                                    <Label Text="kankejiang/CatClawVideo" FontSize="12"
+                                           TextColor="{DynamicResource TextHintColor}" />
+                                </VerticalStackLayout>
+                                <Label Grid.Column="2" Text="›" FontSize="16" VerticalOptions="Center"
+                                       TextColor="{DynamicResource TextHintColor}" Opacity="0.55" />
+                                <Grid.GestureRecognizers>
+                                    <TapGestureRecognizer Command="{Binding OpenGitHubCommand}" />
+                                </Grid.GestureRecognizers>
+                            </Grid>
+
+                        </VerticalStackLayout>
+                    </Border>
+
+                    <!-- 检查更新：渐变主按钮 -->
+                    <Border StrokeThickness="0" StrokeShape="RoundRectangle 15"
+                            HeightRequest="48" HorizontalOptions="Fill">
+                        <Border.Background>
+                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                <GradientStop Color="#9B7ED8" Offset="0" />
+                                <GradientStop Color="#6E4FD0" Offset="1" />
+                            </LinearGradientBrush>
+                        </Border.Background>
+                        <Border.Shadow>
+                            <Shadow Brush="#6E4FD0" Opacity="0.40" Radius="24" Offset="0,8" />
+                        </Border.Shadow>
+                        <Label Text="⟳  检查更新" FontSize="14.5" FontAttributes="Bold"
+                               TextColor="White"
+                               HorizontalOptions="Center" VerticalOptions="Center" />
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnCheckUpdateTapped" />
+                        </Border.GestureRecognizers>
+                    </Border>
+
+                    <Label Text="{Binding Copyright}" FontSize="11.5"
                            TextColor="{DynamicResource TextHintColor}"
                            HorizontalOptions="Center" />
-                    <Border StrokeThickness="0" StrokeShape="RoundRectangle 14"
-                            BackgroundColor="{DynamicResource ChipInactiveColor}"
-                            Padding="14,5" HorizontalOptions="Center">
-                        <Label Text=".NET MAUI Edition"
-                               FontSize="11" FontFamily="OpenSansSemibold"
-                               TextColor="{DynamicResource TextSecondaryColor}"
-                               HorizontalOptions="Center" />
-                    </Border>
+
                 </VerticalStackLayout>
-            </Border>
-
-            <!-- ═══ 简介 ═══ -->
-            <Border StrokeThickness="1" StrokeShape="RoundRectangle 20"
-                    BackgroundColor="{DynamicResource CardBackgroundColor}"
-                    Stroke="{DynamicResource DividerColor}" Padding="20">
-                <VerticalStackLayout Spacing="8">
-                    <Label Text="简介" FontSize="16" FontFamily="OpenSansSemibold"
-                           TextColor="{DynamicResource TextPrimaryColor}" />
-                    <Label Text="跨平台影视播放器（Android / Windows），支持猫爪源本地文件与 TVBox / 影视仓订阅，提供站点订阅、分类浏览、跨源搜索与多线路播放。"
-                           FontSize="13" LineBreakMode="WordWrap"
-                           TextColor="{DynamicResource TextSecondaryColor}" />
-                    <Grid ColumnDefinitions="*,Auto" Padding="0,2">
-                        <Label Grid.Column="0" Text="包名" FontSize="13" VerticalOptions="Center"
-                               TextColor="{DynamicResource TextPrimaryColor}" />
-                        <Label Grid.Column="1" Text="{Binding PackageId}" FontSize="12" VerticalOptions="Center"
-                               TextColor="{DynamicResource TextHintColor}" />
-                    </Grid>
-                </VerticalStackLayout>
-            </Border>
-
-            <!-- ═══ 链接与操作 ═══ -->
-            <Border StrokeThickness="1" StrokeShape="RoundRectangle 20"
-                    BackgroundColor="{DynamicResource CardBackgroundColor}"
-                    Stroke="{DynamicResource DividerColor}" Padding="20">
-                <VerticalStackLayout Spacing="10">
-
-                    <!-- 免责声明 | 开源协议 -->
-                    <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
-                        <Button Grid.Column="0"
-                                Text="⚠️ 免责声明"
-                                Command="{Binding ViewDisclaimerCommand}"
-                                BackgroundColor="{DynamicResource CardBackgroundStrongColor}"
-                                TextColor="{DynamicResource TextPrimaryColor}"
-                                CornerRadius="14" HeightRequest="46" FontSize="13.5" />
-                        <Button Grid.Column="1"
-                                Text="📄 开源协议"
-                                Command="{Binding ViewLicenseCommand}"
-                                BackgroundColor="{DynamicResource CardBackgroundStrongColor}"
-                                TextColor="{DynamicResource TextPrimaryColor}"
-                                CornerRadius="14" HeightRequest="46" FontSize="13.5" />
-                    </Grid>
-
-                    <!-- 猫爪音乐 | GitHub -->
-                    <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
-                        <Button Grid.Column="0"
-                                Text="🎵 猫爪音乐"
-                                Command="{Binding OpenMusicCommand}"
-                                BackgroundColor="{DynamicResource CardBackgroundStrongColor}"
-                                TextColor="{DynamicResource TextPrimaryColor}"
-                                CornerRadius="14" HeightRequest="46" FontSize="13.5" />
-                        <Button Grid.Column="1"
-                                Text="⭐ GitHub"
-                                Command="{Binding OpenGitHubCommand}"
-                                BackgroundColor="{DynamicResource CardBackgroundStrongColor}"
-                                TextColor="{DynamicResource TextPrimaryColor}"
-                                CornerRadius="14" HeightRequest="46" FontSize="13.5" />
-                    </Grid>
-
-                    <!-- 检查更新（跳转 GitHub Releases，TODO 待接入更新服务统一比较版本） -->
-                    <Button Text="检查更新"
-                            Clicked="OnCheckUpdateClicked"
-                            BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
-                            TextColor="White"
-                            CornerRadius="14" HeightRequest="46" FontSize="13.5"
-                            FontAttributes="Bold" />
-                </VerticalStackLayout>
-            </Border>
-
-            <Label Text="{Binding Copyright}"
-                   FontSize="12"
-                   TextColor="{DynamicResource TextHintColor}"
-                   HorizontalOptions="Center"
-                   Margin="0,6,0,0" />
-
-        </VerticalStackLayout>
-    </ScrollView>
+            </ScrollView>
+        </Grid>
+    </Grid>
 </ContentPage>

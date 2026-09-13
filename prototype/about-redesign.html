@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>猫爪影视 · 关于页重设计（横屏）</title>
+<style>
+  :root{
+    --bg:#12102B; --card:#332F5A; --card-strong:#3A3668;
+    --primary:#9B7ED8; --primary-dark:#7C5DCE; --accent:#55D6FF;
+    --text:#F5F6FF; --text2:#BCC0DD; --text3:#868CAE;
+    --divider:rgba(255,255,255,.08); --chip:rgba(255,255,255,.08);
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#0A0818;font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    color:var(--text);padding:48px 40px 80px}
+  h1{font-size:22px;margin-bottom:6px}
+  .sub{color:var(--text3);font-size:13px;margin-bottom:40px}
+  .scheme{max-width:1240px;margin-bottom:56px}
+  .scheme-title{font-size:16px;font-weight:700;margin-bottom:4px;display:flex;align-items:center;gap:10px}
+  .tag{font-size:11px;padding:2px 10px;border-radius:99px;background:rgba(155,126,216,.18);color:#C9B6F2;font-weight:600}
+  .scheme-desc{font-size:12.5px;color:var(--text3);line-height:1.7;margin-bottom:14px}
+  .win{
+    height:640px;border-radius:16px;border:1px solid rgba(255,255,255,.09);
+    overflow:hidden;background:var(--bg);box-shadow:0 24px 60px rgba(0,0,0,.55);
+    display:flex;flex-direction:column;position:relative}
+  .titlebar{height:38px;flex:none;display:flex;align-items:center;gap:12px;padding:0 16px;
+    border-bottom:1px solid var(--divider)}
+  .titlebar .back{width:28px;height:28px;border-radius:9px;background:var(--chip);
+    display:flex;align-items:center;justify-content:center;font-size:14px;color:var(--text2)}
+  .titlebar .t{font-size:13.5px;font-weight:600}
+  .titlebar .winbtns{margin-left:auto;display:flex;gap:14px;color:var(--text3);font-size:11px}
+
+  /* 通用行式列表 */
+  .list{background:rgba(255,255,255,.03);border:1px solid var(--divider);border-radius:16px;overflow:hidden}
+  .li{display:flex;align-items:center;gap:14px;padding:13px 18px;cursor:pointer;transition:background .15s}
+  .li:hover{background:rgba(255,255,255,.045)}
+  .li + .li{border-top:1px solid var(--divider)}
+  .ic{width:40px;height:40px;border-radius:12px;flex:none;display:flex;align-items:center;justify-content:center;font-size:17px}
+  .li .tx{flex:1;min-width:0}
+  .li .tx .a{font-size:14.5px;font-weight:600}
+  .li .tx .b{font-size:12px;color:var(--text3);margin-top:2px}
+  .li .arr{color:var(--text3);font-size:15px;opacity:.55}
+  .cta{display:flex;align-items:center;justify-content:center;gap:8px;height:48px;border-radius:15px;
+    font-size:14.5px;font-weight:700;color:#fff;background:linear-gradient(135deg,#9B7ED8,#6E4FD0);
+    box-shadow:0 8px 24px rgba(124,93,206,.35);cursor:pointer;transition:filter .15s}
+  .cta:hover{filter:brightness(1.08)}
+  .copyright{font-size:11.5px;color:var(--text3)}
+  .ic-disc{background:rgba(255,193,7,.14)} .ic-doc{background:rgba(85,214,255,.13)}
+  .ic-music{background:rgba(245,94,156,.14)} .ic-git{background:rgba(255,255,255,.10)}
+
+  /* ═══════════ 方案 A · 首映之夜 ═══════════ */
+  .a-body{flex:1;display:flex;position:relative;min-height:0}
+  .a-body::before{content:"";position:absolute;inset:0;pointer-events:none;
+    background:radial-gradient(circle at 16% -14%, rgba(155,126,216,.40), transparent 52%),
+               radial-gradient(circle at 42% 118%, rgba(85,214,255,.08), transparent 40%)}
+  .a-left{width:42%;display:flex;flex-direction:column;justify-content:center;
+    align-items:center;text-align:center;padding:24px 44px;position:relative}
+  .a-left .logo{width:96px;height:96px;border-radius:26px;
+    background:linear-gradient(135deg,#F7A8C8,#F55E9C 60%,#E14B8A);
+    display:flex;align-items:center;justify-content:center;font-size:46px;
+    box-shadow:0 0 0 4px rgba(255,255,255,.06),0 14px 48px rgba(245,94,156,.35),0 0 80px rgba(155,126,216,.32)}
+  .a-left .name{font-size:30px;font-weight:800;letter-spacing:1px;margin-top:18px}
+  .a-left .ver{display:inline-flex;margin-top:10px;padding:3px 13px;border-radius:99px;
+    background:rgba(85,214,255,.12);color:var(--accent);font-size:12.5px;font-weight:600;
+    border:1px solid rgba(85,214,255,.22)}
+  .a-left .slogan{font-size:13.5px;color:var(--text2);margin-top:12px;line-height:1.7}
+  .a-right{flex:1;display:flex;flex-direction:column;justify-content:center;
+    padding:28px 40px 28px 8px;position:relative;gap:16px}
+  .a-right .intro{font-size:12.5px;color:var(--text3);line-height:1.85;padding:0 4px}
+
+  /* ═══════════ 方案 B · 玻璃卡片流 ═══════════ */
+  .b-body{flex:1;display:flex;gap:28px;padding:28px 36px;min-height:0;
+    background:radial-gradient(circle at 100% 0%, rgba(85,214,255,.07), transparent 42%),var(--bg)}
+  .b-left{width:44%;display:flex;flex-direction:column;gap:16px;justify-content:center}
+  .b-brand{border-radius:20px;padding:22px;display:flex;gap:18px;align-items:center;
+    border:1px solid transparent;
+    background:linear-gradient(var(--card),var(--card)) padding-box,
+               linear-gradient(135deg,rgba(155,126,216,.75),rgba(85,214,255,.45)) border-box}
+  .b-brand .logo{width:84px;height:84px;border-radius:22px;flex:none;
+    background:linear-gradient(135deg,#F7A8C8,#F55E9C 60%,#E14B8A);
+    display:flex;align-items:center;justify-content:center;font-size:40px;
+    box-shadow:0 10px 30px rgba(245,94,156,.30)}
+  .b-brand .name{font-size:24px;font-weight:800}
+  .b-brand .ver{font-size:12.5px;color:var(--accent);margin-top:4px;font-weight:600}
+  .b-brand .slogan{font-size:12.5px;color:var(--text3);margin-top:7px;line-height:1.6}
+  .b-card{background:var(--card);border:1px solid var(--divider);border-radius:18px;padding:16px 20px}
+  .b-card .h{font-size:14px;font-weight:700;margin-bottom:7px}
+  .b-card p{font-size:12.5px;color:var(--text2);line-height:1.8}
+  .b-card .kv{display:flex;justify-content:space-between;margin-top:10px;font-size:12px}
+  .b-card .kv .k{color:var(--text2)} .b-card .kv .v{color:var(--text3);font-family:Consolas,monospace}
+  .b-right{flex:1;display:flex;flex-direction:column;justify-content:center;gap:16px}
+  .b-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .b-btn{background:var(--card-strong);border:1px solid var(--divider);border-radius:16px;
+    padding:16px;display:flex;align-items:center;gap:12px;cursor:pointer;transition:background .15s}
+  .b-btn:hover{background:#443F78}
+  .b-btn .ic{width:36px;height:36px}
+  .b-btn .tx{font-size:13.5px;font-weight:600}
+  .b-btn .sub2{font-size:11px;color:var(--text3);margin-top:2px}
+
+  /* ═══════════ 方案 C · 放映室 ═══════════ */
+  .c-body{flex:1;display:flex;flex-direction:column;min-height:0}
+  .c-head{display:flex;align-items:center;gap:20px;padding:26px 40px 22px;position:relative}
+  .c-head::after{content:"";position:absolute;left:40px;right:40px;bottom:0;height:1px;
+    background:linear-gradient(90deg,transparent,rgba(155,126,216,.45),transparent)}
+  .c-head .logo{width:76px;height:76px;border-radius:20px;flex:none;
+    background:linear-gradient(135deg,#F7A8C8,#F55E9C 60%,#E14B8A);
+    display:flex;align-items:center;justify-content:center;font-size:36px;
+    box-shadow:0 10px 30px rgba(245,94,156,.28)}
+  .c-head .name{font-size:26px;font-weight:800}
+  .c-head .slogan{font-size:13px;color:var(--text2);margin-top:5px}
+  .c-head .ver{font-size:11.5px;color:var(--accent);margin-top:8px;display:inline-block;
+    padding:2px 11px;border-radius:99px;background:rgba(85,214,255,.10);border:1px solid rgba(85,214,255,.2)}
+  .c-main{flex:1;display:flex;gap:28px;padding:22px 40px 26px;min-height:0}
+  .c-left{width:46%;display:flex;flex-direction:column;gap:14px;justify-content:center}
+  .c-specs{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .c-spec{background:rgba(255,255,255,.03);border:1px solid var(--divider);border-radius:13px;padding:10px 14px}
+  .c-spec .k{font-size:10px;color:var(--text3);letter-spacing:.6px;text-transform:uppercase}
+  .c-spec .v{font-size:13px;font-weight:600;margin-top:4px;font-family:Consolas,"Segoe UI",monospace}
+  .c-left .desc{font-size:12.5px;color:var(--text3);line-height:1.85}
+  .c-right{flex:1;display:flex;flex-direction:column;justify-content:center;gap:16px}
+</style>
+</head>
+<body>
+
+<h1>猫爪影视 · 关于页重设计（横屏方案）</h1>
+<div class="sub">三套方向 · 横屏布局，手机同样使用这套宽屏结构 · 按影视主题色绘制 · 挑中哪套（或混搭）我再落地成 XAML</div>
+
+<!-- ════════ 方案 A ════════ -->
+<div class="scheme">
+  <div class="scheme-title">方案 A · 首映之夜 <span class="tag">推荐</span></div>
+  <div class="scheme-desc">左右分栏：左侧品牌区无卡片框、直接融入背景，左上紫色光晕像影院幕布灯，图标带辉光垂直居中；右侧简介 + 行式操作列表（图标+标题+副标题+箭头）+ 渐变主按钮。信息密度最高，最不像表单。</div>
+  <div class="win">
+    <div class="titlebar"><div class="back">‹</div><div class="t">关于</div><div class="winbtns">— &nbsp;□&nbsp; ✕</div></div>
+    <div class="a-body">
+      <div class="a-left">
+        <div class="logo">🐾</div>
+        <div class="name">猫爪影视</div>
+        <div class="ver">v0.1.0</div>
+        <div class="slogan">一只会找片的猫爪喵<br>本地、私域、订阅源，都给你安排好啦</div>
+      </div>
+      <div class="a-right">
+        <div class="intro">跨平台影视播放器（Android / Windows），支持猫爪源本地文件与 TVBox / 影视仓订阅，提供站点订阅、分类浏览、跨源搜索与多线路播放。</div>
+        <div class="list">
+          <div class="li"><div class="ic ic-disc">⚠️</div><div class="tx"><div class="a">免责声明</div><div class="b">本项目仅为播放器壳，不内置任何片源</div></div><div class="arr">›</div></div>
+          <div class="li"><div class="ic ic-doc">📄</div><div class="tx"><div class="a">开源协议</div><div class="b">MIT License</div></div><div class="arr">›</div></div>
+          <div class="li"><div class="ic ic-music">🎵</div><div class="tx"><div class="a">猫爪音乐</div><div class="b">同作者的跨平台音乐播放器</div></div><div class="arr">›</div></div>
+          <div class="li"><div class="ic ic-git">⭐</div><div class="tx"><div class="a">GitHub</div><div class="b">kankejiang/CatClawVideo</div></div><div class="arr">›</div></div>
+        </div>
+        <div class="cta">⟳&nbsp; 检查更新</div>
+        <div class="copyright" style="text-align:center">© 2026 CatClawVideo. All rights reserved.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════ 方案 B ════════ -->
+<div class="scheme">
+  <div class="scheme-title">方案 B · 玻璃卡片流 <span class="tag">稳健</span></div>
+  <div class="scheme-desc">延续卡片语言但全面提质：左侧品牌卡改横排 + 紫青渐变描边 + 简介卡（含包名）；右侧操作改成 2×2 图标磁贴（每格带副标题），下方检查更新主按钮。与现有设置页风格延续性最好。</div>
+  <div class="win">
+    <div class="titlebar"><div class="back">‹</div><div class="t">关于</div><div class="winbtns">— &nbsp;□&nbsp; ✕</div></div>
+    <div class="b-body">
+      <div class="b-left">
+        <div class="b-brand">
+          <div class="logo">🐾</div>
+          <div>
+            <div class="name">猫爪影视</div>
+            <div class="ver">v0.1.0 · .NET MAUI</div>
+            <div class="slogan">一只会找片的猫爪喵——本地、私域、订阅源，都给你安排好啦</div>
+          </div>
+        </div>
+        <div class="b-card">
+          <div class="h">简介</div>
+          <p>跨平台影视播放器（Android / Windows），支持猫爪源本地文件与 TVBox / 影视仓订阅，提供站点订阅、分类浏览、跨源搜索与多线路播放。</p>
+          <div class="kv"><span class="k">包名</span><span class="v">com.catclaw.video</span></div>
+        </div>
+      </div>
+      <div class="b-right">
+        <div class="b-grid">
+          <div class="b-btn"><div class="ic ic-disc">⚠️</div><div><div class="tx">免责声明</div><div class="sub2">播放器壳声明</div></div></div>
+          <div class="b-btn"><div class="ic ic-doc">📄</div><div><div class="tx">开源协议</div><div class="sub2">MIT License</div></div></div>
+          <div class="b-btn"><div class="ic ic-music">🎵</div><div><div class="tx">猫爪音乐</div><div class="sub2">姊妹应用</div></div></div>
+          <div class="b-btn"><div class="ic ic-git">⭐</div><div><div class="tx">GitHub</div><div class="sub2">kankejiang/CatClawVideo</div></div></div>
+        </div>
+        <div class="cta">⟳&nbsp; 检查更新</div>
+        <div class="copyright" style="text-align:center">© 2026 CatClawVideo. All rights reserved.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════ 方案 C ════════ -->
+<div class="scheme">
+  <div class="scheme-title">方案 C · 放映室 <span class="tag">极客</span></div>
+  <div class="scheme-desc">顶部通栏头图 + 渐变分隔线；左栏 2×2「规格表」（Version / Package / Framework / Platform）+ 简介，右栏操作列表 + 主按钮。极客味最浓，桌面端观感最佳，手机横屏同构。</div>
+  <div class="win">
+    <div class="titlebar"><div class="back">‹</div><div class="t">关于</div><div class="winbtns">— &nbsp;□&nbsp; ✕</div></div>
+    <div class="c-body">
+      <div class="c-head">
+        <div class="logo">🐾</div>
+        <div>
+          <div class="name">猫爪影视</div>
+          <div class="slogan">一只会找片的猫爪喵——本地、私域、订阅源，都给你安排好啦</div>
+          <span class="ver">v0.1.0</span>
+        </div>
+      </div>
+      <div class="c-main">
+        <div class="c-left">
+          <div class="c-specs">
+            <div class="c-spec"><div class="k">Version</div><div class="v">0.1.0</div></div>
+            <div class="c-spec"><div class="k">Package</div><div class="v">com.catclaw.video</div></div>
+            <div class="c-spec"><div class="k">Framework</div><div class="v">.NET MAUI 11</div></div>
+            <div class="c-spec"><div class="k">Platform</div><div class="v">Android / Windows</div></div>
+          </div>
+          <div class="desc">跨平台影视播放器，支持猫爪源本地文件与 TVBox / 影视仓订阅，提供站点订阅、分类浏览、跨源搜索与多线路播放。本项目仅为播放器壳，不内置任何片源。</div>
+        </div>
+        <div class="c-right">
+          <div class="list">
+            <div class="li"><div class="ic ic-doc">📄</div><div class="tx"><div class="a">开源协议</div><div class="b">MIT License</div></div><div class="arr">›</div></div>
+            <div class="li"><div class="ic ic-music">🎵</div><div class="tx"><div class="a">猫爪音乐</div><div class="b">同作者的跨平台音乐播放器</div></div><div class="arr">›</div></div>
+            <div class="li"><div class="ic ic-git">⭐</div><div class="tx"><div class="a">GitHub</div><div class="b">kankejiang/CatClawVideo</div></div><div class="arr">›</div></div>
+          </div>
+          <div class="cta">⟳&nbsp; 检查更新</div>
+          <div class="copyright" style="text-align:center">© 2026 CatClawVideo. All rights reserved.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
