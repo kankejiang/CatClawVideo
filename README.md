@@ -65,7 +65,7 @@ dotnet run -- --selftest 规则源.ccs.json      # 全链路自检（列表→�
 
 ### 环境要求
 
-- .NET SDK **11.0.100-preview.7**（见 [global.json](global.json)）
+- .NET SDK **11.0.100-rc.1**（见 [global.json](global.json)）
 - MAUI 工作负载（`dotnet workload install maui-android`）
 - Android：API 36 平台，运行时标识 `android-arm64` / `android-x64`
 - Windows：WinAppSDK 1.7，10.0.19041.0 以上
@@ -86,6 +86,13 @@ dotnet build CatClawVideo.Maui/CatClawVideo.Maui.csproj -f net11.0-windows10.0.1
 ## 免责声明
 
 本项目仅为播放器壳，不内置任何片源，也不提供、不存储、不上传任何影视内容。所有源均由用户自行配置，用户需对所添加的源及观看内容承担全部责任。本项目与 TVBox / 影视仓及其他第三方源无隶属关系。
+
+## 交流反馈
+
+- **QQ 交流群**：`855383639`
+- **一键加群**：https://qm.qq.com/q/Fhu3IEzqa4
+
+使用问题、片源配置、功能建议都欢迎进群交流；也可以在仓库 [Issues](https://github.com/kankejiang/CatClawVideo/issues) 中反馈。
 
 ## 许可证
 
