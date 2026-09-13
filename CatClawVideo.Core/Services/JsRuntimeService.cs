@@ -1,35 +1,21 @@
-using Jint;
+using CatClaw.Shared.Js;
 
 namespace CatClawVideo.Core.Services;
 
 /// <summary>
-/// <see cref="Interfaces.IJsRuntimeService"/> 默认实现：Jint/Acornima 为普通 NuGet
-/// 依赖随宿主分发（Android/Windows 双端纯托管可用）。
+/// <see cref="Interfaces.IJsRuntimeService"/> 默认实现：共享基类 <see cref="JsRuntimeServiceBase"/>
+/// + 猫爪影视的约束参数（递归上限 2000 / 默认超时 60 秒）。
+/// <para>
+/// 与猫爪音乐的 JsRuntimeService 仅构造参数不同，其余逻辑统一在共享库维护。
+/// </para>
 /// </summary>
-public sealed class JsRuntimeService : Interfaces.IJsRuntimeService
+public sealed class JsRuntimeService : JsRuntimeServiceBase, Interfaces.IJsRuntimeService
 {
-    private int _ensured;
-
-    public void EnsureLoaded()
+    public JsRuntimeService()
+        : base(
+            recursionLimit: 2000,
+            defaultTimeout: TimeSpan.FromSeconds(60),
+            unavailableMessage: "JS 运行时（Jint）不可用")
     {
-        if (Interlocked.Exchange(ref _ensured, 1) == 1)
-            return;
-        try
-        {
-            _ = typeof(Jint.Engine).Assembly;
-            _ = typeof(Acornima.Parser).Assembly;
-        }
-        catch (Exception ex)
-        {
-            Interlocked.Exchange(ref _ensured, 0);
-            throw new InvalidOperationException("JS 运行时（Jint）不可用", ex);
-        }
-    }
-
-    public Engine CreateEngine(TimeSpan? timeout = null)
-    {
-        return new Engine(options => options
-            .LimitRecursion(2000)
-            .TimeoutInterval(timeout ?? TimeSpan.FromSeconds(60)));
     }
 }
