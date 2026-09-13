@@ -112,24 +112,50 @@ public partial class SearchPage : ContentPage
                 return;
             }
 
+            // 边搜边出：每个站返回即增量上屏，不等全场（死站/慢站用 12s 超时熔断，不拖整体）
+            var results = new System.Collections.ObjectModel.ObservableCollection<VodItem>();
+            ResultGrid.ItemsSource = results;
+            var gate = new object();
+            var doneCount = 0;
+
             var tasks = sites.Select(async site =>
             {
                 try
                 {
-                    var items = await _provider.SearchAsync(site, kw);
-                    foreach (var it in items) it.Category ??= site.Name;
-                    return items;
-                }
-                catch { return new List<VodItem>(); }
-            });
-            var batches = await Task.WhenAll(tasks);
-            var results = batches.SelectMany(b => b).ToList();
+                    var searchTask = _provider.SearchAsync(site, kw);
+                    var done = await Task.WhenAny(searchTask, Task.Delay(12000));
+                    var items = done == searchTask && searchTask.IsCompletedSuccessfully
+                        ? searchTask.Result
+                        : new List<VodItem>();
+                    if (items.Count == 0) return;
 
-            ResultGrid.ItemsSource = results;
-            CoverResolver.Attach(_covers, results);   // 结果先出，封面异步补齐
-            StatusLabel.Text = results.Count > 0
-                ? $"「{kw}」找到 {results.Count} 个结果（{sites.Count} 个站点）"
-                : $"未找到与「{kw}」相关的内容";
+                    foreach (var it in items) it.Category ??= site.Name;
+                    List<VodItem> added;
+                    lock (gate)
+                    {
+                        foreach (var it in items) results.Add(it);
+                        added = items;
+                    }
+                    MainThread.BeginInvokeOnMainThread(() =>
+                    {
+                        StatusLabel.Text = $"「{kw}」已找到 {results.Count} 个结果…（{site.Name} +{items.Count}）";
+                        CoverResolver.Attach(_covers, added);   // 增量补封面
+                    });
+                }
+                catch { }
+                finally
+                {
+                    Interlocked.Increment(ref doneCount);
+                }
+            });
+            await Task.WhenAll(tasks);
+
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                StatusLabel.Text = results.Count > 0
+                    ? $"「{kw}」找到 {results.Count} 个结果（{sites.Count} 个站点）"
+                    : $"未找到与「{kw}」相关的内容";
+            });
         }
         catch
         {

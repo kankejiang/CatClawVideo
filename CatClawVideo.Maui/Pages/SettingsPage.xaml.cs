@@ -188,7 +188,9 @@ public partial class SettingsPage : ContentView, ITabView
                 await Shell.Current.Navigation.PushModalAsync(dlg);
             }
 
-            var playableCount = sites.Count(s => s.Playable);
+            // 计数与 SiteRegistry.Playable 口径一致：spider 站在运行时就绪时也算可播（此前只数 type1，误导）
+            var regPlayable = Core.Models.SiteRegistry.Playable.Select(s => s.Key).ToHashSet();
+            var playableCount = sites.Count(s => s.Playable || regPlayable.Contains(s.Key));
             await Shell.Current.DisplayAlertAsync("订阅已添加",
                 $"解析到 {sites.Count} 个站点，其中可播 {playableCount} 个。", "确定");
         }

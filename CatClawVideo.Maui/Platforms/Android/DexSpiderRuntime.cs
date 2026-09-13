@@ -128,11 +128,20 @@ public class DexSpiderRuntime : ISpiderRuntime
             }
 
             await File.WriteAllBytesAsync(jarPath, bytes, ct);
+            // Android 10+ W^X：可写的 dex 文件会被 DexClassLoader 拒绝执行（Writable dex file 错误）
+            File.SetAttributes(jarPath, FileAttributes.ReadOnly);
             Log($"jar 缓存完成 len={bytes.Length}");
         }
 
         var optDir = Path.Combine(_cacheDir, "opt");
         Directory.CreateDirectory(optDir);
+        // 无论新下载还是缓存命中，都必须只读（Android 10+ W^X：可写 dex 拒绝执行）
+        if ((File.GetAttributes(jarPath) & FileAttributes.ReadOnly) == 0)
+        {
+            File.SetAttributes(jarPath, FileAttributes.ReadOnly);
+            Log("jar 已置只读（W^X）");
+        }
+
         return new global::Dalvik.SystemInterop.DexClassLoader(
             jarPath, optDir, null, ClassLoader.SystemClassLoader);
     }
@@ -182,6 +191,10 @@ public class DexSpiderRuntime : ISpiderRuntime
             var cls = TryLoad(loader, className)
                 ?? throw new InvalidOperationException($"jar 中找不到爬虫类: {className}");
 
+            // 保护壳 jar 引导（对照 jun 分支 ProtectedInitJar，纯反射绑定）：
+            // Guard 系 jar 的 Init 单例需要外部注入 Context 与 DexClassLoader 才能工作。
+            BindProtectedJar(loader);
+
             var holder = new SpiderHolder
             {
                 Instance = (Java.Lang.Object)cls.GetConstructor().NewInstance(),
@@ -217,6 +230,97 @@ public class DexSpiderRuntime : ISpiderRuntime
             Log($"站点 {site.Key} spider 就绪: {cls.Name}");
             return holder;
         }, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 保护壳 jar 引导（移植自 jun 分支 ProtectedInitJar，纯 Java 反射，无 native 依赖）：
+    /// ① Init.get() 取单例 → 绑定 Context 字段（"c" 优先，退化任意实例 Context 字段）
+    /// ② jar 内 DexNative.getLoader(context) 取 DexClassLoader → 绑入 Init 的实例字段
+    /// ③ best-effort 调 replaceCloudDiskNames / startGoProxy
+    /// 普通 jar 没有这些字段/类时全部静默跳过，无副作用。
+    /// </summary>
+    private void BindProtectedJar(ClassLoader loader)
+    {
+        try
+        {
+            var initCls = TryLoad(loader, "Init");
+            if (initCls == null) return;
+
+            Java.Lang.Object? init = null;
+            try
+            {
+                var get = initCls.GetMethod("get");
+                init = (Java.Lang.Object?)get.Invoke(null);
+            }
+            catch { }
+
+            var appCtx = global::Android.App.Application.Context;
+
+            // ① bindContext
+            if (init != null)
+            {
+                try
+                {
+                    var f = initCls.GetField("c");
+                    Java.Lang.Reflect.AccessibleObject.SetAccessible(new Java.Lang.Reflect.AccessibleObject[] { f }, true);
+                    f.Set(init, appCtx);
+                }
+                catch
+                {
+                    foreach (var f in initCls.GetDeclaredFields())
+                    {
+                        try
+                        {
+                            if (Java.Lang.Reflect.Modifier.IsStatic(f.Modifiers)) continue;
+                            if (!f.Type.Name.Contains("Context", StringComparison.OrdinalIgnoreCase)) continue;
+                            Java.Lang.Reflect.AccessibleObject.SetAccessible(new Java.Lang.Reflect.AccessibleObject[] { f }, true);
+                            f.Set(init, appCtx);
+                            break;
+                        }
+                        catch { }
+                    }
+                }
+            }
+
+            // ② bindDexLoader：DexNative.getLoader(context) → DexClassLoader
+            try
+            {
+                var nativeCls = TryLoad(loader, "DexNative");
+                var getLoader = nativeCls?.GetMethod("getLoader",
+                    Java.Lang.Class.FromType(typeof(Java.Lang.Object)));
+                var cl = getLoader?.Invoke(null, appCtx);
+                if (cl is global::Dalvik.SystemInterop.DexClassLoader dexCl && init != null)
+                {
+                    foreach (var f in initCls.GetDeclaredFields())
+                    {
+                        try
+                        {
+                            if (Java.Lang.Reflect.Modifier.IsStatic(f.Modifiers)) continue;
+                            if (!f.Type.Name.Contains("DexClassLoader", StringComparison.OrdinalIgnoreCase)) continue;
+                            Java.Lang.Reflect.AccessibleObject.SetAccessible(new Java.Lang.Reflect.AccessibleObject[] { f }, true);
+                            f.Set(init, dexCl);
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch { }
+
+            // ③ 可选引导
+            try { initCls.GetMethod("replaceCloudDiskNames").Invoke(null); } catch { }
+            try
+            {
+                initCls.GetMethod("startGoProxy", Java.Lang.Class.FromType(typeof(global::Android.Content.Context)))
+                    .Invoke(null, appCtx);
+            }
+            catch { }
+
+            Log("保护壳引导完成（Init/Context/DexLoader 绑定）");
+        }
+        catch (System.Exception ex)
+        {
+            Log($"保护壳引导跳过: {ex.Message}");
+        }
     }
 
     private static Java.Lang.Reflect.Method? Find(Class cls, string name, params Class[] sig)
