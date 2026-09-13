@@ -51,7 +51,7 @@ _Modern cross-platform video player built with .NET MAUI._
 
 ## Link
 
-| QQ Group | [![QQ 交流群](https://img.shields.io/badge/QQ%E7%BE%A4-855383639-Join-blue)](https://qm.qq.com/q/Fhu3IEzqa4) |
+| QQ Group | [![QQ 交流群](https://img.shields.io/badge/QQ%E7%BE%A4-855383639-blue)](https://qm.qq.com/q/Fhu3IEzqa4) |
 |:-:|:-:|
 | 相关项目 | [![猫爪音乐](https://img.shields.io/badge/%E7%8C%AB%E7%88%AA%E9%9F%B3%E4%B9%90-CatClawMusic-pink)](https://github.com/kankejiang/CatClawMusic) |
 
