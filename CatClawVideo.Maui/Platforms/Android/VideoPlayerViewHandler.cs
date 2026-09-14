@@ -106,13 +106,42 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, PlayerView>, 
             // 请求头按源切换（TVBox 源防盗链：Referer / User-Agent）
             _mediaSourceFactory?.SetDataSourceFactory(BuildHttpFactory(headers));
 
-            _player.SetMediaItem(MediaItem.FromUri(global::Android.Net.Uri.Parse(url)));
+            // 显式指定 HLS：DefaultMediaSourceFactory 只按 **URI 路径后缀** 推断类型，
+            // 而本地反代/爬虫给出的地址常是 `/proxy?do=m3u8&url=…%2Findex.m3u8`（真正后缀在 query 里）
+            // → 会被判成普通媒体文件走 ProgressiveMediaSource，
+            // 报 UnrecognizedInputFormatException（无 extractor 能读 m3u8）。
+            var builder = new MediaItem.Builder().SetUri(global::Android.Net.Uri.Parse(url));
+            var mime = InferMime(url);
+            if (mime is not null) builder.SetMimeType(mime);
+
+            _player.SetMediaItem(builder.Build());
             _player.Prepare();
         }
         catch (Exception ex)
         {
             VirtualView?.RaiseMediaFailed($"加载失败: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// 从地址推断 MIME（只处理 media3 猜不出来的情形）。
+    /// 本地反代地址形如 <c>…/proxy?do=m3u8&amp;url=&lt;百分号编码的真实地址&gt;</c>，
+    /// URI 路径后缀是 proxy，但真实资源是 HLS 播放列表 —— 必须显式告诉播放器。
+    /// </summary>
+    private static string? InferMime(string url)
+    {
+        try
+        {
+            if (url.Contains("do=m3u8", StringComparison.OrdinalIgnoreCase))
+                return global::AndroidX.Media3.Common.MimeTypes.ApplicationM3u8;
+            if (url.Contains(".m3u8", StringComparison.OrdinalIgnoreCase))
+                return global::AndroidX.Media3.Common.MimeTypes.ApplicationM3u8;
+        }
+        catch
+        {
+            // 类型名随 media3 版本变化时忽略：退回默认推断（与改动前行为一致）
+        }
+        return null;
     }
 
     /// <summary>构建 HTTP 数据源工厂（跨协议重定向 + 自定义请求头）</summary>
