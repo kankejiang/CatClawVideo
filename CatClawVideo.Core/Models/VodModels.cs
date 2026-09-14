@@ -153,6 +153,9 @@ public class VodItem : INotifyPropertyChanged
     /// <summary>更新说明（如「更新至12集」「HD」）</summary>
     public string? Remarks { get; set; }
 
+    /// <summary>角标可见性（首页 XAML 绑定用，与历史/收藏卡片的 HasRemark 对齐）</summary>
+    public bool HasRemark => !string.IsNullOrEmpty(Remarks);
+
     /// <summary>评分（MacCMS vod_score；部分源列表接口返回 0）</summary>
     public double Score { get; set; }
 }
@@ -175,6 +178,9 @@ public class VodEpisode
 
     /// <summary>播放地址（可能是直链 m3u8/mp4，也可能是待解析的页面 URL）</summary>
     public string Url { get; set; } = string.Empty;
+
+    /// <summary>所属线路的 flag（vod_play_from 的值，playerContent 第一参数；spider 常按它分支解析逻辑）</summary>
+    public string? Flag { get; set; }
 }
 
 /// <summary>搜索结果（跨站搜索的聚合容器）</summary>
@@ -201,4 +207,10 @@ public class PlayRequest
 
     /// <summary>请求播放地址时需要的 User-Agent</summary>
     public string? UserAgent { get; set; }
+
+    /// <summary>完整请求头（含 Referer/UA 之外的 Origin/Cookie 等；TVBox spider header 全量透传）</summary>
+    public Dictionary<string, string>? Headers { get; set; }
+
+    /// <summary>是否需要网页嗅探（spider playerContent parse=1 或站点 parse 未解析时为 true）</summary>
+    public bool NeedsSniff { get; set; }
 }

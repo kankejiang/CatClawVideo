@@ -103,9 +103,11 @@ public static class SpiderJsonParser
                     eps.Add(new VodEpisode { Name = name, Url = url });
                 }
                 if (eps.Count == 0) continue;
+                var flagName = i < flags.Length ? flags[i].Trim() : $"线路{i + 1}";
+                foreach (var ep in eps) ep.Flag = flagName;   // flag 真传：spider playerContent 按线路分支
                 result.Add(new VodPlaySource
                 {
-                    Name = i < flags.Length ? flags[i].Trim() : $"线路{i + 1}",
+                    Name = flagName,
                     Episodes = eps,
                 });
             }
@@ -114,7 +116,7 @@ public static class SpiderJsonParser
         return result;
     }
 
-    /// <summary>playerContent → 播放请求。parse=0 直链；parse=1 返回网页地址待嗅探。</summary>
+    /// <summary>playerContent → 播放请求。parse=0 直链；parse=1 返回网页地址待嗅探/JSON 解析。</summary>
     public static PlayRequest ParsePlayRequest(string json, string title)
     {
         if (string.IsNullOrWhiteSpace(json)) return new PlayRequest { Title = title };
@@ -123,11 +125,38 @@ public static class SpiderJsonParser
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
             var url = GetStr(root, "url");
+            var playUrl = GetStr(root, "playUrl");
+            if (playUrl.Length > 0 && url.Length > 0)
+                url = playUrl + url;   // TVBox 协议：playUrl 前缀拼接
             var play = new PlayRequest { Title = title, Url = url };
+            // TVBox PlayFragment L1198：parse 缺省按 "1"；但直链源（m3u8/mp4）不嗅探直接播，
+            // 故缺省语义收敛为「非视频格式 URL 即走解析」。显式 parse=0/jx=0 必须直连。
+            var explicitParse = (bool?)null;
+            if (root.TryGetProperty("parse", out var p))
+            {
+                if (p.ValueKind == JsonValueKind.Number) explicitParse = p.TryGetInt32(out var pi) && pi != 0;
+                else if (p.ValueKind == JsonValueKind.True) explicitParse = true;
+                else if (p.ValueKind == JsonValueKind.False) explicitParse = false;
+            }
+            var explicitJx = false;
+            if (root.TryGetProperty("jx", out var jx))
+            {
+                if (jx.ValueKind == JsonValueKind.Number) explicitJx = jx.TryGetInt32(out var ji) && ji != 0;
+                else if (jx.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                    explicitJx = jx.ValueKind == JsonValueKind.True;
+            }
+            play.NeedsSniff = explicitParse == true || explicitJx ||
+                (explicitParse is null && !explicitJx && url.Length > 0 && !TvBoxParseEngine.IsVideoFormat(url));
             if (root.TryGetProperty("header", out var h) && h.ValueKind == JsonValueKind.Object)
             {
-                if (h.TryGetProperty("Referer", out var r)) play.Referer = r.GetString();
-                if (h.TryGetProperty("User-Agent", out var ua)) play.UserAgent = ua.GetString();
+                play.Headers = new Dictionary<string, string>();
+                foreach (var kv in h.EnumerateObject())
+                {
+                    if (kv.Value.ValueKind != JsonValueKind.String) continue;
+                    play.Headers[kv.Name] = kv.Value.GetString() ?? "";
+                    if (kv.Name.Equals("Referer", StringComparison.OrdinalIgnoreCase)) play.Referer = play.Headers[kv.Name];
+                    else if (kv.Name.Equals("User-Agent", StringComparison.OrdinalIgnoreCase)) play.UserAgent = play.Headers[kv.Name];
+                }
             }
             return play;
         }

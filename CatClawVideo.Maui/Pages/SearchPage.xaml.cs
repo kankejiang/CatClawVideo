@@ -26,7 +26,11 @@ public partial class SearchPage : ContentPage
     public SearchPage(IVodSourceProvider provider, CoverImageService covers)
     {
         InitializeComponent();
-        ResultGrid.SizeChanged += (_, _) => PosterLayoutHelper.Apply(ResultGrid, ResultGrid.Width, ResultGrid.Height, cap: 260);   // Windows 固定 173×260
+#if WINDOWS
+        ResultGrid.SizeChanged += (_, _) => PosterLayoutHelper.Apply(ResultGrid, ResultGrid.Width, ResultGrid.Height, cap: 252);   // 桌面固定 168×252
+#else
+        ResultGrid.SizeChanged += (_, _) => PosterLayoutHelper.Apply(ResultGrid, ResultGrid.Width, ResultGrid.Height);   // 移动端 182 高，与首页/历史/收藏一致
+#endif
         _provider = provider;
         _covers = covers;
 
@@ -47,7 +51,7 @@ public partial class SearchPage : ContentPage
     {
         base.OnAppearing();
 #if WINDOWS
-        PosterLayoutHelper.Apply(ResultGrid, ResultGrid.Width, ResultGrid.Height, cap: 260);
+        PosterLayoutHelper.Apply(ResultGrid, ResultGrid.Width, ResultGrid.Height, cap: 252);
 #endif
         if (_hotLoaded) return;
         _hotLoaded = true;

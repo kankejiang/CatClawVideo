@@ -10,8 +10,8 @@ public static class PosterLayoutHelper
     /// <param name="grid">海报墙 CollectionView（ItemsLayout 须为 GridItemsLayout）</param>
     /// <param name="width">海报墙当前宽</param>
     /// <param name="height">海报墙当前高</param>
-    /// <param name="cap">卡片高度上限。桌面端可视区大，可放宽（如 300）让海报更大。</param>
-    public static void Apply(CollectionView? grid, double width, double height, double cap = 190)
+    /// <param name="cap">卡片高度上限（移动端默认 182：卡片略小给片名留出两行空间）。桌面端调用方传 252/260。</param>
+    public static void Apply(CollectionView? grid, double width, double height, double cap = 182)
     {
         try
         {

@@ -44,10 +44,10 @@
                                 </Border>
                             </Grid>
                         </Border>
-                        <Label Text="{Binding Title}" FontSize="12.5" Margin="0,7,0,0"
-                               LineBreakMode="TailTruncation" MaxLines="1"
+                        <Label Text="{Binding Title}" FontSize="12" Margin="0,6,0,0"
+                               LineBreakMode="TailTruncation" MaxLines="2"
                                TextColor="{DynamicResource TextPrimaryColor}" />
-                        <Label Text="{Binding Meta}" FontSize="10.5" Margin="0,2,0,0"
+                        <Label Text="{Binding Meta}" FontSize="10" Margin="0,2,0,0"
                                LineBreakMode="TailTruncation" MaxLines="1"
                                TextColor="{DynamicResource TextHintColor}" />
                     </VerticalStackLayout>

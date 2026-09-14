@@ -930,6 +930,11 @@ public partial class WatchPage : ContentPage, IQueryAttributable
             var play = await _provider.ResolvePlayUrlAsync(_site, episode);
             if (generation != _playGeneration) return; // 已被后续点击取代，丢弃过期解析
             _resolvedPlay = play;
+            // 防盗链头透传播放器（spider header 全量；此前 Referer/UA 在此被丢弃导致部分源 403）
+            Player.Headers = play.Headers ??
+                (play.Referer is { Length: > 0 } || play.UserAgent is { Length: > 0 }
+                    ? PlayRequestHeaders(play)
+                    : null);
             Player.Source = play.Url;
             Player.Play();
             _playing = true;
@@ -970,6 +975,15 @@ public partial class WatchPage : ContentPage, IQueryAttributable
                 UpdatePlayIcon();
             }
         }
+    }
+
+    /// <summary>把 Referer/UA 兜底成播放器请求头字典（Headers 未提供时）</summary>
+    private static Dictionary<string, string>? PlayRequestHeaders(PlayRequest play)
+    {
+        var h = new Dictionary<string, string>();
+        if (!string.IsNullOrEmpty(play.Referer)) h["Referer"] = play.Referer;
+        if (!string.IsNullOrEmpty(play.UserAgent)) h["User-Agent"] = play.UserAgent;
+        return h.Count > 0 ? h : null;
     }
 
     private void ShowBuffering(bool on) => BufferingIndicator.IsVisible = on;

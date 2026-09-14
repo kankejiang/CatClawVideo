@@ -111,12 +111,21 @@ public static class MauiProgram
             new BitTorrentDownloadService(sp.GetRequiredService<Core.Services.BtStreamService>(), BtFileLog.Write));
         services.AddSingleton(sp => new DownloadManager(btFactory: () => sp.GetService<BitTorrentDownloadService>()));
 
+        // 平台嗅探器：Android WebView 拦截 / Windows WebView2 拦截（TVBox parse=1 页面解析）
+#if ANDROID
+        CatClawVideo.Core.Interfaces.IWebSniffer sniffer = new Platforms.Android.AndroidWebSniffer();
+#elif WINDOWS
+        CatClawVideo.Core.Interfaces.IWebSniffer sniffer = new Platforms.Windows.WindowsWebSniffer();
+#else
+        CatClawVideo.Core.Interfaces.IWebSniffer sniffer = new CatClawVideo.Core.Providers.NullWebSniffer();
+#endif
+
         var vodProvider = new CatClawVideo.Core.Providers.CompositeVodSourceProvider(
             new IVodSourceProvider[]
             {
                 new CatClawVideo.Core.Providers.CatClawSourceProvider(btService),
                 new CatClawVideo.Core.Providers.MacCmsJsonProvider(),
-                new CatClawVideo.Core.Providers.SpiderVodProvider(jsRuntime, jarRuntime),
+                new CatClawVideo.Core.Providers.SpiderVodProvider(jsRuntime, jarRuntime, sniffer),
             });
         services.AddSingleton<IVodSourceProvider>(vodProvider);
 

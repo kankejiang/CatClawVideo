@@ -116,6 +116,9 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
         using var doc = JsonDocument.Parse(jsonText, options);
         var root = doc.RootElement;
 
+        // 留存 parses/hosts 到解析配置仓（此前这两个键被整包丢弃，播放解析无依据）
+        TvBoxConfigStore.Capture(subscriptionName, root);
+
         var sites = new List<VodSiteInfo>();
         if (!root.TryGetProperty("sites", out var siteArray) || siteArray.ValueKind != JsonValueKind.Array)
             return Task.FromResult(sites);

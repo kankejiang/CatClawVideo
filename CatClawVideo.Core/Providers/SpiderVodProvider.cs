@@ -13,11 +13,13 @@ public class SpiderVodProvider : IVodSourceProvider
 {
     private readonly ISpiderRuntime? _jsRuntime;
     private readonly ISpiderRuntime? _jarRuntime;
+    private readonly IWebSniffer? _sniffer;
 
-    public SpiderVodProvider(ISpiderRuntime? jsRuntime, ISpiderRuntime? jarRuntime = null)
+    public SpiderVodProvider(ISpiderRuntime? jsRuntime, ISpiderRuntime? jarRuntime = null, IWebSniffer? sniffer = null)
     {
         _jsRuntime = jsRuntime;
         _jarRuntime = jarRuntime;
+        _sniffer = sniffer;
     }
 
     public string Id => "spider";
@@ -73,11 +75,12 @@ public class SpiderVodProvider : IVodSourceProvider
     private async Task<PlayRequest> ResolveCoreAsync(ISpiderRuntime rt, VodSiteInfo site, VodEpisode episode, CancellationToken ct)
     {
         // episode.Url 可能是 "线路名$id"（来自 vod_play_url 的 集$链接 拆分，此处只剩链接）
-        var json = await rt.PlayerContentAsync(site, flag: "", id: episode.Url, ct);
+        var json = await rt.PlayerContentAsync(site, flag: episode.Flag ?? "", id: episode.Url, ct);
         var play = SpiderJsonParser.ParsePlayRequest(json, episode.Name);
         if (string.IsNullOrEmpty(play.Url))
             play.Url = episode.Url;
-        return play;
+
+        return await TvBoxPlayPipeline.ResolveAsync(site, play, episode.Flag ?? "", _sniffer, ct);
     }
 
     public async Task<List<VodItem>> SearchAsync(VodSiteInfo site, string keyword, CancellationToken ct = default)
