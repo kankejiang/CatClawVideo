@@ -13,8 +13,12 @@ namespace CatClawVideo.Core.Providers;
 /// <summary>
 /// jar/dex 爬虫运行时（桌面 JVM 版）：启动常驻 Java 桥进程（JavaBridge/bridge.Server，
 /// stdin/stdout 每行一条 JSON），spider jar 经 dex2jar 转换为标准 jar 后由桥加载。
-/// <para>能力边界：仅支持明文 dex jar（如小雅 xiaoya_proxy.jar）；Guard 加固 jar
-/// （jar 内带 assets/*.so + *.guard 加密 dex，解密依赖 Android ARM native）无法在 PC 运行。</para>
+/// <para>能力边界：Guard 加固 jar 本身**无法**在 PC 运行 —— 其解密器是 ARM Android native
+/// （<c>assets/ftyguard_v8.so</c> 用 <c>JNI_OnLoad</c> + <c>RegisterNatives</c> 动态注册，且只有
+/// arm64/armv7），在 x64 JVM 里没有可执行路径。
+/// <b>但站点仍可用</b>：检测到 Guard 时会自动改用**同族「非 Guard 构建」**的 jar
+/// （见 <see cref="NonGuardFallbackJars"/>），它提供同名去掉 <c>Guard</c> 后缀的真实实现
+/// （<c>csp_SixVGuard</c> → <c>SixV</c>），因此 新6V 这类站点在 Windows 上也能播。</para>
 /// <para>认证预处理：ext global 含 username/password 而缺 token 时，自动向
 /// {server}/api/auth/login 登录注入 token（小雅 AListSh 需要）。</para>
 /// </summary>
@@ -35,6 +39,27 @@ public class JavaSpiderRuntime : ISpiderRuntime
 
     private readonly ConcurrentDictionary<string, bool> _loadedSites = new();
     private readonly ConcurrentDictionary<string, string> _convertedJars = new();
+
+    /// <summary>
+    /// 站点 → 改用替代 jar 后的类名（去掉 <c>Guard</c> 后缀）。
+    /// <para>Guard 加固 jar 的解密器是 **ARM Android native .so**（v8 库用 <c>JNI_OnLoad</c> +
+    /// <c>RegisterNatives</c> 动态注册，且只提供 arm64/armv7），Windows 的 JVM 里无法执行 ——
+    /// 这是结构性限制，不是配置问题。因此本平台改用**同族「非 Guard 构建」**的 jar：
+    /// 它提供同名但去掉 <c>Guard</c> 后缀的真实实现（如 <c>SixVGuard</c> → <c>SixV</c>）。</para>
+    /// </summary>
+    private readonly ConcurrentDictionary<string, string> _nonGuardClass = new();
+
+    /// <summary>
+    /// 配置的 jar 是 Guard 加固、而本平台解不开时，按顺序尝试的**非 Guard 同族 jar**。
+    /// <para>判定标准（两者都过才用）：① 不含 <c>assets/*.so</c> + <c>*.guard</c>；
+    /// ② <c>classes*.dex</c> 里确实存在「去掉 Guard 后缀」的那个类。</para>
+    /// <para>默认值是 TVBox 生态里长期使用的非 Guard 同族构建（提供 SixV / Proxy / AList 等 900+ 类）。
+    /// 如需替换，改这里即可（例如换成自己镜像）。</para>
+    /// </summary>
+    public static List<string> NonGuardFallbackJars { get; } =
+    [
+        "https://raw.liucn.cc/box/fty.jar",
+    ];
 
     public bool IsSupported { get; }
 
@@ -216,7 +241,9 @@ public class JavaSpiderRuntime : ISpiderRuntime
             ["id"] = Interlocked.Increment(ref _id),
             ["op"] = "load",
             ["site"] = site.Key,
-            ["className"] = site.Api.StartsWith("csp_", StringComparison.OrdinalIgnoreCase) ? site.Api[4..] : site.Api,
+            ["className"] = _nonGuardClass.TryGetValue(site.Key, out var altName)
+                ? altName
+                : site.Api.StartsWith("csp_", StringComparison.OrdinalIgnoreCase) ? site.Api[4..] : site.Api,
             ["ext"] = await PrepareExtAsync(site, ct),
             ["jars"] = new JsonArray(jarPath),
         };
@@ -240,57 +267,127 @@ public class JavaSpiderRuntime : ISpiderRuntime
         if (string.IsNullOrEmpty(jarUrl))
             throw new InvalidOperationException($"站点 {site.Name} 缺少 spider jar 地址");
 
+        var configured = site.Api.StartsWith("csp_", StringComparison.OrdinalIgnoreCase) ? site.Api[4..] : site.Api;
+
+        var outPath = await ConvertJarAsync(jarUrl, expectMd5, ct, null);
+        if (outPath is not null)
+        {
+            _convertedJars[site.Key] = outPath;
+            return outPath;
+        }
+
+        // ── 配置的 jar 在本平台不可用（Guard 加固）：换同族非 Guard 构建 ──
+        // 非 Guard 版里真实类名不带 Guard 后缀（SixVGuard → SixV）。
+        var alt = configured.EndsWith("Guard", StringComparison.Ordinal)
+            ? configured[..^"Guard".Length]
+            : configured;
+        Log($"{site.Name} 的 spider jar 是 Guard 加固包（ARM native 解密，本平台无法执行）；改试非 Guard 同族 jar（目标类 {alt}）…");
+
+        foreach (var fb in NonGuardFallbackJars)
+        {
+            var p = await ConvertJarAsync(fb, null, ct, alt);
+            if (p is null) continue;
+            _nonGuardClass[site.Key] = alt;
+            _convertedJars[site.Key] = p;
+            Log($"{site.Name}: 已改用非 Guard jar（{fb}），类名 {configured} → {alt}");
+            return p;
+        }
+
+        throw new NotSupportedException(
+            $"{site.Name} 的 spider jar 是 Guard 加固包（依赖 Android ARM native 解密），本平台无法执行，" +
+            $"且未找到提供 {alt} 的非 Guard 替代 jar");
+    }
+
+    /// <summary>
+    /// 下载 → 校验 → 查 Guard → dex2jar 转换。
+    /// <para>返回转换后的 java jar 路径；**返回 null 表示这个 jar 在本平台不可用**
+    /// （Guard 加固，或 <paramref name="requireClass"/> 指定的类不在其中），
+    /// 由调用方决定换哪个 jar —— 用 null 而不是抛异常，是为了让「换 jar」成为正常流程而不是错误路径。</para>
+    /// </summary>
+    private async Task<string?> ConvertJarAsync(string jarUrl, string? expectMd5, CancellationToken ct, string? requireClass)
+    {
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(jarUrl)))[..24].ToLowerInvariant();
         var rawPath = Path.Combine(_bridgeDir, "converted", "raw-" + hash + ".jar");
         var outPath = Path.Combine(_bridgeDir, "converted", hash + "-java.jar");
         Directory.CreateDirectory(Path.GetDirectoryName(rawPath)!);
 
-        if (!File.Exists(outPath))
+        if (File.Exists(outPath)) return outPath;
+
+        if (!File.Exists(rawPath))
         {
-            if (!File.Exists(rawPath))
-            {
-                Log($"下载 spider jar: {jarUrl[..Math.Min(80, jarUrl.Length)]}");
-                using var resp = await _http.GetAsync(jarUrl, ct);
-                resp.EnsureSuccessStatusCode();
-                var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
-                // 伪装 jpg：剥前导字节定位 PK
-                for (int i = 0; i + 1 < bytes.Length && i < 4096; i++)
-                    if (bytes[i] == 0x50 && bytes[i + 1] == 0x4B) { if (i > 0) bytes = bytes[i..]; break; }
+            Log($"下载 spider jar: {jarUrl[..Math.Min(80, jarUrl.Length)]}");
+            using var resp = await _http.GetAsync(jarUrl, ct);
+            resp.EnsureSuccessStatusCode();
+            var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
+            // 伪装 jpg：剥前导字节定位 PK
+            for (int i = 0; i + 1 < bytes.Length && i < 4096; i++)
+                if (bytes[i] == 0x50 && bytes[i + 1] == 0x4B) { if (i > 0) bytes = bytes[i..]; break; }
 
-                if (expectMd5 is not null)
-                {
-                    var actual = Convert.ToHexString(MD5.HashData(bytes)).ToLowerInvariant();
-                    if (!actual.Equals(expectMd5, StringComparison.OrdinalIgnoreCase))
-                        Log($"jar md5 不匹配（期望 {expectMd5} 实际 {actual}）");
-                }
-                await File.WriteAllBytesAsync(rawPath, bytes, ct);
+            if (expectMd5 is not null)
+            {
+                var actual = Convert.ToHexString(MD5.HashData(bytes)).ToLowerInvariant();
+                if (!actual.Equals(expectMd5, StringComparison.OrdinalIgnoreCase))
+                    Log($"jar md5 不匹配（期望 {expectMd5} 实际 {actual}）");
             }
-
-            // Guard 加固检测：assets 下带 .so（ARM native 解密器）+ .guard 加密 dex
-            if (IsGuarded(rawPath))
-                throw new NotSupportedException(
-                    $"{site.Name} 的 spider jar 是 Guard 加固包（依赖 Android ARM native 解密），Windows 暂不支持");
-
-            // dex2jar 转换
-            var psi = new ProcessStartInfo
-            {
-                FileName = _javaExe,
-                Arguments = $"-cp \"vendor\\dex2jar\\*\" com.googlecode.dex2jar.tools.Dex2jarCmd \"{rawPath}\" -o \"{outPath}\" --force",
-                WorkingDirectory = _bridgeDir,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            };
-            using var p = Process.Start(psi) ?? throw new InvalidOperationException("dex2jar 启动失败");
-            await p.WaitForExitAsync(ct);
-            if (p.ExitCode != 0 || !File.Exists(outPath))
-                throw new InvalidOperationException($"dex2jar 转换失败: {site.Name}");
-            Log($"jar 转换完成: {Path.GetFileName(outPath)}");
+            await File.WriteAllBytesAsync(rawPath, bytes, ct);
         }
 
-        _convertedJars[site.Key] = outPath;
+        // Guard 加固检测：assets 下带 .so（ARM native 解密器）+ .guard 加密 dex
+        if (IsGuarded(rawPath))
+        {
+            Log($"跳过 Guard 加固 jar: {Path.GetFileName(rawPath)}");
+            return null;
+        }
+
+        if (requireClass is not null && !JarHasClass(rawPath, requireClass))
+        {
+            Log($"跳过不含类 {requireClass} 的 jar: {Path.GetFileName(rawPath)}");
+            return null;
+        }
+
+        // dex2jar 转换
+        var psi = new ProcessStartInfo
+        {
+            FileName = _javaExe,
+            Arguments = $"-cp \"vendor\\dex2jar\\*\" com.googlecode.dex2jar.tools.Dex2jarCmd \"{rawPath}\" -o \"{outPath}\" --force",
+            WorkingDirectory = _bridgeDir,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        using var p = Process.Start(psi) ?? throw new InvalidOperationException("dex2jar 启动失败");
+        await p.WaitForExitAsync(ct);
+        if (p.ExitCode != 0 || !File.Exists(outPath))
+            throw new InvalidOperationException($"dex2jar 转换失败: {Path.GetFileName(rawPath)}");
+        Log($"jar 转换完成: {Path.GetFileName(outPath)}");
         return outPath;
+    }
+
+    /// <summary>
+    /// 判断 jar 的 dex 里是否定义了某个类。
+    /// <para>dex 的 type descriptor（<c>Lcom/foo/Bar;</c>）在字符串池里以**明文 MUTF-8** 存放，
+    /// 所以直接按字节搜完整描述符即可 —— 完整描述符误命中概率可忽略，无需完整解析 dex。</para>
+    /// </summary>
+    private static bool JarHasClass(string jarPath, string className)
+    {
+        try
+        {
+            var desc = Encoding.UTF8.GetBytes("L" + className.Replace('.', '/') + ";");
+            using var zip = System.IO.Compression.ZipFile.OpenRead(jarPath);
+            foreach (var e in zip.Entries)
+            {
+                var n = e.FullName;
+                if (!n.StartsWith("classes", StringComparison.OrdinalIgnoreCase) || !n.EndsWith(".dex", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                using var s = e.Open();
+                using var ms = new MemoryStream();
+                s.CopyTo(ms);
+                if (ms.GetBuffer().AsSpan(0, (int)ms.Length).IndexOf(desc) >= 0) return true;
+            }
+        }
+        catch { }
+        return false;
     }
     private static bool IsGuarded(string jarPath)
     {
