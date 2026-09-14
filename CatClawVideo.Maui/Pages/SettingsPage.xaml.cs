@@ -34,7 +34,87 @@ public partial class SettingsPage : ContentView, ITabView
         // 版本号动态填充（避免硬编码过期）
         try { AboutVersionLabel.Text = $"猫爪影视 {AppInfo.Current?.VersionString ?? "0.0.0"}"; } catch { }
         LoadNodeSettings();
+        LoadNodeHostSettings();
         return Task.CompletedTask;
+    }
+
+    // ═══════════ 本机作为解析节点（手机端）═══════════
+
+    /// <summary>
+    /// 手机端：显示本机节点地址/口令/二维码，并可一键配对到电脑。
+    /// PC 端则相反 —— 显示「填手机地址」的卡片。两平台共用同一份 XAML，这里按平台切换可见性。
+    /// </summary>
+    private void LoadNodeHostSettings()
+    {
+        bool isHost = CatClawVideo.Core.Providers.RemoteSpiderNode.IsNodeHost;
+        NodeHostCard.IsVisible = isHost;
+        NodeClientCard.IsVisible = !isHost;
+        if (!isHost) return;
+
+        try
+        {
+            var ip = CatClawVideo.Core.Services.LanInfo.PrimaryIPv4();
+            const int port = 8899;
+            var token = Preferences.Default.Get("node_token", "");
+
+            NodeAddressLabel.Text = $"本机节点：http://{ip}:{port}";
+            NodeTokenLabel.Text = string.IsNullOrEmpty(token) ? "（口令未生成）" : $"口令：{token}";
+
+            if (NodeQrImage.Source is null)
+            {
+                var payload = $"http://{ip}:{port}" + (string.IsNullOrEmpty(token) ? "" : $"?token={token}");
+                NodeQrImage.Source = ImageSource.FromStream(() => new MemoryStream(Services.PairQr.Png(payload, 5)));
+            }
+        }
+        catch (Exception ex)
+        {
+            NodeTokenLabel.Text = $"初始化失败：{ex.Message}";
+        }
+    }
+
+    /// <summary>把本机节点登记到电脑（POST /pair 到 PC 的 LinkServer）</summary>
+    private async void OnPairToPcClicked(object? sender, EventArgs e)
+    {
+        var raw = PcAddressEntry.Text?.Trim() ?? "";
+        if (string.IsNullOrEmpty(raw))
+        {
+            PairStatusLabel.Text = "请先填电脑上显示的地址（形如 192.168.1.5:8900）";
+            return;
+        }
+
+        // 容错：允许只填 IP、填 http://、末尾带 /
+        var hostPort = raw.Replace("http://", "").Replace("https://", "").TrimEnd('/');
+        var url = $"http://{hostPort}/pair";
+
+        PairButton.IsEnabled = false;
+        PairStatusLabel.Text = "正在配对…";
+        try
+        {
+            var ip = CatClawVideo.Core.Services.LanInfo.PrimaryIPv4();
+            var token = Preferences.Default.Get("node_token", "");
+            var payload = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                node = $"http://{ip}:8899",
+                token,
+                name = Services.PairQr.DeviceName(),
+            });
+
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+            using var content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");
+            var body = await (await http.PostAsync(url, content)).Content.ReadAsStringAsync();
+
+            PairStatusLabel.Text = body.Contains("\"ok\":true")
+                ? $"✅ 配对成功，电脑已记住本机节点（{ip}:8899）"
+                : $"❌ 电脑返回：{Trim(body)}";
+        }
+        catch (Exception ex)
+        {
+            PairStatusLabel.Text = $"❌ 连不上电脑：{ex.GetType().Name}: {ex.Message}";
+        }
+        finally
+        {
+            PairButton.IsEnabled = true;
+        }
     }
 
     // ═══════════ 手机解析节点 ═══════════

@@ -47,8 +47,8 @@
                 </VerticalStackLayout>
             </Border>
 
-            <!-- ═══ 手机解析节点 ═══ -->
-            <Border StrokeThickness="1"
+            <!-- ═══ 手机解析节点（PC 端：填手机地址）═══ -->
+            <Border x:Name="NodeClientCard" StrokeThickness="1"
                     StrokeShape="RoundRectangle 20"
                     BackgroundColor="{DynamicResource CardBackgroundColor}"
                     Stroke="{DynamicResource DividerColor}"
@@ -83,6 +83,42 @@
                                 CornerRadius="8" Padding="18,6" Clicked="OnClearNodeClicked" />
                     </Grid>
                     <Label x:Name="NodeStatusLabel" Text="" FontSize="12" LineBreakMode="WordWrap"
+                           TextColor="{DynamicResource TextSecondaryColor}" />
+                </VerticalStackLayout>
+            </Border>
+
+            <!-- ═══ 本机作为解析节点（手机端：给自己用，也供 PC 扫码配对）═══ -->
+            <Border x:Name="NodeHostCard" IsVisible="False" StrokeThickness="1"
+                    StrokeShape="RoundRectangle 20"
+                    BackgroundColor="{DynamicResource CardBackgroundColor}"
+                    Stroke="{DynamicResource DividerColor}"
+                    Padding="20">
+                <VerticalStackLayout Spacing="12">
+                    <Label Text="本机作为解析节点" FontSize="16" FontFamily="OpenSansSemibold"
+                           TextColor="{DynamicResource TextPrimaryColor}" />
+                    <Label Text="本机已在局域网内提供解析服务，供 PC 端借用（PC 跑不了 Guard 加固源）。本机只做取页+解析的轻活，不发烫。"
+                           FontSize="12" LineBreakMode="WordWrap"
+                           TextColor="{DynamicResource TextSecondaryColor}" />
+                    <Image x:Name="NodeQrImage" WidthRequest="150" HeightRequest="150" HorizontalOptions="Center" />
+                    <Label x:Name="NodeAddressLabel" Text="" FontSize="12" HorizontalTextAlignment="Center"
+                           TextColor="{DynamicResource TextSecondaryColor}" />
+                    <Label x:Name="NodeTokenLabel" Text="" FontSize="11.5" HorizontalTextAlignment="Center"
+                           TextColor="{DynamicResource TextHintColor}" />
+
+                    <BoxView HeightRequest="1" Color="{DynamicResource DividerColor}" />
+
+                    <Label Text="配对到电脑（让 PC 自动记住本机）" FontSize="12.5"
+                           TextColor="{DynamicResource TextPrimaryColor}" />
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+                        <Entry x:Name="PcAddressEntry" Grid.Column="0"
+                               Placeholder="电脑上显示的地址，如 192.168.1.5:8900"
+                               PlaceholderColor="{DynamicResource TextHintColor}"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                        <Button x:Name="PairButton" Grid.Column="1" Text="配对" FontSize="12.5"
+                                TextColor="White" BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
+                                CornerRadius="8" Padding="18,6" Clicked="OnPairToPcClicked" />
+                    </Grid>
+                    <Label x:Name="PairStatusLabel" Text="" FontSize="12" LineBreakMode="WordWrap"
                            TextColor="{DynamicResource TextSecondaryColor}" />
                 </VerticalStackLayout>
             </Border>
