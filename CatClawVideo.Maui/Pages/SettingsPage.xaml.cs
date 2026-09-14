@@ -33,8 +33,84 @@ public partial class SettingsPage : ContentView, ITabView
         _vm.SelectedDarkMode = DarkModeSetting.Dark;
         // 版本号动态填充（避免硬编码过期）
         try { AboutVersionLabel.Text = $"猫爪影视 {AppInfo.Current?.VersionString ?? "0.0.0"}"; } catch { }
+        LoadNodeSettings();
         return Task.CompletedTask;
     }
+
+    // ═══════════ 手机解析节点 ═══════════
+
+    /// <summary>回填当前节点配置（扫码配对后也会走到这里刷新）</summary>
+    private void LoadNodeSettings()
+    {
+        try
+        {
+            NodeEntry.Text = CatClawVideo.Core.Providers.RemoteSpiderNode.BaseUrl ?? "";
+            NodeTokenEntry.Text = CatClawVideo.Core.Providers.RemoteSpiderNode.Token ?? "";
+            var url = CatClawVideo.Core.Providers.RemoteSpiderNode.BaseUrl;
+            NodeStatusLabel.Text = string.IsNullOrEmpty(url)
+                ? "未配置 —— Guard 加固源在本机不可用（其余源不受影响）"
+                : $"已配置：{url}";
+        }
+        catch { }
+    }
+
+    /// <summary>测试节点连通性：GET /ping</summary>
+    private async void OnTestNodeClicked(object? sender, EventArgs e)
+    {
+        var url = NodeEntry.Text?.Trim() ?? "";
+        if (string.IsNullOrEmpty(url))
+        {
+            NodeStatusLabel.Text = "请先填写手机端显示的地址";
+            return;
+        }
+
+        NodeTestButton.IsEnabled = false;
+        NodeStatusLabel.Text = "正在测试…";
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
+            var baseUrl = url.TrimEnd('/');
+            var token = NodeTokenEntry.Text?.Trim();
+            var probe = string.IsNullOrEmpty(token) ? "/ping" : $"/ping?token={Uri.EscapeDataString(token)}";
+            var body = await http.GetStringAsync(baseUrl + probe);
+
+            using var doc = System.Text.Json.JsonDocument.Parse(body);
+            var ok = doc.RootElement.TryGetProperty("ok", out var o) && o.ValueKind == System.Text.Json.JsonValueKind.True;
+            NodeStatusLabel.Text = ok
+                ? "✅ 连接成功。点「保存」生效（Guard 站点将走该节点解析）"
+                : $"❌ 节点返回异常：{Trim(body)}";
+        }
+        catch (Exception ex)
+        {
+            NodeStatusLabel.Text = $"❌ 连不上：{ex.GetType().Name}: {ex.Message}";
+        }
+        finally
+        {
+            NodeTestButton.IsEnabled = true;
+        }
+    }
+
+    private void OnSaveNodeClicked(object? sender, EventArgs e)
+    {
+        var url = NodeEntry.Text?.Trim();
+        if (string.IsNullOrEmpty(url))
+        {
+            NodeStatusLabel.Text = "地址为空，如需关闭请点「清除」";
+            return;
+        }
+        CatClawVideo.Core.Providers.RemoteSpiderNode.Set(url, NodeTokenEntry.Text);
+        LoadNodeSettings();
+        NodeStatusLabel.Text = $"✅ 已保存：{CatClawVideo.Core.Providers.RemoteSpiderNode.BaseUrl}";
+    }
+
+    private void OnClearNodeClicked(object? sender, EventArgs e)
+    {
+        CatClawVideo.Core.Providers.RemoteSpiderNode.Clear();
+        LoadNodeSettings();
+        NodeStatusLabel.Text = "已清除，全部源改回本机解析";
+    }
+
+    private static string Trim(string s) => s.Length <= 200 ? s : s[..200] + "…";
 
     /// <summary>跳转关于页（品牌信息 / 免责声明 / 开源协议 / 检查更新）</summary>
     private async void OnAboutClicked(object? sender, TappedEventArgs e)

@@ -124,8 +124,7 @@ public static class MauiProgram
         var nodeServer = new Platforms.Android.SpiderApiServer(
             8899,
             handler: async (siteKey, method, args) =>
-            {
-                var site = CatClawVideo.Core.Models.SiteRegistry.Find(siteKey)
+            {                var site = CatClawVideo.Core.Models.SiteRegistry.Find(siteKey)
                     ?? throw new InvalidOperationException($"本机未注册站点 {siteKey}");
                 CatClawVideo.Core.Interfaces.ISpiderRuntime rt =
                     site.SpiderKind == CatClawVideo.Core.Models.VodSpiderKind.Jar ? jarRuntime : jsRuntime;
@@ -144,9 +143,11 @@ public static class MauiProgram
                     _ => throw new InvalidOperationException($"未知 method: {method}"),
                 };
             },
-            token: null,
+            token: NodeToken(),
             log: BtFileLog.Write);
         nodeServer.Start();
+        CatClawVideo.Core.Providers.RemoteSpiderNode.IsNodeHost = true;
+        BtFileLog.Write($"[节点] 口令 /node-token = {NodeToken()}（PC 端手填或扫码自动带上）");
 #else
         // 桌面 JVM 桥：JavaBridge 目录 + 系统 java.exe（缺一则不可用）
         var bridgeDir = CatClawVideo.Core.Providers.JavaSpiderRuntime.FindBridgeDir();
@@ -154,6 +155,21 @@ public static class MauiProgram
         CatClawVideo.Core.Interfaces.ISpiderRuntime jarRuntime = bridgeDir != null && javaExe != null
             ? new CatClawVideo.Core.Providers.JavaSpiderRuntime(bridgeDir, javaExe, m => System.Diagnostics.Debug.WriteLine(m))
             : new CatClawVideo.Core.Providers.NullSpiderRuntime("jvm-dex");
+
+        // 「猫爪互联」本机服务：PC 首页在「没有可用源」时展示配对二维码，
+        // 手机扫码 → POST /pair → 把手机登记为解析节点（本机跑不了 Guard 加固源）。
+        // 后续的遥控播放与播放记录同步也复用这条通道。
+        var linkServer = new CatClawVideo.Core.Services.LinkServer(
+            CatClawVideo.Core.Services.LinkServer.DefaultPort,
+            BtFileLog.Write,
+            deviceName: () => Environment.MachineName,
+            onPaired: (node, _) =>
+            {
+                BtFileLog.Write($"[互联] 解析节点已切换为 {node}");
+                // 解析路径变了，通知首页/搜索页刷新（订阅集合本身没变）
+                CatClawVideo.Core.Models.SiteRegistry.NotifyChanged();
+            });
+        linkServer.Start();
 #endif
         CatClawVideo.Core.Models.SiteRegistry.JsSpiderAvailable = jsRuntime.IsSupported;
         CatClawVideo.Core.Models.SiteRegistry.JarSpiderAvailable = jarRuntime.IsSupported;
@@ -176,12 +192,17 @@ public static class MauiProgram
         CatClawVideo.Core.Interfaces.IWebSniffer sniffer = new CatClawVideo.Core.Providers.NullWebSniffer();
 #endif
 
-        // 手机解析节点地址（设置页写入 Preferences）。用 Loader 延迟读取 ——
-        // MauiProgram 早期平台未初始化，直接调 Preferences 会抛。
+        // 手机解析节点地址/口令（设置页与扫码配对都写这里）。
+        // 用 Loader 延迟读取 —— MauiProgram 早期平台未初始化，直接调 Preferences 会抛。
         CatClawVideo.Core.Providers.RemoteSpiderNode.Loader =
-            () => Preferences.Get("remote_spider_node", "");
-        CatClawVideo.Core.Providers.RemoteSpiderNode.Token = null;
-
+            () => Preferences.Default.Get("remote_spider_node", "");
+        CatClawVideo.Core.Providers.RemoteSpiderNode.TokenLoader =
+            () => Preferences.Default.Get("remote_spider_token", "");
+        CatClawVideo.Core.Providers.RemoteSpiderNode.Saver = (url, token) =>
+        {
+            Preferences.Default.Set("remote_spider_node", url ?? "");
+            Preferences.Default.Set("remote_spider_token", token ?? "");
+        };
         var vodProvider = new CatClawVideo.Core.Providers.CompositeVodSourceProvider(            new IVodSourceProvider[]
             {
                 new CatClawVideo.Core.Providers.CatClawSourceProvider(btService),
@@ -308,5 +329,27 @@ public static class MauiProgram
 
         return app;
     }
+
+#if ANDROID
+    /// <summary>
+    /// 本机作为「解析节点」对外的共享口令：首次随机生成并持久化。
+    /// PC 端可手填，也会随二维码下发；手机端日志同样打印，便于手动配对。
+    /// </summary>
+    private static string NodeToken()
+    {
+        try
+        {
+            var t = Preferences.Default.Get("node_token", "");
+            if (!string.IsNullOrEmpty(t)) return t;
+            t = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(8)).ToLowerInvariant();
+            Preferences.Default.Set("node_token", t);
+            return t;
+        }
+        catch
+        {
+            return "";
+        }
+    }
+#endif
 }
 

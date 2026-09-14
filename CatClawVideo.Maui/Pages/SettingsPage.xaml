@@ -47,6 +47,46 @@
                 </VerticalStackLayout>
             </Border>
 
+            <!-- ═══ 手机解析节点 ═══ -->
+            <Border StrokeThickness="1"
+                    StrokeShape="RoundRectangle 20"
+                    BackgroundColor="{DynamicResource CardBackgroundColor}"
+                    Stroke="{DynamicResource DividerColor}"
+                    Padding="20">
+                <VerticalStackLayout Spacing="12">
+                    <Label Text="手机解析节点" FontSize="16" FontFamily="OpenSansSemibold"
+                           TextColor="{DynamicResource TextPrimaryColor}" />
+                    <Label Text="本机跑不了 Guard 加固源（解密器是安卓 ARM 原生库，且解密产物写完即删）。让手机当解析节点：手机只做取页+解析的轻活（不发烫），播放仍在本机。手机端保持 App 在前台即可，地址形如 http://192.168.x.x:8899。"
+                           FontSize="12" LineBreakMode="WordWrap"
+                           TextColor="{DynamicResource TextSecondaryColor}" />
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+                        <Entry x:Name="NodeEntry" Grid.Column="0"
+                               Placeholder="http://192.168.x.x:8899"
+                               PlaceholderColor="{DynamicResource TextHintColor}"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                        <Button x:Name="NodeTestButton" Grid.Column="1" Text="测试" FontSize="12.5"
+                                TextColor="White" BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
+                                CornerRadius="8" Padding="18,6" Clicked="OnTestNodeClicked" />
+                    </Grid>
+                    <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="10">
+                        <Entry x:Name="NodeTokenEntry" Grid.Column="0"
+                               Placeholder="口令（手机端日志/二维码里显示，可留空）"
+                               PlaceholderColor="{DynamicResource TextHintColor}"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                        <Button Grid.Column="1" Text="保存" FontSize="12.5"
+                                TextColor="White" BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
+                                CornerRadius="8" Padding="18,6" Clicked="OnSaveNodeClicked" />
+                        <Button Grid.Column="2" Text="清除" FontSize="12.5"
+                                TextColor="{DynamicResource TextSecondaryColor}"
+                                BackgroundColor="Transparent" BorderWidth="1"
+                                BorderColor="{DynamicResource DividerColor}"
+                                CornerRadius="8" Padding="18,6" Clicked="OnClearNodeClicked" />
+                    </Grid>
+                    <Label x:Name="NodeStatusLabel" Text="" FontSize="12" LineBreakMode="WordWrap"
+                           TextColor="{DynamicResource TextSecondaryColor}" />
+                </VerticalStackLayout>
+            </Border>
+
             <!-- ═══ 下载管理 ═══ -->
             <Border StrokeThickness="1"
                     StrokeShape="RoundRectangle 20"

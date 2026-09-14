@@ -29,6 +29,20 @@ public static class RemoteSpiderNode
     /// </summary>
     public static Func<string?>? Loader { get; set; }
 
+    /// <summary>宿主注入的写入器（(baseUrl, token) => 持久化）。Core 不依赖 MAUI Preferences。</summary>
+    public static Action<string?, string?>? Saver { get; set; }
+
+    /// <summary>设置并持久化节点地址/口令（设置页与扫码配对都走这里）</summary>
+    public static void Set(string? baseUrl, string? token = null)
+    {
+        BaseUrl = baseUrl;
+        Token = string.IsNullOrWhiteSpace(token) ? null : token.Trim();
+        try { Saver?.Invoke(BaseUrl, Token); } catch { }
+    }
+
+    /// <summary>清除节点配置（回落到纯本地）</summary>
+    public static void Clear() => Set(null, null);
+
     /// <summary>节点基地址，形如 <c>http://192.168.1.5:8899</c>；空 = 未配置（全部走本地）。</summary>
     public static string? BaseUrl
     {
@@ -49,7 +63,32 @@ public static class RemoteSpiderNode
     }
 
     /// <summary>可选共享口令（手机端启动时打印）。</summary>
-    public static string? Token { get; set; }
+    public static string? Token
+    {
+        get
+        {
+            if (!_tokenLoaded)
+            {
+                _tokenLoaded = true;
+                try { _token = TokenLoader?.Invoke()?.Trim(); } catch { }
+            }
+            return string.IsNullOrWhiteSpace(_token) ? null : _token;
+        }
+        set
+        {
+            _tokenLoaded = true;
+            _token = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        }
+    }
+
+    private static string? _token;
+    private static bool _tokenLoaded;
+
+    /// <summary>口令牌的宿主读取器（与 <see cref="Loader"/> 同理，延迟读取）。</summary>
+    public static Func<string?>? TokenLoader { get; set; }
+
+    /// <summary>本机是否是「节点提供方」（手机端）。PC 端不需要。</summary>
+    public static bool IsNodeHost { get; set; }
 
     public static bool IsConfigured => !string.IsNullOrWhiteSpace(BaseUrl);
 
