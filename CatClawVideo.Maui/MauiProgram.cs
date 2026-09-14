@@ -116,6 +116,37 @@ public static class MauiProgram
             Path.Combine(FileSystem.CacheDirectory, "thunder"), BtFileLog.Write);
         CatClawVideo.Core.Interfaces.MagnetEngines.Thunder = thunder;
         _ = Task.Run(async () => { try { await thunder.EnsureReadyAsync(); } catch { } });
+
+        // 手机端「解析节点」：把 spider 能力经局域网借给 PC。
+        // PC 上的 Guard jar 跑不了（解密器是 ARM Android native，且加固把解密产物写完即删），
+        // 而手机原生就能跑 Guard —— 让 PC 借手机的解析能力。
+        // 手机只做取页 + 解析 JSON/HTML 的轻活（不搬媒体流），因此不会发烫。
+        var nodeServer = new Platforms.Android.SpiderApiServer(
+            8899,
+            handler: async (siteKey, method, args) =>
+            {
+                var site = CatClawVideo.Core.Models.SiteRegistry.Find(siteKey)
+                    ?? throw new InvalidOperationException($"本机未注册站点 {siteKey}");
+                CatClawVideo.Core.Interfaces.ISpiderRuntime rt =
+                    site.SpiderKind == CatClawVideo.Core.Models.VodSpiderKind.Jar ? jarRuntime : jsRuntime;
+
+                string Arg(string k) => args.TryGetValue(k, out var v) ? v : "";
+                var pg = Arg("pg");
+                if (string.IsNullOrEmpty(pg)) pg = "1";
+
+                return method switch
+                {
+                    "home" => await rt.HomeContentAsync(site),
+                    "category" => await rt.CategoryContentAsync(site, Arg("tid"), pg),
+                    "detail" => await rt.DetailContentAsync(site, Arg("id")),
+                    "search" => await rt.SearchContentAsync(site, Arg("wd"), pg),
+                    "player" => await rt.PlayerContentAsync(site, Arg("flag"), Arg("id")),
+                    _ => throw new InvalidOperationException($"未知 method: {method}"),
+                };
+            },
+            token: null,
+            log: BtFileLog.Write);
+        nodeServer.Start();
 #else
         // 桌面 JVM 桥：JavaBridge 目录 + 系统 java.exe（缺一则不可用）
         var bridgeDir = CatClawVideo.Core.Providers.JavaSpiderRuntime.FindBridgeDir();
@@ -145,12 +176,17 @@ public static class MauiProgram
         CatClawVideo.Core.Interfaces.IWebSniffer sniffer = new CatClawVideo.Core.Providers.NullWebSniffer();
 #endif
 
-        var vodProvider = new CatClawVideo.Core.Providers.CompositeVodSourceProvider(
-            new IVodSourceProvider[]
+        // 手机解析节点地址（设置页写入 Preferences）。用 Loader 延迟读取 ——
+        // MauiProgram 早期平台未初始化，直接调 Preferences 会抛。
+        CatClawVideo.Core.Providers.RemoteSpiderNode.Loader =
+            () => Preferences.Get("remote_spider_node", "");
+        CatClawVideo.Core.Providers.RemoteSpiderNode.Token = null;
+
+        var vodProvider = new CatClawVideo.Core.Providers.CompositeVodSourceProvider(            new IVodSourceProvider[]
             {
                 new CatClawVideo.Core.Providers.CatClawSourceProvider(btService),
                 new CatClawVideo.Core.Providers.MacCmsJsonProvider(btService),
-                new CatClawVideo.Core.Providers.SpiderVodProvider(jsRuntime, jarRuntime, sniffer, btService),
+                new CatClawVideo.Core.Providers.SpiderVodProvider(jsRuntime, jarRuntime, sniffer, btService, BtFileLog.Write),
             });
         services.AddSingleton<IVodSourceProvider>(vodProvider);
 

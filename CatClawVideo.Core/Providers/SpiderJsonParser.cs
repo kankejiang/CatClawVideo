@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using CatClawVideo.Core.Models;
 
@@ -46,24 +47,35 @@ public static class SpiderJsonParser
                 return result;
             foreach (var v in arr.EnumerateArray())
             {
-                var id = GetStr(v, "vod_id");
-                var title = GetStr(v, "vod_name");
-                if (id.Length == 0 || title.Length == 0) continue;
-                result.Add(new VodItem
+                // ⚠️ 单条坏数据不能让整页归零：TVBox 各爬虫的字段类型不一致，
+                // 实测某 Guard 站点把 vod_score 返回成字符串 "0.0"，
+                // 而 JsonElement.TryGetDouble() 遇到非 Number **会抛异常**（不是返回 false），
+                // 一旦抛出就被外层 catch 吞掉 → 整页 0 条（症状是「有数据但暂无影片」）。
+                try
                 {
-                    Id = id,
-                    SourceKey = sourceKey,
-                    Title = title,
-                    Cover = NullToEmpty(GetStr(v, "vod_pic")),
-                    Remarks = NullToEmpty(GetStr(v, "vod_remarks")),
-                    Category = NullToEmpty(GetStr(v, "type_name")),
-                    Year = NullToEmpty(GetStr(v, "vod_year")),
-                    Area = NullToEmpty(GetStr(v, "vod_area")),
-                    Actors = NullToEmpty(GetStr(v, "vod_actor")),
-                    Director = NullToEmpty(GetStr(v, "vod_director")),
-                    Description = NullToEmpty(GetStr(v, "vod_content")),
-                    Score = v.TryGetProperty("vod_score", out var sc) && sc.TryGetDouble(out var d) ? d : 0,
-                });
+                    var id = GetStr(v, "vod_id");
+                    var title = GetStr(v, "vod_name");
+                    if (id.Length == 0 || title.Length == 0) continue;
+                    result.Add(new VodItem
+                    {
+                        Id = id,
+                        SourceKey = sourceKey,
+                        Title = title,
+                        Cover = NullToEmpty(GetStr(v, "vod_pic")),
+                        Remarks = NullToEmpty(GetStr(v, "vod_remarks")),
+                        Category = NullToEmpty(GetStr(v, "type_name")),
+                        Year = NullToEmpty(GetStr(v, "vod_year")),
+                        Area = NullToEmpty(GetStr(v, "vod_area")),
+                        Actors = NullToEmpty(GetStr(v, "vod_actor")),
+                        Director = NullToEmpty(GetStr(v, "vod_director")),
+                        Description = NullToEmpty(GetStr(v, "vod_content")),
+                        Score = GetDouble(v, "vod_score"),
+                    });
+                }
+                catch
+                {
+                    // 跳过这一条，继续后面的
+                }
             }
         }
         catch { }
@@ -170,6 +182,20 @@ public static class SpiderJsonParser
         e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? ""
         : e.TryGetProperty(name, out var v2) && v2.ValueKind == JsonValueKind.Number ? v2.GetRawText()
         : "";
+
+    /// <summary>
+    /// 宽松取数：数字直接用；字符串尝试解析。
+    /// <para>⚠️ 不能直接调 <c>TryGetDouble</c> —— 它在元素不是 Number 时**抛 InvalidOperationException**
+    /// （不是返回 false），实测有站点把 <c>vod_score</c> 返回成 <c>"0.0"</c> 字符串。</para>
+    /// </summary>
+    public static double GetDouble(JsonElement e, string name)
+    {
+        if (!e.TryGetProperty(name, out var v)) return 0;
+        if (v.ValueKind == JsonValueKind.Number) return v.TryGetDouble(out var d) ? d : 0;
+        if (v.ValueKind == JsonValueKind.String)
+            return double.TryParse(v.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var s) ? s : 0;
+        return 0;
+    }
 
     private static string NullToEmpty(string? s) => s ?? "";
 }

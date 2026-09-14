@@ -93,13 +93,15 @@ public class MacCmsJsonProvider : IVodSourceProvider
                 {
                     Id = idEl.ToString(),
                     SourceKey = site.Key,
-                    Title = it.TryGetProperty("vod_name", out var n) ? n.GetString() ?? "" : "",
-                    Cover = it.TryGetProperty("vod_pic", out var p) ? p.GetString() : null,
-                    Category = it.TryGetProperty("type_name", out var c) ? c.GetString() : null,
-                    Year = it.TryGetProperty("vod_year", out var y) ? y.GetString() : null,
-                    Area = it.TryGetProperty("vod_area", out var a) ? a.GetString() : null,
-                    Remarks = it.TryGetProperty("vod_remarks", out var r) ? r.GetString() : null,
-                    Score = it.TryGetProperty("vod_score", out var s) && s.TryGetDouble(out var sv) ? sv : 0,
+                    Title = Str(it, "vod_name"),
+                    Cover = NullIfEmpty(Str(it, "vod_pic")),
+                    Category = NullIfEmpty(Str(it, "type_name")),
+                    Year = NullIfEmpty(Str(it, "vod_year")),
+                    Area = NullIfEmpty(Str(it, "vod_area")),
+                    Remarks = NullIfEmpty(Str(it, "vod_remarks")),
+                    // ⚠️ 不能直接用 TryGetDouble：元素非 Number 时它**抛异常**（不是返回 false），
+                    // 而这里外层是 catch → return []，会整页归零。实测有站点返回 vod_score = "0.0"。
+                    Score = SpiderJsonParser.GetDouble(it, "vod_score"),
                 });
             }
             Log($"[items] return {items.Count} 条");
@@ -107,6 +109,21 @@ public class MacCmsJsonProvider : IVodSourceProvider
         }
         catch { return []; }
     }
+
+    /// <summary>宽松取字符串：字符串直接用，数字转文本；缺失/其他类型 → ""。
+    /// <para>直接用 <c>GetString()</c> 遇到 Number 会抛 InvalidOperationException。</para></summary>
+    private static string Str(JsonElement e, string name)
+    {
+        if (!e.TryGetProperty(name, out var v)) return "";
+        return v.ValueKind switch
+        {
+            JsonValueKind.String => v.GetString() ?? "",
+            JsonValueKind.Number => v.GetRawText(),
+            _ => "",
+        };
+    }
+
+    private static string? NullIfEmpty(string s) => s.Length == 0 ? null : s;
 
     public async Task<List<VodPlaySource>> GetPlaySourcesAsync(VodSiteInfo site, VodItem item, CancellationToken ct = default)
     {

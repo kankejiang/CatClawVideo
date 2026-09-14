@@ -13,14 +13,20 @@ public class SpiderVodProvider : IVodSourceProvider
 {
     private readonly ISpiderRuntime? _jsRuntime;
     private readonly ISpiderRuntime? _jarRuntime;
+    /// <summary>手机解析节点（Guard 站点借它解析；未配置时为 null）</summary>
+    private readonly RemoteSpiderRuntime? _remote;
+    private readonly Action<string>? _log;
     private readonly IWebSniffer? _sniffer;
     private readonly Services.BtStreamService? _bt;
 
     public SpiderVodProvider(ISpiderRuntime? jsRuntime, ISpiderRuntime? jarRuntime = null,
-        IWebSniffer? sniffer = null, Services.BtStreamService? bt = null)
+        IWebSniffer? sniffer = null, Services.BtStreamService? bt = null,
+        Action<string>? log = null)
     {
         _jsRuntime = jsRuntime;
         _jarRuntime = jarRuntime;
+        _remote = new RemoteSpiderRuntime(log);
+        _log = log;
         _sniffer = sniffer;
         _bt = bt;
     }
@@ -28,26 +34,45 @@ public class SpiderVodProvider : IVodSourceProvider
     public string Id => "spider";
     public string Name => "TVBox 爬虫源";
 
-    private ISpiderRuntime? RuntimeFor(VodSiteInfo site) => site.SpiderKind switch
+    private ISpiderRuntime? RuntimeFor(VodSiteInfo site)
     {
-        VodSpiderKind.Script => _jsRuntime,
-        VodSpiderKind.Jar => _jarRuntime,
-        _ => null,
-    };
+        var local = site.SpiderKind switch
+        {
+            VodSpiderKind.Script => _jsRuntime,
+            VodSpiderKind.Jar => _jarRuntime,
+            _ => null,
+        };
+
+        // Guard 加固站点：jar 的解密器是 ARM Android native，PC 的 x64 JVM 没有执行路径
+        // ⇒ 借手机解析（手机原生就能跑 Guard）。手机不在/超时 → 自动回退本地
+        // （本地还有「非 Guard 同族 jar 替代」这条兜底）。
+        if (local is not null && _remote is not null && RemoteSpiderNode.NeedsRemote(site))
+        {
+            _log?.Invoke($"[路由] {site.Name} 是 Guard 站点 → 走手机解析节点（{RemoteSpiderNode.BaseUrl}）");
+            return new FallbackSpiderRuntime(_remote, local, _log);
+        }
+
+        return local;
+    }
 
     public bool CanHandle(VodSiteInfo site) => site.SpiderKind != VodSpiderKind.None && RuntimeFor(site) != null;
 
     public async Task<List<VodCategory>> GetCategoriesAsync(VodSiteInfo site, CancellationToken ct = default)
     {
         var rt = RuntimeFor(site) ?? throw new NotSupportedException(site.StatusNote ?? "爬虫运行时不可用");
-        return SpiderJsonParser.ParseCategories(await rt.HomeContentAsync(site, ct));
+        var raw = await rt.HomeContentAsync(site, ct);
+        var cats = SpiderJsonParser.ParseCategories(raw);
+        _log?.Invoke($"[解析] {site.Key}.home → {raw.Length}B → 分类 {cats.Count} 个");
+        return cats;
     }
 
     public async Task<List<VodItem>> GetItemsAsync(VodSiteInfo site, VodCategory category, int page = 1, CancellationToken ct = default)
     {
         var rt = RuntimeFor(site) ?? throw new NotSupportedException(site.StatusNote ?? "爬虫运行时不可用");
-        return SpiderJsonParser.ParseItems(
-            await rt.CategoryContentAsync(site, category.Id, page.ToString(), ct), site.Key);
+        var raw = await rt.CategoryContentAsync(site, category.Id, page.ToString(), ct);
+        var items = SpiderJsonParser.ParseItems(raw, site.Key);
+        _log?.Invoke($"[解析] {site.Key}.category(tid={category.Id},pg={page}) → {raw.Length}B → {items.Count} 条");
+        return items;
     }
 
     public async Task<List<VodPlaySource>> GetPlaySourcesAsync(VodSiteInfo site, VodItem item, CancellationToken ct = default)

@@ -222,7 +222,7 @@ public class DexSpiderRuntime : ISpiderRuntime
             // 保护壳 jar 引导（对照 jun 分支 ProtectedInitJar，纯反射绑定）：
             // Guard 系 jar 的 Init 单例需要外部注入 Context 与 DexClassLoader 才能工作。
             // 必须在实例化爬虫类之前完成：Guard 壳类的构造函数会通过 Init.getSpider() 取真实实现。
-            BindProtectedJar(loader);
+            BindProtectedJar(loader, site);
 
             // ⚠️ 实例化与 init() 是 Guard 壳最容易失败的两步（真实实现由 native 解密后反射调用），
             // 失败时抛的是 InvocationTargetException，其 Message 是 .NET 兜底的英文文案、毫无信息量，
@@ -327,6 +327,98 @@ public class DexSpiderRuntime : ISpiderRuntime
         }, ct).ConfigureAwait(false);
     }
 
+    // ═══════════ Guard 明文 dex 导出（PC 端离线使用）═══════════
+    //
+    // 背景：Guard 加固 jar 的解密器是 ARM Android native，Windows 执行不了。
+    // 但 DexNative.getLoader() 返回的是 **DexClassLoader**（Android 8+ 必须由磁盘文件支撑）
+    // ⇒ 解密后的明文 dex 就在磁盘上。这里顺手导出成 jar（内含 classes.dex），
+    // PC 端 JavaSpiderRuntime 用它替代 Guard jar → 该 jar 的全部 Guard 站点在 Windows 可用，
+    // 且之后**不再依赖手机**。
+
+    private Java.Lang.Class? _exporterClass;
+    private readonly ConcurrentDictionary<string, long> _exportedDex = new();
+    private readonly object _exportLock = new();
+
+    private Java.Lang.Class? EnsureExporter()
+    {
+        try
+        {
+            return _exporterClass ??= Java.Lang.Class.ForName(
+                "com.catclaw.video.DexExporter", true,
+                global::Android.App.Application.Context.ClassLoader);
+        }
+        catch (System.Exception ex)
+        {
+            Log($"DexExporter 未找到: {ex.Message}");
+            return null;
+        }
+    }
+
+    private void ExportDecryptedDex(Java.Lang.Object dexClassLoader, VodSiteInfo site)
+    {
+        try
+        {
+            var jarUrl = JarUrl(site);
+            if (string.IsNullOrEmpty(jarUrl)) return;
+
+            // 命名键与两端既有的 jar 缓存键一致：SHA256(jarUrl)[..24]
+            var key = Convert.ToHexString(
+                SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(jarUrl)))[..24].ToLowerInvariant();
+
+            var root = global::Android.App.Application.Context.GetExternalFilesDir(null)?.AbsolutePath ?? _cacheDir;
+            var dir = Path.Combine(root, "dexdump");
+            var dst = Path.Combine(dir, key + ".jar");
+
+            var exporter = EnsureExporter();
+            if (exporter is null) return;
+
+            // ① 取 dexclassloader 实际加载的 dex 文件路径
+            var dexPathOf = Find(exporter, "dexPathOf",
+                Java.Lang.Class.FromType(typeof(Java.Lang.Object)));
+            var src = (dexPathOf?.Invoke(null, [dexClassLoader]) as Java.Lang.String)?.ToString();
+
+            if (string.IsNullOrEmpty(src) || !File.Exists(src))
+            {
+                Log($"解密 dex 路径未取到（{(string.IsNullOrEmpty(src) ? "反射为空" : src)}）");
+                return;
+            }
+
+            var len = new FileInfo(src).Length;
+
+            lock (_exportLock)
+            {
+                // 同长度视为同一份，跳过重复导出
+                if (_exportedDex.TryGetValue(key, out var done) && done == len && File.Exists(dst)) return;
+
+                var pack = Find(exporter, "packDexToJar",
+                    Java.Lang.Class.FromType(typeof(Java.Lang.String)),
+                    Java.Lang.Class.FromType(typeof(Java.Lang.String)));
+                var r = (pack?.Invoke(null, [new Java.Lang.String(src), new Java.Lang.String(dst)])
+                         as Java.Lang.String)?.ToString() ?? "";
+
+                if (!r.StartsWith("OK:", StringComparison.Ordinal))
+                {
+                    Log($"导出解密 dex 失败：{r}");
+                    return;
+                }
+                _exportedDex[key] = len;
+            }
+
+            try
+            {
+                File.AppendAllText(Path.Combine(dir, "index.txt"),
+                    $"{key}\t{len}\t{JarMd5(site) ?? "-"}\t{jarUrl}{Environment.NewLine}");
+            }
+            catch { }
+
+            Log($"✅ 已导出解密 dex：{Path.GetFileName(dst)}（{len / 1024} KB）← {site.Name}");
+        }
+        catch (System.Exception ex)
+        {
+            Log($"导出解密 dex 异常：{ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
     /// <summary>
     /// 保护壳 jar 引导（移植自 jun 分支 ProtectedInitJar，纯 Java 反射，无 native 依赖）：
     /// ① Init.get() 取单例 → 绑定 Context 字段（"c" 优先，退化任意实例 Context 字段）
@@ -334,7 +426,7 @@ public class DexSpiderRuntime : ISpiderRuntime
     /// ③ best-effort 调 replaceCloudDiskNames / startGoProxy
     /// 普通 jar 没有这些字段/类时全部静默跳过，无副作用。
     /// </summary>
-    private void BindProtectedJar(ClassLoader loader)
+    private void BindProtectedJar(ClassLoader loader, VodSiteInfo site)
     {
         try
         {
@@ -399,6 +491,9 @@ public class DexSpiderRuntime : ISpiderRuntime
                 var cl = getLoader?.Invoke(null, appCtx);
                 if (cl is global::Dalvik.SystemInterop.DexClassLoader dexCl && init != null)
                 {
+                    // ★ A 方案：顺手把解密后的明文 dex 导出，供 Windows 端离线使用
+                    ExportDecryptedDex(dexCl, site);
+
                     var dexLoaderType = Java.Lang.Class.FromType(typeof(global::Dalvik.SystemInterop.DexClassLoader));
                     var loaderBound = false;
                     for (var type = initCls; type != null && !loaderBound; type = type.Superclass)
