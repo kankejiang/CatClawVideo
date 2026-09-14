@@ -52,6 +52,17 @@ public sealed class BtStreamService : IAsyncDisposable
     /// <summary>metadata 等待超时（节点探测 + DHT bootstrap 并行）</summary>
     public TimeSpan MetadataTimeout { get; init; } = TimeSpan.FromSeconds(45);
 
+    /// <summary>
+    /// 起播预缓冲超时（metadata 到手后等首片数据的上限）。
+    /// <para>⚠ 必须有（2026-09-14 实测）：MonoTorrent 的
+    /// <c>StreamProvider.CreateStreamAsync(file, prebuffer: true, ct)</c> 在数据不可得时会
+    /// **永久阻塞**。而调用链 <c>WatchPage → ResolvePlayUrlAsync → OpenAsync</c> 一路传的是
+    /// <c>CancellationToken.None</c>，等于没有取消源——于是「metadata 拿到了、但该种当前无人做种」
+    /// 会表现为 UI 无限转圈（不是报错，是挂死）。这里给预缓冲加独立超时，
+    /// 超时抛 <see cref="TimeoutException"/> 给出可读提示，由上层显示「换线路重试」。</para>
+    /// </summary>
+    public TimeSpan PrebufferTimeout { get; init; } = TimeSpan.FromSeconds(60);
+
     /// <summary>公共 tracker 注入（xb6v 等站磁力自带 tracker 少；流式播放与下载管理器共用）。
     /// <para>⚠ 列表纪律（2026-09 实测教训）：同一 tier 内 announce 串行，任何一个 DNS 污染/不可达的
     /// tracker 其超时会拖垮整轮 peer 获取（实测 23 个未过滤 → 60s 零节点；精选可达 → 15s 拿到 metadata）。
@@ -250,6 +261,37 @@ public sealed class BtStreamService : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// 带超时的起播预缓冲：包装 <c>CreateStreamAsync(prebuffer: true)</c>。
+    /// <para>metadata 拿到 ≠ 有数据。该资源当前无做种时，MonoTorrent 会在预缓冲阶段无限等待；
+    /// 这里用 <see cref="PrebufferTimeout"/> 兜住，把它转成明确错误而不是 UI 挂死。</para>
+    /// </summary>
+    private async Task<Stream> CreateStreamWithTimeoutAsync(TorrentManager manager, ITorrentManagerFile file, CancellationToken ct)
+    {
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(PrebufferTimeout);
+        try
+        {
+            return await manager.StreamProvider.CreateStreamAsync(file, prebuffer: true, cts.Token);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // 统计一下当前连接与速率，方便判断是「完全无 peer」还是「peer 有但被 choke」
+            long peers = 0, seeds = 0;
+            try
+            {
+                peers = manager.Peers?.Available ?? 0;
+                seeds = manager.Peers?.Seeds ?? 0;
+            }
+            catch { /* 反射/版本差异不影响主流程 */ }
+            Log($"预缓冲超时（{PrebufferTimeout.TotalSeconds:F0}s）：可用 peer {peers}／seed {seeds}，"
+                + $"下载 {manager.Monitor?.DownloadRate ?? 0} B/s");
+            throw new TimeoutException(
+                $"起播超时：已解析到资源信息，但 {PrebufferTimeout.TotalSeconds:F0} 秒内未取到任何数据"
+                + $"（该资源当前可能无人做种）。请换线路或稍后再试。");
+        }
+    }
+
     /// <summary>定位会话（代理请求头用：长度/文件名）</summary>
     public BtSession? FindSession(string infoHex) =>
         _sessions.TryGetValue(infoHex, out var s) && s.FileIndex >= 0
@@ -290,7 +332,7 @@ public sealed class BtStreamService : IAsyncDisposable
             if (s.Stream == null)
             {
                 Log("流已被空闲回收，按需重建…");
-                s.Stream = await s.Manager.StreamProvider.CreateStreamAsync(s.File, prebuffer: true, ct);
+                s.Stream = await CreateStreamWithTimeoutAsync(s.Manager, s.File, ct);
             }
 
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -372,6 +414,7 @@ public sealed class BtStreamService : IAsyncDisposable
             },
         }.ToSettings();
         _engine = new ClientEngine(settings);
+        TryBootstrapDht(_engine);
         _proxy = new BtHttpProxy(this, Log);
         _proxy.Start();
         _idleTimer = new Timer(async _ => await ShutdownIdleSafeAsync(), null,
@@ -510,6 +553,124 @@ public sealed class BtStreamService : IAsyncDisposable
         return $"{node[20]}.{node[21]}.{node[22]}.{node[23]}:{(node[24] << 8) | node[25]}";
     }
 
+    /// <summary>
+    /// 修复 MonoTorrent 3.0.1 的 DHT 永远起不来（实测真实服务日志：<c>DHT Initialising／0 节点</c>）。
+    ///
+    /// <para><b>根因</b>：<c>IDht</c> 接口只有 <c>State</c>／<c>NodeCount</c> 等只读属性，
+    /// <b>没有任何喂节点的方法</b>（无 AddNode／Add／Bootstrap，实测反射枚举确认）。
+    /// 官方引导路径是 <c>ClientEngine</c> 启动时从 <c>CacheDirectory/dht_nodes.cache</c> 加载，
+    /// 但实测该路径不生效——即使按 26 字节/组的紧凑格式预先写好缓存文件，依旧是 0 节点。
+    /// 而域名引导（router.bittorrent.com 等）在国内被 DNS 污染，也走不通。</para>
+    ///
+    /// <para><b>修法</b>：<c>ClientEngine</c> 内部持有真实的
+    /// <c>MonoTorrent.Dht.DhtEngine</c>（自动属性 <c>DhtEngine</c> 的 backing field）。
+    /// 该类型本身与其 <c>StartAsync(ReadOnlyMemory&lt;byte&gt;)</c> 都是 <b>public</b>，
+    /// 只是没暴露在 <c>IDht</c> 上。这里按「字段值类型精确匹配」反射取到它，
+    /// 直接喂内置紧凑种子节点（20 字节 node-id + 4 字节 IP + 2 字节端口）。</para>
+    ///
+    /// <para><b>实测（2026-09-14）</b>：调用前 <c>Initialising / 0</c>；
+    /// 调用后 5 秒内 <c>Ready / 66</c>，60 秒爬到 <c>Ready / 78</c>。</para>
+    /// </summary>
+    private void TryBootstrapDht(ClientEngine engine)
+    {
+        try
+        {
+            const System.Reflection.BindingFlags Any =
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+                | System.Reflection.BindingFlags.Instance;
+
+            // 不按字段名取（backing field 名会随属性重命名而变），按「字段值的实际类型」精确匹配
+            object? dht = null;
+            foreach (var f in typeof(ClientEngine).GetFields(Any))
+            {
+                object? v;
+                try { v = f.GetValue(engine); } catch { continue; }
+                if (v?.GetType().FullName == "MonoTorrent.Dht.DhtEngine") { dht = v; break; }
+            }
+            if (dht is null)
+            {
+                Log("DHT 引导：未找到内部 DhtEngine 实例（MonoTorrent 版本可能已变），跳过");
+                return;
+            }
+
+            var start = dht.GetType().GetMethod("StartAsync", [typeof(ReadOnlyMemory<byte>)]);
+            if (start is null)
+            {
+                Log("DHT 引导：DhtEngine.StartAsync(ReadOnlyMemory<byte>) 不存在，跳过");
+                return;
+            }
+
+            var initial = new ReadOnlyMemory<byte>(DhtSeedNodes);
+            if (start.Invoke(dht, [initial]) is Task task)
+                task.ContinueWith(t => Log($"DHT 引导异常：{t.Exception?.GetBaseException().Message}"),
+                    TaskContinuationOptions.OnlyOnFaulted);
+            Log($"DHT 引导：已注入 {DhtSeedNodes.Length / 26} 个内置种子节点");
+        }
+        catch (Exception ex)
+        {
+            Log($"DHT 引导失败（忽略，回退 tracker-only）：{ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 修复 MonoTorrent 3.0.1「磁力链接 tracker 单 tier 塌陷」—— 这是磁力播放拿不到 metadata 的根因。
+    ///
+    /// <para><b>根因</b>：<c>MagnetLink.AnnounceUrls</c> 只暴露**扁平的 URL 列表**
+    /// （实测元素类型是 string，BEP12 的 tier 分组信息在解析阶段就已丢失），
+    /// <c>TrackerManager</c> 于是把所有 tracker 放进**同一个 tier**。按 BEP12，同一 tier 内的
+    /// tracker 是「串行 + 起始索引随机」的备选关系：只要抽中的那个 announce 返回成功
+    /// （<b>哪怕 peers=0</b>），本轮宣布就结束，其余 tracker 要等它的 announce 间隔才可能轮到。</para>
+    ///
+    /// <para><b>实测（2026-09-14）</b>：注入 11 个 tracker，180 秒内引擎只联系了 1 个
+    /// （<c>http://135.125.198.235:2710</c>，恰好返回 0 个可用 peer），候选 peer 恒为 0、
+    /// 连接数恒 1~2 → 45s metadata 超时。同一时刻独立 BT 线协议客户端从公共 tracker
+    /// 能取到该种 metadata（0.6s），证明种是活的、问题在引擎侧。</para>
+    ///
+    /// <para><b>修法</b>：<c>TrackerManager.Tiers</c> 有 public setter，清空后逐个
+    /// <c>AddTrackerAsync(Uri)</c> —— 它会给每个 tracker 建**独立 tier**。重建后同样这批 tracker
+    /// 全部被 announce（含此前从未被抽中的 UDP tracker），候选 peer 0 → 79、连接正常建立。</para>
+    /// </summary>
+    private async Task EnsureTrackerTiersAsync(TorrentManager manager)
+    {
+        try
+        {
+            // manager.TrackerManager 的静态类型是 public 接口 ITrackerManager：
+            // AddTrackerAsync(Uri) 可直接调用；但 Tiers 在接口上只有 getter，
+            // 清空要靠反射（实现类 MonoTorrent.Trackers.TrackerManager 是 internal，
+            // 而 Tiers 属性本身是 public，元素类型 TrackerTier 也是 public）。
+            var tm = manager.TrackerManager;
+
+            bool cleared = false;
+            var tiersProp = tm.GetType().GetProperty("Tiers",
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+            if (tiersProp?.CanWrite == true)
+            {
+                var elemType = tiersProp.PropertyType.GetGenericArguments()[0];
+                tiersProp.SetValue(tm, Activator.CreateInstance(typeof(List<>).MakeGenericType(elemType)));
+                cleared = true;
+            }
+            else if (tm.Tiers is System.Collections.IList mutable)
+            {
+                mutable.Clear();
+                cleared = true;
+            }
+
+            int ok = 0, fail = 0;
+            foreach (var url in TrackerList)
+            {
+                try { await tm.AddTrackerAsync(new Uri(url)); ok++; }
+                catch { fail++; }
+            }
+            Log($"tracker tier 重建：{(cleared ? "" : "⚠ 未能清空原 tier，")}{ok} 个 tracker 各自独立 tier"
+                + (fail > 0 ? $"（{fail} 个无效）" : ""));
+        }
+        catch (Exception ex)
+        {
+            // 修复失败不能让播放整体失败：退回 MonoTorrent 默认的单 tier 行为
+            Log($"tracker tier 重建失败，沿用默认单 tier：{ex.Message}");
+        }
+    }
+
     /// <summary>获取/复用 manager：新会话注入公共 tracker、启动、等 metadata</summary>
     private async Task<TorrentManager> EnsureManagerAsync(MagnetLink magnet, string infoHex, CancellationToken ct)
     {
@@ -534,8 +695,10 @@ public sealed class BtStreamService : IAsyncDisposable
                 AllowPeerExchange = true,
             }.ToSettings();
             var manager = await _engine!.AddStreamingAsync(magnet, savePath, settings);
+            await EnsureTrackerTiersAsync(manager);   // ⚠ 必须在 StartAsync 之前，否则首轮 announce 仍是单 tier 抽签
             await manager.StartAsync();
             try { await manager.DhtAnnounceAsync(); } catch { }
+            Log($"DHT {_engine.Dht.State}／{_engine.Dht.NodeCount} 节点；tracker {TrackerList.Count} 个");
             _sessions[infoHex] = new TorrentSession { Manager = manager };
             Log($"新会话 {infoHex[..12]}…（{Path.GetFileName(savePath)}）");
         }

@@ -32,12 +32,17 @@ public sealed class BtTrackerSource
 
     /// <summary>过滤后保留的 tracker 上限（太多反而拖慢 announce）</summary>
     public const int MaxTrackers = 14;
-    /// <summary>
-    /// 其中保留给 HTTP tracker 的槽位数。2026-09-10 实测：UDP 侧被按 IP 限流后
-    /// "connect 通但 announce 返回空"（对照程序验证：同一分钟 UDP 混合列表 0 候选，
-    /// 纯 HTTP 列表 5 秒 157 候选/25 秒 44 连接），HTTP 权重必须高于 UDP。
-    /// </summary>
+    /// <summary>其中 HTTP tracker 的槽位数（HTTP 链路更稳，权重更高）</summary>
     public const int MaxHttpTrackers = 6;
+    /// <summary>
+    /// UDP tracker 的槽位数。
+    /// <para>⚠️ 2026-09-14 起放行 UDP：旧版本把 UDP 全部剔除，理由是"MonoTorrent 把磁力内所有
+    /// tracker 放进同一个 tier，抽中一个返回空就整轮作废"。该单 tier 塌陷已在
+    /// <c>BtStreamService.EnsureTrackerTiersAsync</c> 从根上修掉（每个 tracker 独立 tier），
+    /// UDP 不再能拖累 HTTP。实测放行后同一磁力候选 peer 0 → 79，
+    /// 其中单次 UDP announce 就贡献了 50 个候选。</para>
+    /// </summary>
+    public const int MaxUdpTrackers = 8;
     /// <summary>缓存有效期</summary>
     public static readonly TimeSpan CacheTtl = TimeSpan.FromHours(24);
 
@@ -156,17 +161,17 @@ public sealed class BtTrackerSource
     private static bool IsHttp(string t) => !t.StartsWith("udp://", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// 强制只注入 HTTP tracker（MaxHttpTrackers 个）。
-    /// UDP 与 HTTP 是两条独立链路。实测（2026-09-10）ngosang best_ip 的 UDP tracker 集体
-    /// "connect 通但 announce 静默丢弃"（按 IP 限流；换种子对照同样被丢），此时 HTTP tracker
-    /// 仍正常返回 44~73 个做种；而 best_ip 源天然不含 HTTP 条目，不强制混入则 peer 发现归零。
+    /// 汇总最终注入的 tracker：HTTP 优先占满 <see cref="MaxHttpTrackers"/>，再补 UDP 至
+    /// <see cref="MaxUdpTrackers"/>（各自保底列表兜底）。
     ///
-    /// ⚠️ 为什么 UDP 一个都不留：MonoTorrent 把磁力内所有 tracker 放进**同一个 tier，
-    /// announce 串行且顺序被随机打乱**（实测注入 HTTP 在前，tier 里顺序完全重排）。
-    /// 只要首个被抽中的 UDP「成功但返回空」，本轮宣布即告完成，其余 tracker（含活的 HTTP）
-    /// 要等它的 announce 间隔——独立对照程序实测：HTTP×4+UDP×4 混合 60s 零候选，
-    /// 纯 HTTP×4 同一分钟 5s 拿到 157 候选、25s 后 44 连接 1.3MB/s。混放 = 抽奖，纯 HTTP 才稳定。
-    /// UDP 恢复后可把 MaxUdpTrackers 调回非零值。
+    /// <para>历史坑（2026-09-10）：当时 UDP 一个都不留，因为 UDP 被按 IP 限流后
+    /// "connect 通但 announce 静默丢弃"，而 MonoTorrent 的**单 tier 串行抽签**会让这个空答复
+    /// 作废整轮 announce，把活的 HTTP tracker 一起拖死（当时实测 HTTP×4+UDP×4 混合 60s 零候选，
+    /// 纯 HTTP×4 同分钟 5s 拿到 157 候选）。</para>
+    ///
+    /// <para>2026-09-14：单 tier 塌陷已从根上修复（见
+    /// <c>BtStreamService.EnsureTrackerTiersAsync</c>，每个 tracker 独立 tier），
+    /// 单个 tracker 答复为空只影响它自己的 tier，因此重新放行 UDP。</para>
     /// </summary>
     public static string[] MergeHttpTrackers(string[] list)
     {
@@ -176,7 +181,15 @@ public sealed class BtTrackerSource
             if (http.Count >= MaxHttpTrackers) break;
             if (!http.Contains(t, StringComparer.OrdinalIgnoreCase)) http.Add(t);
         }
-        return http.ToArray();
+
+        var udp = list.Where(t => !IsHttp(t)).Take(MaxUdpTrackers).ToList();
+        foreach (var t in BuiltInFallback)
+        {
+            if (udp.Count >= MaxUdpTrackers) break;
+            if (!udp.Contains(t, StringComparer.OrdinalIgnoreCase)) udp.Add(t);
+        }
+
+        return [.. http, .. udp];
     }
 
     // ────────────────────── 拉取 ──────────────────────

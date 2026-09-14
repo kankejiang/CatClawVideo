@@ -466,3 +466,83 @@ manager 走全量校验（4.5GB 约 1~2 分钟）后 peer 正常到位。
 OpenConnections==0`，自动删除对应 `.fresume` 并按 infoHash 清扫重加（复用
 `ForceRemoveStaleManagersAsync` 路径），把这次的人工处置变成自动自愈。
 另可评估升级 MonoTorrent（NuGet 缓存里有 3.9.0-alpha）验证是否已修。
+
+---
+
+## 14. 排障实录：磁力「线路加载失败」三连根因（2026-09-14 已修复）
+
+**背景**：用户反馈安卓端点磁力线路报「线路加载失败」，而**同一条源、同一个磁力在 TVBox 里能播**。
+TVBox 侧走的是迅雷 P2SP SDK（`libxl_thunder_sdk.so`）+ 荐片 P2P（`libp2p.so`）两套私有网络，
+我们只有 MonoTorrent 走公共 BT 网络——所以必须证明「公共网络也拿得到」，否则只能移植迅雷 SDK。
+为此在 `_scratch_tb/btprobe/` 建了三件套：`btprobe`（调用真实 `BtStreamService`）、
+`diag`（纯反射的 MonoTorrent API 探针）、`pywire.py`（纯标准库 BT 线协议客户端，独立裁判）。
+
+### 14.1 根因①：tracker 单 tier 塌陷（metadata 拿不到的主因）
+
+`MagnetLink.AnnounceUrls` 只暴露**扁平 URL 列表**，BEP12 的 tier 分组在解析阶段就丢了，
+`TrackerManager` 于是把所有 tracker 塞进**同一个 tier**。BEP12 规定同 tier 内 tracker 是
+「串行 + 起始索引随机」的备选关系——**只要抽中的那个 announce 返回成功（哪怕 peers=0），
+本轮宣布即结束**，剩余 tracker 要等它的 announce 间隔。
+
+| 观测 | 结果 |
+|---|---|
+| 注入 11 个 tracker，180 秒内实际联系 | **仅 1 个**（`http://135.125.198.235:2710`，恰好返回 0 peer） |
+| 候选 peer | 恒 0 → 45s metadata 超时 |
+| 同时刻独立线协议客户端（`pywire.py`） | **0.6s 拿到 metadata**，SHA1 校验通过 |
+
+**修法**（`BtStreamService.EnsureTrackerTiersAsync`）：`TrackerManager.Tiers` 有 public setter，
+清空后逐个 `AddTrackerAsync(Uri)` → 每个 tracker 建**独立 tier**。
+⚠ 必须在 `manager.StartAsync()` **之前**调用，否则首轮 announce 已经按单 tier 抽完签。
+重建后同一批 tracker 全部被 announce（含此前从未被抽中的 UDP），候选 peer **0 → 79**。
+
+### 14.2 根因②：DHT 从未启动（`Initialising／0` 永不 Ready）
+
+`IDht` 接口上**没有任何注入节点的方法**，而 MonoTorrent 的内置 bootstrap 只依赖
+`router.bittorrent.com` / `router.utorrent.com`——国内被 DNS 污染（解析到 31.13.x.x）或结果跳变，
+`dht_nodes.cache` 又近乎空（实测 292 字节）。真实服务日志长期停在 `DHT Initialising／0 节点`。
+
+**修法**（`BtStreamService.TryBootstrapDht`）：`MonoTorrent.Dht.DhtEngine` 类型本身与其
+`StartAsync(ReadOnlyMemory<byte>)` 都是 **public**，只是没暴露在 `IDht` 上。
+按「**字段值的实际类型**精确匹配」（不按字段名，backing field 名会随属性重命名而变）反射取到实例，
+喂入内置紧凑种子（10 个节点，20B node-id + 4B IP + 2B port）。
+
+| 时点 | 修复前 | 修复后 |
+|---|---|---|
+| 启动 | `Initialising／0` | `Ready／24` |
+| 5s / 60s | 一直 0 | `Ready／35` / `Ready／40`（持续爬升） |
+
+### 14.3 根因③：预缓冲无超时 → UI 无限挂死
+
+`StreamProvider.CreateStreamAsync(file, prebuffer: true, ct)` 在**数据不可得时永久阻塞**。
+而调用链 `WatchPage → ResolvePlayUrlAsync → OpenAsync` 一路传的是 `CancellationToken.None`
+（接口签名就是 `ct = default`），**等于没有取消源**。于是「metadata 拿到了、但该种当前无人做种」
+表现为**无限转圈**——不是报错，是挂死，用户看到的就是「线路加载失败」（前两次探针实测卡 5 分钟无输出）。
+
+**修法**：新增 `PrebufferTimeout`（默认 60s），用 `CreateLinkedTokenSource` 包一层，
+超时抛 `TimeoutException` 并打出可用 peer / seed / 实时速率，由上层提示「换线路重试」。
+
+### 14.4 端到端验证（同一磁力 `1363fb911e8603fde757c9b02979d508de2d195b`）
+
+```
+[bt] DHT 引导：已注入 10 个内置种子节点
+[bt] tracker tier 重建：10 个 tracker 各自独立 tier
+[bt] DHT Ready／40 节点；tracker 10 个
+[bt] metadata 就绪：6 个文件
+[bt] 会话 1363FB911E86… → 第 1 个文件 866.5MB
+[OK] 用时 63.1s
+[bt-proxy] GET 1363FB911E86… range=0+2097152/2097152 完成        → HTTP 206，2.00 MB
+[bt-proxy] GET 1363FB911E86… range=454311273+2097152/2097152 完成 → HTTP 206，2.00 MB
+[bt] 最终下载速率 315 KB/s
+```
+
+**结论**：头段 + 任意中段偏移的 Range 请求均返回 `206` 并完整读出 2MB，
+证明「磁力 → metadata → 选文件 → 预缓冲 → 可 seek 的 HTTP 流」全链路在**公共 BT 网络**上成立，
+**不需要移植迅雷 SDK** 即可达到 TVBox 对公共种的能力。该磁力的 swarm 本身很薄
+（0.1~0.3 Mbps），是内容侧问题，不是引擎缺陷。
+
+### 14.5 回归：第 13 节的 fast-resume 缺陷未复现
+
+`.fresume` 文件确实存在（`cache/engine/fastresume/<infoHash>.fresume`），但上述 4 次连续运行
+（含从缓存重启）**每次都拿到了 peer 并成功出流**。推测独立 tier + DHT 引导让
+「announce 成功但不接纳 peer」这条路径不再触发。**暂不改动 `AutoSaveLoadFastResume`**，
+第 13 节的自动自愈仍是待办（无实测复现前不做投机性改动）。

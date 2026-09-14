@@ -14,12 +14,15 @@ public class SpiderVodProvider : IVodSourceProvider
     private readonly ISpiderRuntime? _jsRuntime;
     private readonly ISpiderRuntime? _jarRuntime;
     private readonly IWebSniffer? _sniffer;
+    private readonly Services.BtStreamService? _bt;
 
-    public SpiderVodProvider(ISpiderRuntime? jsRuntime, ISpiderRuntime? jarRuntime = null, IWebSniffer? sniffer = null)
+    public SpiderVodProvider(ISpiderRuntime? jsRuntime, ISpiderRuntime? jarRuntime = null,
+        IWebSniffer? sniffer = null, Services.BtStreamService? bt = null)
     {
         _jsRuntime = jsRuntime;
         _jarRuntime = jarRuntime;
         _sniffer = sniffer;
+        _bt = bt;
     }
 
     public string Id => "spider";
@@ -80,7 +83,38 @@ public class SpiderVodProvider : IVodSourceProvider
         if (string.IsNullOrEmpty(play.Url))
             play.Url = episode.Url;
 
+        // ⚠️ 磁力拦截必须在进解析管线**之前**：
+        // ① magnet: 不是视频格式，会被判为「需嗅探」，交给网页嗅探器只会拿到垃圾；
+        // ② 就算侥幸直通播放器，ExoPlayer 也会以
+        //    HttpDataSourceException: unknown protocol: magnet 报 Source error
+        //    （2026-09-14 真机实测：磁力站的「此磁力源是边下载边播…」线路点播必炸）。
+        // BT 站点的剧集链接本身就是 magnet:，须转成本机 BT 流式代理地址。
+        var bt = await TryOpenBtAsync(play, episode, ct);
+        if (bt is not null) return bt;
+
         return await TvBoxPlayPipeline.ResolveAsync(site, play, episode.Flag ?? "", _sniffer, ct);
+    }
+
+    /// <summary>
+    /// BT 流式拦截（对齐 <see cref="CatClawSourceProvider"/> 的磁力分支）：
+    /// magnet: → 本机 127.0.0.1 BT 代理地址（可 Range 拖动）；ed2k 明确不支持并给出可读提示。
+    /// 非磁力/电驴返回 null，交回常规解析管线。
+    /// </summary>
+    private async Task<PlayRequest?> TryOpenBtAsync(PlayRequest play, VodEpisode episode, CancellationToken ct)
+    {
+        var url = play.Url ?? "";
+
+        if (url.StartsWith("ed2k://", StringComparison.OrdinalIgnoreCase))
+            throw new NotSupportedException("该集为电驴(ed2k)下载链接，暂不支持在线播放；可复制链接到下载工具");
+
+        if (!url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        if (_bt is null)
+            throw new NotSupportedException("BT 引擎未初始化，磁力线路不可用");
+
+        var session = await _bt.OpenAsync(url, episode.Name, ct);
+        return new PlayRequest { Title = episode.Name, Url = session.Url, Headers = play.Headers };
     }
 
     public async Task<List<VodItem>> SearchAsync(VodSiteInfo site, string keyword, CancellationToken ct = default)

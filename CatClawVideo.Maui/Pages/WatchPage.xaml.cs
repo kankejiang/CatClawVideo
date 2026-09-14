@@ -339,14 +339,25 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     public void ApplyQueryAttributes(IDictionary<string, object> query)
     {
         if (query.TryGetValue("title", out var t) && t is string title) _item.Title = title;
-        if (query.TryGetValue("sourceKey", out var sk) && sk is string sourceKey)
+        // ⚠️ 路由只带 Key/Type/Api 三个字段，而 spider 站点能否被路由**取决于
+        // VodSiteInfo.SpiderKind + Jar**（SpiderVodProvider.CanHandle）。用路由参数重拼
+        // 站点对象会让所有 type=3 爬虫站恒判定为「无可用适配器」，详情页必然报
+        // 「线路加载失败」——所以优先从站点仓库取回订阅解析出的**完整**站点对象。
+        // 取不到（订阅被删/历史残留）才退回路由参数拼装。
+        if (query.TryGetValue("sourceKey", out var sk) && sk is string sourceKey && sourceKey.Length > 0)
         {
-            _site.Key = sourceKey;
+            var fromRegistry = SiteRegistry.Find(sourceKey);
+            if (fromRegistry is not null)
+                _site = fromRegistry;
+            else
+            {
+                _site.Key = sourceKey;
+                if (query.TryGetValue("type", out var tp0) && tp0 is string ts0 && int.TryParse(ts0, out var t0))
+                    _site.Type = t0;
+                if (query.TryGetValue("api", out var api0) && api0 is string a0) _site.Api = a0;
+            }
             _item.SourceKey = sourceKey;
         }
-        if (query.TryGetValue("type", out var tp) && tp is string typeStr && int.TryParse(typeStr, out var type))
-            _site.Type = type;
-        if (query.TryGetValue("api", out var apiObj) && apiObj is string api) _site.Api = api;
         if (query.TryGetValue("itemId", out var idObj) && idObj is string itemId) _item.Id = itemId;
         if (query.TryGetValue("cover", out var cv) && cv is string cover && cover.Length > 0) _item.Cover = cover;
         if (query.TryGetValue("year", out var y) && y is string year && year.Length > 0) _item.Year = year;
@@ -570,9 +581,14 @@ public partial class WatchPage : ContentPage, IQueryAttributable
             else
                 await ShowTipAsync("该影片暂无可播放线路");
         }
-        catch
+        catch (Exception ex)
         {
-            await ShowTipAsync("线路加载失败");
+            // 不要静默：这里的异常通常是「站点不可播 / 爬虫运行时缺失 / 详情解析炸了」，
+            // 吞掉后只剩一句「线路加载失败」，无法判断是哪一类（2026-09-14 真机排查成本极高）。
+            WatchLog($"[load-fail] site={_site.Key} type={_site.Type} api={_site.Api} " +
+                     $"spiderKind={_site.SpiderKind} jar={(string.IsNullOrEmpty(_site.Jar) ? "<null>" : "有")} " +
+                     $"item={_item.Id} → {ex.GetType().Name}: {ex.Message}\n{ex}");
+            await ShowTipAsync($"线路加载失败：{ex.Message}");
         }
         finally
         {

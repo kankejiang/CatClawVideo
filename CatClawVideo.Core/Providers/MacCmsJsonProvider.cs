@@ -12,6 +12,10 @@ namespace CatClawVideo.Core.Providers;
 /// </summary>
 public class MacCmsJsonProvider : IVodSourceProvider
 {
+    public MacCmsJsonProvider(Services.BtStreamService? bt = null) => _bt = bt;
+
+    private readonly Services.BtStreamService? _bt;
+
     private static readonly HttpClient Http = CreateHttp();
 
     /// <summary>带浏览器 UA + 20s 超时（量子源偶发慢响应，15s 会误超时）</summary>
@@ -144,15 +148,30 @@ public class MacCmsJsonProvider : IVodSourceProvider
         catch { return []; }
     }
 
-    public Task<PlayRequest> ResolvePlayUrlAsync(VodSiteInfo site, VodEpisode episode, CancellationToken ct = default)
+    public async Task<PlayRequest> ResolvePlayUrlAsync(VodSiteInfo site, VodEpisode episode, CancellationToken ct = default)
     {
+        var url = episode.Url ?? "";
+
+        // 磁力 API 站的 vod_play_url 直接是 magnet:：必须转本机 BT 流式代理地址，
+        // 否则播放器拿到 magnet: 会以 "unknown protocol: magnet" 报 Source error
+        // （与 SpiderVodProvider 同一处理，2026-09-14 真机实测）。
+        if (url.StartsWith("ed2k://", StringComparison.OrdinalIgnoreCase))
+            throw new NotSupportedException("该集为电驴(ed2k)下载链接，暂不支持在线播放；可复制链接到下载工具");
+        if (url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase))
+        {
+            if (_bt is null)
+                throw new NotSupportedException("BT 引擎未初始化，磁力线路不可用");
+            var session = await _bt.OpenAsync(url, episode.Name, ct);
+            return new PlayRequest { Title = episode.Name, Url = session.Url };
+        }
+
         // MacCMS 直链源：集地址即播放地址（m3u8/mp4 或 302 跳转直链），页面嗅探随后续版本
-        return Task.FromResult(new PlayRequest
+        return new PlayRequest
         {
             Title = episode.Name,
-            Url = episode.Url,
+            Url = url,
             Referer = site.Api,
-        });
+        };
     }
 
     private static void Log(string msg)

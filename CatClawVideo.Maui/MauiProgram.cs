@@ -124,8 +124,8 @@ public static class MauiProgram
             new IVodSourceProvider[]
             {
                 new CatClawVideo.Core.Providers.CatClawSourceProvider(btService),
-                new CatClawVideo.Core.Providers.MacCmsJsonProvider(),
-                new CatClawVideo.Core.Providers.SpiderVodProvider(jsRuntime, jarRuntime, sniffer),
+                new CatClawVideo.Core.Providers.MacCmsJsonProvider(btService),
+                new CatClawVideo.Core.Providers.SpiderVodProvider(jsRuntime, jarRuntime, sniffer, btService),
             });
         services.AddSingleton<IVodSourceProvider>(vodProvider);
 
