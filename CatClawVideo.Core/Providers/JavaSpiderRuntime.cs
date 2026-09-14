@@ -311,7 +311,13 @@ public class JavaSpiderRuntime : ISpiderRuntime
         var outPath = Path.Combine(_bridgeDir, "converted", hash + "-java.jar");
         Directory.CreateDirectory(Path.GetDirectoryName(rawPath)!);
 
-        if (File.Exists(outPath)) return outPath;
+        // 已转换过：但**仍要按需校验类是否存在** —— 同一个 jar 对不同站点可能「有的类在、有的不在」
+        // （实测：非 Guard fty.jar 有 SixV 却没有 JPJ）。直接用缓存会让缺失的类漏到 load 阶段，
+        // 报成 ClassNotFoundException，掩盖「该站无替代实现」这个真实结论。
+        if (File.Exists(outPath))
+            return requireClass is null || !File.Exists(rawPath) || JarHasClass(rawPath, requireClass)
+                ? outPath
+                : null;
 
         if (!File.Exists(rawPath))
         {
@@ -365,15 +371,26 @@ public class JavaSpiderRuntime : ISpiderRuntime
     }
 
     /// <summary>
-    /// 判断 jar 的 dex 里是否定义了某个类。
+    /// 判断 jar 的 dex 里是否定义了某个类（传**简单类名**，如 <c>SixV</c>）。
     /// <para>dex 的 type descriptor（<c>Lcom/foo/Bar;</c>）在字符串池里以**明文 MUTF-8** 存放，
     /// 所以直接按字节搜完整描述符即可 —— 完整描述符误命中概率可忽略，无需完整解析 dex。</para>
+    /// <para>⚠️ 必须搜**完整描述符**：只搜 <c>SixV</c> 这样的简单名会落空，
+    /// 因为 dex 里存的是 <c>Lcom/github/catvod/spider/SixV;</c>。
+    /// 候选前缀与桥的类名解析顺序一致（见 JavaBridge <c>bridge.Server.load</c>）：
+    /// <c>com.github.catvod.spider.</c> → <c>com.github.catvod.crawler.</c> → 裸名。</para>
     /// </summary>
     private static bool JarHasClass(string jarPath, string className)
     {
         try
         {
-            var desc = Encoding.UTF8.GetBytes("L" + className.Replace('.', '/') + ";");
+            string[] candidates =
+            [
+                $"Lcom/github/catvod/spider/{className};",
+                $"Lcom/github/catvod/crawler/{className};",
+                $"L{className};",
+            ];
+            var needles = candidates.Select(Encoding.UTF8.GetBytes).ToArray();
+
             using var zip = System.IO.Compression.ZipFile.OpenRead(jarPath);
             foreach (var e in zip.Entries)
             {
@@ -383,7 +400,9 @@ public class JavaSpiderRuntime : ISpiderRuntime
                 using var s = e.Open();
                 using var ms = new MemoryStream();
                 s.CopyTo(ms);
-                if (ms.GetBuffer().AsSpan(0, (int)ms.Length).IndexOf(desc) >= 0) return true;
+                var span = ms.GetBuffer().AsSpan(0, (int)ms.Length);
+                foreach (var needle in needles)
+                    if (span.IndexOf(needle) >= 0) return true;
             }
         }
         catch { }
