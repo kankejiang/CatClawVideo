@@ -1,5 +1,6 @@
 using CatClawVideo.Core.Interfaces;
 using CatClawVideo.Core.Models;
+using CatClawVideo.Core.Providers;
 using Microsoft.Web.WebView2.Core;
 
 namespace CatClawVideo.Maui.Platforms.Windows;
@@ -19,14 +20,15 @@ public class WindowsWebSniffer : IWebSniffer
 
         try
         {
-            var userData = Path.Combine(FileSystem.CacheDirectory ?? Path.GetTempPath(), "webview2-sniff");
-            var env = await CoreWebView2Environment.CreateAsync(null, userData);
+            // 不显式建 CoreWebView2Environment：C#/WinRT 投影下 CreateAsync 的重载形状与
+            // Microsoft.Web.WebView2.Core 文档不完全一致（2 参/3 参均报 CS1501）。
+            // 离屏嗅探不需要定制 user-data 目录，直接用进程默认环境即可。
             var webView = new Microsoft.UI.Xaml.Controls.WebView2();
-            await webView.EnsureCoreWebView2Async(env);
+            await webView.EnsureCoreWebView2Async();
 
             var core = webView.CoreWebView2;
             var settings = core.Settings;
-            settings.IsJavaScriptEnabled = true;
+            settings.IsScriptEnabled = true;
             settings.IsStatusBarEnabled = false;
             settings.AreDefaultContextMenusEnabled = false;
             settings.AreHostObjectsAllowed = false;
@@ -54,8 +56,9 @@ public class WindowsWebSniffer : IWebSniffer
                 {
                     if (Volatile.Read(ref found) > 0)
                     {
-                        e.Response = core.Environment.CreateWebResourceResponse(
-                            new System.IO.MemoryStream(Array.Empty<byte>()), 200, "OK", "Content-Type: text/plain");
+                        // 空响应体：WinUI3 的 WebView2 投影签名是 IRandomAccessStream，
+                        // 直接传 null 表示「无内容」，避免 MemoryStream→IRandomAccessStream 转换
+                        e.Response = core.Environment.CreateWebResourceResponse(null, 200, "OK", "Content-Type: text/plain");
                         return;
                     }
                     var url = e.Request.Uri;
@@ -68,8 +71,7 @@ public class WindowsWebSniffer : IWebSniffer
                                 headers[h.Key] = h.Value;
                         // WebView2 无法同步取 Cookie；Windows 播放器当前不消费 headers，直链即结果
                         tcs.TrySetResult(new PlayRequest { Url = url, Headers = headers });
-                        e.Response = core.Environment.CreateWebResourceResponse(
-                            new System.IO.MemoryStream(Array.Empty<byte>()), 200, "OK", "Content-Type: text/plain");
+                        e.Response = core.Environment.CreateWebResourceResponse(null, 200, "OK", "Content-Type: text/plain");
                     }
                 }
                 catch { }
@@ -88,7 +90,6 @@ public class WindowsWebSniffer : IWebSniffer
             webView.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
 
             // 挂到可视树外触发加载（离屏）
-            var window = Microsoft.UI.Windowing.AppWindow.Presenters is not null ? null : null; // no-op: MAUI WinUI 城墙内
             var root = Microsoft.Maui.Controls.Application.Current?.Windows.FirstOrDefault()?.Handler?.PlatformView as Microsoft.UI.Xaml.Window;
             if (root?.Content is Microsoft.UI.Xaml.FrameworkElement fe && fe.XamlRoot is not null)
             {
@@ -96,14 +97,20 @@ public class WindowsWebSniffer : IWebSniffer
             }
             webView.Source = new Uri(pageUrl);
 
+            void StopAndClose()
+            {
+                try { core.Stop(); } catch { }
+                try { webView.Close(); } catch { }
+            }
+
             _ = Task.Delay(TimeSpan.FromSeconds(TimeoutSeconds), CancellationToken.None).ContinueWith(_ =>
             {
-                try { webView.Stop(); webView.Close(); } catch { }
+                StopAndClose();
                 tcs.TrySetException(new NotSupportedException($"嗅探超时（{TimeoutSeconds}s）：页面未给出视频直链，请换线路或换源。"));
             });
             ct.Register(() =>
             {
-                try { webView.Stop(); webView.Close(); } catch { }
+                StopAndClose();
                 tcs.TrySetCanceled(ct);
             });
         }
