@@ -77,11 +77,25 @@ public class SpiderVodProvider : IVodSourceProvider
 
     private async Task<PlayRequest> ResolveCoreAsync(ISpiderRuntime rt, VodSiteInfo site, VodEpisode episode, CancellationToken ct)
     {
+        // ⚠️ 荐片（csp_Jianpian）必须先把宿主本地 P2P 服务拉起来：它在 playerContent 内部
+        // 就会逐个探测 127.0.0.1:9978…9999，探不到会直接拼出端口位为空的地址
+        // （真机实测 → 播放器报 Source error / MalformedURLException: invalid port: -1）。
+        // 幂等操作，已就绪时零开销；未注册实现（如 Windows）时是 no-op。
+        var jpHost = JpP2PSupport.Current;
+        if (jpHost is not null)
+        {
+            try { await jpHost.EnsureReadyAsync(); } catch { }
+        }
+
         // episode.Url 可能是 "线路名$id"（来自 vod_play_url 的 集$链接 拆分，此处只剩链接）
         var json = await rt.PlayerContentAsync(site, flag: episode.Flag ?? "", id: episode.Url, ct);
         var play = SpiderJsonParser.ParsePlayRequest(json, episode.Name);
         if (string.IsNullOrEmpty(play.Url))
             play.Url = episode.Url;
+
+        // 荐片私有地址（tvbox-xg: / ftp…gbl.114s）：交宿主 P2P 引擎转成本地 http 地址
+        var jp = TryResolveJianpian(play, episode);
+        if (jp is not null) return jp;
 
         // ⚠️ 磁力拦截必须在进解析管线**之前**：
         // ① magnet: 不是视频格式，会被判为「需嗅探」，交给网页嗅探器只会拿到垃圾；
@@ -115,6 +129,28 @@ public class SpiderVodProvider : IVodSourceProvider
 
         var session = await _bt.OpenAsync(url, episode.Name, ct);
         return new PlayRequest { Title = episode.Name, Url = session.Url, Headers = play.Headers };
+    }
+
+    /// <summary>
+    /// 荐片地址接管：<c>tvbox-xg:</c> 前缀，或含 <c>gbl.114s</c> 的 ftp 地址
+    /// （对齐 TVBox <c>Jianpian.isJpUrl</c>）。
+    /// <para>荐片爬虫自己不下载，播放地址由宿主 P2P 引擎提供的本地 httpd 供给。
+    /// 宿主不支持时返回 null（交回原管线，由播放器报错）。</para>
+    /// </summary>
+    private static PlayRequest? TryResolveJianpian(PlayRequest play, VodEpisode episode)
+    {
+        var host = JpP2PSupport.Current;
+        var url = play.Url ?? "";
+        if (host is null || !host.IsJpUrl(url)) return null;
+
+        if (!host.IsReady)
+            throw new NotSupportedException("该线路需要内置 P2P 组件（荐片），当前不可用；请换线路或换源");
+
+        var local = host.Decode(url);
+        if (string.IsNullOrEmpty(local))
+            throw new NotSupportedException("荐片线路地址解析失败，请换线路或换源");
+
+        return new PlayRequest { Title = episode.Name, Url = local, Headers = play.Headers };
     }
 
     public async Task<List<VodItem>> SearchAsync(VodSiteInfo site, string keyword, CancellationToken ct = default)

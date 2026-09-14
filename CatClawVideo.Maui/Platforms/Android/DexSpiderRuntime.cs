@@ -27,6 +27,7 @@ public class DexSpiderRuntime : ISpiderRuntime
     private sealed class SpiderHolder
     {
         public Java.Lang.Object Instance = null!;
+        public string SiteKey = "";
         public Java.Lang.Reflect.Method? Init;
         public Java.Lang.Reflect.Method? Home;
         public Java.Lang.Reflect.Method? Category;
@@ -34,11 +35,23 @@ public class DexSpiderRuntime : ISpiderRuntime
         public Java.Lang.Reflect.Method? Search2;
         public Java.Lang.Reflect.Method? Search3;
         public Java.Lang.Reflect.Method? Player;
+        /// <summary>Spider.proxy(Map) —— 宿主本地 HTTP 服务器回调用（荐片 /proxy?do=… 走这条）</summary>
+        public Java.Lang.Reflect.Method? Proxy;
+        /// <summary>
+        /// proxy 回调专用锁。⚠️ 不能复用 <see cref="Lock"/>：调用链是
+        /// <c>playerContent(持 Lock) → HTTP 到本机反代 → 反代回调 proxy() → 抢 Lock</c>，
+        /// 复用必然自锁（真机实测：每 2 秒被 spider 超时重试一次，永不返回）。
+        /// </summary>
+        public readonly object ProxyLock = new();
         public readonly object Lock = new();
+        /// <summary>该 jar 的 DexClassLoader —— 用于解析 <c>com.github.catvod.spider.Proxy</c> 静态代理入口</summary>
+        public ClassLoader? Loader;
         public bool Initialized;
     }
 
     private readonly ConcurrentDictionary<string, SpiderHolder> _spiders = new();
+    /// <summary>最近一次使用的 spider —— /proxy 请求常常不带 siteKey，用它兜底（对齐 TVBox getCurrentProxySource）</summary>
+    private volatile SpiderHolder? _lastUsed;
     private readonly HttpClient _http = new();
     private readonly string _cacheDir;
     private readonly Action<string>? _log;
@@ -284,6 +297,9 @@ public class DexSpiderRuntime : ISpiderRuntime
                     Java.Lang.Class.FromType(typeof(Java.Lang.String)),
                     Java.Lang.Class.FromType(typeof(Java.Lang.String)),
                     Java.Lang.Class.FromType(typeof(Java.Util.IList))),
+                Proxy = FindByName(cls, "proxy", 1),
+                SiteKey = site.Key,
+                Loader = loader,
             };
 
             if (holder.Init != null)
@@ -305,6 +321,7 @@ public class DexSpiderRuntime : ISpiderRuntime
 
             holder.Initialized = true;
             _spiders[site.Key] = holder;
+            _lastUsed = holder;
             Log($"站点 {site.Key} spider 就绪: {cls.Name}");
             return holder;
         }, ct).ConfigureAwait(false);
@@ -444,6 +461,116 @@ public class DexSpiderRuntime : ISpiderRuntime
         try { return cls.GetMethod(name, sig); }
         catch { return null; }
     }
+
+    /// <summary>按名字 + 形参个数找方法（形参类型不便用 Class 表达时用，如 proxy(Map) 的 java.util.Map）</summary>
+    private static Java.Lang.Reflect.Method? FindByName(Class cls, string name, int paramCount)
+    {
+        try
+        {
+            foreach (var m in cls.GetMethods() ?? [])
+            {
+                if (m?.Name == name && (m.GetParameterTypes()?.Length ?? -1) == paramCount) return m;
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    /// <summary>
+    /// 回调爬虫自身的 <c>proxy(Map)</c>：宿主本地 HTTP 服务器收到 <c>/proxy?do=…</c> 时使用。
+    /// <para><b>为什么必须回调爬虫</b>：荐片（JPJ）的 playerContent 会先请求
+    /// <c>http://127.0.0.1:&lt;port&gt;/proxy?do=ck</c> 做握手，而这个端点的响应体只能由
+    /// 爬虫自己产生 —— TVBox 的 <c>ApiConfig.proxyLocal</c> 正是 <c>spider.proxy(param)</c>。
+    /// 宿主回 200 空体只能让探测分支走"成功"，握手数据不对，最终仍会拼出空端口地址。</para>
+    /// <para>返回 <c>(status, mime, body)</c>；无法处理时返回 null。</para>
+    /// </summary>
+    public async Task<(int Status, string Mime, byte[]? Body)?> ProxyAsync(
+        IDictionary<string, string> query, CancellationToken ct = default)
+    {
+        // 优先按 siteKey 定位（与 TVBox getCurrentProxySource 一致），否则用最近一次使用的爬虫
+        SpiderHolder? holder = null;
+        if (query.TryGetValue("siteKey", out var key) && !string.IsNullOrEmpty(key))
+        {
+            var site = Core.Models.SiteRegistry.Find(key);
+            if (site is not null)
+            {
+                try { holder = await EnsureSpiderAsync(site, ct).ConfigureAwait(false); }
+                catch { }
+            }
+        }
+        holder ??= _lastUsed;
+        if (holder is null)
+        {
+            Log("proxy 回调：没有可用的爬虫实例");
+            return null;
+        }
+
+        return await Task.Run(() =>
+        {
+            lock (holder.ProxyLock)
+            {
+                try
+                {
+                    var cls = EnsureBridge();
+                    var m = EnsureBridgeMethod(cls);
+                    if (m is null) return ((int)500, "text/plain", (byte[]?)null);
+
+                    var map = new HashMap();
+                    foreach (var kv in query)
+                        map.Put(new Java.Lang.String(kv.Key), new Java.Lang.String(kv.Value ?? ""));
+
+                    // 响应体经临时文件回传：反射调用拿不到 Java 基本类型数组，见 SpiderProxyBridge 注释
+                    var outPath = Path.Combine(Path.GetTempPath(), $"spproxy-{Guid.NewGuid():N}.bin");
+                    var r = m.Invoke(null, [holder.Instance, holder.Loader!, map, new Java.Lang.String(outPath)]);
+                    var head = (r as Java.Lang.String)?.ToString() ?? "";
+
+                    if (head.StartsWith("ERR:", StringComparison.Ordinal))
+                    {
+                        Log($"proxy 回调失败：{head}");
+                        return ((int)502, "text/plain", (byte[]?)null);
+                    }
+
+                    var parts = head.Split('|');
+                    if (parts.Length != 3 || !int.TryParse(parts[0], out var status))
+                    {
+                        Log($"proxy 回调：返回头异常 {head}");
+                        return ((int)502, "text/plain", (byte[]?)null);
+                    }
+                    var mime = parts[1];
+                    var len = long.TryParse(parts[2], out var l) ? l : 0;
+
+                    byte[]? body = null;
+                    if (len > 0 && File.Exists(outPath)) body = File.ReadAllBytes(outPath);
+                    try { if (File.Exists(outPath)) File.Delete(outPath); } catch { }
+
+                    Log($"proxy 回调 ok：do={(query.TryGetValue("do", out var dv) ? dv : "?")} → {status} {mime} {body?.Length ?? 0}B");
+                    return (status, mime, body);
+                }
+                catch (System.Exception ex)
+                {
+                    Log($"proxy 回调异常：{ex.GetType().Name}: {ex.Message}");
+                    return ((int)502, "text/plain", (byte[]?)null);
+                }
+            }
+        }).ConfigureAwait(false);
+    }
+
+    private Java.Lang.Class? _bridgeClass;
+    private Java.Lang.Reflect.Method? _bridgeMethod;
+
+    private Java.Lang.Class EnsureBridge() =>
+        _bridgeClass ??= Java.Lang.Class.ForName(
+            "com.catclaw.video.SpiderProxyBridge", true,
+            global::Android.App.Application.Context.ClassLoader)
+        ?? throw new InvalidOperationException("SpiderProxyBridge 未找到");
+
+    private Java.Lang.Reflect.Method? EnsureBridgeMethod(Java.Lang.Class cls) =>
+        _bridgeMethod ??= Find(cls, "proxyToFile",
+            Java.Lang.Class.FromType(typeof(Java.Lang.Object)),
+            Java.Lang.Class.FromType(typeof(Java.Lang.ClassLoader)),
+            Java.Lang.Class.FromType(typeof(HashMap)),
+            Java.Lang.Class.FromType(typeof(Java.Lang.String)));
+
 
     /// <summary>反射调用并容错：方法缺失返回 null，Java 异常包装为 {"__error":...}</summary>
     private Java.Lang.Object? CallSafe(SpiderHolder h, Java.Lang.Reflect.Method? m, params Java.Lang.Object[] args)

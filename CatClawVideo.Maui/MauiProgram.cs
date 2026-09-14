@@ -95,6 +95,20 @@ public static class MauiProgram
         var jarRuntime = new Platforms.Android.DexSpiderRuntime(
             Path.Combine(FileSystem.CacheDirectory, "spider"),
             m => System.Diagnostics.Debug.WriteLine(m));
+
+        // 荐片（csp_Jianpian）宿主侧 P2P：
+        //  ① libp2p.so + com.p2p.P2PClass 起本地 httpd（实测端口 8087+）；
+        //  ② 在 spider 扫描的 9978…9999 整段起反代指向该 httpd；
+        //  ③ /proxy?do=… 回调爬虫自己的 proxy(Map) 生成响应（对齐 TVBox ApiConfig.proxyLocal）。
+        // 必须在我们解析播放地址前就绪，否则 spider 的 adjustPort 握手失败、拼出空端口地址。
+        // 启动会阻塞到 httpd 就绪，故放后台线程预热；兜底 await 在 SpiderVodProvider 里。
+        var jpP2p = new Platforms.Android.JianpianP2P(
+            Path.Combine(FileSystem.CacheDirectory, "p2p"), BtFileLog.Write)
+        {
+            ProxyHandler = jarRuntime.ProxyAsync,
+        };
+        CatClawVideo.Core.Interfaces.JpP2PSupport.Current = jpP2p;
+        _ = Task.Run(async () => { try { await jpP2p.EnsureReadyAsync(); } catch { } });
 #else
         // 桌面 JVM 桥：JavaBridge 目录 + 系统 java.exe（缺一则不可用）
         var bridgeDir = CatClawVideo.Core.Providers.JavaSpiderRuntime.FindBridgeDir();

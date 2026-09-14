@@ -132,6 +132,23 @@
 		<AndroidJavaLibrary Include="Jars\okio-2.8.0.jar" />
 	</ItemGroup>
 
+	<!-- Android 原生库：荐片（csp_Jianpian / 壳类 JPJGuard）所需的 P2P 引擎。
+	     ⚠️ 荐片爬虫自己不下载：它的 playerContent 会逐个探测 127.0.0.1:9978…9999 找宿主的本地
+	     P2P HTTP 服务，探不到就拼出空端口地址 → 播放器报 Source error /
+	     MalformedURLException: invalid port: -1（2026-09-14 真机实测）。
+	     宿主必须提供 libp2p.so + com.p2p.P2PClass 并启动其 httpd，见 Platforms/Android/com/p2p/。
+
+	     ⚠️ 许可与来源（用户明确知悉并选择打包）：
+	     libp2p.so 取自 TVBox 参考仓库（AGPL-3.0）player/src/main/jniLibs/，
+	     本体是荐片厂商的闭源二进制（无源码/头文件）。本项目 MIT，此项会进入发行物。
+	     仅 arm64-v8a / armeabi-v7a 两个 ABI 存在（**上游没有 x86_64**），x86_64 设备无法使用荐片。
+
+	     ⚠️ AndroidNativeLibrary 的 ABI 由**文件所在目录名**推导，不要改成扁平目录。 -->
+	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">
+		<AndroidNativeLibrary Include="Platforms\Android\jniLibs\arm64-v8a\libp2p.so" />
+		<AndroidNativeLibrary Include="Platforms\Android\jniLibs\armeabi-v7a\libp2p.so" />
+	</ItemGroup>
+
 	<!-- Android signing（同 CatClawMusic）：必须显式 AndroidKeyStore=true，且用 PropertyGroup 属性（非 ItemGroup）。
 	     密码兜底内置（与 SIGNING.md 一致 catclaw123），命令行 -p:CatClawKeyPass=xxx 可覆盖。
 	     keystore 位于仓库根目录 catclaw.keystore（PKCS12 / alias=catclaw / 有效期至 2054）。 -->
