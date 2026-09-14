@@ -72,7 +72,11 @@ public static class MauiProgram
         var trackerSource = new CatClawVideo.Core.Services.BtTrackerSource(FileSystem.AppDataDirectory, BtFileLog.Write);
 #if ANDROID
         var btCacheRoot = Path.Combine(FileSystem.CacheDirectory, "btcache");
-        var btService = new CatClawVideo.Core.Services.BtStreamService(btCacheRoot, m => System.Diagnostics.Debug.WriteLine(m), trackerSource, btSettings)
+        // ⚠️ 日志必须走 BtFileLog（落盘 files/logs/bt.log），不要用 System.Diagnostics.Debug.WriteLine：
+        // · Debug.WriteLine 带 [Conditional("DEBUG")]，Release 包里整行被编译掉 → 真机零日志；
+        // · Debug 包里它走 stdout，被 logd 按进程名打 tag 且受块缓冲影响，adb logcat 抓不稳。
+        // 这两点叠加导致「安卓端磁力线路加载失败」在真机上完全拿不到引擎侧证据（2026-09-14 实测）。
+        var btService = new CatClawVideo.Core.Services.BtStreamService(btCacheRoot, BtFileLog.Write, trackerSource, btSettings)
         {
             MemoryCacheBytes = 32 * 1024 * 1024,
             MaxConnections = 120,          // 移动端连接数略降（省电/省流），仍远高于旧值 50
