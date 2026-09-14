@@ -45,7 +45,42 @@
 
 ---
 
-## 3. okhttp 3.12.11 / okio 2.8.0
+## 3. 迅雷下载引擎 SDK（磁力优先）⚠️ 许可与本文件第 1 节同一量级，但授权性质更明确
+
+| 项 | 内容 |
+|---|---|
+| 文件 | `CatClawVideo.Maui/Jars/thunder.jar`（79 KB，`com.xunlei.downloadlib.*`）<br>`CatClawVideo.Maui/Platforms/Android/jniLibs/arm64-v8a/libxl_thunder_sdk.so`（5.35 MB）<br>`.../arm64-v8a/libxl_stat.so`（0.80 MB）<br>（`armeabi-v7a` 同名两份） |
+| 来源 | TVBox 参考仓库 `app/libs/thunder.jar` + `player/src/main/jniLibs/` |
+| 上游许可 | 该仓库整体为 **AGPL-3.0** |
+| 本体权属 | **迅雷（Xunlei）商业闭源 SDK**；仅以二进制形式分发，无源码 |
+| 用途 | 磁力播放时**优先**走迅雷 P2SP 私有网络（中心化种子索引 + 自有节点），失败回落内置 BT |
+
+**为什么需要**：新6V 这类站的磁力，公共 BT swarm 极薄甚至已死（同一条磁力实测仅 0.28 Mbps），
+而迅雷 P2SP 能秒出种子文件列表（TVBox 的「一个磁力展开成 11 集」即来源于此）并流畅播放。
+
+**⚠️ appKey 属未授权凭据**：`XLTaskHelper.init(context, appKey, version)` 的 appKey 是
+从 TVBox 源码里取出的**硬编码字符串**（所有 TVBox 分支共用同一把），
+等于用他人凭据访问迅雷服务。这与单纯「再分发闭源二进制」不同，风险更高。
+此外 SDK 内的 `XLAppKeyChecker` 含 `verifyAppKeyExpired` / `"appkey expired."` ——
+**该凭据有有效期，且迅雷可随时使其失效**，届时本功能会自动回落内置 BT。
+
+**隐私**：SDK 内的 `XLUtil` 有采集 IMEI / MAC / SSID / PeerId 等设备标识的字段。
+本项目**不读取真实设备标识**：伪造随机 IMEI/MAC（对齐 TVBox 的做法）并持久化，
+使同一设备上保持稳定。用户可在设置中关闭「磁力优先使用迅雷」。
+
+**只打包两个库**：`XLLoader` 仅 `loadLibrary` `xl_stat` 与 `xl_thunder_sdk`
+（`libplayer.so` / `libijkffmpeg.so` 是 ijkplayer，与本 SDK 无关，未打包）。
+依赖的 `liblog/libz/libstdc++/libm/libc/libdl` 均在 Android 公开库白名单内。
+**仅 arm64-v8a / armeabi-v7a**，无 x86_64。
+
+**移除方式**：删除 `Jars/thunder.jar`、`jniLibs/*/libxl_thunder_sdk.so`、`jniLibs/*/libxl_stat.so`、
+`Platforms/Android/com/catclaw/video/ThunderBridge.java`、`Platforms/Android/ThunderP2P.cs`，
+以及 csproj 中对应的 `AndroidJavaLibrary` / `AndroidNativeLibrary` 项即可 ——
+磁力会自动全部走内置 BT，其余功能不受影响。
+
+---
+
+## 4. okhttp 3.12.11 / okio 2.8.0
 
 | 项 | 内容 |
 |---|---|
@@ -58,7 +93,7 @@
 
 ---
 
-## 4. 运行期下载（不随包分发）
+## 5. 运行期下载（不随包分发）
 
 - **spider jar**：由用户配置的订阅在运行时下载（如 `fty.jar`，含 Guard 加固壳）。
   发行物内不含任何 spider jar。

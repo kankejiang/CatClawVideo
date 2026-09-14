@@ -109,6 +109,13 @@ public static class MauiProgram
         };
         CatClawVideo.Core.Interfaces.JpP2PSupport.Current = jpP2p;
         _ = Task.Run(async () => { try { await jpP2p.EnsureReadyAsync(); } catch { } });
+
+        // 迅雷下载引擎（磁力优先）：libxl_thunder_sdk.so + libxl_stat.so + thunder.jar。
+        // 起不来（ABI 不符 / appKey 失效 / 服务端变更）不影响任何现有能力 —— 所有调用点都会回落内置 BT。
+        var thunder = new Platforms.Android.ThunderP2P(
+            Path.Combine(FileSystem.CacheDirectory, "thunder"), BtFileLog.Write);
+        CatClawVideo.Core.Interfaces.MagnetEngines.Thunder = thunder;
+        _ = Task.Run(async () => { try { await thunder.EnsureReadyAsync(); } catch { } });
 #else
         // 桌面 JVM 桥：JavaBridge 目录 + 系统 java.exe（缺一则不可用）
         var bridgeDir = CatClawVideo.Core.Providers.JavaSpiderRuntime.FindBridgeDir();

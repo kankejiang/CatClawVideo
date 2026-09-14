@@ -225,6 +225,28 @@ public sealed class BtStreamService : IAsyncDisposable
         var infoHex = ResolveInfoHashHex(magnet)
             ?? throw new NotSupportedException("磁力链接缺少 info-hash（仅支持 btih v1 磁力）");
 
+        // ── 优先引擎（迅雷 P2SP）：公共 swarm 极薄甚至已死的磁力，只有私有网络能救
+        //    （实测同一磁力公共 BT 仅 0.28 Mbps，而 TVBox 走迅雷能秒出文件列表并流畅播）。
+        //    任何一步失败（未就绪/解析超时/起播超时/appKey 失效）都回落内置 BT，绝不因此让磁力整体不可用。
+        var preferred = Interfaces.MagnetEngines.Thunder;
+        if (preferred is { IsReady: true })
+        {
+            try
+            {
+                var hit = await preferred.TryOpenAsync(magnetUri, preferredName, ct);
+                if (hit is not null)
+                {
+                    Log($"优先引擎（{preferred.Name}）命中：{hit.FileName} {hit.FileLength / 1048576.0:F1}MB");
+                    return new BtSession(hit.InfoHashHex, hit.FileIndex, hit.FileLength, hit.FileName, hit.Url);
+                }
+                Log($"优先引擎（{preferred.Name}）未命中，回落内置 BT");
+            }
+            catch (Exception ex)
+            {
+                Log($"优先引擎（{preferred.Name}）异常，回落内置 BT：{ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
         await _lock.WaitAsync(ct);
         try
         {

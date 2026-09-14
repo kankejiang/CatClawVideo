@@ -130,6 +130,9 @@
 	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">
 		<AndroidJavaLibrary Include="Jars\okhttp-3.12.11.jar" />
 		<AndroidJavaLibrary Include="Jars\okio-2.8.0.jar" />
+		<!-- 迅雷下载引擎 SDK（磁力优先使用；仅嵌入 dex，不生成 C# 绑定）。
+		     自包含：thunder.jar 里零引用 TVBox 宿主类，只需宿主提供 Context。 -->
+		<AndroidJavaLibrary Include="Jars\thunder.jar" />
 	</ItemGroup>
 
 	<!-- Android 原生库：荐片（csp_Jianpian / 壳类 JPJGuard）所需的 P2P 引擎。
@@ -147,6 +150,13 @@
 	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">
 		<AndroidNativeLibrary Include="Platforms\Android\jniLibs\arm64-v8a\libp2p.so" />
 		<AndroidNativeLibrary Include="Platforms\Android\jniLibs\armeabi-v7a\libp2p.so" />
+		<!-- 迅雷下载引擎：XLLoader 只加载这两个库（libplayer.so 是 ijkplayer，与本 SDK 无关，不要带）。
+		     libxl_thunder_sdk.so → NEEDED libxl_stat.so，两个必须同包存在。
+		     其余依赖（liblog/libz/libstdc++/libm/libc/libdl）都在 Android 公开库白名单里。 -->
+		<AndroidNativeLibrary Include="Platforms\Android\jniLibs\arm64-v8a\libxl_thunder_sdk.so" />
+		<AndroidNativeLibrary Include="Platforms\Android\jniLibs\armeabi-v7a\libxl_thunder_sdk.so" />
+		<AndroidNativeLibrary Include="Platforms\Android\jniLibs\arm64-v8a\libxl_stat.so" />
+		<AndroidNativeLibrary Include="Platforms\Android\jniLibs\armeabi-v7a\libxl_stat.so" />
 	</ItemGroup>
 
 	<!-- Android signing（同 CatClawMusic）：必须显式 AndroidKeyStore=true，且用 PropertyGroup 属性（非 ItemGroup）。
