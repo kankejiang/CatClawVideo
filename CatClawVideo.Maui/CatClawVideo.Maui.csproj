@@ -108,6 +108,30 @@
 		<PackageReference Include="Xamarin.AndroidX.Media3.UI" Version="1.10.1.1" />
 	</ItemGroup>
 
+	<!-- Android Java 源文件：宿主侧 spider 基类 com.github.catvod.crawler.Spider。
+	     spider jar 里的爬虫类全部继承该基类（Guard 加固包亦然：BaseSpiderGuard extends Spider），
+	     而 jar 自身不打包它，必须由宿主 App 提供；否则 DexClassLoader 解析父类失败，
+	     抛 NoClassDefFoundError，表现为「jar 中找不到爬虫类」。
+	     ⚠️ .NET for Android 不会自动 glob Platforms/Android 下的 .java，必须显式声明 AndroidJavaSource。 -->
+	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">
+		<AndroidJavaSource Include="Platforms\Android\**\*.java" />
+	</ItemGroup>
+
+	<!-- Android Java 库：OkHttp 运行时（spider jar 的真实实现直接依赖 okhttp3，宿主必须提供）。
+	     Guard 加固包的外层 classes.dex 只有加固壳，真实实现由 assets/*.guard + native .so 在运行时解密，
+	     解密出的代码直接引用 okhttp3（ConnectionPool / Request$Builder / MultipartBody$Builder 等）。
+	     TVBox 之所以能用，是因为它自带 OkHttp；宿主不提供就会在调用爬虫方法时抛
+	     NoClassDefFoundError: Failed resolution of: Lokhttp3/...
+	     版本严格对齐 TVBox 参考实现（app/build.gradle）：okhttp 3.12.11 + okio 2.8.0。
+	     okio 2.8.0 为 Kotlin 编译，但其依赖的 kotlin-stdlib 已由本项目的 AndroidX/Media3 NuGet 间接引入
+	     （已存在于 lp/*/jl/libs 中），故**不要**再自行打包 kotlin-stdlib —— 会触发 D8 的
+	     「Type kotlin.XxxKt is defined multiple times」重复定义错误（JAVA0000）。
+	     ⚠️ 用 AndroidJavaLibrary（仅嵌入 dex，不生成 C# 绑定），避免对 Kotlin 元数据做绑定而产生告警/失败。 -->
+	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">
+		<AndroidJavaLibrary Include="Jars\okhttp-3.12.11.jar" />
+		<AndroidJavaLibrary Include="Jars\okio-2.8.0.jar" />
+	</ItemGroup>
+
 	<!-- Android signing（同 CatClawMusic）：必须显式 AndroidKeyStore=true，且用 PropertyGroup 属性（非 ItemGroup）。
 	     密码兜底内置（与 SIGNING.md 一致 catclaw123），命令行 -p:CatClawKeyPass=xxx 可覆盖。
 	     keystore 位于仓库根目录 catclaw.keystore（PKCS12 / alias=catclaw / 有效期至 2054）。 -->

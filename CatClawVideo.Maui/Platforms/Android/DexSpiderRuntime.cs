@@ -142,8 +142,12 @@ public class DexSpiderRuntime : ISpiderRuntime
             Log("jar 已置只读（W^X）");
         }
 
-        return new global::Dalvik.SystemInterop.DexClassLoader(
-            jarPath, optDir, null, ClassLoader.SystemClassLoader);
+        // parent 必须是 App 自身的 ClassLoader（对照 TVBox 的 App.getInstance().getClassLoader()）：
+        // spider jar 里的爬虫类继承宿主基类 com.github.catvod.crawler.Spider（见 Platforms/Android 下的
+        // Spider.java），该基类只存在于 App 自己的 APK 中，只能由 parent 解析到。parent 若解析不到，
+        // 加载任何爬虫类都会抛 NoClassDefFoundError。
+        var parent = global::Android.App.Application.Context.ClassLoader ?? ClassLoader.SystemClassLoader;
+        return new global::Dalvik.SystemInterop.DexClassLoader(jarPath, optDir, null, parent);
     }
 
     /// <summary>找 PK（Zip 头），兼容伪装成图片的 jar</summary>
@@ -155,7 +159,17 @@ public class DexSpiderRuntime : ISpiderRuntime
         return 0;
     }
 
-    private static Class? TryLoad(ClassLoader loader, string className)
+    private static Class? TryLoad(ClassLoader loader, string className) =>
+        TryLoad(loader, className, out _);
+
+    /// <summary>
+    /// 按 TVBox 的类名前缀约定查找爬虫类。
+    /// <para>⚠️ 失败原因必须回传：这里的失败几乎都不是「类不存在」，而是类加载器解析依赖时
+    /// 失败。典型例子是 spider jar 的爬虫类继承宿主基类
+    /// <c>com.github.catvod.crawler.Spider</c>，宿主没提供该基类时抛 NoClassDefFoundError，
+    /// 静默吞掉异常会让调用方永远只看到「jar 中找不到爬虫类」这种误导性描述。</para>
+    /// </summary>
+    private static Class? TryLoad(ClassLoader loader, string className, out string? lastError)
     {
         string[] prefixes =
         {
@@ -163,10 +177,11 @@ public class DexSpiderRuntime : ISpiderRuntime
             "com.github.catvod.crawler.",
             "",
         };
+        lastError = null;
         foreach (var p in prefixes)
         {
             try { return loader.LoadClass(p + className); }
-            catch { }
+            catch (System.Exception ex) { lastError = $"{ex.GetType().Name}: {ex.Message}"; }
         }
         return null;
     }
@@ -188,16 +203,33 @@ public class DexSpiderRuntime : ISpiderRuntime
                 ? site.Api[4..]
                 : site.Api;
 
-            var cls = TryLoad(loader, className)
-                ?? throw new InvalidOperationException($"jar 中找不到爬虫类: {className}");
+            var cls = TryLoad(loader, className, out var loadError)
+                ?? throw new InvalidOperationException($"jar 中找不到爬虫类: {className}（{loadError ?? "无异常信息"}）");
 
             // 保护壳 jar 引导（对照 jun 分支 ProtectedInitJar，纯反射绑定）：
             // Guard 系 jar 的 Init 单例需要外部注入 Context 与 DexClassLoader 才能工作。
+            // 必须在实例化爬虫类之前完成：Guard 壳类的构造函数会通过 Init.getSpider() 取真实实现。
             BindProtectedJar(loader);
+
+            // ⚠️ 实例化与 init() 是 Guard 壳最容易失败的两步（真实实现由 native 解密后反射调用），
+            // 失败时抛的是 InvocationTargetException，其 Message 是 .NET 兜底的英文文案、毫无信息量，
+            // 真实异常在 Cause 链里。必须显式展开，否则调用方只能看到
+            // 「Exception of type 'Java.Lang.Reflect.InvocationTargetException' was thrown.」
+            Java.Lang.Object instance;
+            try
+            {
+                instance = (Java.Lang.Object)cls.GetConstructor().NewInstance();
+            }
+            catch (Java.Lang.Throwable t)
+            {
+                var d = $"爬虫类实例化失败: {className} → {Describe(t)}";
+                Log(d);
+                throw new InvalidOperationException(d, t);
+            }
 
             var holder = new SpiderHolder
             {
-                Instance = (Java.Lang.Object)cls.GetConstructor().NewInstance(),
+                Instance = instance,
                 Init = Find(cls, "init", Java.Lang.Class.FromType(typeof(global::Android.Content.Context)), Java.Lang.Class.FromType(typeof(Java.Lang.String))),
                 Home = Find(cls, "homeContent", Java.Lang.Boolean.Type),
                 Category = Find(cls, "categoryContent",
@@ -221,8 +253,17 @@ public class DexSpiderRuntime : ISpiderRuntime
             {
                 var ext = site.Ext ?? "";
                 Log($"init {className} ext={ext[..System.Math.Min(60, ext.Length)]}");
-                holder.Init.Invoke(holder.Instance,
-                    global::Android.App.Application.Context, new Java.Lang.String(ext));
+                try
+                {
+                    holder.Init.Invoke(holder.Instance,
+                        global::Android.App.Application.Context, new Java.Lang.String(ext));
+                }
+                catch (Java.Lang.Throwable t)
+                {
+                    var d = $"爬虫 init() 失败: {className} → {Describe(t)}";
+                    Log(d);
+                    throw new InvalidOperationException(d, t);
+                }
             }
 
             holder.Initialized = true;
@@ -256,33 +297,46 @@ public class DexSpiderRuntime : ISpiderRuntime
 
             var appCtx = global::Android.App.Application.Context;
 
-            // ① bindContext
+            // ① bindContext（对照 jun ProtectedInitJar.bindContext）：先试字段名 "c"，否则按类型匹配实例字段。
+            // ⚠️ 必须用「类型可赋值性」判断，不能用字段类型名字符串：混淆后的 Guard jar 里该字段的声明类型是
+            // android.app.Application（Application 是 Context 的子类，类型名里没有 "Context" 字样），
+            // 用 Contains("Context") 会漏绑 → Init 拿不到 Context → DexNative.getLoader 失败 →
+            // 实例化爬虫类时抛 InvocationTargetException。TVBox 用的正是 Context.isAssignableFrom。
             if (init != null)
             {
+                var contextType = Java.Lang.Class.FromType(typeof(global::Android.Content.Context));
+                var bound = false;
                 try
                 {
                     var f = initCls.GetField("c");
                     Java.Lang.Reflect.AccessibleObject.SetAccessible(new Java.Lang.Reflect.AccessibleObject[] { f }, true);
                     f.Set(init, appCtx);
+                    bound = true;
                 }
-                catch
+                catch { }
+
+                if (!bound)
                 {
-                    foreach (var f in initCls.GetDeclaredFields())
+                    for (var type = initCls; type != null && !bound; type = type.Superclass)
                     {
-                        try
+                        foreach (var f in type.GetDeclaredFields())
                         {
-                            if (Java.Lang.Reflect.Modifier.IsStatic(f.Modifiers)) continue;
-                            if (!f.Type.Name.Contains("Context", StringComparison.OrdinalIgnoreCase)) continue;
-                            Java.Lang.Reflect.AccessibleObject.SetAccessible(new Java.Lang.Reflect.AccessibleObject[] { f }, true);
-                            f.Set(init, appCtx);
-                            break;
+                            try
+                            {
+                                if (Java.Lang.Reflect.Modifier.IsStatic(f.Modifiers)) continue;
+                                if (!contextType.IsAssignableFrom(f.Type)) continue;
+                                Java.Lang.Reflect.AccessibleObject.SetAccessible(new Java.Lang.Reflect.AccessibleObject[] { f }, true);
+                                f.Set(init, appCtx);
+                                bound = true;
+                            }
+                            catch { }
                         }
-                        catch { }
                     }
                 }
             }
 
-            // ② bindDexLoader：DexNative.getLoader(context) → DexClassLoader
+            // ② bindDexLoader：DexNative.getLoader(context) → DexClassLoader，绑入 Init 的实例字段。
+            // 同样按类型可赋值性匹配并向上遍历继承链（对照 jun ProtectedInitJar.bindDexLoader）。
             try
             {
                 var nativeCls = TryLoad(loader, "DexNative");
@@ -291,16 +345,23 @@ public class DexSpiderRuntime : ISpiderRuntime
                 var cl = getLoader?.Invoke(null, appCtx);
                 if (cl is global::Dalvik.SystemInterop.DexClassLoader dexCl && init != null)
                 {
-                    foreach (var f in initCls.GetDeclaredFields())
+                    var dexLoaderType = Java.Lang.Class.FromType(typeof(global::Dalvik.SystemInterop.DexClassLoader));
+                    var loaderBound = false;
+                    for (var type = initCls; type != null && !loaderBound; type = type.Superclass)
                     {
-                        try
+                        foreach (var f in type.GetDeclaredFields())
                         {
-                            if (Java.Lang.Reflect.Modifier.IsStatic(f.Modifiers)) continue;
-                            if (!f.Type.Name.Contains("DexClassLoader", StringComparison.OrdinalIgnoreCase)) continue;
-                            Java.Lang.Reflect.AccessibleObject.SetAccessible(new Java.Lang.Reflect.AccessibleObject[] { f }, true);
-                            f.Set(init, dexCl);
+                            try
+                            {
+                                if (Java.Lang.Reflect.Modifier.IsStatic(f.Modifiers)) continue;
+                                if (!dexLoaderType.IsAssignableFrom(f.Type)) continue;
+                                Java.Lang.Reflect.AccessibleObject.SetAccessible(new Java.Lang.Reflect.AccessibleObject[] { f }, true);
+                                f.Set(init, dexCl);
+                                loaderBound = true;
+                                break;
+                            }
+                            catch { }
                         }
-                        catch { }
                     }
                 }
             }
@@ -323,6 +384,24 @@ public class DexSpiderRuntime : ISpiderRuntime
         }
     }
 
+    /// <summary>
+    /// 展开 Java 异常的完整 cause 链。<c>Throwable.ToString()</c> 给出「类名: message」，
+    /// 但反射调用相关的 <c>InvocationTargetException</c> 的 message 往往为空，
+    /// 真正的失败原因（NoClassDefFoundError / NPE / IO 异常…）挂在 Cause 上，必须逐层打印。
+    /// </summary>
+    private static string Describe(Java.Lang.Throwable t)
+    {
+        var sb = new System.Text.StringBuilder();
+        try
+        {
+            sb.Append(t.ToString());
+            for (var c = t.Cause; c != null; c = c.Cause)
+                sb.Append("\n    ---> ").Append(c.ToString());
+        }
+        catch { }
+        return sb.ToString();
+    }
+
     private static Java.Lang.Reflect.Method? Find(Class cls, string name, params Class[] sig)
     {
         try { return cls.GetMethod(name, sig); }
@@ -339,8 +418,11 @@ public class DexSpiderRuntime : ISpiderRuntime
         }
         catch (Java.Lang.Throwable t)
         {
-            Log($"{m.Name} 异常: {t.Message}");
-            var msg = System.Text.Json.JsonSerializer.Serialize(t.Message ?? "error");
+            // ⚠️ 只打印 Message 会丢失根因：反射调用抛的是 InvocationTargetException，其 Message 常为空，
+            // 真实异常在其 Cause 里（爬虫方法内部抛的才是有效信息）。这里展开整条 cause 链。
+            var detail = Describe(t);
+            Log($"{m.Name} 异常: {detail}");
+            var msg = System.Text.Json.JsonSerializer.Serialize(detail);
             return new Java.Lang.String("{\"__error\":" + msg + "}");
         }
         catch
