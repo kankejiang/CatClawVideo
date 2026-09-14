@@ -88,14 +88,6 @@ _Modern cross-platform video player built with .NET MAUI._
 
 在 App「源配置」页粘贴本地文件路径即可添加。
 
-## 猫爪源生成器
-
-```powershell
-cd Tools/CatClawSourceGen
-dotnet run -- --pages 3 --out xb6v.ccs.json   # 每分类抓 3 页
-dotnet run -- --selftest 规则源.ccs.json      # 全链路自检（列表→详情→播放解析）
-```
-
 ## 项目结构
 
 | 目录 | 说明 |
@@ -104,8 +96,6 @@ dotnet run -- --selftest 规则源.ccs.json      # 全链路自检（列表→�
 | `CatClawVideo.Data` | 数据层：SQLite 数据库（订阅源、播放历史、收藏） |
 | `CatClawVideo.Maui` | MAUI 应用主体：页面、ViewModel、平台播放器 Handler |
 | `JavaBridge` | 桌面端 Java 桥（android-stub + 爬虫桩 + bridge server → `bridge.jar`），用于在桌面加载 TVBox jar 爬虫 |
-| `Tools/CatClawSourceGen` | 猫爪源生成器 CLI（试点：xb6v 磁力下载站抓取 → 猫爪源文件） |
-| `sources/` | 预生成的猫爪源文件（`*.ccs.json`） |
 | `samples/` | 猫爪源协议示例文件 |
 | `prototype/` | HTML 界面原型 |
 
