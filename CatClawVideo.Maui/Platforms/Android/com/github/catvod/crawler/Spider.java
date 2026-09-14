@@ -7,6 +7,10 @@ import org.json.JSONObject;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
+
+import okhttp3.Dns;
+import okhttp3.OkHttpClient;
 
 /**
  * Host-provided base class for TVBox-compatible spider jars.
@@ -21,11 +25,21 @@ import java.util.Map;
  * superclass of any spider class and throws {@code NoClassDefFoundError} instead. The
  * caller sees a bare "class not found" and the whole jar looks unusable.</p>
  *
- * <p>Ported from the TVBox reference implementation
- * ({@code app/src/main/java/com/github/catvod/crawler/Spider.java}). Three members were
- * dropped on purpose to keep this class dependency-free: {@code safeDns()}/{@code client()}
- * (they pulled in OkHttp) and {@code initApi(SpiderApi)} (it pulled in TVBox-internal
- * classes). No bundled spider class references them.</p>
+ * <p>Member parity with the reference implementation
+ * ({@code app/src/main/java/com/github/catvod/crawler/Spider.java}) is required, not
+ * cosmetic: jars link against these members by name, and verification of the whole spider
+ * class fails when one is absent. Two groups are easy to get wrong:</p>
+ * <ul>
+ *   <li>{@code initApi(SpiderApi)} - overridden by {@code XBPQ} (the 饭太硬/海阔 family),
+ *       which calls {@code super.initApi(api)}. Dropping it here breaks every {@code csp_XBPQ}
+ *       site even though the site itself is otherwise fine.</li>
+ *   <li>{@code client()} / {@code safeDns()} - re-implemented on top of the okhttp3 jar the
+ *       host already ships, instead of TVBox's {@code com.github.catvod.net.OkHttp}.</li>
+ * </ul>
+ *
+ * <p>The host must also <em>call</em> these in the reference order
+ * ({@code siteKey} -> {@code initApi} -> {@code init}), exactly as TVBox's
+ * {@code JarLoader.getSpider()} does; see {@code DexSpiderRuntime}.</p>
  */
 public class Spider {
 
@@ -35,12 +49,22 @@ public class Spider {
 
     protected static Context mContext;
 
+    private static volatile OkHttpClient client;
+
     public void init(Context context) {
         mContext = context;
     }
 
     public void init(Context context, String extend) {
         init(context);
+    }
+
+    /**
+     * Injects the host-side helper object. Called by the host right after instantiation and
+     * before {@code init()}; spiders that need {@code SpiderApi} override this and must call
+     * {@code super}.
+     */
+    public void initApi(SpiderApi api) {
     }
 
     /**
@@ -96,6 +120,25 @@ public class Spider {
 
     public String liveContent(String url) {
         return "";
+    }
+
+    public static Dns safeDns() {
+        return Dns.SYSTEM;
+    }
+
+    public static OkHttpClient client() {
+        if (client == null) {
+            synchronized (Spider.class) {
+                if (client == null) {
+                    client = new OkHttpClient.Builder()
+                            .connectTimeout(15, TimeUnit.SECONDS)
+                            .readTimeout(20, TimeUnit.SECONDS)
+                            .writeTimeout(20, TimeUnit.SECONDS)
+                            .build();
+                }
+            }
+        }
+        return client;
     }
 
     /**

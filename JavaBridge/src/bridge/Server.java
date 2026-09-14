@@ -1,6 +1,7 @@
 package bridge;
 
 import android.content.Context;
+import com.github.catvod.crawler.SpiderApi;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
@@ -27,20 +28,33 @@ import java.util.List;
 public class Server {
 
     private static final HashMap<String, Object> SPIDERS = new HashMap<>();
-    private static URLClassLoader loader;
+    /** jar 集合 -> 类加载器。按 jar 集合分桶，而不是全局单例。 */
+    private static final HashMap<String, URLClassLoader> LOADERS = new HashMap<>();
     private static final Object LOCK = new Object();
 
-    /** 懒构建：把 C# 侧传入的转换后 jar 挂到 URLClassLoader */
-    private static void ensureLoader(org.json.JSONArray jars) throws Exception {
-        if (loader != null) return;
+    /**
+     * 懒构建：把 C# 侧传入的转换后 jar 挂到 URLClassLoader。
+     *
+     * <p>必须按 jar 集合分别缓存。早期实现把加载器放在一个全局字段里、第二次调用直接返回，
+     * 于是<b>只有第一个站点用到的那个 jar 生效</b>：订阅里 10 个 jar 站跨 5 个不同的 jar，
+     * 后续站点一律报「jar 中找不到爬虫类」，看起来像站点坏了。</p>
+     */
+    private static URLClassLoader loaderFor(org.json.JSONArray jars) throws Exception {
         if (jars == null || jars.length() == 0) throw new IllegalStateException("no jars provided");
         URL[] urls = new URL[jars.length()];
+        StringBuilder keyBuilder = new StringBuilder();
         for (int i = 0; i < jars.length(); i++) {
             File f = new File(jars.getString(i));
             if (!f.isFile()) throw new java.io.FileNotFoundException(f.getAbsolutePath());
             urls[i] = f.toURI().toURL();
+            keyBuilder.append(f.getAbsolutePath()).append('\n');
         }
-        loader = new URLClassLoader(urls, Server.class.getClassLoader());
+        String key = keyBuilder.toString();
+        URLClassLoader cached = LOADERS.get(key);
+        if (cached != null) return cached;
+        URLClassLoader created = new URLClassLoader(urls, Server.class.getClassLoader());
+        LOADERS.put(key, created);
+        return created;
     }
 
     public static void main(String[] args) throws Exception {
@@ -85,7 +99,7 @@ public class Server {
     private static String load(String site, String className, String ext, org.json.JSONArray jars) throws Exception {
         synchronized (LOCK) {
             if (SPIDERS.containsKey(site)) return "loaded";
-            ensureLoader(jars);
+            URLClassLoader loader = loaderFor(jars);
 
             Class<?> cls = null;
             for (String p : new String[]{"com.github.catvod.spider.", "com.github.catvod.crawler.", ""}) {
@@ -100,6 +114,16 @@ public class Server {
                 Class<?> initCls = loader.loadClass("com.github.catvod.spider.Init");
                 initCls.getMethod("init", Context.class).invoke(null, new android.app.Application());
             } catch (Exception ignored) { }
+
+            // 与 TVBox JarLoader.getSpider 的调用序列一致：siteKey -> initApi -> init。
+            // siteKey 供爬虫读取自身站点 key；initApi 注入 SpiderApi（XBPQ 等爬虫会覆盖它并调用
+            // super.initApi，且把实例存进字段后用于日志/端口，不注入则后续 NPE）。
+            try {
+                cls.getField("siteKey").set(instance, site);
+            } catch (Throwable ignored) { }
+            try {
+                cls.getMethod("initApi", SpiderApi.class).invoke(instance, new SpiderApi());
+            } catch (NoSuchMethodException ignored) { }
 
             try {
                 cls.getMethod("init", Context.class, String.class).invoke(instance, new Context(), ext == null ? "" : ext);

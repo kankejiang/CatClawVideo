@@ -227,6 +227,43 @@ public class DexSpiderRuntime : ISpiderRuntime
                 throw new InvalidOperationException(d, t);
             }
 
+            // 与 TVBox JarLoader.getSpider 的调用序列严格一致：siteKey -> initApi -> init。
+            // ① siteKey：部分爬虫在 init 之前就读自身 key（默认 null）。
+            // ② initApi：注入宿主 SpiderApi。XBPQ（饭太硬/海阔系，订阅里占比最高的 jar 爬虫）
+            //    覆盖了 initApi 并调用 super.initApi，还把实例存进字段供后续日志调用；
+            //    不注入则其字段恒为 null，出错路径直接 NPE，且 super 调用无法完成链接。
+            //    参数类型直接从方法签名取（避免 Class.ForName 走错类加载器导致类型不一致）。
+            try
+            {
+                cls.GetField("siteKey")?.Set(instance, new Java.Lang.String(site.Key));
+            }
+            catch (Java.Lang.Throwable t)
+            {
+                Log($"siteKey 注入跳过: {className} → {Describe(t)}");
+            }
+
+            try
+            {
+                Java.Lang.Reflect.Method? initApi = null;
+                Java.Lang.Class? apiType = null;
+                foreach (var m in cls.GetMethods() ?? System.Array.Empty<Java.Lang.Reflect.Method>())
+                {
+                    if (m.Name != "initApi") continue;
+                    var ps = m.GetParameterTypes();
+                    if (ps is { Length: 1 }) { initApi = m; apiType = ps[0]; break; }
+                }
+                if (initApi != null && apiType != null)
+                {
+                    var apiInstance = (Java.Lang.Object)apiType.GetConstructor().NewInstance();
+                    initApi.Invoke(instance, apiInstance);
+                    Log($"initApi 注入完成: {className}");
+                }
+            }
+            catch (Java.Lang.Throwable t)
+            {
+                Log($"initApi 注入失败: {className} → {Describe(t)}");
+            }
+
             var holder = new SpiderHolder
             {
                 Instance = instance,
