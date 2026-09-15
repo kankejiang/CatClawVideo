@@ -207,8 +207,10 @@ static void start_dl(const char *torrentPath, const char *dir, const char *relPa
     printf("[ctrl] 建下载任务(BT) 返回 %d（9000=成功），id=%ld seq=%d\n", (int)r, id, s_seq);
     if (r != 9000 || id <= 0) { ctrl_report("error", id, (int)r, 0, 0, 0, "BT 下载任务创建失败"); return; }
 
-    // 资源开关：阶段 B 实测过，BT 任务要拿到 peer 资源得显式打开
-    if (g_eng.sdk) {
+    // 资源开关：阶段 B 实测过，BT 任务要拿到 peer 资源得显式打开。
+    // ⚠ 2026-09-16：手机端 jar 里**没有**这些调用（XLTaskHelper 只调 createBtTask/deselect/
+    //   start/gsState）。先按「和手机完全一致」跑一遍：默认不发，EXTRA=1 才发。
+    if (g_eng.sdk && getenv("EXTRA")) {
         typedef int (*fn_allow)(long long, int);
         typedef int (*fn_sw)(long long);
         fn_allow allowRes  = (fn_allow)dlsym((void *)g_eng.sdk, "XLSetTaskAllowUseResource");
@@ -246,8 +248,8 @@ static void start_dl(const char *torrentPath, const char *dir, const char *relPa
     if (g_eng.gsState)
         printf("[ctrl]   setTaskGsState(%ld,%d,2) → %d\n", id, index,
                (int)((fn_l3)g_eng.gsState)(env, thiz, (jlong)id, (jint)index, 2));
-    // ★ 边下边播的「预取模式」+ 重查索引（引擎导出的 C API，任务健康时也值得一试）
-    if (g_eng.sdk) {
+    // ★ 边下边播的「预取模式」+ 重查索引（同上：默认不发，EXTRA=1 才发）
+    if (g_eng.sdk && getenv("EXTRA")) {
         typedef int (*fn_l1x)(long long);
         fn_l1x prefetch = (fn_l1x)dlsym((void *)g_eng.sdk, "XLEnterPrefetchMode");
         fn_l1x requery  = (fn_l1x)dlsym((void *)g_eng.sdk, "XLRequeryIndex");
@@ -282,6 +284,43 @@ static void list_dir(const char *path) {
     }
     closedir(d);
     ctrl_report("ls", 0, 0, 0, 0, 0, buf);
+}
+
+// ── 调试：读文件尾部（最多 1100 字节，走 msg 通道）──
+static void cat_file(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) { printf("[ctrl] CAT %s → 打不开\n", path); ctrl_report("cat", 0, 0, 0, 0, 0, "打不开"); return; }
+    static char buf[8192];
+    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    if (n > 1100) memmove(buf, buf + (n - 1100), 1100), n = 1100;
+    buf[n] = 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)buf[i];
+        if ((c < 9) || (c > 13 && c < 32) || c > 126) buf[i] = '.';
+    }
+    printf("[ctrl] CAT %s（%d 字节，取尾部）:\n%s\n", path, (int)n, buf);
+    ctrl_report("cat", 0, 0, 0, 0, 0, buf);
+}
+
+// ── 调试：打开引擎自己的日志（XLSetReleaseLog；README 说在 init 路径下会崩，这里晚调试试）──
+static void enable_engine_log(void) {
+    if (!g_eng.sdk) return;
+    typedef jint (*fn_ison)(void);
+    fn_ison fOn = (fn_ison)dlsym((void *)g_eng.sdk, "XLIsLogTurnOn");
+    if (fOn) printf("[ctrl] XLIsLogTurnOn() = %d\n", (int)fOn());
+    typedef int (*fn_rel)(int, void *);
+    fn_rel fRel = (fn_rel)dlsym((void *)g_eng.sdk, "XLSetReleaseLog");
+    if (fRel) {
+        struct { const char *path; unsigned pathSize, maxCount, maxSize; } cfg;
+        cfg.path = "/thunder-data";
+        cfg.pathSize = (unsigned)strlen(cfg.path);
+        cfg.maxCount = 5; cfg.maxSize = 4 * 1024 * 1024;
+        printf("[ctrl] 调 XLSetReleaseLog(1, {%s})...\n", cfg.path);
+        fflush(stdout);
+        printf("[ctrl] ← XLSetReleaseLog 返回 %d\n", fRel(1, &cfg));
+        if (fOn) printf("[ctrl] XLIsLogTurnOn() 现在 = %d\n", (int)fOn());
+    }
 }
 
 /** 每次轮询：取任务状态，必要时上报播放地址 */
@@ -407,6 +446,12 @@ static void main_loop(void) {
                 }
                 if (np >= 4) start_dl(parts[0], parts[1], parts[2], atoi(parts[3]), np >= 5 ? parts[4] : "");
                 else ctrl_report("error", 0, 0, 0, 0, 0, "DL 参数不完整");
+            } else if (!strncmp(cmd, "CAT ", 4)) {
+                char *pp = cmd + 4; while (*pp == ' ') pp++;
+                char *ee = pp + strlen(pp); while (ee > pp && (ee[-1] == '\n' || ee[-1] == '\r')) *--ee = 0;
+                cat_file(pp);
+            } else if (!strncmp(cmd, "RELLOG", 6)) {
+                enable_engine_log();
             } else if (!strncmp(cmd, "LS", 2)) {
                 char *pp = cmd + 2; while (*pp == ' ') pp++;
                 char *ee = pp + strlen(pp); while (ee > pp && (ee[-1] == '\n' || ee[-1] == '\r')) *--ee = 0;

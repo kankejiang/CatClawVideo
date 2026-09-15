@@ -521,3 +521,114 @@ addMagentTask(magnet, cacheRoot, getFileName(magnet))
 
 **唯一剩下的差异：真机 Android 运行时 vs bionic 垫片** —— 数据面可能存在垫片未覆盖的依赖。
 每轮验证成本 = 编译 + 打 initrd + 起 VM ≈ 3 分钟，但方向已不明确，属盲试。
+
+---
+
+# 🎉🎉 磁力边下边播在 Windows 上完全跑通（2026-09-16 凌晨）
+
+## 结果
+
+```
+[编排] ⑤ 从代理拉前 256KB 验证
+[编排]     HTTP=206 字节=262144 前16字节=000000186674797069736f6d00000001
+[编排]     🎉 磁力边下边播已验证通过
+```
+
+拉到的字节解码：`....ftypisom....isomavc1..6.moov` = **真 MP4**。
+下载过程：`已下载=478152857/1094334176 速度=2534805`（**P2P 通道 2.5 MB/s 持续**）。
+
+**全链路（全自动、无人干预）**：
+宿主下发磁力 → guest 解析成 `.torrent` → 宿主经代理取回并用 bencode 展开文件列表 →
+下发选片命令 → guest 建 BT 任务 → P2P 下载 → 引擎给本地播放地址 → 宿主 HTTP 206 拉流。
+
+## 让 114004 / 零字节消失的两个关键改动
+
+对比上一轮（同样的磁力、同样的身份，却零字节），本轮只改了两处：
+
+### 1. 去掉「我们自作聪明加的」多余引擎调用
+
+手机端 `thunder.jar` 的 `XLTaskHelper` 只调这四步：
+
+```
+createBtTask(param) → deselectBtSubTask(未选中的) → startTask → setTaskGsState(id, index, 2)
+```
+
+**它从来不调** `XLSetTaskAllowUseResource` / `XLSwitchOriginToAllResDownload` /
+`XLEnterPrefetchMode` / `XLRequeryIndex` —— 这几个是我们早期「救火」时加的。
+现在它们被收到 `EXTRA=1` 开关后面，默认不发。**（怀疑 `XLSwitchOriginToAllResDownload`
+把任务切到「只用显式挂载的资源」模式，反而掐断了正常的资源获取。）**
+
+### 2. 磁力原样透传（补上 `&dn=`）
+
+手机侧那次成功请求的 stat 记录（`statstorage_v5.xml` 里解出来的）：
+
+```
+SuccessByBtDht=0, SuccessByBtPool=1, SuccessByUrl=0
+ProtocolQueryBtPoolHost=MSHUB
+Seconds=0.409   Status=success
+Url=magnet:?xt=urn:btih:1f8e2b67…&dn=中头奖还是要上班…        ← 带 dn
+```
+
+**磁力必须原样透传（含 `dn=`），不要自己拼一条裸 btih 的。** 站点给的播放链接本来就是完整的磁力。
+
+## 这一路修掉的东西（按发现顺序）
+
+| # | 问题 | 修法 |
+|---|---|---|
+| 1 | 引擎身份签名不对 → hub 回 400/500 | `peerid = MAC + "004V"`；`guid = IMEI + "_" + MAC`；`setImei/setMac` 挪到 init **之前**；补 `setMiUiVersion("<incremental>_alpha")`、`setLocalProperty("PhoneModel", …)`；预置 `Identify2.txt` |
+| 2 | 引擎缺服务器配置 | 预置手机的 `setting.cfg`（`phub_host` / 策略串） |
+| 3 | 网络状态没告诉引擎 | `notifyNetWorkType(9=WIFI)` / `setNotifyWifiBSSID(...)` / `setNotifyNetWorkCarrier(0)` |
+| 4 | JNI 垫片把引擎回填的文件列表丢了 | 实现 `NewObjectArray` / `SetObjectArrayElement` / `SetBooleanField` |
+| 5 | 下载目录名带空格超长 + 目录不存在 | 用 TASK 行里的种子名当目录（= 手机的做法）+ 先 `mkdir` |
+| 6 | **VOD/P2P 数据面没起来** | **`XYVodSDK_initUnixSock` 的参数是「目录」**（引擎在它下面建 `<随机>.socket`）→ 先 `mkdir /thunder-data/vod.sock`，返回值从 **-102 → 0**，引擎日志随即出现 P2P 栈（`natdetection.onethingpcs.com`、`get scid/scg`） |
+| 7 | ramfs 空间上报不可信 | `/thunder-data` 改挂真 **tmpfs**（1500m）；QEMU 内存 4096 |
+
+## 引擎自己的日志（重要发现）
+
+**引擎把内部日志打在 stdout 上**，格式 `[YYYY-MM-DD HH:MM:SS][LEVEL]msg`，
+QEMU 控制台日志里直接能抓到。关键行：
+
+```
+[DEBUG]get scid 61dd7971-…            ← 会话 id
+[DEBUG]request configure json
+[ERROR]parse json failed.             ← 配置拉取失败（见下）
+[DEBUG]dns cache set [natdetection.onethingpcs.com], ip […]
+[DEBUG]detect nat type 4              ← NAT 类型（SLIRP = 对称型）
+[WARN]listen unix, unix_path:/thunder-data/vod.sock/….socket   ← vod.sock 修好后才有
+```
+
+**配置服务器的现状（不影响可用性）**：
+`conf-darwin.xycdn.com/psdk_param?version=2.0.8.15` → 一律 **404**（带不带 Scid 都一样）；
+`sdk1xyajs.data.p2cdn.com` → **NXDOMAIN**。
+所以引擎退回「sdk default configure」——**手机也是这样，照样能播**，不用管。
+
+⚠️ `XLSetReleaseLog` / `XLIsLogTurnOn` 在本环境调用**必崩**（SIGSEGV），别调。
+
+## 复现命令
+
+```bash
+# ① 编译 harness（NDK）
+cd /d/Code/_scratch_tb/thunder-harness
+NDK="C:/Users/lvjin/AppData/Local/Android/Sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/windows-x86_64/bin"
+"$NDK/aarch64-linux-android21-clang.cmd" harness4.c -o harness4 -ldl -Wl,-export-dynamic
+
+# ② 打包 initrd（WSL；会预置 setting.cfg + Identify2.txt，挂 tmpfs）
+wsl -d Debian bash -c 'cd /mnt/d/Code/_scratch_tb/qemu-system && MAGNET= URL= MON_SECS=0 \
+  PROXY_PORT=20080 CTRL_PORT=18080 bash build_initrd.sh >/dev/null 2>&1; \
+  cp ~/armrun/initrd.xz /mnt/d/Code/_scratch_tb/qemu-system/pkg_initrd.xz'
+
+# ③ 起宿主控制端（任务行 = 站点原样给的磁力，务必带 dn=）
+python ctrlserver2.py "TASK MAGNET magnet:?xt=urn:btih:<HASH>&dn=<URL编码的片名> name.mp4" 18080 20092 &
+
+# ④ 起 VM（内存 4096，媒体口 hostfwd）
+./qw64/qemu-system-aarch64.exe -M virt -cpu max -m 4096 -smp 4 -nographic -L qw64/share \
+  -kernel pkg_kernel -initrd pkg_initrd.xz -append "console=ttyAMA0 rdinit=/init loglevel=4" \
+  -netdev user,id=n0,hostfwd=tcp:127.0.0.1:20092-:20080 -device virtio-net-pci,netdev=n0 &
+```
+
+## 写进 CatClawVideo 剩的事
+
+1. 把 QEMU 运行时打进安装包（增量约 43MB：qemu 30.9MB + 104 DLL + 内核 9.2MB + initramfs 3.5MB）
+2. MAUI 侧：起 qemu 子进程 + 内置控制端（C# `HttpListener`）+ 解析上报 + 播放器播转发地址
+3. **务必照抄本轮的调用顺序**（别加 allowUseResource / switchOriginToAllResDownload），
+   磁力原样透传（带 `dn=`）

@@ -745,8 +745,15 @@ static void run_full_chain(JNIEnv *env, void *sdk) {
             jstring sp = fSockPath(env, (jobject)thiz);
             printf("[chain]   XYVodSDK_getUnixSockPath() → %s\n", sp ? "有值" : "NULL");
         }
-        if (fSock)    printf("[chain]   XYVodSDK_initUnixSock(/thunder-data/vod.sock) → %d\n",
-                             (int)fSock(env, (jobject)thiz, (jstring)"/thunder-data/vod.sock"));
+        if (fSock) {
+            // ★ 引擎日志揭示：它把 vod.sock 当**目录**用 —— 在里面建 <随机>.socket 当本地 http 服务。
+            //   目录不存在 → "http server bind socket failed.error=2" → 返回 -102 → VOD/P2P 数据面起不来。
+            int mkr = mkdir("/thunder-data/vod.sock", 0777);
+            printf("[chain]   mkdir(/thunder-data/vod.sock) → %d（%s）\n", mkr,
+                   mkr == 0 ? "新建" : (errno == EEXIST ? "已存在" : "失败"));
+            printf("[chain]   XYVodSDK_initUnixSock(/thunder-data/vod.sock) → %d\n",
+                   (int)fSock(env, (jobject)thiz, (jstring)"/thunder-data/vod.sock"));
+        }
         if (fNetEn)   printf("[chain]   XYVodSDK_setNetworkEnable() → %d\n", (int)fNetEn(env, (jobject)thiz));
         if (fNetChg)  printf("[chain]   XYVodSDK_networkChanged() → %d\n", (int)fNetChg(env, (jobject)thiz));
         if (fEnabled) printf("[chain]   XYVodSDK_getSdkEnabled() 再查 = %d\n", (int)fEnabled(env, (jobject)thiz));
@@ -817,6 +824,19 @@ static void run_full_chain(JNIEnv *env, void *sdk) {
     // ⚠️ X* 系列 C API（XLSetReleaseLog / XLIsLogTurnOn）在 JNI 初始化路径下调用会崩
     //    （libc: Fatal signal 11 SEGV_ACCERR），不要再调；要开日志请改走 slog 配置文件。
     if (spdLim) printf("[chain]   setSpeedLimit(-1,-1) → %d\n", (int)spdLim(env, (jobject)thiz, (jlong)-1, (jlong)-1));
+
+    // ★ 目录建好之后再调一次（这次才能成功绑定本地 http 服务 —— VOD/P2P 数据面靠它）
+    {
+        typedef jint (*fn_s1b)(JNIEnv *, jobject, jstring);
+        fn_s1b fSock2 = (fn_s1b)dlsym(sdk, "Java_com_xunlei_downloadlib_XLLoader_XYVodSDK_1initUnixSock");
+        typedef jint (*fn_i0b)(JNIEnv *, jobject);
+        fn_i0b fNetEn2 = (fn_i0b)dlsym(sdk, "Java_com_xunlei_downloadlib_XLLoader_XYVodSDK_1setNetworkEnable");
+        typedef jint (*fn_i0c)(JNIEnv *, jobject);
+        fn_i0c fNetChg2 = (fn_i0c)dlsym(sdk, "Java_com_xunlei_downloadlib_XLLoader_XYVodSDK_1networkChanged");
+        if (fSock2)  printf("[chain]   [init 后] initUnixSock → %d\n", (int)fSock2(env, (jobject)thiz, (jstring)"/thunder-data/vod.sock"));
+        if (fNetEn2) printf("[chain]   [init 后] setNetworkEnable → %d\n", (int)fNetEn2(env, (jobject)thiz));
+        if (fNetChg2) printf("[chain]   [init 后] networkChanged → %d\n", (int)fNetChg2(env, (jobject)thiz));
+    }
 
     printf("[chain] ── createBtMagnetTask ──\n");
     const char *magnet = getenv("MAGNET");
