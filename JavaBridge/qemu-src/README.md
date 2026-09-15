@@ -541,11 +541,20 @@ addMagentTask(magnet, cacheRoot, getFileName(magnet))
 宿主下发磁力 → guest 解析成 `.torrent` → 宿主经代理取回并用 bencode 展开文件列表 →
 下发选片命令 → guest 建 BT 任务 → P2P 下载 → 引擎给本地播放地址 → 宿主 HTTP 206 拉流。
 
-## 让 114004 / 零字节消失的两个关键改动
+## 让零字节消失的关键改动（A/B 实证：只有一个）
 
-对比上一轮（同样的磁力、同样的身份，却零字节），本轮只改了两处：
+对比上一轮（同样的磁力、同样的身份，却零字节），本轮改了两处；随后补做 2×2 A/B 实验，**证明只有一处是必要的**：
 
-### 1. 去掉「我们自作聪明加的」多余引擎调用
+| 实验 | 4 个多余调用 | 磁力带 `dn=` | 结果 |
+|---|---|---|---|
+| mag22–25（4 次） | 发 | 否 | 0 字节 |
+| mag26 | **不发** | 是 | ✅ 完整下载 1.09 GB（P2P 2.4–2.8 MB/s，`st=2` 全程完成） |
+| mag27 | 发 | 是 | 0 字节（4 个调用确已发出，返回 9000/9000/9106/9000） |
+| mag28 | **不发** | **否** | ✅ 裸 `btih` 磁力照样 2.5 MB/s |
+
+**结论：跑通的关键 = 不发那 4 个多余调用；磁力带不带 `dn=` 无关（原推断作废）。** 现场日志：`_scratch_tb/证据-mag2*.log`。
+
+### 1. ★ 唯一关键：去掉「我们自作聪明加的」4 个多余引擎调用
 
 手机端 `thunder.jar` 的 `XLTaskHelper` 只调这四步：
 
@@ -554,22 +563,17 @@ createBtTask(param) → deselectBtSubTask(未选中的) → startTask → setTas
 ```
 
 **它从来不调** `XLSetTaskAllowUseResource` / `XLSwitchOriginToAllResDownload` /
-`XLEnterPrefetchMode` / `XLRequeryIndex` —— 这几个是我们早期「救火」时加的。
-现在它们被收到 `EXTRA=1` 开关后面，默认不发。**（怀疑 `XLSwitchOriginToAllResDownload`
-把任务切到「只用显式挂载的资源」模式，反而掐断了正常的资源获取。）**
+`XLEnterPrefetchMode` / `XLRequeryIndex` —— 这几个是早期「救火」时加的，**A/B 实锤：发了就零速度**。
+现在它们被收到 `EXTRA=1` 开关后面，默认不发。主犯疑似 `XLSwitchOriginToAllResDownload`：
+把任务切到「资源只走 origin」模式，BT 没有 origin → 四通道全 0。
 
-### 2. 磁力原样透传（补上 `&dn=`）
+### 2. 磁力原样透传（保留为实践建议；A/B 已证非必要）
 
-手机侧那次成功请求的 stat 记录（`statstorage_v5.xml` 里解出来的）：
+手机侧 stat 记录（`statstorage_v5.xml` 解出）显示站点播放链接是完整磁力（含 `dn=`）：
+`Url=magnet:?xt=urn:btih:1f8e2b67…&dn=中头奖还是要上班…`
 
-```
-SuccessByBtDht=0, SuccessByBtPool=1, SuccessByUrl=0
-ProtocolQueryBtPoolHost=MSHUB
-Seconds=0.409   Status=success
-Url=magnet:?xt=urn:btih:1f8e2b67…&dn=中头奖还是要上班…        ← 带 dn
-```
-
-**磁力必须原样透传（含 `dn=`），不要自己拼一条裸 btih 的。** 站点给的播放链接本来就是完整的磁力。
+当时推断「必须照抄、不能自己拼裸 btih」；**mag28 实验（裸 btih、其余相同）照样跑满速，推断作废。**
+仍建议原样透传（零成本、保留显示名），但它**不是**跑通前提。
 
 ## 这一路修掉的东西（按发现顺序）
 
@@ -617,7 +621,7 @@ wsl -d Debian bash -c 'cd /mnt/d/Code/_scratch_tb/qemu-system && MAGNET= URL= MO
   PROXY_PORT=20080 CTRL_PORT=18080 bash build_initrd.sh >/dev/null 2>&1; \
   cp ~/armrun/initrd.xz /mnt/d/Code/_scratch_tb/qemu-system/pkg_initrd.xz'
 
-# ③ 起宿主控制端（任务行 = 站点原样给的磁力，务必带 dn=）
+# ③ 起宿主控制端（任务行 = 站点原样给的磁力；dn= 可选，A/B 已证无关）
 python ctrlserver2.py "TASK MAGNET magnet:?xt=urn:btih:<HASH>&dn=<URL编码的片名> name.mp4" 18080 20092 &
 
 # ④ 起 VM（内存 4096，媒体口 hostfwd）
@@ -630,5 +634,5 @@ python ctrlserver2.py "TASK MAGNET magnet:?xt=urn:btih:<HASH>&dn=<URL编码的�
 
 1. 把 QEMU 运行时打进安装包（增量约 43MB：qemu 30.9MB + 104 DLL + 内核 9.2MB + initramfs 3.5MB）
 2. MAUI 侧：起 qemu 子进程 + 内置控制端（C# `HttpListener`）+ 解析上报 + 播放器播转发地址
-3. **务必照抄本轮的调用顺序**（别加 allowUseResource / switchOriginToAllResDownload），
-   磁力原样透传（带 `dn=`）
+3. **务必照抄本轮的调用顺序**：别调 allowUseResource / switchOriginToAllResDownload /
+   enterPrefetchMode / requeryIndex（A/B 实锤：发了就 0 字节）；磁力原样透传即可（`dn=` 可有可无）

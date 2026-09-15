@@ -207,9 +207,9 @@ static void start_dl(const char *torrentPath, const char *dir, const char *relPa
     printf("[ctrl] 建下载任务(BT) 返回 %d（9000=成功），id=%ld seq=%d\n", (int)r, id, s_seq);
     if (r != 9000 || id <= 0) { ctrl_report("error", id, (int)r, 0, 0, 0, "BT 下载任务创建失败"); return; }
 
-    // 资源开关：阶段 B 实测过，BT 任务要拿到 peer 资源得显式打开。
-    // ⚠ 2026-09-16：手机端 jar 里**没有**这些调用（XLTaskHelper 只调 createBtTask/deselect/
-    //   start/gsState）。先按「和手机完全一致」跑一遍：默认不发，EXTRA=1 才发。
+    // 资源开关：早期「救火」时加的。⚠ 2026-09-16 A/B 实锤：手机端 jar 里**没有**这些调用
+    //   （XLTaskHelper 只调 createBtTask/deselect/start/gsState），**发了就零速度**（四通道全 0，
+    //   见 mag27），不发则 P2P 满速（mag26/mag28）。默认不发，EXTRA=1 才发（仅实验用）。
     if (g_eng.sdk && getenv("EXTRA")) {
         typedef int (*fn_allow)(long long, int);
         typedef int (*fn_sw)(long long);
@@ -248,7 +248,7 @@ static void start_dl(const char *torrentPath, const char *dir, const char *relPa
     if (g_eng.gsState)
         printf("[ctrl]   setTaskGsState(%ld,%d,2) → %d\n", id, index,
                (int)((fn_l3)g_eng.gsState)(env, thiz, (jlong)id, (jint)index, 2));
-    // ★ 边下边播的「预取模式」+ 重查索引（同上：默认不发，EXTRA=1 才发）
+    // ★ 边下边播的「预取模式」+ 重查索引（同上：A/B 实锤发了有害；默认不发，EXTRA=1 才发）
     if (g_eng.sdk && getenv("EXTRA")) {
         typedef int (*fn_l1x)(long long);
         fn_l1x prefetch = (fn_l1x)dlsym((void *)g_eng.sdk, "XLEnterPrefetchMode");
