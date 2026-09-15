@@ -655,9 +655,8 @@ static void run_full_chain(JNIEnv *env, void *sdk) {
     const char *model  = getenv("PHONEMODEL") ? getenv("PHONEMODEL") : "M2011K2C";
     char peerid[64], guid[64];
     snprintf(peerid, sizeof peerid, "%s004V", mac_s);
-    fill_random_hex(guid, 14, "0123456789abcdef");
-    guid[14] = '_';
-    fill_random_hex(guid + 15, 12, "0123456789abcdef");
+    // ★ guid 同样不能瞎编：XLUtil.generateGuid 在 GUID_TYPE.ALL 下就是 = mIMEI + "_" + mMAC
+    snprintf(guid, sizeof guid, "%s_%s", imei_s, mac_s);
 
     // ★ 设备指纹：必须在 **init 之前**设（对齐 TVBox 的 Thunder.java：
     //   XLUtil.mIMEI/mMAC + isGetIMEI/isGetMAC = true 都写在 XLTaskHelper.init 之前）。

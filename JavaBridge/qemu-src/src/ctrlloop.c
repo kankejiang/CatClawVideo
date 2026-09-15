@@ -26,6 +26,9 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 #include <sys/select.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 // 引擎函数指针表 EngineFns 已在 harness4.c 前半部分声明
 
@@ -187,6 +190,13 @@ static void start_dl(const char *torrentPath, const char *dir, const char *relPa
         }
     }
 
+    // ★ 先把下载目录建出来 —— 迅雷不一定会自己 mkdir；目录不存在时任务会"跑着但零字节"
+    mkdir(dir, 0755);
+    {
+        struct stat sb2;
+        printf("[ctrl]   下载目录 %s → %s\n", dir, stat(dir, &sb2) == 0 ? "已存在" : "创建失败");
+    }
+
     static int s_seq = 0;
     typedef jint (*fn_bttask)(JNIEnv *, jobject, jstring, jstring, jint, jint, jint, jobject);
     JObj *tid = new_obj("com/xunlei/downloadlib/parameter/GetTaskId");
@@ -255,6 +265,23 @@ static void start_dl(const char *torrentPath, const char *dir, const char *relPa
     g_play_reported = 0; g_torrent_reported = 0;
     printf("[ctrl] 下载目标 = %s\n", g_dl_target);
     ctrl_report("started", id, 0, 0, 0, 0, relPath);
+}
+
+// ── 调试：列目录（看引擎到底有没有落文件）──
+static void list_dir(const char *path) {
+    DIR *d = opendir(path);
+    if (!d) { printf("[ctrl] LS %s → 打不开\n", path); ctrl_report("ls", 0, 0, 0, 0, 0, "打不开"); return; }
+    struct dirent *e;
+    static char buf[1100];
+    buf[0] = 0;
+    printf("[ctrl] LS %s:\n", path);
+    while ((e = readdir(d))) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        printf("[ctrl]   %s\n", e->d_name);
+        if (strlen(buf) < sizeof buf - 160) { strncat(buf, e->d_name, sizeof buf - strlen(buf) - 1); strncat(buf, " | ", sizeof buf - strlen(buf) - 1); }
+    }
+    closedir(d);
+    ctrl_report("ls", 0, 0, 0, 0, 0, buf);
 }
 
 /** 每次轮询：取任务状态，必要时上报播放地址 */
@@ -380,6 +407,10 @@ static void main_loop(void) {
                 }
                 if (np >= 4) start_dl(parts[0], parts[1], parts[2], atoi(parts[3]), np >= 5 ? parts[4] : "");
                 else ctrl_report("error", 0, 0, 0, 0, 0, "DL 参数不完整");
+            } else if (!strncmp(cmd, "LS", 2)) {
+                char *pp = cmd + 2; while (*pp == ' ') pp++;
+                char *ee = pp + strlen(pp); while (ee > pp && (ee[-1] == '\n' || ee[-1] == '\r')) *--ee = 0;
+                list_dir(pp[0] ? pp : EMU_SAVE_PATH);
             } else if (!strncmp(cmd, "STOP", 4)) {
                 if (g_task_id > 0 && g_eng.startTask) { g_task_id = 0; ctrl_report("stopped", 0, 0, 0, 0, 0, ""); }
             } else if (!strncmp(cmd, "PING", 4)) {
