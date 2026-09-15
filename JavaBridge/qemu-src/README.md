@@ -630,9 +630,44 @@ python ctrlserver2.py "TASK MAGNET magnet:?xt=urn:btih:<HASH>&dn=<URL编码的�
   -netdev user,id=n0,hostfwd=tcp:127.0.0.1:20092-:20080 -device virtio-net-pci,netdev=n0 &
 ```
 
-## 写进 CatClawVideo 剩的事
+## C# 集成（Windows App，2026-09-16 已落地）
 
-1. 把 QEMU 运行时打进安装包（增量约 43MB：qemu 30.9MB + 104 DLL + 内核 9.2MB + initramfs 3.5MB）
-2. MAUI 侧：起 qemu 子进程 + 内置控制端（C# `HttpListener`）+ 解析上报 + 播放器播转发地址
-3. **务必照抄本轮的调用顺序**：别调 allowUseResource / switchOriginToAllResDownload /
-   enterPrefetchMode / requeryIndex（A/B 实锤：发了就 0 字节）；磁力原样透传即可（`dn=` 可有可无）
+宿主编排从 `ctrlserver2.py` **逐行移植为 C#**，随应用分发，运行期不再需要 Python/Git-Bash：
+
+| 部件 | 位置 |
+|---|---|
+| 引擎（`IPreferredMagnetEngine` 实现） | `CatClawVideo.Core/Services/QemuThunder/QemuThunderEngine.cs` |
+| 控制端（≡ ctrlserver2.py 的 HTTP 服务） | 同目录 `QemuControlServer.cs`（裸 `TcpListener`，避 http.sys 的 URL ACL） |
+| QEMU 进程管理 | 同目录 `QemuHostRuntime.cs`（Job Object 防孤儿进程、stdout 走日志并过滤 jni 噪声） |
+| 种子解析（bencode） | 同目录 `Bencode.cs` |
+| 引擎链（QEMU → 网盘兜底 → 内置 BT） | `CatClawVideo.Core/Providers/ChainedMagnetEngine.cs` |
+| 运行时（142MB；图形栈已裁） | `CatClawVideo.Maui/ThunderRuntime/`（csproj Windows 条件分发，溯源见 PROVENANCE.md） |
+| 注册 | `MauiProgram.cs` 的 Windows 分支 |
+
+**验收（2026-09-16 05:05）**：C# 宿主全链路 ≡ 实验装置，两轮全通过
+（33.7s / 21s：QEMU 启动 → 磁力 → 文件列表 → DL → 播放地址 → HTTP 206 + 真 MP4 头 262144 字节）。
+
+**控制台回归测试**（改宿主后必跑）：
+
+```bash
+cd CatClawVideo/JavaBridge/qemu-src/hosttest
+dotnet run -c Release -- "<runtimeDir>" "magnet:?xt=urn:btih:<HASH>" [preferName]
+# runtimeDir 例：D:\Code\_scratch_tb\qemu-runtime（= ThunderRuntime 的源目录）
+# 退出码 0 = 全链路通过
+```
+
+**行为细节**（对齐 Python 版，另有增强）：
+
+- 控制口 `18080` 烧死在 initrd（改不了）；媒体口从 `20092` 起、被占自动向后探测空闲端口
+- VM **懒启动**（首次任务时才起）+ 常驻复用 + **空闲 15 分钟自停**；单 VM 单会话（新任务会断开旧流）
+- 拉流验证：≥64KB（HTTP 200/206）判成功；60s 内 0 字节判失败 → 链式回落（网盘引擎 → 内置 BT）
+- 阶段一取种子优先用 guest 的 play URL 路径；拿不到时用「原路径合成双重编码」兜底
+- 运行时长日志：`%LOCALAPPDATA%\CatClawVideo\qemu-console.log`（含被过滤的 jni 全量输出）
+
+**开发提醒**（照抄调用顺序，别加料）：
+
+1. 磁力任务只走四步：`createBtTask → deselect → start → setTaskGsState`；**绝不调**
+   `XLSetTaskAllowUseResource` / `XLSwitchOriginToAllResDownload` / `XLEnterPrefetchMode` /
+   `XLRequeryIndex`（A/B 实锤：发了就零速度）
+2. `XLSetReleaseLog` / `XLIsLogTurnOn` 在本环境**必崩**（SIGSEGV），别调
+3. 磁力原样透传即可（`dn=` 可有可无）；下载目录名用「TASK 行给的名字去扩展名」，先 mkdir

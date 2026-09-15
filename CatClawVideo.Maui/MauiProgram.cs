@@ -86,11 +86,17 @@ public static class MauiProgram
         var btCacheRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CatClawVideo", "btcache");
         var btService = new CatClawVideo.Core.Services.BtStreamService(btCacheRoot, BtFileLog.Write, trackerSource, btSettings);
 
-        // PC 原生「迅雷磁力播放」：走迅雷网盘官方 HTTP API（云添加 → 迅雷服务器下载 → 取直链）。
-        // 为什么不是迅雷下载 SDK：那套安卓 SDK 的引导域名被迅雷在权威 DNS 上沉成 127.0.0.2，
-        // 二进制内也没有可用地址 ⟹ PC 上跑不起来。网盘 API 是官方且 PC 可达的，
-        // 播放全程直连迅雷 CDN，不经任何中转。未登录时该引擎判未就绪 → 自动回落内置 BT。
-        CatClawVideo.Core.Interfaces.MagnetEngines.Thunder = new CatClawVideo.Core.Providers.ThunderPanEngine();
+        // PC「迅雷磁力播放」双引擎（链式：前者失败才试后者，全部失败回落内置 BT）：
+        //  ① QEMU 本地迅雷引擎（首选）：ARM64 Android 迅雷 SDK 跑在 QEMU 里，走 P2SP 私有网络，
+        //     公共磁力也能满速边下边播；无需登录。运行时随包分发在 ThunderRuntime/
+        //     （缺失/启动失败判未就绪、自动跳过）。链路与移植说明：JavaBridge/qemu-src/README.md。
+        //  ② 迅雷网盘 API（兜底）：云添加 → 迅雷服务器下载 → 取直链；需登录，未登录判未就绪。
+        // 为什么不是直接用迅雷下载 SDK：那套安卓 SDK 在 PC 上跑不起来（引导域名被沉 127.0.0.2），
+        // 所以 ① 用 QEMU 承载原生跑；② 走官方网盘 API。
+        var qemuThunder = new CatClawVideo.Core.Services.QemuThunder.QemuThunderEngine(
+            Path.Combine(AppContext.BaseDirectory, "ThunderRuntime"), BtFileLog.Write);
+        CatClawVideo.Core.Interfaces.MagnetEngines.Thunder = new CatClawVideo.Core.Providers.ChainedMagnetEngine(
+            qemuThunder, new CatClawVideo.Core.Providers.ThunderPanEngine());
 #endif
         services.AddSingleton(btSettings);
         services.AddSingleton(trackerSource);

@@ -217,4 +217,14 @@
 		</ItemGroup>
 	</Target>
 
+	<!-- QEMU 迅雷引擎运行时（Windows 专用）：随应用分发到 ThunderRuntime/。
+	     引擎从 AppContext.BaseDirectory\ThunderRuntime 加载（见 Core/Services/QemuThunder）。
+	     目录缺失时构建不报错，引擎判未就绪、磁力自动回落内置 BT。 -->
+	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">
+		<None Remove="ThunderRuntime\**" />
+		<Content Include="ThunderRuntime\**">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</Content>
+	</ItemGroup>
+
 </Project>
