@@ -47,6 +47,7 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
     private QemuControlServer? _server;
     private int _mediaPort = PreferredMediaPort;
     private Session? _session;
+    private QemuStreamProxy? _streamProxy;
     private DateTime _lastActiveUtc = DateTime.UtcNow;
     private bool _disposed;
 
@@ -101,21 +102,30 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
             var pick = SelectFile(s.Files, preferName);
             var hash = ResolveInfoHashHex(magnet);
 
-            // 会话已在播同一切片（播放器重试/续连）：先试直接复用（代理未被重武装时仍有效）
+            // 会话已在播同一切片（播放器重试/续连）：直接复用（缓存代理还活着时最省事）
             if (s.Played && s.PlayUrlPath.Length > 0 && s.PickIndex == pick.Index)
             {
+                if (_streamProxy is not null)
+                {
+                    Log($"复用已在播会话（走缓存代理）：#{pick.Index} {pick.Name}");
+                    _lastActiveUtc = DateTime.UtcNow;
+                    return new MagnetPlayback(hash, pick.Index, pick.Size, Path.GetFileName(pick.Name), _streamProxy.Url);
+                }
                 var reuse = await VerifyOnceAsync(s.PlayUrlPath, ct).ConfigureAwait(false);
                 if (reuse > 0)
                 {
                     Log($"复用已在播会话：#{pick.Index} {pick.Name}");
                     _lastActiveUtc = DateTime.UtcNow;
-                    return new MagnetPlayback(hash, pick.Index, pick.Size, Path.GetFileName(pick.Name), MediaUrl(s.PlayUrlPath));
+                    StartStreamProxy(s);
+                    return new MagnetPlayback(hash, pick.Index, pick.Size, Path.GetFileName(pick.Name),
+                        _streamProxy?.Url ?? MediaUrl(s.PlayUrlPath));
                 }
                 Log("旧播放地址已失效，重新下发 DL");
             }
 
             s.PickIndex = pick.Index; s.PickName = pick.Name; s.PickSize = pick.Size;
             s.DlSent = true; s.Played = false; s.PlayUrlPath = ""; s.LastError = null;
+            LastDirectMediaUrl = null;
 
             var others = string.Join(',', s.Files.Where(f => f.Index != pick.Index).Take(100).Select(f => f.Index));
             Log($"选片 #{pick.Index}（{pick.Size / 1048576.0:F1}MB，共 {s.Files.Count} 项）→ 下发 DL");
@@ -140,11 +150,17 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
             }
 
             _lastActiveUtc = DateTime.UtcNow;
-            return new MagnetPlayback(hash, pick.Index, pick.Size, Path.GetFileName(pick.Name), MediaUrl(s.PlayUrlPath));
+            LastDirectMediaUrl = MediaUrl(s.PlayUrlPath);
+            StartStreamProxy(s);
+            return new MagnetPlayback(hash, pick.Index, pick.Size, Path.GetFileName(pick.Name),
+                _streamProxy?.Url ?? MediaUrl(s.PlayUrlPath));
         }
         catch (Exception ex) { Log($"TryOpen 异常：{ex.GetType().Name}: {ex.Message}"); return null; }
         finally { _gate.Release(); }
     }
+
+    /// <summary>最近一次会话的**直连媒体口** URL（调试/基准用；播放器走的是缓存代理地址）。</summary>
+    public string? LastDirectMediaUrl { get; private set; }
 
     /// <summary>停止当前任务（保留 VM；空闲计时器过会儿会收掉它）。</summary>
     public void Stop()
@@ -152,6 +168,30 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
         var s = _session;
         _session = null;
         if (s is not null) s.Cancelled = true;   // 打断进行中的等待（否则会挂满超时）
+        var p = _streamProxy;
+        _streamProxy = null;
+        p?.Dispose();                            // 停止播放即关闭缓存代理（播放器地址随之失效）
+    }
+
+    /// <summary>为当前会话（重新）建立读前缓存代理；播放器地址从媒体口换成代理口。
+    /// 代理起不来时静默回落直连媒体口（功能不受影响，只是回到旧行为）。</summary>
+    private void StartStreamProxy(Session s)
+    {
+        var old = _streamProxy;
+        _streamProxy = null;
+        old?.Dispose();
+        try
+        {
+            var proxy = new QemuStreamProxy(_mediaPort, s.PlayUrlPath, s.PickSize,
+                QemuStreamProxy.ContentTypeFor(s.PickName), Log);
+            proxy.Start();
+            _streamProxy = proxy;
+            Log($"播放器地址改走缓存代理：{proxy.Url}");
+        }
+        catch (Exception ex)
+        {
+            Log($"缓存代理启动失败（回落直连媒体口）：{ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     // ═══════════ 编排（逐行对齐 ctrlserver2.py） ═══════════
@@ -205,6 +245,12 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
             _lastActiveUtc = DateTime.UtcNow;
             return cached;
         }
+
+        // 换磁力 = 引擎会被重武装到别的文件，旧缓存代理必须立即停
+        //（否则它会把「新文件」的字节当作旧文件送给播放器——数据就错了）
+        var staleProxy = _streamProxy;
+        _streamProxy = null;
+        staleProxy?.Dispose();
 
         var s = new Session { Magnet = magnet, Name = BuildTaskName(preferName, magnet) };
         s.Dir = "/thunder-data/" + StripExtension(s.Name);
@@ -499,6 +545,7 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
         if (_disposed) return;
         _disposed = true;
         try { _idleTimer.Dispose(); } catch { }
+        try { _streamProxy?.Dispose(); } catch { }
         try { _runtime?.Dispose(); } catch { }
         try { _server?.Dispose(); } catch { }
         try { _http.Dispose(); } catch { }
