@@ -29,6 +29,13 @@
 // ↓↓↓ DNS 拦截层：bionic 在无 netd 环境里 getaddrinfo 必失败，必须自己实现 ↓↓↓
 #include "dnshook.c"
 
+// ═══════════ 控制通道用的引擎函数指针表（实现在 ctrlloop.c）═══════════
+typedef struct {
+    void *env, *thiz;
+    void *createMagnet, *createP2sp, *startTask, *gsState, *getTaskInfo, *localUrl;
+} EngineFns;
+void ctrl_register_engine(EngineFns *e);
+
 // ═══════════ 极简 Java 对象模型 ═══════════
 // 我们不需要真 JVM：参数对象只是「按字段名存值」的容器，
 // jclass 用对象自身身份表示，jfieldID 用 {name,sig} 描述。
@@ -872,8 +879,27 @@ static void run_full_chain(JNIEnv *env, void *sdk) {
     //    后续任何调用（包括代理为播放器重新 getLocalUrl）都会返回 9102 = XL_SDK_NOT_INIT。
     //    引擎是要长期运行的，产品里也一直不调它。
     if (unInit && getenv("CALL_UNINIT") && atoi(getenv("CALL_UNINIT"))) unInit(env, (jobject)thiz);
+    // 把引擎函数指针交给控制通道（运行时下发任务用）
+    {
+        EngineFns e; memset(&e, 0, sizeof e);
+        e.env = (void *)env;  e.thiz = (void *)thiz;
+        e.createMagnet = (void *)createMagnet;
+        e.createP2sp   = (void *)createP2spTask;
+        e.startTask    = (void *)startTask;
+        e.gsState      = (void *)gsState;
+        e.getTaskInfo  = (void *)getTaskInfo;
+        e.localUrl     = (void *)localUrl;
+        ctrl_register_engine(&e);
+        // 代理的"重新武装"要用到这三个（先前只在阶段 C 里设，空任务链下就漏了）
+        g_env_any = (void *)env;  g_thiz_any = (void *)thiz;
+        g_localurl_fn = (void *)localUrl;
+        if (getenv("ABS_PATH")) snprintf(g_engine_abs, sizeof g_engine_abs, "%s", getenv("ABS_PATH"));
+    }
     printf("[chain] 结束，JNI 总调用 %d 次\n", g_jni_calls);
 }
+
+// ↓↓↓ 控制通道（宿主 App ⇄ guest）：用 qemu 用户网络的 10.0.2.2 回连宿主 ↓↓↓
+#include "ctrlloop.c"
 
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);   // 关缓冲：崩溃前也要能看到日志
@@ -995,27 +1021,22 @@ int main(void) {
     // ⚠️ 不要在 fork 出来的子进程里跑代理：bionic 下 fork 多线程进程（引擎已起多个线程）
     //    后，子进程很容易在 libc 的锁上卡死（实测：连接能到，但永远没有响应）。
     //    改成在主线程里顺序处理连接 —— 播放器通常 1~2 条连接，够用。
-    if (g_engine_port > 0 && getenv("PROXY_PORT")) {
+    if (getenv("CTRL_PORT")) g_ctrl_port = atoi(getenv("CTRL_PORT"));
+    // 无条件起代理：目标端口每次连接时由 do_rearm() 动态给出（引擎端口会变）
+    if (getenv("PROXY_PORT") && atoi(getenv("PROXY_PORT")) > 0) {
         int lp = atoi(getenv("PROXY_PORT"));
-        // 用 pthread 跑 accept 循环（fork 会卡、顺序版会挡住自测）
         pthread_t th;
         if (pthread_create(&th, NULL, proxy_entry, (void *)(intptr_t)lp) == 0) {
             sleep(1);
-            printf("[proxy] 主线程握手循环已启动\n");
-            fflush(stdout);
-            for (;;) {
-                if (g_rearm_req) {
-                    g_rearm_req = 0;
-                    g_rearm_port = do_rearm();          // ★ 在主线程里调，才不会是 9102
-                    g_rearm_done = 1;
-                }
-                usleep(20000);
-            }
+            printf("[proxy] 已启动（端口 %d → 引擎 %d）\n", lp, g_engine_port);
         } else {
-            printf("[proxy] pthread 起不来，退回顺序版\n");
-            proxy_loop(lp, g_engine_port);
+            printf("[proxy] pthread 起不来\n");
         }
     }
+    // 主事件循环：控制通道轮询 + 代理的"重新武装"握手（引擎调用必须在本线程）
+    printf("[main] 进入事件循环（控制端口 %d）\n", g_ctrl_port);
+    fflush(stdout);
+    main_loop();
     for (;;) sleep(3600);
     return 0;
 }
