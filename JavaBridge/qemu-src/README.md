@@ -152,3 +152,56 @@ MAGNET='magnet:?xt=urn:btih:...' FILENAME=xxx.mkv bash build/boot1.sh 300 \
   -netdev user,id=n0 -device virtio-net-pci,netdev=n0
 ```
 抓包文件在 `/tmp/guest.pcap`（`-object filter-dump` 导出），可用 `_scratch_tb/pcap_dump.py` 解析。
+
+
+---
+
+# 更新：直链 + 边下边播全链路打通（2026-09-15 深夜）
+
+## 实测结果（用 https://releases.ubuntu.com/26.04.1/ubuntu-26.04.1-desktop-amd64.iso）
+
+| 能力 | 实测 |
+|---|---|
+| 直链下载 | **7 ~ 17 MB/s**，其中 **P2S（迅雷服务端加速）占 6 ~ 17 MB/s** |
+| CID/GCID | 引擎正确算出（mCid / mGcid 有值） |
+| 本地播放服务 | `getLocalUrl` 返回 **9000 + 可用 URL**，`HTTP/1.1 206 Partial Content`（**支持 Range，可拖动进度**） |
+| 实拉字节 | guest 内拉回 1024 字节，hex `000000206674797069736F6D…` = **MP4 的 `ftypisom` 头** ✅ |
+
+## 五条必须记住的结论
+
+1. **`getLocalUrl` 的参数是「绝对路径」，不是文件名。**
+   （TVBox 官方写法：`getLoclUrl(cache + File.separator + mFileName)`）
+   传裸文件名 → `9404`；传绝对路径 → `9000`。
+
+2. **引擎的本地播放服务只监听 `127.0.0.1:<随机端口>`**（每次不同，如 33631 / 37087）。
+   宿主侧 `hostfwd` 够不到（SLIRP 连的是 guest 的 10.0.2.15）。
+   ⇒ **必须加一层 guest 内代理**：`0.0.0.0:<固定端口> → 127.0.0.1:<引擎端口>`，
+   已实现 `proxy_loop` / `proxy_conn`（fork + select 双向转发），
+   配静态 `hostfwd=tcp:127.0.0.1:20080-:20080` 即可从宿主拉流。
+
+3. **非媒体文件拿不到播放地址**：`SHA256SUMS`（无扩展名）即使下载完成 `st=2`，
+   `getLocalUrl` 仍返回 `9402`；换成 `.mp4` 立刻 `9000`。
+
+4. **引擎返回的 URL 路径是「双重 URL 编码」的绝对路径**：
+   `http://127.0.0.1:33631/%252Fthunder-data%252Fsample-5s.mp4`（`%252F` = 编码后的 `%2F`）。
+
+5. **init 参数**（对照 TVBox 官方 `Thunder.java`）：
+   - `appVersion = "21.01.07.800002"`（先前传 "1.0.0" 会被服务端当成不认识的旧客户端）
+   - 需要设备指纹：`setImei` / `setMac`（TVBox 用随机值 + `XLUtil.isGetIMEI/isGetMAC = true`）
+
+## 直链任务的权威调用（从 `XLDownloadManager.createP2spTask` 字节码反出）
+
+```java
+createP2spTask(mUrl, mRefUrl, mCookie, mUser, mPass, mFilePath, mFileName, mCreateMode, mSeqId, GetTaskId)
+// 之后照旧 startTask → setTaskGsState(id, 0, 2) → 轮询 getTaskInfo
+```
+
+## 磁力路径的真相
+
+`114004` 在 **TVBox 自己的 `errorInfo()` 映射**里 = **"版权限制：无权下载"**
+（不是按引擎内部枚举名理解的 "QUERY_BT_HUB_FAILED"）。
+
+同一份内容对照：**直链 7~17MB/s 成功，磁力 `st=3 err=114004` 失败**
+⇒ 迅雷对 **BT 通道**有策略限制，对**直链通道**正常加速。**不是本机环境的问题。**
+
+待验证：用一条**真实的国内磁力**确认 114004 是"内容相关"还是"BT 通道整体受限"。
