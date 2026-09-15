@@ -260,3 +260,51 @@ qw64\qemu-system-aarch64.exe -M virt -cpu max -m 2048 -smp 4 -nographic -L qw64/
 | 内核 `vmlinuz-virt` | 9.2 MB | ~9 MB |
 | initramfs（busybox+bionic+引擎+harness） | 13 MB | 3.5 MB |
 | **安装包增量** | | **≈ 43 MB** |
+
+---
+
+# 产品化第一步：运行时控制通道打通（2026-09-15 深夜）
+
+## 关键突破：任务不再是「编译期烧进 initramfs」，而是**运行时由宿主下发**
+
+```
+宿主控制端 (127.0.0.1:18080)                guest harness
+   │  GET /task   ←──────────────────────   每秒轮询（走 qemu 用户网络的 10.0.2.2）
+   │  ──────────→   TASK URL <url> <name>
+   │                                         → 迅雷引擎建任务 / 启动 / 监控
+   │  GET /report?ev=play&...   ←──────────  状态、播放地址回帖
+   │
+   └─ 播放器播 http://127.0.0.1:<hostfwd>/<path> → hostfwd → guest 代理 → 引擎
+```
+
+### 实测（Windows 原生，全程无人干预）
+
+```
+宿主下发: TASK URL https://download.samplelib.com/mp4/sample-5s.mp4 sample-5s.mp4
+guest:    [ctrl] ✅ 播放地址 = http://127.0.0.1:39293/%252Fthunder-data%252Fsample-5s.mp4
+宿主收报: [宿主] ↑ play id=1002 st=2 err=0 2848208/2848208 /%252Fthunder-data%252Fsample-5s.mp4
+宿主拉流: 无Range → HTTP=200 2848208 字节； 带Range → HTTP=206 262144 字节
+          前 16 字节 = 00 00 00 20 66 74 79 70 69 73 6f 6d …（MP4 的 ftypisom 头）
+```
+
+### 协议（纯文本，详见 `src/ctrlloop.c` 头部注释）
+
+- 宿主 → guest（`GET /task` 的响应体）
+  `NONE` / `PING` / `TASK MAGNET <uri> <name>` / `TASK URL <url> <name>` / `STOP`
+- guest → 宿主（`GET /report?...`）
+  `ready` / `started` / `status` / `play` / `error` / `pong`
+
+### 又踩到的三个点
+
+1. **代理要无条件启动**：空任务链下 `g_engine_port` 是 0，
+   先前「端口 > 0 才起代理」导致代理根本没起。
+   端口应当**每次连接时由 rearm 动态给出**。
+2. **JNI 上下文（env / thiz / localUrl）要在链尾无条件设置**，不能只在某个阶段里设。
+3. **控制端任务只发一次**：测试脚本每轮要重开控制端，否则 guest 拿到的是 `NONE`。
+
+### 写进 CatClawVideo（Windows 端）还差的事
+
+1. 把 `qw64/`（qemu + DLL）、`pkg_kernel`、`pkg_initrd.xz` 打进安装包（增量 ≈43 MB）
+2. MAUI 侧：起 qemu 子进程 + 内置控制端（把 `ctrlserver.py` 的逻辑用 C# 写，
+   或直接起一个 HttpListener）+ 解析上报 + 播放器播 `http://127.0.0.1:<portfwd>/<path>`
+3. 磁力支线：`114004`（TVBox 官方映射 =「版权限制：无权下载」）**仍需一条国内磁力来定性**
