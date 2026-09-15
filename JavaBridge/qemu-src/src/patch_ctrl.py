@@ -11,11 +11,24 @@ def rep(old, new, tag):
         print('!! 锚点未找到:', tag); return False
     s = s.replace(old, new, 1); print('   ok', tag); return True
 
-# 1) include（放在 main 之前，此时 JObj/代理/全局都已定义）
-rep('int main(void) {',
-    '// ↓↓↓ 控制通道（宿主 App ⇄ guest）：用 qemu 用户网络的 10.0.2.2 回连宿主 ↓↓↓\n'
-    '#include "ctrlloop.c"\n\n'
-    'int main(void) {', 'include ctrlloop.c')
+# 1) 引擎函数指针表（ctrlloop.c 用它把「宿主下发的运行时任务」转成引擎调用）
+if 'typedef struct {\n    void *env, *thiz;' not in s:
+    rep('int main(void) {',
+        '// ↓↓↓ 控制通道：宿主 App ⇄ guest（qemu 用户网络的 10.0.2.2 回连宿主）↓↓↓\n'
+        'typedef struct {\n'
+        '    void *env, *thiz;\n'
+        '    void *createMagnet, *createP2sp, *startTask, *gsState, *getTaskInfo, *localUrl;\n'
+        '    // ↓ 磁力第二阶段（宿主展开文件列表后指定下载哪个文件）用\n'
+        '    void *sdk, *createBtTask, *selectBtSubTask;\n'
+        '} EngineFns;\n'
+        'void ctrl_register_engine(EngineFns *e);\n'
+        '#include "ctrlloop.c"\n\n'
+        'int main(void) {', 'include ctrlloop.c + EngineFns')
+else:
+    rep('int main(void) {',
+        '// ↓↓↓ 控制通道（宿主 App ⇄ guest）：用 qemu 用户网络的 10.0.2.2 回连宿主 ↓↓↓\n'
+        '#include "ctrlloop.c"\n\n'
+        'int main(void) {', 'include ctrlloop.c')
 
 # 2) 在调用链里注册引擎函数指针
 rep('''    if (unInit && getenv("CALL_UNINIT") && atoi(getenv("CALL_UNINIT"))) unInit(env, (jobject)thiz);''',
@@ -30,6 +43,9 @@ rep('''    if (unInit && getenv("CALL_UNINIT") && atoi(getenv("CALL_UNINIT"))) u
         e.gsState      = (void *)gsState;
         e.getTaskInfo  = (void *)getTaskInfo;
         e.localUrl     = (void *)localUrl;
+        e.sdk          = (void *)sdk;
+        e.createBtTask = (void *)createBtTask;
+        e.selectBtSubTask = (void *)dlsym(sdk, "Java_com_xunlei_downloadlib_XLLoader_selectBtSubTask");
         ctrl_register_engine(&e);
     }''', '注册引擎函数')
 

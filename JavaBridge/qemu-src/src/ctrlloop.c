@@ -36,6 +36,11 @@ static char g_task_name[256] = "";
 static int g_task_is_magnet = 0;
 static int g_last_st = -1, g_last_err = -1;
 static long g_last_done = -1, g_last_total = -1;
+// 磁力两阶段：1 = 等种子落盘（宿主去展开文件列表）；2 = 已按宿主指定文件起真下载
+static int g_mag_stage = 0;
+static char g_dl_target[600] = "";
+static char g_mag_torrent[600] = "";   // 磁力阶段一落盘的 .torrent 绝对路径（DL 用它，宿主不必回传）
+static int g_torrent_reported = 0, g_play_reported = 0;
 
 void ctrl_register_engine(EngineFns *e) { g_eng = *e; }
 
@@ -130,6 +135,12 @@ static void start_task(int is_magnet, const char *uri, const char *name) {
     }
     g_task_id = id;
     g_task_is_magnet = is_magnet;
+    // 磁力：先只到「种子落盘」为止 —— 真正的媒体下载要等宿主展开文件列表后用 DL 命令指定
+    g_mag_stage = is_magnet ? 1 : 0;
+    g_dl_target[0] = 0;
+    g_torrent_reported = 0; g_play_reported = 0;
+    if (is_magnet) snprintf(g_mag_torrent, sizeof g_mag_torrent, "%s/%s", EMU_SAVE_PATH, name);
+    else g_mag_torrent[0] = 0;
     snprintf(g_task_name, sizeof g_task_name, "%s", name);
     g_last_st = g_last_err = -1; g_last_done = g_last_total = -1;
 
@@ -141,6 +152,99 @@ static void start_task(int is_magnet, const char *uri, const char *name) {
         printf("[ctrl]   setTaskGsState(%ld,0,2) → %d\n", id,
                (int)((fn_l3)g_eng.gsState)(env, thiz, (jlong)id, 0, 2));
     ctrl_report("started", id, 0, 0, 0, 0, name);
+}
+
+// ── 磁力第二阶段：宿主展开 .torrent 得到文件列表后，指定要下的那个文件 ──
+//   严格对齐手机端 XLTaskHelper.addTorrentTask() 的反编译结果：
+//     getTorrentInfo → createBtTask(param{createMode=1, filePath=dir, maxConcurrent=3, seqId=递增})
+//     → [多文件] deselectBtSubTask(未选中的那些)  ← 是**反选**，不是正选
+//     → startTask → setTaskGsState(id, 被选中的 index, 2)   ← 第二参是索引，不是 0
+static void start_dl(const char *torrentPath, const char *dir, const char *relPath,
+                     int index, const char *excludeCsv) {
+    JNIEnv *env = (JNIEnv *)g_eng.env;
+    jobject thiz = (jobject)g_eng.thiz;
+    if (!g_eng.createBtTask) { ctrl_report("error", 0, 0, 0, 0, 0, "引擎没有 createBtTask"); return; }
+    // 种子路径：宿主可传 "-" 表示「就用我刚下发的那条磁力落盘的种子」
+    if (!torrentPath[0] || !strcmp(torrentPath, "-")) {
+        if (!g_mag_torrent[0]) { ctrl_report("error", 0, 0, 0, 0, 0, "没有已知种子路径"); return; }
+        torrentPath = g_mag_torrent;
+    }
+    printf("[ctrl] 用种子 %s\n", torrentPath);
+
+    // ★ 对齐手机 addTorrentTask 的**第一行**：引擎自己解析一遍种子建内部索引。
+    //   少了这一步，BT 任务会 setTaskGsState → 9303 INDEX_NOT_READY 并以 114004 收场。
+    if (g_eng.sdk) {
+        typedef jint (*fn_tinfo)(JNIEnv *, jobject, jstring, jobject);
+        fn_tinfo getTorrentInfo = (fn_tinfo)dlsym((void *)g_eng.sdk,
+                                   "Java_com_xunlei_downloadlib_XLLoader_getTorrentInfo");
+        if (getTorrentInfo) {
+            JObj *tinfo = new_obj("com/xunlei/downloadlib/parameter/TorrentInfo");
+            jint tr = getTorrentInfo(env, (jobject)thiz, (jstring)torrentPath, (jobject)tinfo);
+            printf("[ctrl]   getTorrentInfo(%s) → %d（建索引）\n", torrentPath, (int)tr);
+        } else {
+            printf("[ctrl]   ⚠ 找不到 getTorrentInfo\n");
+        }
+    }
+
+    static int s_seq = 0;
+    typedef jint (*fn_bttask)(JNIEnv *, jobject, jstring, jstring, jint, jint, jint, jobject);
+    JObj *tid = new_obj("com/xunlei/downloadlib/parameter/GetTaskId");
+    jint r = ((fn_bttask)g_eng.createBtTask)(env, thiz, (jstring)torrentPath, (jstring)dir,
+                                             3 /*maxConcurrent*/, 1 /*createMode*/, ++s_seq /*seqId 递增*/,
+                                             (jobject)tid);
+    long id = obj_get_long(tid, "mTaskId");
+    printf("[ctrl] 建下载任务(BT) 返回 %d（9000=成功），id=%ld seq=%d\n", (int)r, id, s_seq);
+    if (r != 9000 || id <= 0) { ctrl_report("error", id, (int)r, 0, 0, 0, "BT 下载任务创建失败"); return; }
+
+    // 资源开关：阶段 B 实测过，BT 任务要拿到 peer 资源得显式打开
+    if (g_eng.sdk) {
+        typedef int (*fn_allow)(long long, int);
+        typedef int (*fn_sw)(long long);
+        fn_allow allowRes  = (fn_allow)dlsym((void *)g_eng.sdk, "XLSetTaskAllowUseResource");
+        fn_sw   switchRes  = (fn_sw)dlsym((void *)g_eng.sdk, "XLSwitchOriginToAllResDownload");
+        if (allowRes)  printf("[ctrl]   XLSetTaskAllowUseResource(%ld,1) → %d\n", id, allowRes((long long)id, 1));
+        if (switchRes) printf("[ctrl]   XLSwitchOriginToAllResDownload(%ld) → %d\n", id, switchRes((long long)id));
+    }
+    // 反选：把「不要的文件」剔掉（对齐 addTorrentTask 的行为）
+    if (g_eng.sdk && excludeCsv && excludeCsv[0]) {
+        typedef jint (*fn_sel)(JNIEnv *, jobject, jlong, jobject);
+        fn_sel desel = (fn_sel)dlsym((void *)g_eng.sdk,
+                                     "Java_com_xunlei_downloadlib_XLLoader_deselectBtSubTask");
+        int idxs[64], ni = 0;
+        for (const char *q = excludeCsv; *q && ni < 64; ) {
+            idxs[ni++] = atoi(q);
+            while (*q && *q != ',') q++;
+            if (*q == ',') q++;
+        }
+        if (desel && ni > 0) {
+            JObj *iset = new_obj("com/xunlei/downloadlib/parameter/BtIndexSet");
+            JIntArray *ia = new_int_array(ni);
+            for (int i = 0; i < ni; i++) ia->v[i] = idxs[i];
+            put_field(iset, mk_fid("mIndexSet", "[I"), 3, 0, ia);
+            printf("[ctrl]   deselectBtSubTask(%ld, %d 个：", id, ni);
+            for (int i = 0; i < ni; i++) printf("%s%d", i ? "," : "", idxs[i]);
+            printf(") → %d\n", (int)desel(env, (jobject)thiz, (jlong)id, (jobject)iset));
+        } else {
+            printf("[ctrl]   ⚠ 找不到 deselectBtSubTask 或反选清单为空\n");
+        }
+    }
+    typedef jint (*fn_l1)(JNIEnv *, jobject, jlong);
+    typedef jint (*fn_l3)(JNIEnv *, jobject, jlong, jint, jint);
+    if (g_eng.startTask)
+        printf("[ctrl]   startTask(%ld) → %d\n", id, (int)((fn_l1)g_eng.startTask)(env, thiz, (jlong)id));
+    if (g_eng.gsState)
+        printf("[ctrl]   setTaskGsState(%ld,%d,2) → %d\n", id, index,
+               (int)((fn_l3)g_eng.gsState)(env, thiz, (jlong)id, (jint)index, 2));
+
+    g_task_id = id;
+    g_task_is_magnet = 1;
+    g_mag_stage = 2;
+    snprintf(g_dl_target, sizeof g_dl_target, "%s/%s", dir, relPath);
+    snprintf(g_task_name, sizeof g_task_name, "%s", relPath);
+    g_last_st = g_last_err = -1; g_last_done = g_last_total = -1;
+    g_play_reported = 0; g_torrent_reported = 0;
+    printf("[ctrl] 下载目标 = %s\n", g_dl_target);
+    ctrl_report("started", id, 0, 0, 0, 0, relPath);
 }
 
 /** 每次轮询：取任务状态，必要时上报播放地址 */
@@ -161,29 +265,53 @@ static void poll_task(void) {
         g_last_st = st; g_last_err = err; g_last_done = done; g_last_total = total;
         if (r == 9000) ctrl_report("status", g_task_id, st, err, done, total, "");
     }
+    // 磁力阶段一：种子落盘就上报，宿主去展开文件列表（.torrent 是 bencode，宿主侧解析更省事）
+    if (g_mag_stage == 1 && g_task_id > 0 && g_task_name[0]) {
+        char tp[600];
+        snprintf(tp, sizeof tp, "%s/%s", EMU_SAVE_PATH, g_task_name);
+        struct stat sb;
+        if (stat(tp, &sb) == 0 && sb.st_size > 100 && !g_torrent_reported) {
+            g_torrent_reported = 1;
+            printf("[ctrl] 🌱 种子已落盘：%s（%ld 字节）\n", tp, (long)sb.st_size);
+            ctrl_report("torrent", g_task_id, st, err, done, total, tp);
+        }
+    }
+
     // 有数据了就试着拿播放地址（每次都要重新取：引擎的本地服务是一次性的）
     if ((st == 1 || st == 2 || st == 4) && g_eng.localUrl && g_task_name[0]) {
-        char abs[600];
-        snprintf(abs, sizeof abs, "%s/%s", EMU_SAVE_PATH, g_task_name);
         typedef jint (*fn_lu)(JNIEnv *, jobject, jstring, jobject);
-        JObj *lu = new_obj("com/xunlei/downloadlib/parameter/XLTaskLocalUrl");
-        jint lr = ((fn_lu)g_eng.localUrl)(env, thiz, (jstring)abs, (jobject)lu);
-        if (lr == 9000) {
+        // 候选路径：磁力阶段二用宿主指定的绝对路径；再兜底「保存目录 + 文件名」
+        // （引擎把文件放哪取决于种子的 info 结构，多试一条更稳）
+        char cand[2][600]; int nc = 0;
+        if (g_mag_stage == 2 && g_dl_target[0]) {
+            snprintf(cand[nc++], sizeof cand[0], "%s", g_dl_target);
+            const char *bs = strrchr(g_task_name, '/');
+            snprintf(cand[nc++], sizeof cand[0], "%s/%s", EMU_SAVE_PATH, bs ? bs + 1 : g_task_name);
+        } else {
+            snprintf(cand[nc++], sizeof cand[0], "%s/%s", EMU_SAVE_PATH, g_task_name);
+        }
+        for (int ci = 0; ci < nc; ci++) {
+            JObj *lu = new_obj("com/xunlei/downloadlib/parameter/XLTaskLocalUrl");
+            jint lr = ((fn_lu)g_eng.localUrl)(env, thiz, (jstring)cand[ci], (jobject)lu);
+            if (lr != 9000) { printf("[ctrl]   getLocalUrl(%s) → %d\n", cand[ci], (int)lr); continue; }
             const char *u = obj_get_str(lu, "mStrUrl");
-            if (u && u[0] == 'h') {
-                // 存起来给代理用（新端口！）
-                const char *p = u + 7;
-                const char *colon = strchr(p, ':');
-                if (colon) {
-                    int np = atoi(colon + 1);
-                    if (np > 0) g_engine_port = np;
-                }
-                snprintf(g_engine_abs, sizeof g_engine_abs, "%s", abs);
-                const char *slash = strchr(p, '/');
-                if (slash) snprintf(g_engine_path, sizeof g_engine_path, "%s", slash);
-                printf("[ctrl] ✅ 播放地址 = %s\n", u);
+            if (!u || u[0] != 'h') continue;
+            // 存起来给代理用（新端口！）
+            const char *p = u + 7;
+            const char *colon = strchr(p, ':');
+            if (colon) {
+                int np = atoi(colon + 1);
+                if (np > 0) g_engine_port = np;
+            }
+            snprintf(g_engine_abs, sizeof g_engine_abs, "%s", cand[ci]);
+            const char *slash = strchr(p, '/');
+            if (slash) snprintf(g_engine_path, sizeof g_engine_path, "%s", slash);
+            printf("[ctrl] ✅ 播放地址 = %s\n", u);
+            if (!g_play_reported) {
+                g_play_reported = 1;
                 ctrl_report("play", g_task_id, st, err, done, total, slash ? slash : "");
             }
+            break;
         }
     }
 }
@@ -209,6 +337,20 @@ static void main_loop(void) {
                 if (sscanf(cmd + 5, "%15s %1023s %255s", kind, uri, name) >= 2) {
                     start_task(!strcmp(kind, "MAGNET"), uri, name[0] ? name : "download.bin");
                 }
+            } else if (!strncmp(cmd, "DL ", 3)) {
+                // DL <torrentPath>|<dir>|<relPath>|<index>|<exclude-csv> —— 用 | 分隔，路径里的空格不会拆错
+                char *parts[5] = {0}; int np = 0;
+                parts[np++] = cmd + 3;
+                for (char *q = cmd + 3; *q && np < 5; q++) {
+                    if (*q == '|') { *q = 0; parts[np++] = q + 1; }
+                }
+                {
+                    char *e = parts[np - 1];
+                    size_t L = strlen(e);
+                    while (L && (e[L - 1] == '\n' || e[L - 1] == '\r')) e[--L] = 0;
+                }
+                if (np >= 4) start_dl(parts[0], parts[1], parts[2], atoi(parts[3]), np >= 5 ? parts[4] : "");
+                else ctrl_report("error", 0, 0, 0, 0, 0, "DL 参数不完整");
             } else if (!strncmp(cmd, "STOP", 4)) {
                 if (g_task_id > 0 && g_eng.startTask) { g_task_id = 0; ctrl_report("stopped", 0, 0, 0, 0, 0, ""); }
             } else if (!strncmp(cmd, "PING", 4)) {

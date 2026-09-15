@@ -308,3 +308,96 @@ guest:    [ctrl] ✅ 播放地址 = http://127.0.0.1:39293/%252Fthunder-data%252
 2. MAUI 侧：起 qemu 子进程 + 内置控制端（把 `ctrlserver.py` 的逻辑用 C# 写，
    或直接起一个 HttpListener）+ 解析上报 + 播放器播 `http://127.0.0.1:<portfwd>/<path>`
 3. 磁力支线：`114004`（TVBox 官方映射 =「版权限制：无权下载」）**仍需一条国内磁力来定性**
+
+---
+
+# 磁力全链路推进 + 114004 定性（2026-09-15 深夜，第二轮）
+
+## 起因：手机能播，PC 为什么不能
+
+用户反馈「手机端磁力都能播放」。核对手机（com.catclaw.video.debug）的 `files/logs/bt.log`：
+
+```
+[12:23:12.898] [迅雷] 文件列表 2 项            ← 1.2 秒出种子文件列表
+[12:23:14.258] [迅雷] 起播 index=0
+[12:23:14.264] [bt] 优先引擎（迅雷）命中：…909.9MB
+```
+`[迅雷]` 在日志里出现 44 次、全部成功；00:20~00:21 一分钟内连开 4 条磁力（6/1/4/6 项文件列表）秒出。
+⇒ **迅雷 BT hub 对这个客户端是开放的**，此前「迅雷对 BT 通道有策略限制」的结论**作废**。
+
+## 用手机的真实磁力做对照实验
+
+手机缓存里每个种子目录都藏着一个以 infohash 命名的隐藏文件：
+
+```
+cache/thunder/01-02.1080p.HD中字/.1F8E2B67E3142CD3B0B26128C6D2FFB8C33C00DB
+cache/thunder/01.1080p.HD国语中字无水印[...]/.1363FB911E8603FDE757C9B02979D508DE2D195B
+```
+取出头部即可读回 infohash（**这是取「真实国内磁力」的可靠办法**，不必去站点抓）。
+
+## 新增能力：运行时下发磁力 → 自动展开 → 指定文件起下载
+
+控制通道补了两条（`src/ctrlloop.c`）：
+
+| 命令 | 作用 |
+|---|---|
+| `TASK MAGNET <magnet> <name>` | 只把磁力解析成 `.torrent` 并落盘（不再当下载任务） |
+| `DL <torrent>\|<dir>\|<relPath>\|<index>\|<exclude-csv>` | 起真正的 BT 下载任务（种子可传 `-` 表示用刚下发那条磁力的种子） |
+
+宿主侧 `build/ctrlserver2.py` 是**完整编排器**：下发磁力 → 经 guest 代理把 `.torrent` 拉回来 →
+bencode 展开文件列表 → 挑最大视频 → 下发 DL → 等播放地址 → 拉 256KB 验证。
+
+`start_dl()` 严格对齐 **手机 `XLTaskHelper.addTorrentTask` 的反编译结果**
+（`javap -c` thunder.jar 得到），三处关键差异都补上了：
+
+1. **先 `getTorrentInfo(torrentPath, ti)`** —— 引擎自己解析种子建内部索引（少了它 `setTaskGsState` 回 9303 INDEX_NOT_READY）
+2. **多文件用 `deselectBtSubTask`（反选不要的），不是 `selectBtSubTask`（正选要的）**
+3. **`setTaskGsState(id, 被选中文件的 index, 2)`** —— 第二参是索引，不是 0
+（另：`seqId` 用递增计数，不是固定 1）
+
+## 实测结果
+
+| 环节 | 结果 |
+|---|---|
+| 磁力 → `.torrent` 落盘 | ✅ 2946 字节，bencode 合法，`length=954147489`（909.9MB，与手机日志一致） |
+| 宿主展开文件列表 | ✅ 2 项，选中 #1（1043.6MB） |
+| `getTorrentInfo` / `createBtTask` / `deselectBtSubTask` / `startTask` | ✅ 全 9000，任务 `total` 正确收敛为**只含选中文件**（1094334176） |
+| **BT 下载（hub 查询）** | ❌ `st=3 err=114004`，**国内外磁力都一样** |
+
+⇒ **114004 与内容无关**（境外 ISO、国内 dyyg7 磁力表现一致），是**环境/引擎侧**的问题。
+
+## 抓包定位（`hub.pcap` + `hub_flows.py`）
+
+| 流 | 结果 |
+|---|---|
+| → `112.64.218.66:11400`（种子索引 pool.bt.n0808.com） | **200 OK，484 KB** —— 种子就是这样下到的 ✅ |
+| → `116.132.223.136:80`（idx/hub5btmain） | 200 OK，但响应体仅 80 字节 |
+| → `112.64.218.40:80`（被 `/etc/hosts` 劫持的 btrouter/master.wap.dphub） | **400 Bad Request**（nginx） |
+
+**最关键的发现**：手机 `files/setting.cfg`（base64，引擎写的**服务器下发运行配置**）：
+
+```json
+"server": { "phub_host" : "pr.m.hub.sandai.net",
+            "int32_server_min_pipe_count" : 35, "server_max_pipe_count" : 45 },
+"P2P":    { "max_phub_pipe_count" : 150 },
+"strategy": "(scdn.closeScdn)(server.resStrategy_20210727)(P2P.p2pPipeCount_20210727)…"
+```
+
+而 **VM 里这份配置是空的**，抓包里 `phub_host` / `pr.m.hub` / `rp.m.hub` **命中 0 次** ——
+引擎从没拉到过配置，P2P hub 主机名无从得知，只能退回 `.so` 内建的旧域名（已下线/被沉）。
+
+已试过但**无效**的手段：`QCO=1`（queryConfOnInit）、把劫持目标从 BT 主 hub(.40) 换成手机配置里的
+`pr.m.hub.sandai.net`(.71)。⇒ 配置拉取不是这个开关能触发的，链路更深。
+
+## 当前结论（写在播放器里之前必须知道）
+
+- PC（VM）侧：**磁力解析通道已完全打通**（能拿到种子、能选文件、能建任务），**只差 BT hub 查询这一步**。
+- 这一步依赖引擎的服务器下发配置，而 VM 环境里拿不到 ⇒ 需要继续挖配置拉取路径，
+  或改走**不依赖 BT hub 的路线**（见下）。
+- 手机端一切正常，可作为**短期兜底**（把手机的迅雷引擎经局域网借给 PC，与既有「解析节点」同构）。
+
+## 待办
+
+1. 挖「服务器配置从哪个 URL 拉」——线索：`flowcontroll.dcdn.sandai.net:8080/query`（抓包里唯一有配置味的 200 响应，448 字节）
+2. 或改走：**迅雷网盘云添加**（`ThunderPanEngine`，PC 原生、官方接口，需登录）
+3. 或短期：**手机借力**（局域网节点转发手机的迅雷播放地址）
