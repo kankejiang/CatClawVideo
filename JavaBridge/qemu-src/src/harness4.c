@@ -57,6 +57,7 @@ typedef struct {
 static JObj g_objs[MAX_OBJS];
 static int g_nobj = 0;
 static int g_jni_calls = 0;
+static int g_engine_port = 0;   // 引擎本地播放服务的端口（http_probe 里记下）
 static struct JNINativeInterface *g_env_ptr = NULL;
 
 // —— 数组辅助的前置声明（实现在后面的"字节数组 / 整数数组"节）——
@@ -156,6 +157,128 @@ static void put_field(JObj *o, jfieldID fid, int kind, long iv, void *ov) {
     JField *nf = &o->f[o->n++];
     snprintf(nf->name, sizeof(nf->name), "%s", name);
     nf->kind = kind; nf->i = iv; nf->o = ov;
+}
+
+// 直接 HTTP GET 引擎返回的播放地址 —— 这是"边下边播"能不能成的唯一硬证据
+static void http_probe(const char *url) {
+    if (!url || strncmp(url, "http://", 7) != 0) { printf("[play] 地址非 http，跳过探测\n"); return; }
+    const char *p = url + 7;
+    const char *slash = strchr(p, '/');
+    const char *colon = strchr(p, ':');
+    char host[160] = "";
+    int port = 80;
+    if (colon && (!slash || colon < slash)) {
+        int hl = (int)(colon - p); if (hl > 159) hl = 159;
+        memcpy(host, p, (size_t)hl); host[hl] = 0;
+        port = atoi(colon + 1);
+    } else {
+        int hl = slash ? (int)(slash - p) : (int)strlen(p); if (hl > 159) hl = 159;
+        memcpy(host, p, (size_t)hl); host[hl] = 0;
+    }
+    const char *path = slash ? slash : "/";
+    printf("[play] GET http://%s:%d%s （Range: 0-1023）\n", host, port, path);
+    g_engine_port = port;      // 记下来给后面的 guest 内代理用
+
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET; hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host, NULL, &hints, &res) != 0 || !res) { printf("[play] ✗ 解析失败\n"); return; }
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    struct timeval tv = {8, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    struct sockaddr_in sa = *(struct sockaddr_in *)res->ai_addr;
+    sa.sin_port = htons((unsigned short)port);
+    if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
+        printf("[play] ✗ connect 失败 errno=%d\n", errno); close(fd); freeaddrinfo(res); return;
+    }
+    char req[640];
+    snprintf(req, sizeof(req),
+             "GET %s HTTP/1.0\r\nHost: %s:%d\r\nRange: bytes=0-1023\r\nConnection: close\r\n\r\n",
+             path, host, port);
+    write(fd, req, strlen(req));
+    char buf[4096];
+    int n = 0, tries = 0;
+    // 循环读：先拿到响应头，再继续读到正文（单次 read 往往只有头）
+    while (n < (int)sizeof(buf) - 1 && tries < 40) {
+        int r = (int)read(fd, buf + n, sizeof(buf) - 1 - n);
+        if (r <= 0) break;
+        n += r;
+        tries++;
+        char tmp[4096]; memcpy(tmp, buf, n); tmp[n] = 0;
+        char *e = strstr(tmp, "\r\n\r\n");
+        if (e && (n - (int)(e - tmp) - 4) >= 64) break;   // 已拿到 ≥64 字节正文
+    }
+    if (n > 0) {
+        buf[n] = 0;
+        printf("[play] ✅ 收到 %d 字节：\n", n);
+        char *nl = strstr(buf, "\r\n\r\n");
+        if (nl) {
+            int hdr = (int)(nl - buf);
+            printf("[play]   响应头：%.*s\n", hdr > 300 ? 300 : hdr, buf);
+            int body = n - hdr - 4;
+            printf("[play]   正文 %d 字节，前 32 字节 hex：", body);
+            for (int i = 0; i < body && i < 32; i++)
+                printf("%02X", (unsigned char)buf[hdr + 4 + i]);
+            printf("\n");
+        } else printf("[play]   %.300s\n", buf);
+    } else printf("[play] ✗ 读失败 n=%d errno=%d\n", n, errno);
+    close(fd);
+    freeaddrinfo(res);
+}
+
+
+// ═══════════ guest 内固定端口代理 ═══════════
+// 引擎的本地播放服务监听在 **127.0.0.1:<随机端口>**，宿主侧的 qemu hostfwd 够不到
+// （hostfwd 连的是 guest 的 10.0.2.15）。所以在这里起一个 0.0.0.0:<固定端口> 的
+// 转发进程：宿主 → hostfwd → guest:固定端口 → 127.0.0.1:引擎端口 → 播放。
+static void proxy_conn(int c, int tport) {
+    int t = socket(AF_INET, SOCK_STREAM, 0);
+    if (t < 0) return;
+    struct sockaddr_in b; memset(&b, 0, sizeof b);
+    b.sin_family = AF_INET; b.sin_port = htons((unsigned short)tport);
+    inet_pton(AF_INET, "127.0.0.1", &b.sin_addr);
+    if (connect(t, (struct sockaddr *)&b, sizeof b) != 0) { close(t); return; }
+    char buf[16384];
+    for (;;) {
+        fd_set rs; FD_ZERO(&rs); FD_SET(c, &rs); FD_SET(t, &rs);
+        struct timeval tv = {120, 0};
+        int m = (c > t ? c : t) + 1;
+        int r = select(m, &rs, NULL, NULL, &tv);
+        if (r <= 0) break;
+        if (FD_ISSET(c, &rs)) {
+            int n = (int)read(c, buf, sizeof buf);
+            if (n <= 0) break;
+            if (write(t, buf, (size_t)n) != n) break;
+        }
+        if (FD_ISSET(t, &rs)) {
+            int n = (int)read(t, buf, sizeof buf);
+            if (n <= 0) break;
+            if (write(c, buf, (size_t)n) != n) break;
+        }
+    }
+    close(t);
+}
+
+static void proxy_loop(int lport, int tport) {
+    int ls = socket(AF_INET, SOCK_STREAM, 0);
+    if (ls < 0) return;
+    int one = 1;
+    setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    struct sockaddr_in a; memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET; a.sin_port = htons((unsigned short)lport);
+    a.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(ls, (struct sockaddr *)&a, sizeof a) != 0 || listen(ls, 16) != 0) {
+        printf("[proxy] ✗ 监听 %d 失败 errno=%d\n", lport, errno);
+        return;
+    }
+    printf("[proxy] ✅ 监听 0.0.0.0:%d → 127.0.0.1:%d（宿主可经 hostfwd 拉流）\n", lport, tport);
+    for (;;) {
+        int c = accept(ls, NULL, NULL);
+        if (c < 0) { sleep(1); continue; }
+        pid_t pid = fork();
+        if (pid == 0) { close(ls); proxy_conn(c, tport); close(c); _exit(0); }
+        close(c);
+    }
 }
 
 static void dump_obj(const char *tag, JObj *o) {
@@ -406,6 +529,8 @@ static jint my_GetJavaVM(JNIEnv *env, JavaVM **pvm) {
 //   APPTYPE_PRODUCT = 1
 static const char *SO_APP_KEY = "Y29tLmFuZHJvaWQucHJvdmlkZXJzLmRvd25sb2FkcwBxFwE=";
 static const char *EMU_SAVE_PATH = "/thunder-data";
+// ★ TVBox 的 Thunder.java 里 init 用的 appVersion 就是它（我先前传的 "1.0.0" 会被服务端当成不认识的旧客户端）
+static const char *APP_VERSION = "21.01.07.800002";
 
 static void fill_random_hex(char *out, int n, const char *alphabet) {
     int la = (int)strlen(alphabet);
@@ -444,6 +569,12 @@ static void run_full_chain(JNIEnv *env, void *sdk) {
     //   (mTorrentPath, mFilePath, mMaxConcurrent, mCreateMode, mSeqId, GetTaskId)
     fn_bttask createBtTask =
         (fn_bttask)dlsym(sdk, "Java_com_xunlei_downloadlib_XLLoader_createBtTask");
+    // ★ 直链任务（P2SP）。原生签名参数顺序由 XLDownloadManager.createP2spTask 的字节码确认：
+    //   (mUrl, mRefUrl, mCookie, mUser, mPass, mFilePath, mFileName, mCreateMode, mSeqId, GetTaskId)
+    typedef jint (*fn_p2sp)(JNIEnv *, jobject, jstring, jstring, jstring, jstring, jstring,
+                            jstring, jstring, jint, jint, jobject);
+    fn_p2sp createP2spTask =
+        (fn_p2sp)dlsym(sdk, "Java_com_xunlei_downloadlib_XLLoader_createP2spTask");
     printf("[chain]   startTask=%p setTaskGsState=%p\n", (void *)startTask, (void *)gsState);
     if (!init || !createMagnet) {
         printf("[chain] ✗ 关键入口缺失\n");
@@ -462,7 +593,7 @@ static void run_full_chain(JNIEnv *env, void *sdk) {
     jint rc = init(env, (jobject)thiz,
                    (jstring)SO_APP_KEY,
                    (jstring)"com.android.providers.downloads",
-                   (jstring)"1.0.0",
+                   (jstring)APP_VERSION,
                    (jstring)"",
                    (jstring)peerid,
                    (jstring)guid,
@@ -475,8 +606,21 @@ static void run_full_chain(JNIEnv *env, void *sdk) {
                          //   现象正是「域名解析了、但一个包都不发，直接 114004
                          //   TASK_FAILURE_QUERY_BT_HUB_FAILED」。
                    1,    // permissionLevel
-                   0);   // queryConfOnInit
+                   (getenv("QCO") ? atoi(getenv("QCO")) : 0));   // queryConfOnInit（QCO=1 让引擎在 init 时拉取服务器配置）
     printf("[chain] ← init 返回 %d（0=成功）\n", (int)rc);
+
+    // ★ 设备指纹：TVBox 的 Thunder.java 里用随机 IMEI/MAC 喂给 SDK
+    //   （XLUtil.mIMEI/mMAC + isGetIMEI/isGetMAC = true），我先前完全没设。
+    {
+        typedef jint (*fn_s1)(JNIEnv *, jobject, jstring);
+        fn_s1 fImei = (fn_s1)dlsym(sdk, "Java_com_xunlei_downloadlib_XLLoader_setImei");
+        fn_s1 fMac  = (fn_s1)dlsym(sdk, "Java_com_xunlei_downloadlib_XLLoader_setMac");
+        static char imei[32], mac[32];
+        fill_random_hex(imei, 15, "0123456");
+        fill_random_hex(mac, 12, "ABCDEF0123456");
+        if (fImei) printf("[chain]   setImei(%s) → %d\n", imei, (int)fImei(env, (jobject)thiz, (jstring)imei));
+        if (fMac)  printf("[chain]   setMac(%s) → %d\n", mac, (int)fMac(env, (jobject)thiz, (jstring)mac));
+    }
 
     // XLTaskHelper.init 在 init 之后还做了三件事，一并补上
     typedef jint (*fn_bool1)(JNIEnv *, jobject, jboolean);
@@ -609,6 +753,57 @@ static void run_full_chain(JNIEnv *env, void *sdk) {
         }
     }
 
+    // ══ 阶段 C：直链（P2SP）任务 ══
+    //   BT 路径依赖迅雷的 BT hub（当前卡在 114004），直链不走 hub，
+    //   可以单独回答「引擎的下载机制本身在这个环境里能不能跑」。
+    {
+        const char *url = getenv("URL");
+        if (url && url[0] && createP2spTask) {
+            const char *uname = getenv("URL_NAME") ? getenv("URL_NAME") : "url-download.bin";
+            printf("[chain] ══ 阶段 C：createP2spTask（直链）══\n");
+            printf("[chain]   url      = %s\n", url);
+            printf("[chain]   fileName = %s\n", uname);
+            JObj *tid3 = new_obj("com/xunlei/downloadlib/parameter/GetTaskId");
+            jint r3 = createP2spTask(env, (jobject)thiz,
+                                     (jstring)url, (jstring)"", (jstring)"", (jstring)"",
+                                     (jstring)"", (jstring)EMU_SAVE_PATH, (jstring)uname,
+                                     1,   // createMode
+                                     1,   // seqId
+                                     (jobject)tid3);
+            long id3 = obj_get_long(tid3, "mTaskId");
+            printf("[chain] ← createP2spTask 返回 %d，任务 ID = %ld\n", (int)r3, id3);
+            if (id3 > 0) {
+                if (startTask) printf("[chain]   startTask(%ld) → %d\n", id3,
+                                      (int)startTask(env, (jobject)thiz, (jlong)id3));
+                if (gsState) printf("[chain]   setTaskGsState(%ld,0,2) → %d\n", id3,
+                                    (int)gsState(env, (jobject)thiz, (jlong)id3, 0, 2));
+                int psecs = getenv("P2SP_SECS") ? atoi(getenv("P2SP_SECS")) : 90;
+                for (int i = 0; i <= psecs / 5; i++) {
+                    JObj *ti = new_obj("com/xunlei/downloadlib/parameter/XLTaskInfo");
+                    jint ir = getTaskInfo ? getTaskInfo(env, (jobject)thiz, (jlong)id3, 0, (jobject)ti) : -1;
+                    printf("[url] t=%3ds info=%d st=%d err=%d 已下载=%ld/%ld 速度=%ld  P2S=%ld P2P=%ld 源=%ld\n",
+                           i * 5, (int)ir,
+                           obj_get_int(ti, "mTaskStatus"), obj_get_int(ti, "mErrorCode"),
+                           obj_get_long(ti, "mDownloadSize"), obj_get_long(ti, "mFileSize"),
+                           obj_get_long(ti, "mDownloadSpeed"),
+                           obj_get_long(ti, "mP2SSpeed"), obj_get_long(ti, "mP2PSpeed"),
+                           obj_get_long(ti, "mAdditionalResCount"));
+                    sleep(5);
+                }
+                if (localUrl) {
+                    JObj *lu = new_obj("com/xunlei/downloadlib/parameter/XLTaskLocalUrl");
+                    char fullp[600]; snprintf(fullp, sizeof fullp, "%s/%s", EMU_SAVE_PATH, uname);
+                    jint lrc = localUrl(env, (jobject)thiz, (jstring)fullp, (jobject)lu);
+                    const char *u = obj_get_str(lu, "mStrUrl");
+                    printf("[chain] ← getLocalUrl(\"%s\") 返回 %d，mStrUrl = %s\n", uname, (int)lrc, u);
+                    if (lrc == 9000 && u && u[0] == 'h') http_probe(u);   // ★ 边下边播验证
+                }
+            }
+        } else if (!url) {
+            printf("[chain] （未提供 URL，跳过阶段 C）\n");
+        }
+    }
+
     if (localUrl) {
         const char *fn = getenv("FILENAME") ? getenv("FILENAME") : "cc-test";
         JObj *lu = new_obj("com/xunlei/downloadlib/parameter/XLTaskLocalUrl");
@@ -738,6 +933,11 @@ int main(void) {
 
     printf("[v2] ===== 结束，JNI 总调用 %d 次 =====\n", g_jni_calls);
     // 容器/VM 里作为 init：不要退出（退出会 kernel panic）。等一会儿再重启 shell。
+    if (g_engine_port > 0 && getenv("PROXY_PORT")) {
+        pid_t pid = fork();
+        if (pid == 0) { proxy_loop(atoi(getenv("PROXY_PORT")), g_engine_port); _exit(0); }
+        sleep(1);
+    }
     for (;;) sleep(3600);
     return 0;
 }
