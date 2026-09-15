@@ -33,6 +33,8 @@
 typedef struct {
     void *env, *thiz;
     void *createMagnet, *createP2sp, *startTask, *gsState, *getTaskInfo, *localUrl;
+    // ↓ 磁力第二阶段（宿主展开文件列表后指定下载哪个文件）用
+    void *sdk, *createBtTask, *selectBtSubTask;
 } EngineFns;
 void ctrl_register_engine(EngineFns *e);
 
@@ -642,12 +644,30 @@ static void run_full_chain(JNIEnv *env, void *sdk) {
     }
 
     JObj *thiz = new_obj("com/xunlei/downloadlib/XLLoader");
+    // ★★ 身份对齐（2026-09-16）：hub 请求是「带签名」的，身份不对 → HTTP 400/500 → 114004。
+    //   手机侧身份来源：files/Identify2.txt（peerid=FA25CC5B3363004V / MAC / IMEI）
+    //   与 XLUtil.getPeerid 字节码 —— **peerid = MAC + "004V"**，
+    //   注意不是「36 位随机 hex + 004V」（那是先前猜的，格式就不对）。
+    //   Build 属性取自真机（小米 M2011K2C，Android 14）。
+    const char *imei_s = getenv("IMEI") ? getenv("IMEI") : "663105441262552";
+    const char *mac_s  = getenv("MAC")  ? getenv("MAC")  : "FA25CC5B3363";
+    const char *osver  = getenv("OSVER") ? getenv("OSVER") : "OS2.0.6.0.UKBCNXM_alpha";
+    const char *model  = getenv("PHONEMODEL") ? getenv("PHONEMODEL") : "M2011K2C";
     char peerid[64], guid[64];
-    fill_random_hex(peerid, 36, "0123456789ABCDEF");
-    strcpy(peerid + 36, "004V");
+    snprintf(peerid, sizeof peerid, "%s004V", mac_s);
     fill_random_hex(guid, 14, "0123456789abcdef");
     guid[14] = '_';
     fill_random_hex(guid + 15, 12, "0123456789abcdef");
+
+    // ★ 设备指纹：必须在 **init 之前**设（对齐 TVBox 的 Thunder.java：
+    //   XLUtil.mIMEI/mMAC + isGetIMEI/isGetMAC = true 都写在 XLTaskHelper.init 之前）。
+    {
+        typedef jint (*fn_s1)(JNIEnv *, jobject, jstring);
+        fn_s1 fImei = (fn_s1)dlsym(sdk, "Java_com_xunlei_downloadlib_XLLoader_setImei");
+        fn_s1 fMac  = (fn_s1)dlsym(sdk, "Java_com_xunlei_downloadlib_XLLoader_setMac");
+        if (fImei) printf("[chain]   setImei(%s) → %d\n", imei_s, (int)fImei(env, (jobject)thiz, (jstring)imei_s));
+        if (fMac)  printf("[chain]   setMac(%s) → %d\n", mac_s, (int)fMac(env, (jobject)thiz, (jstring)mac_s));
+    }
 
     printf("[chain] ── init ──\n");
     jint rc = init(env, (jobject)thiz,
@@ -669,17 +689,17 @@ static void run_full_chain(JNIEnv *env, void *sdk) {
                    (getenv("QCO") ? atoi(getenv("QCO")) : 0));   // queryConfOnInit（QCO=1 让引擎在 init 时拉取服务器配置）
     printf("[chain] ← init 返回 %d（0=成功）\n", (int)rc);
 
-    // ★ 设备指纹：TVBox 的 Thunder.java 里用随机 IMEI/MAC 喂给 SDK
-    //   （XLUtil.mIMEI/mMAC + isGetIMEI/isGetMAC = true），我先前完全没设。
+    // ★ Java 层在 XLTaskHelper.init 之后还会补两步（字节码）：
+    //     setOSVersion("<Build.VERSION.INCREMENTAL>_alpha")  → 内部就是 setMiUiVersion
+    //     setLocalProperty("PhoneModel", Build.MODEL)
     {
         typedef jint (*fn_s1)(JNIEnv *, jobject, jstring);
-        fn_s1 fImei = (fn_s1)dlsym(sdk, "Java_com_xunlei_downloadlib_XLLoader_setImei");
-        fn_s1 fMac  = (fn_s1)dlsym(sdk, "Java_com_xunlei_downloadlib_XLLoader_setMac");
-        static char imei[32], mac[32];
-        fill_random_hex(imei, 15, "0123456");
-        fill_random_hex(mac, 12, "ABCDEF0123456");
-        if (fImei) printf("[chain]   setImei(%s) → %d\n", imei, (int)fImei(env, (jobject)thiz, (jstring)imei));
-        if (fMac)  printf("[chain]   setMac(%s) → %d\n", mac, (int)fMac(env, (jobject)thiz, (jstring)mac));
+        typedef jint (*fn_s2)(JNIEnv *, jobject, jstring, jstring);
+        fn_s1 fOsVer = (fn_s1)dlsym(sdk, "Java_com_xunlei_downloadlib_XLLoader_setMiUiVersion");
+        fn_s2 fProp  = (fn_s2)dlsym(sdk, "Java_com_xunlei_downloadlib_XLLoader_setLocalProperty");
+        if (fOsVer) printf("[chain]   setMiUiVersion(%s) → %d\n", osver, (int)fOsVer(env, (jobject)thiz, (jstring)osver));
+        if (fProp)  printf("[chain]   setLocalProperty(PhoneModel,%s) → %d\n", model,
+                           (int)fProp(env, (jobject)thiz, (jstring)"PhoneModel", (jstring)model));
     }
 
     // XLTaskHelper.init 在 init 之后还做了三件事，一并补上
@@ -889,6 +909,9 @@ static void run_full_chain(JNIEnv *env, void *sdk) {
         e.gsState      = (void *)gsState;
         e.getTaskInfo  = (void *)getTaskInfo;
         e.localUrl     = (void *)localUrl;
+        e.sdk          = (void *)sdk;
+        e.createBtTask = (void *)createBtTask;
+        e.selectBtSubTask = (void *)dlsym(sdk, "Java_com_xunlei_downloadlib_XLLoader_selectBtSubTask");
         ctrl_register_engine(&e);
         // 代理的"重新武装"要用到这三个（先前只在阶段 C 里设，空任务链下就漏了）
         g_env_any = (void *)env;  g_thiz_any = (void *)thiz;

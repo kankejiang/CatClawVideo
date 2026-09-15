@@ -401,3 +401,80 @@ bencode 展开文件列表 → 挑最大视频 → 下发 DL → 等播放地址
 1. 挖「服务器配置从哪个 URL 拉」——线索：`flowcontroll.dcdn.sandai.net:8080/query`（抓包里唯一有配置味的 200 响应，448 字节）
 2. 或改走：**迅雷网盘云添加**（`ThunderPanEngine`，PC 原生、官方接口，需登录）
 3. 或短期：**手机借力**（局域网节点转发手机的迅雷播放地址）
+
+---
+
+# 🎉 114004 破案：引擎身份签名（2026-09-16 凌晨）
+
+## 结论：114004 不是「版权限制」，是**身份签名不对**导致的 hub 请求被拒
+
+前一轮把 114004 归因为「缺服务器配置（phub_host）」，**不完全对**。真正让它消失的是
+**把引擎的身份对齐到手机那一套**。
+
+## 破案链条
+
+1. **`XLTaskHelper.addTorrentTask` 之后仍读诊断字段**（新增 `diag` 打印）：
+   ```
+   cid=  gcid=  queryIdx=1 → 3        ← 索引查询失败，CID/GCID 都没算出来
+   ```
+   而直链任务的 cid/gcid 是有值的。
+
+2. **抓包看 hub 交互**：引擎向 hub 发的请求体是**加密签名块**（156 字节，头
+   `01 00 00 00 01 00 00 00 90 00 00 00` + 144 字节密文），服务器回
+   **400 / 500**（换台服务器：`400 Bad Request` / `500 Internal Server Error`）。
+
+3. **从 `thunder.jar` 反编译出身份来源**：
+   - `XLUtil.getPeerid()`：**peerid = `MAC` + `"004V"`**（其次 `IMEI` + `"V"`，或读身份文件）
+     —— 我们先前用的是「36 位随机 hex + 004V」，**格式就不对**
+   - `XLDownloadManager.setOSVersion(s)` → 实际调 `XLLoader.setMiUiVersion(s)`，
+     Java 层传的是 `Build.VERSION.INCREMENTAL + "_alpha"`
+   - `XLDownloadManager.init()` 之后调 `setLocalProperty("PhoneModel", Build.MODEL)`
+   - 引擎自己维护身份缓存文件 **`<mStatSavePath>/Identify2.txt`**，格式：
+     ```
+     peerid=<MAC>004V
+     MAC=<12位十六进制>
+     IMEI=<15位>
+     ```
+
+4. **对齐实现**（`src/harness4.c`）：
+   - `setImei` / `setMac` **挪到 init 之前**（放到之后会返回 9102 SDK_NOT_INIT）
+   - `peerid = <MAC>004V`（真机值 `FA25CC5B3363004V`）
+   - init 之后补 `setMiUiVersion("OS2.0.6.0.UKBCNXM_alpha")` + `setLocalProperty("PhoneModel","M2011K2C")`
+   - initrd 预置 `Identify2.txt`（61 字节，与手机一致）+ `setting.cfg`（1020 字节，含 phub_host）
+
+## 实测：114004 消失 ✅
+
+| 指标 | 修复前 | 修复后 |
+|---|---|---|
+| 任务状态 | `st=3 err=114004`（5 秒内判死） | **`st=1 err=0` 运行中** |
+| `queryIdx` | 1 → **3**（失败） | 1 → **2** |
+| `cid`/`gcid` | 空字符串 | `0000…0`（有槽位了） |
+| BT hub 响应 | 400 / 500 | **200 OK + 10604 字节**（有数据了） |
+| 播放地址 | 无（任务已失败） | **引擎给出所选文件的播放地址**（id=1003） |
+
+```
+[chain]   setMiUiVersion(OS2.0.6.0.UKBCNXM_alpha) → 9000
+[chain]   setLocalProperty(PhoneModel,M2011K2C) → 9000
+[ctrl] 建下载任务(BT) 返回 9000，id=1003 seq=1
+[ctrl] t=… st=1 err=0 已下载=0/1094334176 速度=0
+[ctrl]   diag cid=000…0 gcid=000…0 queryIdx=2 infoLen=0 附加源=2
+```
+
+## 仍差最后一步：数据没起量
+
+`已下载=0 / 速度=0` —— 任务活着、资源索引拿到了 10.6KB，但引擎还没开始拉字节。
+下一步排查方向（按优先级）：
+
+1. **hub 响应内容**：那 10604 字节是「资源列表」还是「无源」？需要解密/比对协议
+2. **资源挂载 API**：`btAddServerResource` / `btAddPeerResource` / `addPeerResource`
+   （jar 里的 XLTaskHelper 不调它们，但 TVBox 某些分支会）
+3. **`XLEnterPrefetchMode` / `XLRequeryIndex`**：任务健康时踢一脚试试（harness 里已有 dlsym）
+4. **`setUserId`**：引擎可能要求账号态才给 P2SP 服务端加速
+5. **对比手机侧**：真机同一磁力 `已下载` 是否立刻增长（手机日志 `[迅雷] 起播 index=0` 后应有时长）
+
+## 环境备忘（本轮新增）
+
+- 诊断字段打印在 `ctrlloop.c` 的 `poll_task()`：`cid/gcid/queryIdx/infoLen/附加源`
+- 抓包分析：`build/hub_flows.py`（按迅雷网段筛选四元组）+ `build/dump_flows.py`（按目的 dump 完整载荷）
+- `build/build_initrd.sh` 现在会预置 `setting.cfg` + `Identify2.txt` 到 `/thunder-data/`
+- **setImei/setMac 必须在 init 之前调用**

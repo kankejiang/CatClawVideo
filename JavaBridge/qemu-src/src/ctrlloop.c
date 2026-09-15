@@ -261,6 +261,12 @@ static void poll_task(void) {
     long total = obj_get_long(ti, "mFileSize");
     printf("[ctrl] t=%ld st=%d err=%d 已下载=%ld/%ld 速度=%ld\n",
            (long)time(NULL), st, err, done, total, obj_get_long(ti, "mDownloadSpeed"));
+    // ★ 诊断：CID/GCID = 迅雷给内容算的索引号；mQueryIndexStatus = 「向 hub 查索引」的状态。
+    //   BT 任务报 114004 时，看这两个就能判断是「没算出来」还是「hub 拒了」。
+    printf("[ctrl]   diag cid=%s gcid=%s queryIdx=%d infoLen=%d 附加源=%ld\n",
+           obj_get_str(ti, "mCid"), obj_get_str(ti, "mGcid"),
+           obj_get_int(ti, "mQueryIndexStatus"), obj_get_int(ti, "mInfoLen"),
+           obj_get_long(ti, "mAdditionalResCount"));
     if (st != g_last_st || err != g_last_err || done != g_last_done) {
         g_last_st = st; g_last_err = err; g_last_done = done; g_last_total = total;
         if (r == 9000) ctrl_report("status", g_task_id, st, err, done, total, "");
