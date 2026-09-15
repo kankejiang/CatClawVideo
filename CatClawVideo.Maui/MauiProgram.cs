@@ -153,7 +153,13 @@ public static class MauiProgram
         var bridgeDir = CatClawVideo.Core.Providers.JavaSpiderRuntime.FindBridgeDir();
         var javaExe = CatClawVideo.Core.Providers.JavaSpiderRuntime.FindJavaExe();
         CatClawVideo.Core.Interfaces.ISpiderRuntime jarRuntime = bridgeDir != null && javaExe != null
-            ? new CatClawVideo.Core.Providers.JavaSpiderRuntime(bridgeDir, javaExe, m => System.Diagnostics.Debug.WriteLine(m))
+            ? new CatClawVideo.Core.Providers.JavaSpiderRuntime(bridgeDir, javaExe, m =>
+            {
+                // Windows 桌面没有控制台，Debug.WriteLine 不挂调试器就抓不到 →
+                // 同时落 %APPDATA%\CatClawVideo\home-debug.log，排障 Guard 解壳/桥加载要看这段
+                System.Diagnostics.Debug.WriteLine(m);
+                DiagLog.Write(m);
+            })
             : new CatClawVideo.Core.Providers.NullSpiderRuntime("jvm-dex");
 
         // 「猫爪互联」本机服务：PC 首页在「没有可用源」时展示配对二维码，
@@ -312,15 +318,20 @@ public static class MauiProgram
                 {
                     try
                     {
-                        SiteRegistry.Replace(await subscriptionManager.LoadSubscriptionAsync(sub.SourceUrl));
+                        var sites = await subscriptionManager.LoadSubscriptionAsync(sub.SourceUrl);
+                        SiteRegistry.Replace(sites);
+                        DiagLog.Write($"[启动] 订阅恢复成功: {sub.Name} ({sub.SourceUrl}) → {sites.Count} 站点");
                         System.Diagnostics.Debug.WriteLine($"[启动] 订阅恢复成功: {sub.Name} ({sub.SourceUrl})");
                         return;
                     }
                     catch (Exception ex)
                     {
+                        // 落文件：Windows 无控制台，Debug.WriteLine 抓不到，否则「源没反应」查不出原因
+                        DiagLog.Write($"[启动] 订阅恢复失败 {sub.Name} ({sub.SourceUrl}): {ex.Message}");
                         System.Diagnostics.Debug.WriteLine($"[启动] 订阅恢复失败 {sub.SourceUrl}: {ex.Message}");
                     }
                 }
+                DiagLog.Write("[启动] 所有订阅均恢复失败，站点列表为空");
             }
             catch (Exception ex)
             {

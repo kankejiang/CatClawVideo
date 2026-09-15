@@ -272,23 +272,35 @@ public class JavaSpiderRuntime : ISpiderRuntime
         return resp["result"]?.GetValue<string>() ?? "{}";
     }
 
+    /// <summary>
+    /// 桥侧要加载的类名：默认取 api 去掉 <c>csp_</c> 前缀；
+    /// 换了 jar/解了 Guard 壳后以 <see cref="_nonGuardClass"/> 的映射为准。
+    /// </summary>
+    private string classNameOf(VodSiteInfo site) =>
+        _nonGuardClass.TryGetValue(site.Key, out var alt)
+            ? alt
+            : site.Api.StartsWith("csp_", StringComparison.OrdinalIgnoreCase) ? site.Api[4..] : site.Api;
+
     private async Task EnsureSiteLoadedAsync(VodSiteInfo site, string jarPath, CancellationToken ct)
     {
         if (_loadedSites.TryGetValue(site.Key, out _)) return;
+        var className = classNameOf(site);
         var req = new JsonObject
         {
             ["id"] = Interlocked.Increment(ref _id),
             ["op"] = "load",
             ["site"] = site.Key,
-            ["className"] = _nonGuardClass.TryGetValue(site.Key, out var altName)
-                ? altName
-                : site.Api.StartsWith("csp_", StringComparison.OrdinalIgnoreCase) ? site.Api[4..] : site.Api,
+            ["className"] = className,
             ["ext"] = await PrepareExtAsync(site, ct),
             ["jars"] = new JsonArray(jarPath),
         };
         var resp = await RoundTripAsync(req, TimeSpan.FromSeconds(60), ct);
         if (resp["ok"]?.GetValue<bool>() != true)
+        {
+            // 加载失败必须留痕：此前只 log 成功分支，导致「站点没反应」无从查因
+            Log($"站点 {site.Key} 加载失败（类名 {className}，jar {Path.GetFileName(jarPath)}）: {resp["error"]}");
             throw new InvalidOperationException($"spider {site.Key} 加载失败: {resp["error"]}");
+        }
         _loadedSites[site.Key] = true;
         Log($"站点 {site.Key} 已加载");
     }
@@ -311,9 +323,19 @@ public class JavaSpiderRuntime : ISpiderRuntime
         var conv = await ConvertJarAsync(jarUrl, expectMd5, ct, null);
         if (conv is { } ok)
         {
-            // Guard 包解壳后真实类名不带 Guard 后缀（DouDouGuard → DouDou），桥必须按真实名加载
-            if (ok.GuardUnpacked && configured.EndsWith("Guard", StringComparison.Ordinal))
-                _nonGuardClass[site.Key] = configured[..^"Guard".Length];
+            // Guard 外壳类名带 Guard 后缀，真实 dex 里不带（DouDouGuard → DouDou）。
+            // 判定依据必须是「dex 里实际存在哪个类」，不能靠「原包是否 IsGuarded」推断 ——
+            // 离线导入/复用手工解好的产物时，那份 raw 已经不含 .so/.guard，IsGuarded 会误判成
+            // 非 Guard 包，于是按 DouDouGuard 去加载 → 必然 ClassNotFoundException（实测踩过）。
+            if (configured.EndsWith("Guard", StringComparison.Ordinal))
+            {
+                var real = configured[..^"Guard".Length];
+                if (ok.DexSource is { } src && !JarHasClass(src, configured) && JarHasClass(src, real))
+                {
+                    _nonGuardClass[site.Key] = real;
+                    Log($"{site.Name}: 真实类名 {configured} → {real}");
+                }
+            }
             _convertedJars[site.Key] = ok.Path;
             return ok.Path;
         }
@@ -339,8 +361,12 @@ public class JavaSpiderRuntime : ISpiderRuntime
             $"{site.Name} 的 spider jar 是 Guard 加固包，unidbg 解壳失败且未找到提供 {alt} 的非 Guard 替代 jar");
     }
 
-    /// <summary>一次 jar 转换的结果。<paramref name="GuardUnpacked"/> 表示该 jar 是 Guard 加固包、走了 unidbg 解壳。</summary>
-    private readonly record struct JarConversion(string Path, bool GuardUnpacked);
+    /// <summary>
+    /// 一次 jar 转换的结果。
+    /// <para><paramref name="DexSource"/> 是**含 classes*.dex 的那份 jar**（普通包=下载原件，
+    /// Guard 包=解壳产物）；调用方据此查真实类名。为 null 表示 raw 文件缺失、无法查证。</para>
+    /// </summary>
+    private readonly record struct JarConversion(string Path, string? DexSource);
 
     /// <summary>
     /// 下载 → 校验 → Guard 解壳 → dex2jar 转换。
@@ -360,9 +386,20 @@ public class JavaSpiderRuntime : ISpiderRuntime
         // 报成 ClassNotFoundException，掩盖「该站无替代实现」这个真实结论。
         if (File.Exists(outPath))
         {
-            if (requireClass is null || !File.Exists(rawPath) || JarHasClass(rawPath, requireClass))
-                return new JarConversion(outPath, IsGuarded(rawPath));
-            return null;
+            // 查类名要查**含 classes.dex 的那份**：Guard 包的 raw 只有外壳 stub，
+            // 真实类在解壳产物里（复用缓存时同样适用）
+            var src = File.Exists(rawPath) && IsGuarded(rawPath)
+                ? Path.Combine(_bridgeDir, "converted", "raw-" + hash + "-unpacked.jar")
+                : rawPath;
+            if (!File.Exists(src)) src = File.Exists(rawPath) ? rawPath : null;
+            if (requireClass is not null && src is not null && !JarHasClass(src, requireClass))
+            {
+                Log($"缓存 jar 不含类 {requireClass}: {Path.GetFileName(outPath)}");
+                return null;
+            }
+            // 缓存命中也要留痕：此前静默返回，遇到「没下载没解壳却又没反应」时无从查因
+            Log($"复用已转换 jar: {Path.GetFileName(outPath)}");
+            return new JarConversion(outPath, src);
         }
 
         if (!File.Exists(rawPath))
@@ -386,7 +423,6 @@ public class JavaSpiderRuntime : ISpiderRuntime
 
         // ── Guard 加固（assets 下有 .so native 解密器 + .guard 密文）：先 unidbg 解壳 ──
         var dexSource = rawPath;
-        var guardUnpacked = false;
         if (IsGuarded(rawPath))
         {
             if (!_unidbgReady)
@@ -398,7 +434,6 @@ public class JavaSpiderRuntime : ISpiderRuntime
             if (!File.Exists(unpacked) && !await UnpackGuardAsync(rawPath, unpacked, ct))
                 return null;
             dexSource = unpacked;
-            guardUnpacked = true;
         }
 
         if (requireClass is not null && !JarHasClass(dexSource, requireClass))
@@ -417,13 +452,17 @@ public class JavaSpiderRuntime : ISpiderRuntime
             CreateNoWindow = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            // 同 unidbg 解壳器：批处理型 java 工具一律给「立即 EOF 的 stdin」，
+            // 杜绝「从 GUI 宿主继承到永不 EOF 的管道 → 等 stdin 卡死」这一类问题
+            RedirectStandardInput = true,
         };
         using var p = Process.Start(psi) ?? throw new InvalidOperationException("dex2jar 启动失败");
+        try { p.StandardInput.Close(); } catch { }
         await p.WaitForExitAsync(ct);
         if (p.ExitCode != 0 || !File.Exists(outPath))
             throw new InvalidOperationException($"dex2jar 转换失败: {Path.GetFileName(dexSource)}");
         Log($"jar 转换完成: {Path.GetFileName(outPath)}");
-        return new JarConversion(outPath, guardUnpacked);
+        return new JarConversion(outPath, dexSource);
     }
 
     /// <summary>
@@ -451,36 +490,71 @@ public class JavaSpiderRuntime : ISpiderRuntime
             CreateNoWindow = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            // ⚠️ 必须让子进程拿到一个**立即 EOF 的 stdin**（见下方 StandardInput.Close）。
+            // unidbg 遇到良性异常时会进入 SimpleARM64Debugger，用 Scanner(System.in) 等调试命令；
+            // 若 stdin 是从 GUI 宿主继承来、永不 EOF 的管道，解壳会永久卡死
+            // （实测 jstack 证据：main 线程停在 SimpleARM64Debugger.loop → Scanner.nextLine）。
+            RedirectStandardInput = true,
             // 解壳器按 -Dfile.encoding=UTF-8 输出，接收端也必须按 UTF-8 解，否则中文日志变乱码
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8,
         };
-        using var p = Process.Start(psi) ?? throw new InvalidOperationException("unidbg 解壳器启动失败");
-        // 两端都要读，否则管道写满会死锁
-        var errTask = p.StandardError.ReadToEndAsync(ct);
-        var outTask = p.StandardOutput.ReadToEndAsync(ct);
+        Process proc;
         try
         {
-            await p.WaitForExitAsync(ct);
+            proc = Process.Start(psi) ?? throw new InvalidOperationException("Process.Start 返回 null");
         }
-        catch (OperationCanceledException)
+        catch (Exception ex)
         {
-            try { p.Kill(entireProcessTree: true); } catch { }
-            throw;
-        }
-        // unidbg 自身会往 stderr 打大量栈信息；只保留解壳器的 [unpack] 结论行
-        foreach (var line in (await errTask + "\n" + await outTask).Split('\n'))
-        {
-            var t = line.Trim();
-            if (t.Contains("[unpack]")) Log("  " + t);
-        }
-        if (p.ExitCode != 0 || !File.Exists(outPath))
-        {
-            Log($"unidbg 解壳失败（exit={p.ExitCode}）: {Path.GetFileName(rawPath)}");
+            Log($"unidbg 解壳器启动失败: {ex.GetType().Name} {ex.Message}");
             return false;
         }
-        Log($"Guard 解壳完成: {Path.GetFileName(outPath)}（{new FileInfo(outPath).Length} 字节）");
-        return true;
+
+        using (proc)
+        {
+            // 立刻关闭 stdin 写端 → 子进程读到 EOF。这一步是解壳能否收敛的**关键**：
+            // 我们不给它任何输入，也绝不允许它等输入（调试器会一直等到 EOF）。
+            try { proc.StandardInput.Close(); } catch { }
+
+            // 两端都要读，否则管道写满会死锁。**不要传 ct** —— ct 取消会让读取提前抛，
+            // 后续拿不到诊断输出（进程杀死后管道即 EOF，自然结束）。
+            var errTask = proc.StandardError.ReadToEndAsync(CancellationToken.None);
+            var outTask = proc.StandardOutput.ReadToEndAsync(CancellationToken.None);
+            try
+            {
+                // 正常解壳 ~3s；给 90s 上限，避免异常时把首页挂死
+                using var guard = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                guard.CancelAfter(TimeSpan.FromSeconds(90));
+                await proc.WaitForExitAsync(guard.Token);
+            }
+            catch (Exception ex)
+            {
+                try { proc.Kill(entireProcessTree: true); } catch { }
+                Log($"unidbg 解壳进程中止: {ex.GetType().Name} {ex.Message}");
+                return false;
+            }
+
+            // stderr 里有：① 解壳器自己的 [unpack] 结论行；② unidbg 的反汇编/栈噪声。
+            // 过滤掉噪声，但**必须放行报错行** —— 否则 JVM 起不来的原因会被静默吞掉。
+            var combined = (await errTask) + "\n" + (await outTask);
+            foreach (var line in combined.Split('\n'))
+            {
+                var t = line.Trim();
+                if (t.Length == 0 || t.StartsWith("at ") || t.StartsWith("=>")) continue;
+                if (t.StartsWith("[unpack]") || t.Contains("[unpack] ")
+                    || t.Contains("Exception") || t.Contains("Error") || t.Contains("error")
+                    || t.Contains("Could not") || t.Contains("Unrecognized") || t.Contains("无法"))
+                    Log("  " + t[..Math.Min(220, t.Length)]);
+            }
+
+            if (proc.ExitCode != 0 || !File.Exists(outPath))
+            {
+                Log($"unidbg 解壳失败（exit={proc.ExitCode}）: {Path.GetFileName(rawPath)}");
+                return false;
+            }
+            Log($"Guard 解壳完成: {Path.GetFileName(outPath)}（{new FileInfo(outPath).Length} 字节）");
+            return true;
+        }
     }
 
     /// <summary>

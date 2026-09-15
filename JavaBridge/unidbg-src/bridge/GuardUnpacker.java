@@ -76,6 +76,17 @@ public final class GuardUnpacker {
             // UTF-8 一定存在，进不来
         }
 
+        // ⚠️ 关键自保：把 stdin 换成**立即 EOF** 的空流。
+        // unidbg 在模拟途中遇到「良性异常」时（例：壳调用 DexClassLoader.loadClass，
+        // 我们的 GuardJni 桩刻意不实现 → UnsupportedOperationException），
+        // AbstractEmulator.handleEmuException 会挂起 SimpleARM64Debugger，
+        // 而它用 Scanner(System.in) 读交互式调试命令。
+        // 若 stdin 是**永不 EOF 的管道**（被 GUI 宿主 CreateProcess 继承时就是这种），
+        // 进程会永久阻塞在 Scanner.nextLine()，表现为「解壳卡死」——但其实
+        // 解密数据早已截获完毕（栈证据：SimpleARM64Debugger.loop -> Scanner.nextLine）。
+        // 批处理解壳器不需要交互调试，直接断掉 stdin。
+        System.setIn(new java.io.ByteArrayInputStream(new byte[0]));
+
         boolean verbose = false;
         boolean keepTemp = false;
         List<String> pos = new ArrayList<>();
