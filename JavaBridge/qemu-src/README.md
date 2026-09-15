@@ -213,20 +213,50 @@ createP2spTask(mUrl, mRefUrl, mCookie, mUser, mPass, mFilePath, mFileName, mCrea
 
 ## 最终结果：宿主真的把视频流拉下来了
 
+| 请求 | 结果 |
+|---|---|
+| 无 Range | `HTTP=200`，2848208 字节（整个文件），0.33s |
+| 带 Range `0-1023` | `HTTP=206`，1024 字节 |
+| 前 16 字节 | `00 00 00 20 66 74 79 70 69 73 6f 6d …` = MP4 的 `ftypisom` 头 ✅ |
+
 链路：**宿主 → qemu hostfwd(127.0.0.1:20085) → guest 代理(0.0.0.0:20080)
-→ 重新 getLocalUrl → 迅雷引擎本地服务(127.0.0.1:随机) → 真实字节**
+→ 重新 getLocalUrl → 迅雷引擎本地服务(127.0.0.1:随机端口) → 真实字节**
 
 ## 最后一跳的三个真正原因（都踩过，务必记住）
-1. **链尾不能调 ** —— 它是 SDK 的清理入口，调完之后引擎变成未初始化，
-   后续任何调用（包括为播放器重新取播放地址）都会返回 **9102 = XL_SDK_NOT_INIT**。
+
+1. **链尾不能调 `unInit`**
+   它是 SDK 的清理入口，调完之后引擎变成「未初始化」，后续任何调用
+   （包括为播放器重新取播放地址）都会返回 **9102 = XL_SDK_NOT_INIT**。
    **引擎要长期运行，产品里永远不调它。**
-2. **引擎状态是「线程相关」的** —— 在代理线程里调  也是 9102。
-   解法：代理线程发请求、**主线程**执行 （volatile 变量握手）。
-3. **引擎的本地播放服务是「一次性」的** —— 一个客户端断开后就不再接受新连接
-   （第二次连 ECONNREFUSED）。**每次有播放器连进来都要重新调一次 **，
+
+2. **引擎状态是「线程相关」的**
+   在代理线程里调 `getLocalUrl` 同样得到 9102。
+   解法：代理线程发请求 + volatile 变量握手 + **主线程**执行 `getLocalUrl`。
+
+3. **引擎的本地播放服务是「一次性」的**
+   一个客户端断开后就不再接受新连接（第二次连它 = ECONNREFUSED）。
+   **每次播放器连进来都要重新调一次 `getLocalUrl`**，
    并用返回 URL 里的**新端口**去连（端口每次都变）。
-4. 代理端口必须 （引擎只监听 127.0.0.1，宿主 hostfwd 够不到 loopback）；
-   qemu 的 hostfwd 端口被占用时会**静默拒绝启动**（），换端口即可。
 
-## Windows 原生启动命令（已实测）
+4. 代理必须监听 `0.0.0.0`（引擎只听 `127.0.0.1`，宿主 hostfwd 够不到 loopback）。
+   qemu 的 hostfwd 端口被占用时会**静默拒绝启动**，
+   只报 `Could not set up host forwarding rule`，换端口即可。
 
+## Windows 原生启动命令（已实测可用）
+
+```
+qw64\qemu-system-aarch64.exe -M virt -cpu max -m 2048 -smp 4 -nographic -L qw64/share ^
+  -kernel pkg_kernel -initrd pkg_initrd.xz ^
+  -append "console=ttyAMA0 rdinit=/init loglevel=4" ^
+  -netdev user,id=n0,hostfwd=tcp:127.0.0.1:20085-:20080 ^
+  -device virtio-net-pci,netdev=n0
+```
+
+## 打包体积（实测）
+
+| 部件 | 未压缩 | 压缩后 |
+|---|---|---|
+| QEMU（exe 30.9MB + 104 个 DLL） | 127 MB | **30.2 MB** |
+| 内核 `vmlinuz-virt` | 9.2 MB | ~9 MB |
+| initramfs（busybox+bionic+引擎+harness） | 13 MB | 3.5 MB |
+| **安装包增量** | | **≈ 43 MB** |
