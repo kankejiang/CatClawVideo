@@ -185,6 +185,12 @@ public class JavaSpiderRuntime : ISpiderRuntime
             CreateNoWindow = true,
         };
         psi.ArgumentList.Add("-Dfile.encoding=UTF-8");
+        // ⚠️ 必须关字节码校验：dex2jar 从 OLLVM 混淆过的 dex 还原出来的类，
+        // 经常**缺 StackMapTable**（`VerifyError: Expecting a stackmap frame at branch target N`），
+        // 校验器直接拒绝加载 → 站点整站不可用（2026-09-15 实测：原创/糯米/海绵/厂长/光影
+        // 全部栽在这上面，而它们的内容其实是好的）。JVM 21 起无法按类关闭校验，
+        // 只能在 JVM 级关掉；关掉后这类畸形类可以正常加载运行。
+        psi.ArgumentList.Add("-Xverify:none");
         psi.ArgumentList.Add("-cp");
         psi.ArgumentList.Add("bridge.jar;vendor\\deps\\*");
         psi.ArgumentList.Add("bridge.Server");

@@ -977,11 +977,21 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         }
         catch (NotSupportedException ex)
         {
+            // 这类异常的消息本身就是给人看的（如「BT 引擎未初始化」「该集为电驴链接」），
+            // 原样提示；同时落盘，方便事后对照桥日志查因。
+            DiagLog.Write($"[播放] 不支持 {_item.Title} / {episode.Name}: {ex.Message}");
             if (generation == _playGeneration) await ShowTipAsync(ex.Message);
         }
-        catch
+        catch (Exception ex)
         {
-            if (generation == _playGeneration) await ShowTipAsync("该集解析失败，请换集或换线路");
+            // ⚠ 绝不能静默吞：只显示一句「解析失败」的话，Guard 包缺类、BT 无节点、
+            // 嗅探失败、防盗链 403 全都长得一模一样，排障只能靠猜
+            // （2026-09-15 实测：「新6V 剧集解析失败」真因是 playerContent 抛
+            //   ClassNotFoundException: android.view.View$OnTouchListener，全被这里吃掉）。
+            DiagLog.Write($"[播放] 解析失败 {_item.Title} / {episode.Name}"
+                          + $"（源 {_site.Name} / 线路 {episode.Flag}）: {ex.GetType().Name}: {ex.Message}");
+            if (generation == _playGeneration)
+                await ShowTipAsync("该集解析失败：" + ReasonOf(ex.Message));
         }
         finally
         {
@@ -991,6 +1001,14 @@ public partial class WatchPage : ContentPage, IQueryAttributable
                 UpdatePlayIcon();
             }
         }
+    }
+
+    /// <summary>把异常消息压成一行可读原因（VerifyError 之类自带多行字节码 dump，不能整段进提示）</summary>
+    private static string ReasonOf(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message)) return "请换集或换线路";
+        var line = message.Split('\n')[0].Trim();
+        return line.Length > 80 ? line[..80] + "…" : line;
     }
 
     /// <summary>把 Referer/UA 兜底成播放器请求头字典（Headers 未提供时）</summary>

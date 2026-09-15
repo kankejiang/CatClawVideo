@@ -272,7 +272,12 @@ public sealed class BtStreamService : IAsyncDisposable
             await ApplyPrioritiesAsync(manager, file);
             s.File = file;
             s.FileIndex = fileIndex;
-            s.Stream = await manager.StreamProvider.CreateStreamAsync(file, prebuffer: true, ct);
+            // ⚠ 必须走带超时的包装：CreateStreamAsync(prebuffer: true) 在「metadata 拿到了、
+            // 但该种当前无人做种」时会**永久阻塞**，而这里传进来的 ct 一路都是
+            // CancellationToken.None（WatchPage → ResolvePlayUrlAsync → OpenAsync），
+            // 直接裸调用会让 UI 无限转圈而不是报错（2026-09-15 修正：原来只有重建流那条路径
+            // 用了 CreateStreamWithTimeoutAsync，首开这条反而漏了）。
+            s.Stream = await CreateStreamWithTimeoutAsync(manager, file, ct);
             s.LastUsedUtc = DateTime.UtcNow;
             Log($"会话 {infoHex[..12]}… → 第 {fileIndex} 个文件 {file.Length / 1048576.0:F1}MB");
             return new BtSession(infoHex, s.FileIndex, file.Length, file.FullPath, SessionUrl(infoHex));
