@@ -47,6 +47,14 @@ public final class ThunderRunner {
     /** AndroidResolver 的 API level：取 23（引擎只用最基础的 libc/liblog/文件行为） */
     private static final int API_LEVEL = 23;
 
+    /**
+     * 传给引擎的保存路径必须是 **Android 风格路径**。
+     * <p>实测传 Windows 路径（{@code D:\...}）时 {@code createBtMagnetTask} 会
+     * {@code UC_ERR_READ_UNMAPPED} 崩在引擎自己起的线程里。用规范路径，
+     * 实际落盘再交给 IOResolver 映射到宿主目录。</p>
+     */
+    private static final String EMU_SAVE_PATH = "/data/data/com.catclaw.video/files";
+
     public static void main(String[] args) throws Exception {
         // UTF-8 控制台（Windows 默认 GBK，中文日志会乱码）
         System.setOut(new java.io.PrintStream(new java.io.FileOutputStream(java.io.FileDescriptor.out), true, "UTF-8"));
@@ -123,7 +131,7 @@ public final class ThunderRunner {
             }
 
             if (stage2) {
-                stage2MagnetTask(vm, emulator, work);
+                stage2MagnetTask(vm, emulator, work, jni);
             }
         } finally {
             emulator.close();
@@ -165,15 +173,128 @@ public final class ThunderRunner {
         }
     }
 
-    /** 阶段二：init → createBtMagnetTask（骨架，参数逐步补齐） */
-    private static void stage2MagnetTask(VM vm, AndroidEmulator emulator, Path work) {
-        System.err.println("[迅雷] ── 阶段二：init + 建磁力任务 ──");
-        System.err.println("[迅雷] （待补齐 soAppKey/peerid/guid 等参数后启用）");
-        // TODO: init(soAppKey, "com.android.providers.downloads", appVersion, "", peerid, guid,
-        //             statSavePath, statCfgSavePath, networkType, permissionLevel, queryConfOnInit)
-        //       → createBtMagnetTask(magnet, savePath, name, GetTaskId)
-        //       → 轮询 getBtSubTaskStatus / getBtSubTaskInfo
-        //       → getLocalUrl(url, XLTaskLocalUrl)
+    /** 阶段二：init(...) —— 让引擎真正启动起来 */
+    private static void stage2MagnetTask(VM vm, AndroidEmulator emulator, Path work, ThunderJni jni) {
+        System.err.println("[迅雷] ── 阶段二：init ──");
+        DvmClass xlLoaderCls = vm.resolveClass("com/xunlei/downloadlib/XLLoader");
+        DvmObject<?> loader = xlLoaderCls == null ? null : xlLoaderCls.newObject(null);
+        if (loader == null) {
+            System.err.println("[迅雷] ✗ XLLoader 实例化失败");
+            return;
+        }
+
+        // soAppKey：由 appKey 派生，算法已从字节码复刻（见 README 的推导）：
+        //   appKey.split("==")[0].replace('^','=') 去掉首尾各 2 字符 → Base64 解码 → rawItems
+        //   mAppId = Short.parseShort(rawItems.split(";")[0]) = 6001
+        //   Base64( "com.android.providers.downloads" + 0x00 + appId(小端 2 字节) + appType(1=PRODUCT) )
+        final String soAppKey = "Y29tLmFuZHJvaWQucHJvdmlkZXJzLmRvd25sb2FkcwBxFwE=";
+
+        File saveRoot = work.resolve("thunder-data").toFile();
+        //noinspection ResultOfMethodCallIgnored
+        saveRoot.mkdirs();
+
+        // peerid：对齐 XLDownloadManager.getPeerid() 的回落分支 —— 大写十六进制(36) + "004V"
+        String peerid = randomHex(36).toUpperCase() + "004V";
+        // guid：XLUtil.generateGuid 的默认形态
+        String guid = randomHex(14) + "_" + randomHex(12);
+
+        System.err.println("[迅雷]   soAppKey = " + soAppKey);
+        System.err.println("[迅雷]   peerid   = " + peerid);
+        System.err.println("[迅雷]   guid     = " + guid);
+        System.err.println("[迅雷]   savePath = " + saveRoot.getAbsolutePath());
+
+        try {
+            int rc = loader.callJniMethodInt(emulator,
+                    "init(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;"
+                            + "Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;III)I",
+                    soAppKey,                       // ① soAppKey（getSoAppKey()）
+                    "com.android.providers.downloads", // ② 硬编码包名
+                    "1.0.0",                        // ③ mAppVersion
+                    "",                             // ④ 空串
+                    peerid,                         // ⑤ getPeerid()
+                    guid,                           // ⑥ getGuid()
+                    EMU_SAVE_PATH,                     // ⑦ mStatSavePath
+                    EMU_SAVE_PATH,                     // ⑧ mStatCfgSavePath
+                    1,                              // ⑨ networkType
+                    1,                              // ⑩ mPermissionLevel（对齐 XLTaskHelper：1）
+                    0);                             // ⑪ mQueryConfOnInit （对齐 XLTaskHelper：0）
+            System.err.println("[迅雷] ← init 返回 " + rc + "（0 = 成功；9000/9901 = 失败）");
+
+            if (rc != 0) {
+                System.err.println("[迅雷] ⚠️ init 未返回 0 —— 仍继续试建任务，以便观察真实失败点");
+            }
+
+            createMagnetTask(vm, emulator, loader, saveRoot, jni);
+        } catch (Throwable t) {
+            System.err.println("[迅雷] ✗ init 失败: " + t);
+            t.printStackTrace();
+        }
+    }
+
+    /**
+     * 建磁力任务 → 轮询状态 → 取本地播放地址。
+     * 调用顺序与参数顺序均取自字节码（`XLTaskHelper.addMagentTask` /
+     * `XLDownloadManager.createBtMagnetTask`）：native 侧是
+     * {@code createBtMagnetTask(url, filePath, fileName, GetTaskId)}。
+     */
+    private static void createMagnetTask(VM vm, AndroidEmulator emulator, DvmObject<?> loader,
+                                         File saveRoot, ThunderJni jni) {
+        String magnet = System.getProperty("thunder.magnet",
+                "magnet:?xt=urn:btih:1363FB911E8603FDE757C9B02979D508DE2D195B");
+        String name = "test-magnet";
+        System.err.println("[迅雷] ── 建磁力任务 ──");
+        System.err.println("[迅雷]   magnet = " + magnet);
+
+        try {
+            DvmClass taskIdCls = vm.resolveClass("com/xunlei/downloadlib/parameter/GetTaskId");
+            DvmObject<?> taskId = taskIdCls == null ? null : taskIdCls.newObject(null);
+            int rc = loader.callJniMethodInt(emulator,
+                    "createBtMagnetTask(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;"
+                            + "Lcom/xunlei/downloadlib/parameter/GetTaskId;)I",
+                    magnet, EMU_SAVE_PATH, name, taskId);
+            System.err.println("[迅雷] ← createBtMagnetTask 返回 " + rc
+                    + "，taskId = " + jni.capturedString("mTaskId"));
+
+            long id = -1;
+            Object v = jni.captured("mTaskId");
+            if (v instanceof Number n) id = n.longValue();
+            if (id <= 0) {
+                System.err.println("[迅雷] ⚠️ 没拿到有效 taskId，跳过轮询");
+                return;
+            }
+
+            // 轮询任务状态：看它是否会去联网、进度是否推进
+            DvmClass statusCls = vm.resolveClass("com/xunlei/downloadlib/parameter/BtTaskStatus");
+            for (int i = 0; i < 10; i++) {
+                DvmObject<?> st = statusCls == null ? null : statusCls.newObject(null);
+                int s = loader.callJniMethodInt(emulator,
+                        "getBtSubTaskStatus(JLcom/xunlei/downloadlib/parameter/BtTaskStatus;II)I",
+                        id, st, 0, 0);
+                System.err.println("[迅雷]   轮询#" + i + " getBtSubTaskStatus 返回 " + s
+                        + "，mState/" + jni.capturedString("mState")
+                        + " mStatus/" + jni.capturedString("mStatus"));
+                Thread.sleep(1000);
+            }
+
+            // 取本地播放地址
+            DvmClass localUrlCls = vm.resolveClass("com/xunlei/downloadlib/parameter/XLTaskLocalUrl");
+            DvmObject<?> localUrl = localUrlCls == null ? null : localUrlCls.newObject(null);
+            int u = loader.callJniMethodInt(emulator,
+                    "getLocalUrl(Ljava/lang/String;Lcom/xunlei/downloadlib/parameter/XLTaskLocalUrl;)I",
+                    name, localUrl);
+            System.err.println("[迅雷] ← getLocalUrl 返回 " + u
+                    + "，mStrUrl = " + jni.capturedString("mStrUrl"));
+        } catch (Throwable t) {
+            System.err.println("[迅雷] ✗ 建任务失败: " + t);
+            t.printStackTrace();
+        }
+    }
+
+    private static String randomHex(int n) {
+        java.security.SecureRandom r = new java.security.SecureRandom();
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < n; i++) sb.append("0123456789abcdef".charAt(r.nextInt(16)));
+        return sb.toString();
     }
 
 }
