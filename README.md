@@ -95,7 +95,7 @@ _Modern cross-platform video player built with .NET MAUI._
 | `CatClawVideo.Core` | 核心库：模型、接口、片源提供者（猫爪源 / MacCMS / spider 爬虫运行时）、TVBox 订阅解析 |
 | `CatClawVideo.Data` | 数据层：SQLite 数据库（订阅源、播放历史、收藏） |
 | `CatClawVideo.Maui` | MAUI 应用主体：页面、ViewModel、平台播放器 Handler |
-| `JavaBridge` | 桌面端 Java 桥（android-stub + 爬虫桩 + bridge server → `bridge.jar`），用于在桌面加载 TVBox jar 爬虫 |
+| `JavaBridge` | 桌面端 Java 桥（android-stub + 爬虫桩 + bridge server → `bridge.jar`），用于在桌面加载 TVBox jar 爬虫；`vendor/unidbg` 为 Guard 加固包解壳器（模拟 ARM64 跑原生解密 .so） |
 | `samples/` | 猫爪源协议示例文件 |
 | `prototype/` | HTML 界面原型 |
 
@@ -107,7 +107,7 @@ _Modern cross-platform video player built with .NET MAUI._
 - MAUI 工作负载（`dotnet workload install maui-android`）
 - Android：API 36 平台，运行时标识 `android-arm64` / `android-x64`
 - Windows：WinAppSDK 1.7，10.0.19041.0 以上
-- JavaBridge：JDK 17+（构建 `bridge.jar`）
+- JavaBridge：JDK 17+（构建 `bridge.jar`）；Guard 解壳器需 JDK 17+ 运行（`JavaBridge\build-unidbg.cmd` 构建 `vendor\unidbg\unpacker.jar`）
 
 ### 构建 App
 

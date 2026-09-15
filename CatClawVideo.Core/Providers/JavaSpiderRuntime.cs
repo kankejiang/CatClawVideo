@@ -13,12 +13,17 @@ namespace CatClawVideo.Core.Providers;
 /// <summary>
 /// jar/dex 爬虫运行时（桌面 JVM 版）：启动常驻 Java 桥进程（JavaBridge/bridge.Server，
 /// stdin/stdout 每行一条 JSON），spider jar 经 dex2jar 转换为标准 jar 后由桥加载。
-/// <para>能力边界：Guard 加固 jar 本身**无法**在 PC 运行 —— 其解密器是 ARM Android native
-/// （<c>assets/ftyguard_v8.so</c> 用 <c>JNI_OnLoad</c> + <c>RegisterNatives</c> 动态注册，且只有
-/// arm64/armv7），在 x64 JVM 里没有可执行路径。
-/// <b>但站点仍可用</b>：检测到 Guard 时会自动改用**同族「非 Guard 构建」**的 jar
+/// <para><b>Guard 加固包的 PC 侧脱壳</b>：Guard 把真正的 spider dex 加密成
+/// <c>assets/ftyshinidie.guard</c>，解密器是 ARM Android native
+/// （<c>assets/ftyguard_v8.so</c>，<c>JNI_OnLoad</c> + <c>RegisterNatives</c> 注册
+/// <c>com.github.catvod.spider.DexNative</c>）；x64 JVM 跑不了 ARM 指令。
+/// 本运行时改用 <b>unidbg（Unicorn）模拟 ARM64 Android 进程</b>执行该 SO 完成解密
+/// （见 <c>JavaBridge/unidbg-src/bridge/GuardUnpacker.java</c>），拿回明文 dex 后照常走 dex2jar。
+/// 该壳经实测<b>没有反模拟检测</b>（SO 只有 18 个外部符号且全是 libc，不读 /proc、不 ptrace），
+/// 因此解壳可离线稳定复现。</para>
+/// <para>解壳器不可用或解壳失败时，退而求其次改用**同族「非 Guard 构建」**的 jar
 /// （见 <see cref="NonGuardFallbackJars"/>），它提供同名去掉 <c>Guard</c> 后缀的真实实现
-/// （<c>csp_SixVGuard</c> → <c>SixV</c>），因此 新6V 这类站点在 Windows 上也能播。</para>
+/// （<c>csp_SixVGuard</c> → <c>SixV</c>）。</para>
 /// <para>认证预处理：ext global 含 username/password 而缺 token 时，自动向
 /// {server}/api/auth/login 登录注入 token（小雅 AListSh 需要）。</para>
 /// </summary>
@@ -42,12 +47,14 @@ public class JavaSpiderRuntime : ISpiderRuntime
 
     /// <summary>
     /// 站点 → 改用替代 jar 后的类名（去掉 <c>Guard</c> 后缀）。
-    /// <para>Guard 加固 jar 的解密器是 **ARM Android native .so**（v8 库用 <c>JNI_OnLoad</c> +
-    /// <c>RegisterNatives</c> 动态注册，且只提供 arm64/armv7），Windows 的 JVM 里无法执行 ——
-    /// 这是结构性限制，不是配置问题。因此本平台改用**同族「非 Guard 构建」**的 jar：
-    /// 它提供同名但去掉 <c>Guard</c> 后缀的真实实现（如 <c>SixVGuard</c> → <c>SixV</c>）。</para>
+    /// <para>Guard 外壳的类名都带 <c>Guard</c> 后缀（<c>DouDouGuard</c> / <c>SixVGuard</c>），
+    /// 而解壳出来的真实 dex 里**不带**后缀（<c>DouDou</c> / <c>SixV</c>），桥必须按真实名加载。
+    /// 无论是 unidbg 解壳还是换非 Guard 同族 jar，映射规则一致。</para>
     /// </summary>
     private readonly ConcurrentDictionary<string, string> _nonGuardClass = new();
+
+    /// <summary>unidbg 解壳器是否就绪：<c>vendor/unidbg/unpacker.jar</c> + <c>unidbg-android-*.jar</c>。</summary>
+    private readonly bool _unidbgReady;
 
     /// <summary>
     /// 配置的 jar 是 Guard 加固、而本平台解不开时，按顺序尝试的**非 Guard 同族 jar**。
@@ -71,32 +78,64 @@ public class JavaSpiderRuntime : ISpiderRuntime
         IsSupported = File.Exists(Path.Combine(bridgeDir, "bridge.jar"))
                       && Directory.Exists(Path.Combine(bridgeDir, "vendor", "deps"))
                       && Directory.Exists(Path.Combine(bridgeDir, "vendor", "dex2jar"));
+        _unidbgReady = DetectUnidbg(bridgeDir);
+    }
+
+    /// <summary>探测 unidbg 解壳器是否已随包部署（缺省时 Guard 站点自动退回非 Guard 同族 jar）。</summary>
+    private static bool DetectUnidbg(string bridgeDir)
+    {
+        try
+        {
+            var dir = Path.Combine(bridgeDir, "vendor", "unidbg");
+            return File.Exists(Path.Combine(dir, "unpacker.jar"))
+                   && Directory.EnumerateFiles(dir, "unidbg-android-*.jar").Any();
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private void Log(string m) => _log?.Invoke("[jvm] " + m);
 
-    /// <summary>查找系统里的 java.exe：JAVA_HOME → C:\Program Files\Java\* → PATH</summary>
+    /// <summary>
+    /// 查找系统里的 java.exe，取**版本最高**的那个。
+    /// <para>扫描顺序：JAVA_HOME → <c>C:\Program Files\Java\*</c> → <c>C:\Program Files\Microsoft\jdk-*</c> → PATH。
+    /// 必须取最高版本：<c>bridge.jar</c> 与 unidbg 解壳器都是按 JDK 21 编译的（class file 65），
+    /// 落到 JDK 17 会抛 <c>UnsupportedClassVersionError</c>；而本机常见「PATH 里 17、JAVA_HOME 里 21」
+    /// 或同时装了两套 JDK 的情况，所以按目录名里的版本号排序取最大。</para>
+    /// </summary>
     public static string? FindJavaExe()
     {
-        var home = Environment.GetEnvironmentVariable("JAVA_HOME");
-        if (!string.IsNullOrEmpty(home))
+        var candidates = new List<(int Major, string Path)>();
+        void Consider(string? p)
         {
-            var p = Path.Combine(home, "bin", "java.exe");
-            if (File.Exists(p)) return p;
+            if (string.IsNullOrEmpty(p) || !File.Exists(p)) return;
+            var dir = new DirectoryInfo(Path.GetDirectoryName(p)!);
+            var m = Regex.Match(dir.Name, @"(\d+)");
+            candidates.Add((m.Success ? int.Parse(m.Groups[1].Value) : 0, p));
         }
-        if (Directory.Exists("C:\\Program Files\\Java"))
-            foreach (var dir in Directory.GetDirectories("C:\\Program Files\\Java"))
-            {
-                var p = Path.Combine(dir, "bin", "java.exe");
-                if (File.Exists(p)) return p;
-            }
+
+        var home = Environment.GetEnvironmentVariable("JAVA_HOME");
+        if (!string.IsNullOrEmpty(home)) Consider(Path.Combine(home, "bin", "java.exe"));
+
+        foreach (var root in new[] { @"C:\Program Files\Java", @"C:\Program Files\Microsoft", @"C:\Program Files\Android\openjdk" })
+        {
+            if (!Directory.Exists(root)) continue;
+            foreach (var dir in Directory.GetDirectories(root))
+                Consider(Path.Combine(dir, "bin", "java.exe"));
+        }
+
         var pathVar = Environment.GetEnvironmentVariable("PATH") ?? "";
         foreach (var d in pathVar.Split(';', StringSplitOptions.RemoveEmptyEntries))
         {
-            try { var p = Path.Combine(d.Trim(), "java.exe"); if (File.Exists(p)) return p; }
+            try { Consider(Path.Combine(d.Trim(), "java.exe")); }
             catch { }
         }
-        return null;
+
+        return candidates.Count == 0
+            ? null
+            : candidates.OrderByDescending(c => c.Major).First().Path;
     }
 
     /// <summary>向上查找 JavaBridge 目录（bridge.jar 所在，App 部署目录或仓库根）</summary>
@@ -269,42 +308,47 @@ public class JavaSpiderRuntime : ISpiderRuntime
 
         var configured = site.Api.StartsWith("csp_", StringComparison.OrdinalIgnoreCase) ? site.Api[4..] : site.Api;
 
-        var outPath = await ConvertJarAsync(jarUrl, expectMd5, ct, null);
-        if (outPath is not null)
+        var conv = await ConvertJarAsync(jarUrl, expectMd5, ct, null);
+        if (conv is { } ok)
         {
-            _convertedJars[site.Key] = outPath;
-            return outPath;
+            // Guard 包解壳后真实类名不带 Guard 后缀（DouDouGuard → DouDou），桥必须按真实名加载
+            if (ok.GuardUnpacked && configured.EndsWith("Guard", StringComparison.Ordinal))
+                _nonGuardClass[site.Key] = configured[..^"Guard".Length];
+            _convertedJars[site.Key] = ok.Path;
+            return ok.Path;
         }
 
-        // ── 配置的 jar 在本平台不可用（Guard 加固）：换同族非 Guard 构建 ──
-        // 非 Guard 版里真实类名不带 Guard 后缀（SixVGuard → SixV）。
+        // ── 解壳不可用/失败：换同族非 Guard 构建 ──
+        // 非 Guard 版里真实类名同样不带 Guard 后缀（SixVGuard → SixV）。
         var alt = configured.EndsWith("Guard", StringComparison.Ordinal)
             ? configured[..^"Guard".Length]
             : configured;
-        Log($"{site.Name} 的 spider jar 是 Guard 加固包（ARM native 解密，本平台无法执行）；改试非 Guard 同族 jar（目标类 {alt}）…");
+        Log($"{site.Name} 的 spider jar 是 Guard 加固包且未能解壳；改试非 Guard 同族 jar（目标类 {alt}）…");
 
         foreach (var fb in NonGuardFallbackJars)
         {
-            var p = await ConvertJarAsync(fb, null, ct, alt);
-            if (p is null) continue;
+            var c = await ConvertJarAsync(fb, null, ct, alt);
+            if (c is null) continue;
             _nonGuardClass[site.Key] = alt;
-            _convertedJars[site.Key] = p;
+            _convertedJars[site.Key] = c.Value.Path;
             Log($"{site.Name}: 已改用非 Guard jar（{fb}），类名 {configured} → {alt}");
-            return p;
+            return c.Value.Path;
         }
 
         throw new NotSupportedException(
-            $"{site.Name} 的 spider jar 是 Guard 加固包（依赖 Android ARM native 解密），本平台无法执行，" +
-            $"且未找到提供 {alt} 的非 Guard 替代 jar");
+            $"{site.Name} 的 spider jar 是 Guard 加固包，unidbg 解壳失败且未找到提供 {alt} 的非 Guard 替代 jar");
     }
 
+    /// <summary>一次 jar 转换的结果。<paramref name="GuardUnpacked"/> 表示该 jar 是 Guard 加固包、走了 unidbg 解壳。</summary>
+    private readonly record struct JarConversion(string Path, bool GuardUnpacked);
+
     /// <summary>
-    /// 下载 → 校验 → 查 Guard → dex2jar 转换。
-    /// <para>返回转换后的 java jar 路径；**返回 null 表示这个 jar 在本平台不可用**
-    /// （Guard 加固，或 <paramref name="requireClass"/> 指定的类不在其中），
+    /// 下载 → 校验 → Guard 解壳 → dex2jar 转换。
+    /// <para>返回转换后的 java jar；**返回 null 表示这个 jar 在本平台不可用**
+    /// （Guard 且解壳失败/解壳器缺失，或 <paramref name="requireClass"/> 指定的类不在其中），
     /// 由调用方决定换哪个 jar —— 用 null 而不是抛异常，是为了让「换 jar」成为正常流程而不是错误路径。</para>
     /// </summary>
-    private async Task<string?> ConvertJarAsync(string jarUrl, string? expectMd5, CancellationToken ct, string? requireClass)
+    private async Task<JarConversion?> ConvertJarAsync(string jarUrl, string? expectMd5, CancellationToken ct, string? requireClass)
     {
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(jarUrl)))[..24].ToLowerInvariant();
         var rawPath = Path.Combine(_bridgeDir, "converted", "raw-" + hash + ".jar");
@@ -315,9 +359,11 @@ public class JavaSpiderRuntime : ISpiderRuntime
         // （实测：非 Guard fty.jar 有 SixV 却没有 JPJ）。直接用缓存会让缺失的类漏到 load 阶段，
         // 报成 ClassNotFoundException，掩盖「该站无替代实现」这个真实结论。
         if (File.Exists(outPath))
-            return requireClass is null || !File.Exists(rawPath) || JarHasClass(rawPath, requireClass)
-                ? outPath
-                : null;
+        {
+            if (requireClass is null || !File.Exists(rawPath) || JarHasClass(rawPath, requireClass))
+                return new JarConversion(outPath, IsGuarded(rawPath));
+            return null;
+        }
 
         if (!File.Exists(rawPath))
         {
@@ -338,24 +384,34 @@ public class JavaSpiderRuntime : ISpiderRuntime
             await File.WriteAllBytesAsync(rawPath, bytes, ct);
         }
 
-        // Guard 加固检测：assets 下带 .so（ARM native 解密器）+ .guard 加密 dex
+        // ── Guard 加固（assets 下有 .so native 解密器 + .guard 密文）：先 unidbg 解壳 ──
+        var dexSource = rawPath;
+        var guardUnpacked = false;
         if (IsGuarded(rawPath))
         {
-            Log($"跳过 Guard 加固 jar: {Path.GetFileName(rawPath)}");
-            return null;
+            if (!_unidbgReady)
+            {
+                Log($"跳过 Guard 加固 jar（未部署 unidbg 解壳器 vendor/unidbg/）: {Path.GetFileName(rawPath)}");
+                return null;
+            }
+            var unpacked = Path.Combine(_bridgeDir, "converted", "raw-" + hash + "-unpacked.jar");
+            if (!File.Exists(unpacked) && !await UnpackGuardAsync(rawPath, unpacked, ct))
+                return null;
+            dexSource = unpacked;
+            guardUnpacked = true;
         }
 
-        if (requireClass is not null && !JarHasClass(rawPath, requireClass))
+        if (requireClass is not null && !JarHasClass(dexSource, requireClass))
         {
             Log($"跳过不含类 {requireClass} 的 jar: {Path.GetFileName(rawPath)}");
             return null;
         }
 
-        // dex2jar 转换
+        // dex2jar 转换（普通 jar 直接用原件；Guard 包用解壳后的明文 dex）
         var psi = new ProcessStartInfo
         {
             FileName = _javaExe,
-            Arguments = $"-cp \"vendor\\dex2jar\\*\" com.googlecode.dex2jar.tools.Dex2jarCmd \"{rawPath}\" -o \"{outPath}\" --force",
+            Arguments = $"-cp \"vendor\\dex2jar\\*\" com.googlecode.dex2jar.tools.Dex2jarCmd \"{dexSource}\" -o \"{outPath}\" --force",
             WorkingDirectory = _bridgeDir,
             UseShellExecute = false,
             CreateNoWindow = true,
@@ -365,9 +421,66 @@ public class JavaSpiderRuntime : ISpiderRuntime
         using var p = Process.Start(psi) ?? throw new InvalidOperationException("dex2jar 启动失败");
         await p.WaitForExitAsync(ct);
         if (p.ExitCode != 0 || !File.Exists(outPath))
-            throw new InvalidOperationException($"dex2jar 转换失败: {Path.GetFileName(rawPath)}");
+            throw new InvalidOperationException($"dex2jar 转换失败: {Path.GetFileName(dexSource)}");
         Log($"jar 转换完成: {Path.GetFileName(outPath)}");
-        return outPath;
+        return new JarConversion(outPath, guardUnpacked);
+    }
+
+    /// <summary>
+    /// 用 unidbg 解 Guard 壳：模拟 ARM64 Android 进程执行 <c>assets/ftyguard_v8.so</c> 的原生解密器，
+    /// 把 <c>assets/ftyshinidie.guard</c> 还原成明文 dex（ZIP），产物写入 <paramref name="outPath"/>。
+    /// </summary>
+    /// <returns>解壳成功且产物存在返回 true；否则 false（调用方据此退回非 Guard 同族 jar）。</returns>
+    private async Task<bool> UnpackGuardAsync(string rawPath, string outPath, CancellationToken ct)
+    {
+        Log($"Guard 加固包 → unidbg 解壳: {Path.GetFileName(rawPath)}");
+        var psi = new ProcessStartInfo
+        {
+            FileName = _javaExe,
+            // unidbg 要反射访问 JDK 内部（Module / 直接内存），JDK 17+ 必须显式 add-opens
+            Arguments =
+                "--add-opens java.base/java.lang=ALL-UNNAMED " +
+                "--add-opens java.base/java.util=ALL-UNNAMED " +
+                "--add-opens java.base/java.nio=ALL-UNNAMED " +
+                "--add-opens java.base/sun.nio.ch=ALL-UNNAMED " +
+                "-Dfile.encoding=UTF-8 " +
+                "-Dorg.slf4j.simpleLogger.defaultLogLevel=error " +
+                $"-cp \"vendor\\unidbg\\*\" bridge.GuardUnpacker \"{rawPath}\" \"{outPath}\"",
+            WorkingDirectory = _bridgeDir,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            // 解壳器按 -Dfile.encoding=UTF-8 输出，接收端也必须按 UTF-8 解，否则中文日志变乱码
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+        };
+        using var p = Process.Start(psi) ?? throw new InvalidOperationException("unidbg 解壳器启动失败");
+        // 两端都要读，否则管道写满会死锁
+        var errTask = p.StandardError.ReadToEndAsync(ct);
+        var outTask = p.StandardOutput.ReadToEndAsync(ct);
+        try
+        {
+            await p.WaitForExitAsync(ct);
+        }
+        catch (OperationCanceledException)
+        {
+            try { p.Kill(entireProcessTree: true); } catch { }
+            throw;
+        }
+        // unidbg 自身会往 stderr 打大量栈信息；只保留解壳器的 [unpack] 结论行
+        foreach (var line in (await errTask + "\n" + await outTask).Split('\n'))
+        {
+            var t = line.Trim();
+            if (t.Contains("[unpack]")) Log("  " + t);
+        }
+        if (p.ExitCode != 0 || !File.Exists(outPath))
+        {
+            Log($"unidbg 解壳失败（exit={p.ExitCode}）: {Path.GetFileName(rawPath)}");
+            return false;
+        }
+        Log($"Guard 解壳完成: {Path.GetFileName(outPath)}（{new FileInfo(outPath).Length} 字节）");
+        return true;
     }
 
     /// <summary>

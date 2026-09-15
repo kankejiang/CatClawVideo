@@ -157,8 +157,9 @@ public static class MauiProgram
             : new CatClawVideo.Core.Providers.NullSpiderRuntime("jvm-dex");
 
         // 「猫爪互联」本机服务：PC 首页在「没有可用源」时展示配对二维码，
-        // 手机扫码 → POST /pair → 把手机登记为解析节点（本机跑不了 Guard 加固源）。
-        // 后续的遥控播放与播放记录同步也复用这条通道。
+        // 手机扫码 → POST /pair → 把手机登记为解析节点。
+        // （Guard 加固源本机已可用 unidbg 解壳，但解壳器缺失/失败时仍需手机兜底；
+        // 后续的遥控播放与播放记录同步也复用这条通道。）
         var linkServer = new CatClawVideo.Core.Services.LinkServer(
             CatClawVideo.Core.Services.LinkServer.DefaultPort,
             BtFileLog.Write,
