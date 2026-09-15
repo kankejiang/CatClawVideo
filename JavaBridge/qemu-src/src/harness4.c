@@ -21,6 +21,9 @@
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <pthread.h>
+#include <netinet/in.h>
+#include <stdint.h>
 #include "jni_trap.h"   // 233 个槽位陷阱：谁被调用就打印自己的槽位名
 
 // ↓↓↓ DNS 拦截层：bionic 在无 netd 环境里 getaddrinfo 必失败，必须自己实现 ↓↓↓
@@ -58,6 +61,14 @@ static JObj g_objs[MAX_OBJS];
 static int g_nobj = 0;
 static int g_jni_calls = 0;
 static int g_engine_port = 0;   // 引擎本地播放服务的端口（http_probe 里记下）
+static char g_engine_path[256] = "";  // 引擎本地服务的 URL 路径（双重编码的绝对路径）
+static char g_engine_abs[600]  = "";  // 该路径对应的**文件绝对路径**（重新 getLocalUrl 时要用）
+static void *g_env_any = NULL;        // JNIEnv*（通用指针，避免类型前置依赖）
+static void *g_thiz_any = NULL;       // XLLoader 的 jobject
+static void *g_localurl_fn = NULL;    // Java_..._getLocalUrl 的函数指针
+// 引擎状态是**线程相关**的：在代理线程里调 getLocalUrl 会返回 9102(XL_SDK_NOT_INIT)。
+// 所以由代理线程发起请求、**主线程**执行 getLocalUrl，用一组 volatile 变量握手。
+static volatile int g_rearm_req = 0, g_rearm_done = 0, g_rearm_port = 0;
 static struct JNINativeInterface *g_env_ptr = NULL;
 
 // —— 数组辅助的前置声明（实现在后面的"字节数组 / 整数数组"节）——
@@ -178,6 +189,7 @@ static void http_probe(const char *url) {
     const char *path = slash ? slash : "/";
     printf("[play] GET http://%s:%d%s （Range: 0-1023）\n", host, port, path);
     g_engine_port = port;      // 记下来给后面的 guest 内代理用
+    snprintf(g_engine_path, sizeof g_engine_path, "%s", path);
 
     struct addrinfo hints, *res = NULL;
     memset(&hints, 0, sizeof(hints));
@@ -231,13 +243,43 @@ static void http_probe(const char *url) {
 // 引擎的本地播放服务监听在 **127.0.0.1:<随机端口>**，宿主侧的 qemu hostfwd 够不到
 // （hostfwd 连的是 guest 的 10.0.2.15）。所以在这里起一个 0.0.0.0:<固定端口> 的
 // 转发进程：宿主 → hostfwd → guest:固定端口 → 127.0.0.1:引擎端口 → 播放。
+// 引擎的本地播放服务是**一次性**的：第一个客户端断开后它就不再接受新连接
+// （实测：第二次连它会 ECONNREFUSED）。所以每次有播放器连进来，先重新调一次
+// getLocalUrl 把服务"重新武装"，并从返回的 URL 里取回（可能变化的）端口。
+static int do_rearm(void) {
+    if (!g_localurl_fn || !g_env_any || !g_thiz_any || !g_engine_abs[0]) return 0;
+    typedef jint (*fn_local)(JNIEnv *, jobject, jstring, jobject);
+    fn_local fn = (fn_local)g_localurl_fn;
+    JObj *lu = new_obj("com/xunlei/downloadlib/parameter/XLTaskLocalUrl");
+    jint r = fn((JNIEnv *)g_env_any, (jobject)g_thiz_any, (jstring)g_engine_abs, (jobject)lu);
+    const char *u = obj_get_str(lu, "mStrUrl");
+    printf("[proxy] 重新武装 getLocalUrl → %d，url=%s\n", (int)r, u);
+    if (r != 9000 || !u || strncmp(u, "http://", 7) != 0) return 0;
+    const char *p = u + 7;
+    const char *colon = strchr(p, ':');
+    if (colon) {
+        int np = atoi(colon + 1);
+        if (np > 0) return np;
+    }
+    return 0;
+}
+
 static void proxy_conn(int c, int tport) {
+    // ★ 请主线程重新武装（引擎状态线程相关），并等它回结果
+    g_rearm_port = 0; g_rearm_done = 0; g_rearm_req = 1;
+    for (int i = 0; i < 200 && !g_rearm_done; i++) usleep(50000);   // 最多等 10s
+    if (g_rearm_port > 0) tport = g_rearm_port;
+    printf("[proxy] 目标引擎端口 = %d\n", tport);
     int t = socket(AF_INET, SOCK_STREAM, 0);
     if (t < 0) return;
     struct sockaddr_in b; memset(&b, 0, sizeof b);
     b.sin_family = AF_INET; b.sin_port = htons((unsigned short)tport);
     inet_pton(AF_INET, "127.0.0.1", &b.sin_addr);
-    if (connect(t, (struct sockaddr *)&b, sizeof b) != 0) { close(t); return; }
+    if (connect(t, (struct sockaddr *)&b, sizeof b) != 0) {
+        printf("[proxy] ✗ 连引擎 127.0.0.1:%d 失败 errno=%d\n", tport, errno);
+        close(t); return;
+    }
+    printf("[proxy] → 已连上引擎 127.0.0.1:%d，开始转发\n", tport);
     char buf[16384];
     for (;;) {
         fd_set rs; FD_ZERO(&rs); FD_SET(c, &rs); FD_SET(t, &rs);
@@ -259,6 +301,13 @@ static void proxy_conn(int c, int tport) {
     close(t);
 }
 
+static void proxy_loop(int lport, int tport);   // 前置声明（proxy_entry 在它之前）
+
+static void *proxy_entry(void *arg) {
+    proxy_loop((int)(intptr_t)arg, g_engine_port);
+    return NULL;
+}
+
 static void proxy_loop(int lport, int tport) {
     int ls = socket(AF_INET, SOCK_STREAM, 0);
     if (ls < 0) return;
@@ -273,9 +322,14 @@ static void proxy_loop(int lport, int tport) {
     }
     printf("[proxy] ✅ 监听 0.0.0.0:%d → 127.0.0.1:%d（宿主可经 hostfwd 拉流）\n", lport, tport);
     for (;;) {
-        int c = accept(ls, NULL, NULL);
+        struct sockaddr_in peer; socklen_t pl = sizeof(peer);
+        int c = accept(ls, (struct sockaddr *)&peer, &pl);
         if (c < 0) { sleep(1); continue; }
-        proxy_conn(c, tport);      // 顺序处理（不用 fork，见 main 里的说明）
+        char ip[32] = "?";
+        inet_ntop(AF_INET, &peer.sin_addr, ip, sizeof ip);
+        printf("[proxy] ← 收到连接 来自 %s:%d\n", ip, (int)ntohs(peer.sin_port));
+        fflush(stdout);
+        proxy_conn(c, tport);
         close(c);
     }
 }
@@ -792,10 +846,13 @@ static void run_full_chain(JNIEnv *env, void *sdk) {
                 if (localUrl) {
                     JObj *lu = new_obj("com/xunlei/downloadlib/parameter/XLTaskLocalUrl");
                     char fullp[600]; snprintf(fullp, sizeof fullp, "%s/%s", EMU_SAVE_PATH, uname);
+                    snprintf(g_engine_abs, sizeof g_engine_abs, "%s", fullp);
                     jint lrc = localUrl(env, (jobject)thiz, (jstring)fullp, (jobject)lu);
                     const char *u = obj_get_str(lu, "mStrUrl");
                     printf("[chain] ← getLocalUrl(\"%s\") 返回 %d，mStrUrl = %s\n", uname, (int)lrc, u);
-                    if (lrc == 9000 && u && u[0] == 'h') http_probe(u);   // ★ 边下边播验证
+                    g_env_any = (void *)env;  g_thiz_any = (void *)thiz;  g_localurl_fn = (void *)localUrl;
+                    if (lrc == 9000 && u && u[0] == 'h' && (!getenv("DIRECT_PROBE") || atoi(getenv("DIRECT_PROBE"))))
+                        http_probe(u);   // ★ 边下边播验证（DIRECT_PROBE=0 可关掉，避免"用掉"引擎的一次性服务）
                 }
             }
         } else if (!url) {
@@ -811,7 +868,10 @@ static void run_full_chain(JNIEnv *env, void *sdk) {
                obj_get_str(lu, "mStrUrl"));
     }
 
-    if (unInit) unInit(env, (jobject)thiz);
+    // ⚠️ 千万不要在这里 unInit！它是 SDK 的清理入口，调了之后引擎就"未初始化"了，
+    //    后续任何调用（包括代理为播放器重新 getLocalUrl）都会返回 9102 = XL_SDK_NOT_INIT。
+    //    引擎是要长期运行的，产品里也一直不调它。
+    if (unInit && getenv("CALL_UNINIT") && atoi(getenv("CALL_UNINIT"))) unInit(env, (jobject)thiz);
     printf("[chain] 结束，JNI 总调用 %d 次\n", g_jni_calls);
 }
 
@@ -936,7 +996,25 @@ int main(void) {
     //    后，子进程很容易在 libc 的锁上卡死（实测：连接能到，但永远没有响应）。
     //    改成在主线程里顺序处理连接 —— 播放器通常 1~2 条连接，够用。
     if (g_engine_port > 0 && getenv("PROXY_PORT")) {
-        proxy_loop(atoi(getenv("PROXY_PORT")), g_engine_port);   // 内部已改为顺序 accept
+        int lp = atoi(getenv("PROXY_PORT"));
+        // 用 pthread 跑 accept 循环（fork 会卡、顺序版会挡住自测）
+        pthread_t th;
+        if (pthread_create(&th, NULL, proxy_entry, (void *)(intptr_t)lp) == 0) {
+            sleep(1);
+            printf("[proxy] 主线程握手循环已启动\n");
+            fflush(stdout);
+            for (;;) {
+                if (g_rearm_req) {
+                    g_rearm_req = 0;
+                    g_rearm_port = do_rearm();          // ★ 在主线程里调，才不会是 9102
+                    g_rearm_done = 1;
+                }
+                usleep(20000);
+            }
+        } else {
+            printf("[proxy] pthread 起不来，退回顺序版\n");
+            proxy_loop(lp, g_engine_port);
+        }
     }
     for (;;) sleep(3600);
     return 0;
