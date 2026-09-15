@@ -981,6 +981,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable
             // 原样提示；同时落盘，方便事后对照桥日志查因。
             DiagLog.Write($"[播放] 不支持 {_item.Title} / {episode.Name}: {ex.Message}");
             if (generation == _playGeneration) await ShowTipAsync(ex.Message);
+            _ = MaybeAutoSwitchSourceAsync();
         }
         catch (Exception ex)
         {
@@ -992,6 +993,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable
                           + $"（源 {_site.Name} / 线路 {episode.Flag}）: {ex.GetType().Name}: {ex.Message}");
             if (generation == _playGeneration)
                 await ShowTipAsync("该集解析失败：" + ReasonOf(ex.Message));
+            _ = MaybeAutoSwitchSourceAsync();
         }
         finally
         {
@@ -1001,6 +1003,99 @@ public partial class WatchPage : ContentPage, IQueryAttributable
                 UpdatePlayIcon();
             }
         }
+    }
+
+    // ═══════════ 磁力兜底：自动换源 ═══════════
+
+    private bool _autoSwitching;
+
+    /// <summary>当前影片的全部剧集都是磁力/电驴（即「磁力站」）</summary>
+    private bool CurrentItemIsMagnetOnly() =>
+        _sources.SelectMany(s => s.Episodes).Any()
+        && _sources.SelectMany(s => s.Episodes).All(e =>
+            e.Url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase) ||
+            e.Url.StartsWith("ed2k:", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// 磁力兜底：磁力站的剧集起播失败时，用标题在**同订阅的其他可播站点**里找同名内容，
+    /// 找到一个「有非磁力剧集」的站点/条目后直接跳过去续播同集。
+    /// 给最终用户用的：不要求任何账号、零配置 —— 磁力起不来就自动落到能播的源上。
+    /// <para>只对「整部片都是磁力」的影片触发；混合线路里换一条线路就够了。</para>
+    /// </summary>
+    private async Task MaybeAutoSwitchSourceAsync()
+    {
+        if (_autoSwitching) return;
+        if (!CurrentItemIsMagnetOnly()) return;
+
+        _autoSwitching = true;
+        try
+        {
+            var title = CleanTitleForMatch(_item.Title);
+            if (title.Length < 2) return;
+
+            DiagLog.Write($"[换源] 磁力站起播失败，开始跨站搜索：{title}");
+            int tried = 0;
+            foreach (var site in SiteRegistry.Playable)
+            {
+                if (site.Key == _site.Key || tried >= 10) continue;
+                tried++;
+
+                List<VodItem> hits;
+                try { hits = await _provider.SearchAsync(site, title); }
+                catch { continue; }
+
+                var match = hits.FirstOrDefault(h => TitlesMatch(h.Title, title));
+                if (match is null) continue;
+
+                // 必须确认有非磁力剧集，否则换过去还是播不了
+                List<VodPlaySource> srcs;
+                try { srcs = await _provider.GetPlaySourcesAsync(site, match); }
+                catch { continue; }
+                var hasDirect = srcs.SelectMany(s => s.Episodes).Any(e =>
+                    !e.Url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase) &&
+                    !e.Url.StartsWith("ed2k:", StringComparison.OrdinalIgnoreCase));
+                if (!hasDirect) continue;
+
+                var ep = _currentEpisode?.Name;
+                DiagLog.Write($"[换源] 命中 {site.Name}/{site.Key}《{match.Title}》，跳转续播 {ep}");
+                var q = "watch?sourceKey=" + Uri.EscapeDataString(site.Key)
+                      + "&itemId=" + Uri.EscapeDataString(match.Id)
+                      + "&title=" + Uri.EscapeDataString(match.Title);
+                if (!string.IsNullOrEmpty(match.Cover)) q += "&cover=" + Uri.EscapeDataString(match.Cover);
+                if (!string.IsNullOrEmpty(ep)) q += "&resumeEp=" + Uri.EscapeDataString(ep);
+                await Shell.Current.GoToAsync(q);
+                return;
+            }
+            DiagLog.Write("[换源] 其他站点没有找到可播的同名内容");
+            await ShowTipAsync("磁力源不可用，其他站点也没有同名可播内容");
+        }
+        catch (Exception ex)
+        {
+            DiagLog.Write($"[换源] 失败：{ex.GetType().Name}: {ex.Message}");
+        }
+        finally { _autoSwitching = false; }
+    }
+
+    /// <summary>标题清洗：去括号备注/年份/更新集数等，只留正题名</summary>
+    private static string CleanTitleForMatch(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "";
+        var s = raw.Trim();
+        int cut = s.IndexOfAny(['(', '（', '【']);
+        if (cut > 1) s = s[..cut];
+        s = System.Text.RegularExpressions.Regex.Replace(s, @"\b(19|20)\d{2}\b", "").Trim();
+        s = System.Text.RegularExpressions.Regex.Replace(s, @"更新至.*$|第.*季$|[4kK][hl]?$", "").Trim();
+        return s.Trim(' ', '-', '—', '·', '｜', '|');
+    }
+
+    /// <summary>标题匹配：去空白/标点后忽略大小写互含</summary>
+    private static bool TitlesMatch(string a, string b)
+    {
+        static string Norm(string s) => new(s.Where(char.IsLetterOrDigit).ToArray());
+        var na = Norm(a); var nb = Norm(b);
+        if (na.Length < 2 || nb.Length < 2) return false;
+        return na.Contains(nb, StringComparison.OrdinalIgnoreCase)
+            || nb.Contains(na, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>把异常消息压成一行可读原因（VerifyError 之类自带多行字节码 dump，不能整段进提示）</summary>
