@@ -41,6 +41,7 @@ static int g_mag_stage = 0;
 static char g_dl_target[600] = "";
 static char g_mag_torrent[600] = "";   // 磁力阶段一落盘的 .torrent 绝对路径（DL 用它，宿主不必回传）
 static int g_torrent_reported = 0, g_play_reported = 0;
+static int g_dl_index = -1;   // 磁力下载阶段选中的子文件 index（getBtSubTaskInfo 要它）
 
 void ctrl_register_engine(EngineFns *e) { g_eng = *e; }
 
@@ -235,10 +236,19 @@ static void start_dl(const char *torrentPath, const char *dir, const char *relPa
     if (g_eng.gsState)
         printf("[ctrl]   setTaskGsState(%ld,%d,2) → %d\n", id, index,
                (int)((fn_l3)g_eng.gsState)(env, thiz, (jlong)id, (jint)index, 2));
+    // ★ 边下边播的「预取模式」+ 重查索引（引擎导出的 C API，任务健康时也值得一试）
+    if (g_eng.sdk) {
+        typedef int (*fn_l1x)(long long);
+        fn_l1x prefetch = (fn_l1x)dlsym((void *)g_eng.sdk, "XLEnterPrefetchMode");
+        fn_l1x requery  = (fn_l1x)dlsym((void *)g_eng.sdk, "XLRequeryIndex");
+        if (prefetch) printf("[ctrl]   XLEnterPrefetchMode(%ld) → %d\n", id, prefetch((long long)id));
+        if (requery)  printf("[ctrl]   XLRequeryIndex(%ld) → %d\n", id, requery((long long)id));
+    }
 
     g_task_id = id;
     g_task_is_magnet = 1;
     g_mag_stage = 2;
+    g_dl_index = index;
     snprintf(g_dl_target, sizeof g_dl_target, "%s/%s", dir, relPath);
     snprintf(g_task_name, sizeof g_task_name, "%s", relPath);
     g_last_st = g_last_err = -1; g_last_done = g_last_total = -1;
@@ -267,10 +277,23 @@ static void poll_task(void) {
            obj_get_str(ti, "mCid"), obj_get_str(ti, "mGcid"),
            obj_get_int(ti, "mQueryIndexStatus"), obj_get_int(ti, "mInfoLen"),
            obj_get_long(ti, "mAdditionalResCount"));
+    printf("[ctrl]   speed P2S=%ld P2P=%ld Scdn=%ld Origin=%ld 慢速源=%ld\n",
+           obj_get_long(ti, "mP2SSpeed"), obj_get_long(ti, "mP2PSpeed"),
+           obj_get_long(ti, "mScdnSpeed"), obj_get_long(ti, "mOriginSpeed"),
+           obj_get_long(ti, "mAdditionalResPeerBytes"));
     if (st != g_last_st || err != g_last_err || done != g_last_done) {
         g_last_st = st; g_last_err = err; g_last_done = done; g_last_total = total;
         if (r == 9000) ctrl_report("status", g_task_id, st, err, done, total, "");
     }
+    // ★ 复现手机 playFile() 的关键动作：起下载后**每秒 getBtSubTaskInfo(tid, index)**。
+    //   少了它，引擎可能一直停在"已建任务但不拉数据"（手机端就是在循环里调它直到能播）。
+    if (g_mag_stage == 2 && g_dl_index >= 0 && g_eng.getBtSubTaskInfo) {
+        typedef jint (*fn_bti)(JNIEnv *, jobject, jlong, jint, jobject);
+        JObj *det = new_obj("com/xunlei/downloadlib/parameter/BtSubTaskDetail");
+        jint r2 = ((fn_bti)g_eng.getBtSubTaskInfo)(env, thiz, (jlong)g_task_id, g_dl_index, (jobject)det);
+        printf("[ctrl]   getBtSubTaskInfo(%ld,%d) → %d\n", g_task_id, g_dl_index, (int)r2);
+    }
+
     // 磁力阶段一：种子落盘就上报，宿主去展开文件列表（.torrent 是 bencode，宿主侧解析更省事）
     if (g_mag_stage == 1 && g_task_id > 0 && g_task_name[0]) {
         char tp[600];

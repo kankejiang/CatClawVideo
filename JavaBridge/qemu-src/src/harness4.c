@@ -34,7 +34,7 @@ typedef struct {
     void *env, *thiz;
     void *createMagnet, *createP2sp, *startTask, *gsState, *getTaskInfo, *localUrl;
     // ↓ 磁力第二阶段（宿主展开文件列表后指定下载哪个文件）用
-    void *sdk, *createBtTask, *selectBtSubTask;
+    void *sdk, *createBtTask, *selectBtSubTask, *getBtSubTaskInfo;
 } EngineFns;
 void ctrl_register_engine(EngineFns *e);
 
@@ -912,6 +912,7 @@ static void run_full_chain(JNIEnv *env, void *sdk) {
         e.sdk          = (void *)sdk;
         e.createBtTask = (void *)createBtTask;
         e.selectBtSubTask = (void *)dlsym(sdk, "Java_com_xunlei_downloadlib_XLLoader_selectBtSubTask");
+        e.getBtSubTaskInfo = (void *)dlsym(sdk, "Java_com_xunlei_downloadlib_XLLoader_getBtSubTaskInfo");
         ctrl_register_engine(&e);
         // 代理的"重新武装"要用到这三个（先前只在阶段 C 里设，空任务链下就漏了）
         g_env_any = (void *)env;  g_thiz_any = (void *)thiz;
