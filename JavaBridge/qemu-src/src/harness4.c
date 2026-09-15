@@ -407,10 +407,22 @@ static void my_ExceptionDescribe(JNIEnv *e) { (void)e; g_jni_calls++; }
 static jint my_ThrowNew(JNIEnv *e, jclass c, const char *m) { (void)e; (void)c; printf("  [jni] ThrowNew(%s)\n", m); g_jni_calls++; return 0; }
 static void my_DeleteLocalRef(JNIEnv *e, jobject o) { (void)e; (void)o; g_jni_calls++; }
 static jint my_GetVersion(JNIEnv *e) { (void)e; g_jni_calls++; return JNI_VERSION_1_6; }
+// ═══════════ 对象数组（引擎回填 TorrentFileInfo[] 用）═══════════
+#define MAX_OA 8
+typedef struct { jsize n; void **v; } JObjArray;
+static JObjArray g_oa[MAX_OA];
+static int g_noa = 0;
+
+static int is_obj_array(void *p) {
+    for (int i = 0; i < g_noa; i++) if ((void *)&g_oa[i] == p) return 1;
+    return 0;
+}
+
 static jsize my_GetArrayLength(JNIEnv *e, jarray a) {
     (void)e; g_jni_calls++;
     if (is_int_array(a))  return ((JIntArray *)a)->n;
     if (is_byte_array(a)) return ((JByteArray *)a)->n;
+    if (is_obj_array(a))  return ((JObjArray *)a)->n;
     return 0;
 }
 static jintArray my_NewIntArray(JNIEnv *e, jsize n) {
@@ -459,6 +471,46 @@ static JIntArray *new_int_array(jsize n) {
     a->n = n;
     a->v = (int *)calloc(1, (size_t)(n > 0 ? n : 1) * sizeof(int));
     return a;
+}
+
+// ═══════════ 对象数组 + 布尔字段（引擎回填文件列表用）═══════════
+// 教训（2026-09-16）：getTorrentInfo() 内部会 NewObjectArray + SetObjectArrayElement
+// 把每个文件填进 TorrentFileInfo[]，还会 SetBooleanField 写 mIsMultiFiles。
+// 这三个槽位此前是陷阱：**引擎辛苦解析出的文件列表被整包丢弃**，
+// 且 NewObjectArray 返回 NULL 可能让引擎走进异常分支、后续行为不可预期。
+// （JObjArray 定义在 GetArrayLength 之前）
+static jobjectArray my_NewObjectArray(JNIEnv *e, jsize n, jclass c, jobject init) {
+    (void)e; (void)c; (void)init; g_jni_calls++;
+    if (g_noa >= MAX_OA) g_noa = MAX_OA - 1;
+    JObjArray *a = &g_oa[g_noa++];
+    a->n = n;
+    a->v = (void **)calloc(1, (size_t)(n > 0 ? n : 1) * sizeof(void *));
+    printf("  [jni] NewObjectArray(%d)\n", (int)n);
+    return (jobjectArray)a;
+}
+
+static void my_SetObjectArrayElement(JNIEnv *e, jobjectArray a, jsize i, jobject v) {
+    (void)e; g_jni_calls++;
+    if (!is_obj_array(a) || i < 0 || i >= ((JObjArray *)a)->n) return;
+    ((JObjArray *)a)->v[i] = v;
+    printf("  [jni] SetObjectArrayElement(第 %d 项)\n", (int)i);
+}
+
+static jobject my_GetObjectArrayElement(JNIEnv *e, jobjectArray a, jsize i) {
+    (void)e; g_jni_calls++;
+    if (!is_obj_array(a) || i < 0 || i >= ((JObjArray *)a)->n) return NULL;
+    return (jobject)((JObjArray *)a)->v[i];
+}
+
+static void my_SetBooleanField(JNIEnv *env, jobject obj, jfieldID fid, jboolean v) {
+    (void)env; g_jni_calls++;
+    put_field((JObj *)obj, fid, 0, v, NULL);
+    printf("  [jni] SetBooleanField(%s, %s)\n", fid_name(fid), v ? "true" : "false");
+}
+
+static jboolean my_GetBooleanField(JNIEnv *env, jobject obj, jfieldID fid) {
+    (void)env; g_jni_calls++;
+    return (jboolean)(obj_get_long((JObj *)obj, fid_name(fid)) != 0);
 }
 
 // ═══════════ 字节数组 + NewObject ═══════════
@@ -668,6 +720,39 @@ static void run_full_chain(JNIEnv *env, void *sdk) {
         if (fMac)  printf("[chain]   setMac(%s) → %d\n", mac_s, (int)fMac(env, (jobject)thiz, (jstring)mac_s));
     }
 
+    // ★ XYVodSDK（迅雷 VOD/P2P 数据面组件）：我们此前从未碰过它。
+    //   getSdkEnabled 看它是否启用；setNetworkEnable / initUnixSock 是启动它的入口。
+    //   BT 任务「有索引但不传数据」很可能就是这一层没起来。
+    //   ⚠ 符号名是 JNI 转义形式（下划线 → _1），签名是 JNI 函数（首参 JNIEnv*、次参 jobject）。
+    {
+        typedef jboolean (*fn_ben)(JNIEnv *, jobject);
+        typedef jint (*fn_i0)(JNIEnv *, jobject);
+        typedef jint (*fn_s1)(JNIEnv *, jobject, jstring);
+        typedef jint (*fn_i1)(JNIEnv *, jobject, jint);
+        typedef jstring (*fn_s0)(JNIEnv *, jobject);
+        const char *P = "Java_com_xunlei_downloadlib_XLLoader_XYVodSDK_1";
+        char sym[128];
+#define SYM(x) (snprintf(sym, sizeof sym, "%s%s", P, x), sym)
+        fn_ben fEnabled = (fn_ben)dlsym(sdk, SYM("getSdkEnabled"));
+        fn_i0  fNetEn   = (fn_i0)dlsym(sdk, SYM("setNetworkEnable"));
+        fn_s1  fSock    = (fn_s1)dlsym(sdk, SYM("initUnixSock"));
+        fn_i1  fLogEn   = (fn_i1)dlsym(sdk, SYM("setLogEnable"));
+        fn_s0  fSockPath = (fn_s0)dlsym(sdk, SYM("getUnixSockPath"));
+        fn_i0  fNetChg  = (fn_i0)dlsym(sdk, SYM("networkChanged"));
+        if (fEnabled) printf("[chain]   XYVodSDK_getSdkEnabled() = %d\n", (int)fEnabled(env, (jobject)thiz));
+        if (fLogEn)   printf("[chain]   XYVodSDK_setLogEnable(1) → %d\n", (int)fLogEn(env, (jobject)thiz, 1));
+        if (fSockPath) {
+            jstring sp = fSockPath(env, (jobject)thiz);
+            printf("[chain]   XYVodSDK_getUnixSockPath() → %s\n", sp ? "有值" : "NULL");
+        }
+        if (fSock)    printf("[chain]   XYVodSDK_initUnixSock(/thunder-data/vod.sock) → %d\n",
+                             (int)fSock(env, (jobject)thiz, (jstring)"/thunder-data/vod.sock"));
+        if (fNetEn)   printf("[chain]   XYVodSDK_setNetworkEnable() → %d\n", (int)fNetEn(env, (jobject)thiz));
+        if (fNetChg)  printf("[chain]   XYVodSDK_networkChanged() → %d\n", (int)fNetChg(env, (jobject)thiz));
+        if (fEnabled) printf("[chain]   XYVodSDK_getSdkEnabled() 再查 = %d\n", (int)fEnabled(env, (jobject)thiz));
+#undef SYM
+    }
+
     printf("[chain] ── init ──\n");
     jint rc = init(env, (jobject)thiz,
                    (jstring)SO_APP_KEY,
@@ -699,6 +784,25 @@ static void run_full_chain(JNIEnv *env, void *sdk) {
         if (fOsVer) printf("[chain]   setMiUiVersion(%s) → %d\n", osver, (int)fOsVer(env, (jobject)thiz, (jstring)osver));
         if (fProp)  printf("[chain]   setLocalProperty(PhoneModel,%s) → %d\n", model,
                            (int)fProp(env, (jobject)thiz, (jstring)"PhoneModel", (jstring)model));
+    }
+
+    // ★★ 网络状态通知（2026-09-16 补）：TVBox 的 XLDownloadManager$NetworkChangeHandlerThread
+    //   在每次网络变化时会喂引擎三样东西 —— 我们此前一样都没做：
+    //     notifyNetWorkType(XLUtil.getNetworkType(ctx))      // WIFI = 9
+    //     setNotifyWifiBSSID(XLUtil.getBSSID(ctx))           // 形如 FA:25:CC:5B:33:63
+    //     setNotifyNetWorkCarrier(NetWorkCarrier.ordinal())  // UNKNOWN=0 / CMCC=1 / CU=2 / CT=3
+    //   引擎若认为「网络未知/非 WiFi」，很可能刻意不启用 P2P/P2SP 传输（省流量），
+    //   现象正是「任务运行中、资源索引也有、但四条速度通道全 0」。
+    {
+        typedef jint (*fn_i1)(JNIEnv *, jobject, jint);
+        typedef jint (*fn_sx)(JNIEnv *, jobject, jstring);
+        fn_i1 fNetType = (fn_i1)dlsym(sdk, "Java_com_xunlei_downloadlib_XLLoader_notifyNetWorkType");
+        fn_sx fBssid   = (fn_sx)dlsym(sdk, "Java_com_xunlei_downloadlib_XLLoader_setNotifyWifiBSSID");
+        fn_i1 fCarrier = (fn_i1)dlsym(sdk, "Java_com_xunlei_downloadlib_XLLoader_setNotifyNetWorkCarrier");
+        const char *bssid_s = getenv("BSSID") ? getenv("BSSID") : "FA:25:CC:5B:33:63";
+        if (fNetType) printf("[chain]   notifyNetWorkType(9=WIFI) → %d\n", (int)fNetType(env, (jobject)thiz, 9));
+        if (fBssid)   printf("[chain]   setNotifyWifiBSSID(%s) → %d\n", bssid_s, (int)fBssid(env, (jobject)thiz, (jstring)bssid_s));
+        if (fCarrier) printf("[chain]   setNotifyNetWorkCarrier(0=UNKNOWN) → %d\n", (int)fCarrier(env, (jobject)thiz, 0));
     }
 
     // XLTaskHelper.init 在 init 之后还做了三件事，一并补上
@@ -953,6 +1057,11 @@ int main(void) {
     iface.SetObjectField = my_SetObjectField;
     iface.SetIntField = my_SetIntField;
     iface.SetLongField = my_SetLongField;
+    iface.SetBooleanField = my_SetBooleanField;
+    iface.GetBooleanField = my_GetBooleanField;
+    iface.NewObjectArray = my_NewObjectArray;
+    iface.SetObjectArrayElement = my_SetObjectArrayElement;
+    iface.GetObjectArrayElement = my_GetObjectArrayElement;
     iface.GetMethodID = my_GetMethodID;
     iface.GetStaticMethodID = my_GetStaticMethodID;
     iface.CallObjectMethod = my_CallObjectMethod;
