@@ -8,4 +8,7 @@ public class TextUtils {
     public static boolean equals(CharSequence a, CharSequence b) { return java.util.Objects.equals(a == null ? null : a.toString(), b == null ? null : b.toString()); }
     public static String htmlEncode(String s) { return s == null ? "" : s.replace("&", "&amp;"); }
     public static int getTrimmedLength(CharSequence s) { return s.toString().trim().length(); }
+
+    /** 省略位置（真实为 enum）。 */
+    public enum TruncateAt { START, MIDDLE, END, MARQUEE }
 }
