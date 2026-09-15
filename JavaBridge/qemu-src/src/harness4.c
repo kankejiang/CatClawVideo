@@ -275,8 +275,7 @@ static void proxy_loop(int lport, int tport) {
     for (;;) {
         int c = accept(ls, NULL, NULL);
         if (c < 0) { sleep(1); continue; }
-        pid_t pid = fork();
-        if (pid == 0) { close(ls); proxy_conn(c, tport); close(c); _exit(0); }
+        proxy_conn(c, tport);      // 顺序处理（不用 fork，见 main 里的说明）
         close(c);
     }
 }
@@ -933,10 +932,11 @@ int main(void) {
 
     printf("[v2] ===== 结束，JNI 总调用 %d 次 =====\n", g_jni_calls);
     // 容器/VM 里作为 init：不要退出（退出会 kernel panic）。等一会儿再重启 shell。
+    // ⚠️ 不要在 fork 出来的子进程里跑代理：bionic 下 fork 多线程进程（引擎已起多个线程）
+    //    后，子进程很容易在 libc 的锁上卡死（实测：连接能到，但永远没有响应）。
+    //    改成在主线程里顺序处理连接 —— 播放器通常 1~2 条连接，够用。
     if (g_engine_port > 0 && getenv("PROXY_PORT")) {
-        pid_t pid = fork();
-        if (pid == 0) { proxy_loop(atoi(getenv("PROXY_PORT")), g_engine_port); _exit(0); }
-        sleep(1);
+        proxy_loop(atoi(getenv("PROXY_PORT")), g_engine_port);   // 内部已改为顺序 accept
     }
     for (;;) sleep(3600);
     return 0;
