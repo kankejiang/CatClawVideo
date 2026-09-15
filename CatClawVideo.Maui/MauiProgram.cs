@@ -85,6 +85,12 @@ public static class MauiProgram
 #else
         var btCacheRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CatClawVideo", "btcache");
         var btService = new CatClawVideo.Core.Services.BtStreamService(btCacheRoot, BtFileLog.Write, trackerSource, btSettings);
+
+        // PC 原生「迅雷磁力播放」：走迅雷网盘官方 HTTP API（云添加 → 迅雷服务器下载 → 取直链）。
+        // 为什么不是迅雷下载 SDK：那套安卓 SDK 的引导域名被迅雷在权威 DNS 上沉成 127.0.0.2，
+        // 二进制内也没有可用地址 ⟹ PC 上跑不起来。网盘 API 是官方且 PC 可达的，
+        // 播放全程直连迅雷 CDN，不经任何中转。未登录时该引擎判未就绪 → 自动回落内置 BT。
+        CatClawVideo.Core.Interfaces.MagnetEngines.Thunder = new CatClawVideo.Core.Providers.ThunderPanEngine();
 #endif
         services.AddSingleton(btSettings);
         services.AddSingleton(trackerSource);
