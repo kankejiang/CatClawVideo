@@ -478,3 +478,46 @@ bencode 展开文件列表 → 挑最大视频 → 下发 DL → 等播放地址
 - 抓包分析：`build/hub_flows.py`（按迅雷网段筛选四元组）+ `build/dump_flows.py`（按目的 dump 完整载荷）
 - `build/build_initrd.sh` 现在会预置 `setting.cfg` + `Identify2.txt` 到 `/thunder-data/`
 - **setImei/setMac 必须在 init 之前调用**
+
+
+---
+
+# TVBox 源码对照 + 又排除 4 项（2026-09-16 凌晨，提交 6b4fd9d）
+
+## 参考实现在本地
+
+`D:/Code/sourceCode-ccc25f6/app/src/main/java/com/github/tvbox/osc/util/thunder/Thunder.java`
+
+**逐行比对结论：TVBox 的磁力流程与本项目实现完全一致**
+
+```
+addMagentTask(magnet, cacheRoot, getFileName(magnet))
+  -> 轮询 getTaskInfo 直到 mTaskStatus == 2（= 种子解析完成）
+  -> getTorrentInfo(cache路径) 取 mSubFileInfo
+  -> addTorrentTask(种子, cacheRoot/<种子名去扩展名>, mFileIndex)
+  -> 轮询 getBtSubTaskInfo(tid, index) 到 1/4/2
+  -> getLoclUrl(cache + "/" + info.mFileName)
+```
+
+⚠️ 另：TVBox 的 `errorInfo()` 把 **114001 / 114004~114007 / 114011 / 9304 / 111154 统一映射成
+「版权限制：无权下载」** —— 那是一大类错误的公共文案，**不能按字面理解**（本项目的 114004
+已证明是身份签名问题）。
+
+## 本轮修 1 个真 bug + 排除 3 个假设
+
+| # | 项 | 结果 |
+|---|---|---|
+| 1 | **JNI 垫片缺口**：`NewObjectArray`(#172) / `SetObjectArrayElement`(#174) / `SetBooleanField`(#105) 是未实现陷阱 → **引擎 `getTorrentInfo` 解析出的文件列表被整包丢弃** | ✅ 已实现（含 `JObjArray` 注册表），日志现已能看到 `mIsMultiFiles=true` + 2 个文件 + `mIsSelect` |
+| 2 | 磁盘空间：initramfs rootfs 是 **ramfs**，statvfs 空闲上报不可信，BT 要预分配整个文件 | ❌ 改挂**真 tmpfs**（1500m）+ 内存 4096，仍零字节 |
+| 3 | 网络状态通知：`notifyNetWorkType(9)` / `setNotifyWifiBSSID(...)` / `setNotifyNetWorkCarrier(0)` | ❌ 全部返回 9000，仍零字节 |
+| 4 | `XYVodSDK_*`（VOD/P2P 数据面组件）未启用 | ❌ `getSdkEnabled()=1` 本来就启用着，仍零字节 |
+
+## 累计已排除（11 项）
+
+内容(国内外) · 身份签名(已修) · 服务器配置 · 网络通知 · 下载目录名 · 种子索引 ·
+文件列表回填 · 磁盘空间 · 预取模式 · 子任务轮询 · VodSDK
+
+## 现状
+
+**唯一剩下的差异：真机 Android 运行时 vs bionic 垫片** —— 数据面可能存在垫片未覆盖的依赖。
+每轮验证成本 = 编译 + 打 initrd + 起 VM ≈ 3 分钟，但方向已不明确，属盲试。
