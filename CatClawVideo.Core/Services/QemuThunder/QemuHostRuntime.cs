@@ -33,9 +33,8 @@ public sealed class QemuHostRuntime : IDisposable
         RuntimeDir = runtimeDir;
         MediaPort = mediaPort;
         _log = log;
-        ConsoleLogPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "CatClawVideo", "qemu-console.log");
+        // Debug/Release 隔离（见 AppPaths）
+        ConsoleLogPath = AppPaths.LocalOf("qemu-console.log");
     }
 
     /// <summary>运行时文件是否齐全（缺一件就视为未部署，引擎判未就绪、静默回落）。</summary>

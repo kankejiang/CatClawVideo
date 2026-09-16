@@ -353,8 +353,7 @@ public partial class App : Application
             // 调试日志（自测点击用）
             try
             {
-                var dir = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CatClawVideo");
+                var dir = CatClawVideo.Core.AppPaths.DataRoot;
                 Directory.CreateDirectory(dir);
                 var winPos = _appWindow.Position;
                 var winSize = _appWindow.Size;

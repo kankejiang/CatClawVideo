@@ -38,7 +38,9 @@ public static class MauiProgram
         // ═══════════════════════════════════════════════════
         // Database（单连接单例，初始化放后台不阻塞首帧）
         // ═══════════════════════════════════════════════════
-        var dbPath = Path.Combine(FileSystem.AppDataDirectory, "catclawvideo.db");
+        // Debug/Release 数据隔离（见 Core.AppPaths）：首次从旧的共享位置（MAUI AppDataDirectory）拷一份 → 订阅/历史不丢
+        CatClawVideo.Core.AppPaths.SeedFile("catclawvideo.db", FileSystem.AppDataDirectory);
+        var dbPath = CatClawVideo.Core.AppPaths.Of("catclawvideo.db");
         var db = new VideoDatabase(dbPath);
         _ = Task.Run(async () =>
         {
@@ -83,7 +85,7 @@ public static class MauiProgram
             MaxHalfOpenConnections = 40,
         };
 #else
-        var btCacheRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CatClawVideo", "btcache");
+        var btCacheRoot = CatClawVideo.Core.AppPaths.Sub("btcache");
         var btService = new CatClawVideo.Core.Services.BtStreamService(btCacheRoot, BtFileLog.Write, trackerSource, btSettings);
 
         // PC「迅雷磁力播放」双引擎（链式：前者失败才试后者，全部失败回落内置 BT）：

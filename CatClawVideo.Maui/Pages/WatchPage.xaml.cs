@@ -227,7 +227,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     {
         try
         {
-            var dir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CatClawVideo");
+            var dir = CatClawVideo.Core.AppPaths.DataRoot;
             Directory.CreateDirectory(dir);
             File.AppendAllText(System.IO.Path.Combine(dir, "watch-debug.log"),
                 $"{DateTime.Now:HH:mm:ss.fff} {msg}{Environment.NewLine}");
@@ -396,7 +396,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         // 简介排版诊断（临时）：记录原始/清洗后文本的不可见字符分布，定位空隙根因后移除
         try
         {
-            var dir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CatClawVideo");
+            var dir = CatClawVideo.Core.AppPaths.DataRoot;
             Directory.CreateDirectory(dir);
             var rawDesc = _item.Description ?? "";
             var odd = string.Concat(rawDesc.Where(c => c == '\n' || c == '\r' || c == '\u00a0' || c == '\u3000' || c == '\u200b' || c == '\ufeff')

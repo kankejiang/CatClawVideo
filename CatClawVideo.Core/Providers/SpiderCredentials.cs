@@ -11,9 +11,18 @@ namespace CatClawVideo.Core.Providers;
 /// </summary>
 public static class SpiderCredentials
 {
-    public static string FilePath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "CatClawVideo", "spider-creds.json");
+    /// <summary>凭据文件（Debug/Release 各自一份，见 <see cref="AppPaths"/>）；
+    /// 首次运行从旧的共享位置拷一份过来。</summary>
+    public static string FilePath
+    {
+        get
+        {
+            var path = AppPaths.Of("spider-creds.json");
+            if (!File.Exists(path))
+                AppPaths.SeedFile("spider-creds.json", AppPaths.LegacyDataDir);
+            return path;
+        }
+    }
 
     /// <summary>读取全部凭据（authority → 用户名/密码）；文件缺失或损坏返回空表</summary>
     public static Dictionary<string, (string User, string Pass)> Load()

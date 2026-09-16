@@ -579,11 +579,16 @@ public sealed class ThunderPanEngine : IPreferredMagnetEngine
     private static string Md5Hex(string s) =>
         Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(s))).ToLowerInvariant();
 
-    private static string StatePath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CatClawVideo", "thunder-pan.json");
+    // Debug/Release 隔离（见 AppPaths）；首次把旧位置的网盘状态/凭据拷一份
+    static ThunderPanEngine()
+    {
+        AppPaths.SeedFile("thunder-pan.json", AppPaths.LegacyDataDir);
+        AppPaths.SeedFile("thunder-pan-creds.json", AppPaths.LegacyDataDir);
+    }
 
-    private static string CredsPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CatClawVideo", "thunder-pan-creds.json");
+    private static string StatePath => AppPaths.Of("thunder-pan.json");
+
+    private static string CredsPath => AppPaths.Of("thunder-pan-creds.json");
 
     private void LoadState()
     {

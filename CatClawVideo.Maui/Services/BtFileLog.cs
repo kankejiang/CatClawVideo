@@ -12,7 +12,7 @@ internal static class BtFileLog
     {
         try
         {
-            var dir = Path.Combine(FileSystem.AppDataDirectory, "logs");
+            var dir = CatClawVideo.Core.AppPaths.Sub("logs");
             Directory.CreateDirectory(dir);
             var line = $"[{DateTime.Now:HH:mm:ss.fff}] {msg}";
             lock (Lock)
@@ -32,7 +32,7 @@ internal static class BtFileLog
     {
         get
         {
-            var dir = Path.Combine(FileSystem.AppDataDirectory, "logs");
+            var dir = CatClawVideo.Core.AppPaths.Sub("logs");
             return Path.Combine(dir, "bt.log");
         }
     }

@@ -17,9 +17,8 @@ public static class DiagLog
 #endif
         try
         {
-            var dir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CatClawVideo");
-            Directory.CreateDirectory(dir);
-            File.AppendAllText(System.IO.Path.Combine(dir, "home-debug.log"),
+            // Debug/Release 隔离（见 Core.AppPaths）：Debug 落 CatClawVideo.debug
+            File.AppendAllText(CatClawVideo.Core.AppPaths.Of("home-debug.log"),
                 $"{DateTime.Now:HH:mm:ss.fff} {msg}{Environment.NewLine}");
         }
         catch { }
