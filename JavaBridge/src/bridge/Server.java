@@ -58,6 +58,9 @@ public class Server {
     }
 
     public static void main(String[] args) throws Exception {
+        // 把 AES/*/PKCS7Padding 别名到 PKCS5Padding（标准 JVM 不提供 PKCS7 命名，Android 提供）
+        // → 否则爬虫的接口加解密直接失败（NoSuchAlgorithmException → aes decrypt fail）。见 Pkcs7Provider。
+        Pkcs7Provider.install();
         // 强制 stdout/stderr 为 UTF-8（JVM 默认跟随 Windows 控制台代码页 GBK，中文会坏）
         System.setOut(new java.io.PrintStream(new java.io.FileOutputStream(java.io.FileDescriptor.out), true, "UTF-8"));
         System.setErr(new java.io.PrintStream(new java.io.FileOutputStream(java.io.FileDescriptor.err), true, "UTF-8"));

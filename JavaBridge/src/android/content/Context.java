@@ -36,6 +36,11 @@ public class Context {
     public String getString(int resId) { return ""; }
     public String getString(int resId, Object... formatArgs) { return ""; }
 
+    /** ContentResolver：爬虫读系统设置/媒体库时用（实测 2026-09-16「瓜子」站因缺此方法整站挂）。 */
+    public android.content.ContentResolver getContentResolver() {
+        return new android.content.ContentResolver();
+    }
+
     /**
      * PackageManager：TVBox 系爬虫用它读自身包名/签名做校验（<c>merge.cn.F5</c> 在端口调整线程里调）。
      * 缺这个 getter 会抛 <c>NoSuchMethodError: android.content.pm.PackageManager
