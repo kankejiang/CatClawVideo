@@ -12,9 +12,7 @@ namespace CatClawVideo.Core.Providers;
 /// </summary>
 public class MacCmsJsonProvider : IVodSourceProvider
 {
-    public MacCmsJsonProvider(Services.BtStreamService? bt = null) => _bt = bt;
-
-    private readonly Services.BtStreamService? _bt;
+    public MacCmsJsonProvider() { }
 
     private static readonly HttpClient Http = CreateHttp();
 
@@ -176,10 +174,13 @@ public class MacCmsJsonProvider : IVodSourceProvider
             throw new NotSupportedException("该集为电驴(ed2k)下载链接，暂不支持在线播放；可复制链接到下载工具");
         if (url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase))
         {
-            if (_bt is null)
-                throw new NotSupportedException("BT 引擎未初始化，磁力线路不可用");
-            var session = await _bt.OpenAsync(url, episode.Name, ct);
-            return new PlayRequest { Title = episode.Name, Url = session.Url };
+            // 磁力只走迅雷引擎（内置 BT 已移除）
+            var engine = Interfaces.MagnetEngines.Thunder;
+            if (engine is null || !engine.IsReady)
+                throw new NotSupportedException("磁力播放需要迅雷引擎，当前不可用；请确认迅雷运行时已就绪");
+            var opened = await engine.TryOpenAsync(url, episode.Name, ct)
+                ?? throw new NotSupportedException("迅雷无法解析该磁力链接（无可用资源）");
+            return new PlayRequest { Title = episode.Name, Url = opened.Url };
         }
 
         // MacCMS 直链源：集地址即播放地址（m3u8/mp4 或 302 跳转直链），页面嗅探随后续版本

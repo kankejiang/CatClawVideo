@@ -67,9 +67,6 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     /// <summary>播放历史会话（观看页播放也落库，海报墙封面来自 _item.Cover）</summary>
     private readonly VideoPlaybackManager _playback;
 
-    /// <summary>BT 引擎（网速徽章数据源；非 BT 播放时不显示）</summary>
-    private readonly BtStreamService? _bt;
-
     /// <summary>下载管理器（磁力资源行"下载"按钮入口）</summary>
     private readonly DownloadManager? _downloads;
 
@@ -94,13 +91,12 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     private double _resumePosition;
 
     public WatchPage(IVodSourceProvider provider, VideoDatabase db, VideoPlaybackManager playback,
-        BtStreamService? bt = null, DownloadManager? downloads = null)
+        DownloadManager? downloads = null)
     {
         InitializeComponent();
         _provider = provider;
         _db = db;
         _playback = playback;
-        _bt = bt;
         _downloads = downloads;
 
 #if ANDROID
@@ -178,11 +174,9 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         // 鼠标进入播放框：控制层常亮（取消倒计时，等鼠标离开再重新计时）
         ShowControls();
 
-        _btInfoHex = BtStreamService.ExtractInfoHash(_resolvedPlay?.Url);
-        if (_bt == null || _btInfoHex == null) return; // 非 BT 播放不显示
-        UpdateSpeedBadge();
-        SpeedBadge.IsVisible = true;
-        _speedTimer?.Start();
+        // 内置 BT 已移除 → 网速徽章暂无数据源（磁力改走迅雷引擎；引擎本身有 speed 上报，后续接上即可）
+        _btInfoHex = null;
+        SpeedBadge.IsVisible = false;
     }
 
     /// <summary>鼠标在播放框内移动：保持控制层可见（离开播放框才开始 3s 倒计时）</summary>
@@ -327,8 +321,8 @@ public partial class WatchPage : ContentPage, IQueryAttributable
 
     private void UpdateSpeedBadge()
     {
-        if (_bt == null || _btInfoHex == null) { SpeedBadge.IsVisible = false; return; }
-        SpeedLabel.Text = FormatSpeed(_bt.GetDownloadSpeed(_btInfoHex));
+        // 数据源（内置 BT）已移除：保持隐藏，避免显示陈旧数值
+        SpeedBadge.IsVisible = false;
     }
 
     private static string FormatSpeed(long bps) =>
@@ -868,9 +862,8 @@ public partial class WatchPage : ContentPage, IQueryAttributable
             await ShowTipAsync("下载管理器不可用");
             return;
         }
-        var name = string.IsNullOrWhiteSpace(_item.Title) ? episode.Name : $"{_item.Title} {episode.Name}";
-        _downloads.EnqueueMagnet(episode.Url!, name);
-        await ShowTipAsync($"「{episode.Name}」已加入下载队列（设置 → 下载管理 查看）");
+        // 内置 BT 下载已移除：磁力不再入下载队列，改为播放页边下边播（迅雷引擎）
+        await ShowTipAsync("磁力已不再走内置 BT 下载：请直接播放（边下边播走迅雷引擎），或复制链接到迅雷客户端");
     }
 
     /// <summary>行高亮刷新入口：仅当前页已渲染的行有可视件（不在本页的行事件静默）</summary>

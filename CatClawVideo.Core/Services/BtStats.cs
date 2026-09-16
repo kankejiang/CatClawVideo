@@ -2,8 +2,8 @@ namespace CatClawVideo.Core.Services;
 
 /// <summary>
 /// BT 任务运行快照（任务详情页 / 卡片统计用）。
-/// <para>能力边界：MonoTorrent 3.0.1 不暴露 peer 连接明细（PeerManager 仅有计数），
-/// 故无"连接列表"（地址/客户端/单 peer 速率）。</para>
+/// <para>内置 BT 引擎已移除（2026-09-16），本记录仅保留供下载详情页的数据结构兼容；
+/// 当前恒为 null（磁力改走迅雷引擎）。</para>
 /// </summary>
 public sealed record BtTorrentStats(
     string InfoHash,

@@ -40,10 +40,7 @@ public class CatClawSourceProvider : IVodSourceProvider
     /// <summary>web 模式通用引擎</summary>
     private readonly CatClawWebEngine _engine = new();
 
-    /// <summary>BT 流式引擎（磁力边下边播；未注入时磁力线路保持明确报错）</summary>
-    private readonly Services.BtStreamService? _bt;
-
-    public CatClawSourceProvider(Services.BtStreamService? bt = null) => _bt = bt;
+    public CatClawSourceProvider() { }
 
     public string Id => "catclaw";
     public string Name => "猫爪源";
@@ -123,10 +120,13 @@ public class CatClawSourceProvider : IVodSourceProvider
         // 磁力：BT 流式引擎边下边播 → 本地 127.0.0.1 代理地址（可 Range 拖动）
         if (url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase))
         {
-            if (_bt == null)
-                throw new NotSupportedException("BT 引擎未初始化，磁力线路不可用");
-            var session = await _bt.OpenAsync(url, episode.Name, ct);
-            return new PlayRequest { Title = episode.Name, Url = session.Url };
+            // 磁力只走迅雷引擎（内置 BT 已移除）
+            var engine = Interfaces.MagnetEngines.Thunder;
+            if (engine is null || !engine.IsReady)
+                throw new NotSupportedException("磁力播放需要迅雷引擎，当前不可用；请确认迅雷运行时已就绪");
+            var opened = await engine.TryOpenAsync(url, episode.Name, ct)
+                ?? throw new NotSupportedException("迅雷无法解析该磁力链接（无可用资源）");
+            return new PlayRequest { Title = episode.Name, Url = opened.Url };
         }
 
         // web 模式：非直链 URL（播放入口页）→ 规则引擎实时解析直链（时效签名现取现用）

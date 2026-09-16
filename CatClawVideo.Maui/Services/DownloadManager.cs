@@ -234,11 +234,6 @@ public class DownloadManager : IDisposable
     private int _active;
     private bool _disposed;
 
-    /// <summary>磁力（BT）下载引擎懒工厂（首次真正使用磁力功能时才构造 ClientEngine）</summary>
-    private readonly Func<BitTorrentDownloadService?>? _btFactory;
-
-    private BitTorrentDownloadService? Bt => _btFactory?.Invoke();
-
     /// <summary>当前最大并发下载任务数</summary>
     public int ConcurrentLimit { get; private set; } = DefaultConcurrent;
 
@@ -251,24 +246,8 @@ public class DownloadManager : IDisposable
     /// <summary>单个任务进度/状态变化时触发</summary>
     public event Action<DownloadTaskItem>? TaskUpdated;
 
-    /// <summary>BT 任务运行快照（详情页/文件与 Tracker 列表；HTTP 任务返回 null）</summary>
-    public CatClawVideo.Core.Services.BtTorrentStats? GetBtStats(string id)
+    public DownloadManager()
     {
-        var task = Find(id);
-        if (task == null || task.Kind != "magnet") return null;
-        return Bt?.GetStats(id);
-    }
-
-    /// <summary>勾选/取消勾选 BT 任务内文件</summary>
-    public Task<bool> SetBtFileSelectionAsync(string id, int fileIndex, bool selected)
-    {
-        var bt = Bt;
-        return bt == null ? Task.FromResult(false) : bt.SetFileSelectionAsync(id, fileIndex, selected);
-    }
-
-    public DownloadManager(Func<BitTorrentDownloadService?>? btFactory = null)
-    {
-        _btFactory = btFactory;
         _http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
         _http.DefaultRequestHeaders.Add("User-Agent", "CatClawVideo/1.0");
         ConcurrentLimit = LoadConcurrentLimit();
@@ -338,28 +317,18 @@ public class DownloadManager : IDisposable
         return item;
     }
 
-    /// <summary>新建磁力（BT）下载任务：magnet: 链接由内置 BT 引擎下载（DHT/tracker 发现做种者）</summary>
-    public DownloadTaskItem EnqueueMagnet(string magnet, string? displayName = null)
+    /// <summary>
+    /// 内置 BT 引擎已移除（公共 BT 网络实测无速度，见 docs/playback-latency-analysis.md）：
+    /// 历史遗留的磁力任务统一置为失败并给出指引，避免静默卡在"排队中"。
+    /// </summary>
+    private void MarkMagnetGone(DownloadTaskItem task)
     {
-        var name = !string.IsNullOrWhiteSpace(displayName)
-            ? SanitizeFileName(displayName)
-            : DeriveMagnetName(magnet);
-        // BT 任务保存到 下载目录/BT/名称/（多文件种子保持目录结构）
-        var dir = Path.Combine(DownloadFolderPath, "BT");
-        try { Directory.CreateDirectory(dir); } catch { }
-        var saveDir = GetUniqueDirPath(Path.Combine(dir, name));
-
-        var item = new DownloadTaskItem
+        UpdateTask(task, t =>
         {
-            Name = name,
-            Url = magnet,
-            Kind = "magnet",
-            CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-            LocalPath = saveDir
-        };
-        AddTask(item);
-        _ = RunMagnetAsync(item, magnet, saveDir);
-        return item;
+            t.Status = DownloadStatus.Failed;
+            t.Error = "内置 BT 下载已移除：磁力请用播放器（迅雷引擎）边下边播，或复制链接到迅雷客户端";
+            t.SpeedText = "";
+        });
     }
 
     private DownloadTaskItem CreateTask(string url, string fileName, string kind)
@@ -399,7 +368,6 @@ public class DownloadManager : IDisposable
         if (task == null) return;
         if (task.Kind == "magnet")
         {
-            _ = Bt?.PauseAsync(id);
             if (task.Status == DownloadStatus.Downloading)
             {
                 UpdateTask(task, t => { t.Status = DownloadStatus.Paused; t.IsPaused = true; t.SpeedText = ""; });
@@ -430,7 +398,7 @@ public class DownloadManager : IDisposable
         if (task.Kind == "magnet")
         {
             UpdateTask(task, t => { t.Status = DownloadStatus.Queued; t.IsPaused = false; t.Error = ""; });
-            _ = ResumeMagnetAsync(task);
+            MarkMagnetGone(task);
             return;
         }
         UpdateTask(task, t =>
@@ -440,33 +408,6 @@ public class DownloadManager : IDisposable
             t.Error = "";
         });
         _ = RunAsync(task);
-    }
-
-    /// <summary>
-    /// 磁力任务继续：优先原地恢复引擎会话（保留已连 peer 与校验进度，秒级生效）；
-    /// 引擎里已无该会话（如 App 重启后从持久化恢复）则退回完整重跑（重新 AddAsync，
-    /// 会先校验已下数据再续传）。
-    /// 此前的实现只把状态置为 Queued，而回调只刷字节/速度、无人推回 Downloading，
-    /// 导致任务永远卡在"排队中"且暂停/继续/重试三个按钮全都不显示。
-    /// </summary>
-    private async Task ResumeMagnetAsync(DownloadTaskItem task)
-    {
-        var bt = Bt;
-        if (bt == null)
-        {
-            MarkFailed(task, "磁力下载引擎未初始化");
-            return;
-        }
-
-        var resumed = await bt.ResumeAsync(task.Id);
-        if (resumed)
-        {
-            // 引擎会话还在：manager 已 Start，原有周期回调会继续刷进度，这里只补状态
-            UpdateTask(task, t => { t.Status = DownloadStatus.Downloading; t.Error = ""; });
-            return;
-        }
-
-        await RunMagnetAsync(task, task.Url, task.LocalPath);
     }
 
     /// <summary>取消任务（删除临时文件，任务标记已取消）</summary>
@@ -497,9 +438,6 @@ public class DownloadManager : IDisposable
         {
             if (_ctsMap.TryGetValue(id, out var cts)) { cts.Cancel(); cts.Dispose(); _ctsMap.Remove(id); }
         }
-        if (task?.Kind == "magnet")
-            _ = Bt?.RemoveAsync(id);
-
         string? fileError = null;
         if (task != null)
         {
@@ -555,7 +493,7 @@ public class DownloadManager : IDisposable
             t.DownloadedBytes = 0;
         });
         if (task.Kind == "magnet")
-            _ = RunMagnetAsync(task, task.Url, task.LocalPath);
+            MarkMagnetGone(task);
         else
             _ = RunAsync(task);
     }
@@ -563,63 +501,6 @@ public class DownloadManager : IDisposable
     // ═══════════════════════════════════════════════════════
     // 内部执行
     // ═══════════════════════════════════════════════════════
-
-    /// <summary>磁力任务执行：委托 BT 引擎下载，回调更新任务进度/状态</summary>
-    private async Task RunMagnetAsync(DownloadTaskItem task, string magnet, string saveDir)
-    {
-        var bt = Bt;
-        if (bt == null)
-        {
-            MarkFailed(task, "磁力下载引擎未初始化");
-            return;
-        }
-        try
-        {
-            BtFileLog.Write($"[dm] 磁力任务执行开始 {task.Id} saveDir={saveDir}");
-            UpdateTask(task, t => { t.Status = DownloadStatus.Downloading; t.SpeedText = ""; });
-            var error = await bt.StartAsync(task.Id, magnet, saveDir,
-                onState: text => UpdateTask(task, t => { if (t.Status != DownloadStatus.Completed) t.Error = text == "下载中" ? "" : text; }),
-                onProgress: p => UpdateTask(task, t =>
-                {
-                    if (t.TotalBytes > 0) t.DownloadedBytes = (long)(t.TotalBytes * p / 100.0);
-                }),
-                onStats: stats => UpdateTask(task, t =>
-                {
-                    t.DownloadedBytes = stats.Downloaded;
-                    t.TotalBytes = stats.Total;
-                    t.SpeedText = stats.DownloadRate > 0 ? $"{DownloadTaskItem.FormatBytes(stats.DownloadRate)}/s" : "";
-                    t.DownloadRateBytes = stats.DownloadRate;
-                    t.UploadSpeedText = stats.UploadRate > 0 ? $"{DownloadTaskItem.FormatBytes(stats.UploadRate)}/s" : "";
-                    t.UploadedBytes = stats.Uploaded;
-                    t.Connections = stats.Connections;
-                    t.Seeds = stats.Seeds;
-                    if (stats.DownloadRate > 0) t.PushSpeedSample(stats.DownloadRate);
-                }),
-                onComplete: () =>
-                {
-                    if (IsTerminal(task)) return;
-                    UpdateTask(task, t =>
-                    {
-                        t.Status = DownloadStatus.Completed;
-                        t.DownloadedBytes = t.TotalBytes;
-                        t.SpeedText = "";
-                        t.UploadSpeedText = "";
-                        t.DownloadRateBytes = 0;
-                        t.Seeds = 0;
-                        t.Connections = 0;
-                    });
-                    SaveTasksOnMainThread();
-                });
-            if (error != null)
-            {
-                MarkFailed(task, error);
-            }
-        }
-        catch (Exception ex)
-        {
-            MarkFailed(task, ex.Message);
-        }
-    }
 
     /// <summary>从 magnet 链接提取展示名（dn= 参数优先，否则取 infohash）</summary>
     private static string DeriveMagnetName(string magnet)
@@ -961,14 +842,8 @@ public class DownloadManager : IDisposable
                 };
                 Tasks.Add(item);
 
-                // 磁力任务：重启后自动续传（BT 引擎校验已下数据后继续，无需重新开始）
-                if (dto.Kind == "magnet" && Bt != null
-                    && status is DownloadStatus.Queued or DownloadStatus.Paused or DownloadStatus.Downloading)
-                {
-                    item.Status = DownloadStatus.Queued;
-                    item.IsPaused = false;
-                    _ = RunMagnetAsync(item, dto.Url, dto.LocalPath);
-                }
+                // 内置 BT 已移除：历史遗留的磁力任务直接标记为失败，避免卡在"排队中"
+                if (dto.Kind == "magnet") MarkMagnetGone(item);
             }
         }
         catch { }

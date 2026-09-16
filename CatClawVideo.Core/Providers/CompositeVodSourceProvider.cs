@@ -50,8 +50,8 @@ public class CompositeVodSourceProvider : IVodSourceProvider
     /// <para>展开靠优先引擎（迅雷）的文件列表：实测 35~567ms/磁力，详情页代价可接受；
     /// 引擎没起来或解析失败时**原样保留**，不影响任何既有行为。</para>
     ///
-    /// <para>展开后集名 = 种子内文件名，播放时 <c>BtStreamService</c> 会用它做 preferName
-    /// 命中同一个文件，因此无需额外传文件索引。</para>
+    /// <para>展开后集名 = 种子内文件名；播放时磁力引擎（迅雷）用它做 preferName 命中同一个文件，
+    /// 因此无需额外传文件索引。</para>
     /// </summary>
     private static async Task<List<VodPlaySource>> ExpandMagnetEpisodesAsync(
         List<VodPlaySource> sources, CancellationToken ct)

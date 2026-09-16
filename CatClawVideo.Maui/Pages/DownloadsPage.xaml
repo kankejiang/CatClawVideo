@@ -20,10 +20,6 @@
                 <Label Grid.Column="0" Text="下载管理" FontSize="17" FontFamily="OpenSansSemibold"
                        TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
                 <!-- 下载设置（照搬 Motrix 设置项） -->
-                <Button Grid.Column="1" Text="⚙ 设置" FontSize="12" Padding="12,6" CornerRadius="8"
-                        TextColor="{DynamicResource TextPrimaryColor}"
-                        BackgroundColor="{DynamicResource ChipInactiveColor}"
-                        Clicked="OnBtSettingsTapped" />
                 <Button Grid.Column="2" Text="＋ 新建下载" FontSize="12"
                         ContentLayout="Left,4"
                         ImageSource="ic_add.png"
@@ -200,7 +196,7 @@
                                Opacity="0.4" HorizontalOptions="Center" />
                         <Label Text="下载架还空着喵…" FontSize="15" FontFamily="OpenSansSemibold"
                                TextColor="{DynamicResource TextPrimaryColor}" HorizontalTextAlignment="Center" />
-                        <Label Text="在影片详情页点磁力线路旁的下载按钮，或点右上角 ＋ 直接输入 http 直链 / magnet 磁力链接"
+                        <Label Text="磁力用播放页边下边播（迅雷引擎）；此页只接 HTTP/HTTPS 直链"
                                FontSize="11"
                                TextColor="{DynamicResource TextHintColor}"
                                HorizontalTextAlignment="Center" />

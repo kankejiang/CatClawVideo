@@ -17,10 +17,9 @@ public class SpiderVodProvider : IVodSourceProvider
     private readonly RemoteSpiderRuntime? _remote;
     private readonly Action<string>? _log;
     private readonly IWebSniffer? _sniffer;
-    private readonly Services.BtStreamService? _bt;
 
     public SpiderVodProvider(ISpiderRuntime? jsRuntime, ISpiderRuntime? jarRuntime = null,
-        IWebSniffer? sniffer = null, Services.BtStreamService? bt = null,
+        IWebSniffer? sniffer = null,
         Action<string>? log = null)
     {
         _jsRuntime = jsRuntime;
@@ -28,7 +27,6 @@ public class SpiderVodProvider : IVodSourceProvider
         _remote = new RemoteSpiderRuntime(log);
         _log = log;
         _sniffer = sniffer;
-        _bt = bt;
     }
 
     public string Id => "spider";
@@ -149,11 +147,14 @@ public class SpiderVodProvider : IVodSourceProvider
         if (!url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase))
             return null;
 
-        if (_bt is null)
-            throw new NotSupportedException("BT 引擎未初始化，磁力线路不可用");
+        // 磁力只走迅雷引擎（内置 BT 引擎已移除：公共 BT 网络实测无速度，见 docs/playback-latency-analysis.md）
+        var engine = Interfaces.MagnetEngines.Thunder;
+        if (engine is null || !engine.IsReady)
+            throw new NotSupportedException("磁力播放需要迅雷引擎，当前不可用；请确认迅雷运行时已就绪");
 
-        var session = await _bt.OpenAsync(url, episode.Name, ct);
-        return new PlayRequest { Title = episode.Name, Url = session.Url, Headers = play.Headers };
+        var opened = await engine.TryOpenAsync(url, episode.Name, ct)
+            ?? throw new NotSupportedException("迅雷无法解析该磁力链接（无可用资源或资源不存在）");
+        return new PlayRequest { Title = episode.Name, Url = opened.Url, Headers = play.Headers };
     }
 
     /// <summary>

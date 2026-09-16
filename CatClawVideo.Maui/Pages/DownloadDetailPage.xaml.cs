@@ -89,7 +89,7 @@ public partial class DownloadDetailPage : ContentPage
                 _ => "STOPPED",
             };
 
-            var stats = _manager.GetBtStats(task.Id);
+            CatClawVideo.Core.Services.BtTorrentStats? stats = null;   // 内置 BT 已移除：不再有 BT 统计
             _lastStats = stats;
             if (stats == null)
             {
@@ -174,7 +174,7 @@ public partial class DownloadDetailPage : ContentPage
             check.CheckedChanged += async (_, e) =>
             {
                 if (TaskId == null) return;
-                var ok = await _manager.SetBtFileSelectionAsync(TaskId, index, e.Value);
+                var ok = await Task.FromResult(false) /* BT 已移除 */;
                 if (!ok) HintLabel.Text = "切换下载勾选失败（任务可能未就绪）";
                 else HintLabel.Text = e.Value ? "已加入下载" : "已跳过该文件";
             };
@@ -210,7 +210,7 @@ public partial class DownloadDetailPage : ContentPage
         for (int i = 0; i < stats.Files.Count && i < _fileChecks.Count; i++)
         {
             _fileChecks[i].IsChecked = !_fileChecks[i].IsChecked;
-            await _manager.SetBtFileSelectionAsync(TaskId, i, _fileChecks[i].IsChecked == true);
+            await Task.FromResult(false) /* BT 已移除 */;
         }
         Refresh();
     }
@@ -222,7 +222,7 @@ public partial class DownloadDetailPage : ContentPage
         for (int i = 0; i < stats.Files.Count && i < _fileChecks.Count; i++)
         {
             _fileChecks[i].IsChecked = selected;
-            await _manager.SetBtFileSelectionAsync(TaskId, i, selected);
+            await Task.FromResult(false) /* BT 已移除 */;
         }
         Refresh();
     }

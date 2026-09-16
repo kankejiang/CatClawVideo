@@ -56,14 +56,12 @@ public partial class DownloadsViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(IsEmpty));
     }
 
-    /// <summary>新建下载任务：自动识别 magnet: 磁力链接走 BT 引擎，否则按普通 URL 下载</summary>
+    /// <summary>新建下载任务（仅 HTTP/HTTPS 直链；内置 BT 已移除，磁力走播放页的迅雷引擎）</summary>
     public void AddUrlDownload(string url, string? fileName = null)
     {
         if (string.IsNullOrWhiteSpace(url)) return;
-        if (url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase))
-            _manager.EnqueueMagnet(url.Trim(), fileName);
-        else
-            _manager.EnqueueUrl(url.Trim(), fileName);
+        if (url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase)) return;   // 页面层已拦截并提示
+        _manager.EnqueueUrl(url.Trim(), fileName);
     }
 
     /// <summary>暂停任务</summary>

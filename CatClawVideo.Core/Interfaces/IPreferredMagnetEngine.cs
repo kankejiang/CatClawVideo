@@ -1,13 +1,13 @@
 namespace CatClawVideo.Core.Interfaces;
 
-/// <summary>磁力播放结果（与 <c>BtStreamService.BtSession</c> 同形，避免 Core 内部耦合）</summary>
+/// <summary>磁力播放结果（宿主自有类型，避免 Core 内部耦合）</summary>
 public sealed record MagnetPlayback(string InfoHashHex, int FileIndex, long FileLength, string FileName, string Url);
 
 /// <summary>磁力文件条目（种子内单个文件）</summary>
 public sealed record MagnetFile(int Index, long Size, string Name);
 
 /// <summary>
-/// 优先磁力引擎（如迅雷下载引擎）：先于内置 MonoTorrent 尝试。
+/// 优先磁力引擎（如迅雷下载引擎）：先于内置 内置 BT 尝试。
 ///
 /// <para><b>为什么要它</b>：新6V 这类站的磁力，公共 BT swarm 极薄甚至已死（实测 0.28 Mbps），
 /// 而 TVBox 用迅雷 P2SP 私有网络（中心化种子索引 + 自有节点）能秒出文件列表并流畅播放。

@@ -66,27 +66,7 @@ public static class MauiProgram
             new CatClawVideo.Core.Services.JsRuntimeService(),
             cacheDir: CatClawVideo.Core.AppPaths.LocalSub("drpy2"),
             log: m => System.Diagnostics.Debug.WriteLine(m));
-
-        // BT 流式引擎（磁力边下边播）：双端同一实现，仅缓存路径/内存预算按平台调参
-        // 设置与 tracker 列表：BtSettings（设置页可改，保存后 RecreateEngineAsync 生效）
-        //                + BtTrackerSource（ngosang 拉取 + BEP15 可达性过滤 + 每日更新，替代硬编码）
-        var btSettings = CatClawVideo.Core.Services.BtSettings.Load(CatClawVideo.Core.AppPaths.DataRoot);
-        var trackerSource = new CatClawVideo.Core.Services.BtTrackerSource(CatClawVideo.Core.AppPaths.DataRoot, BtFileLog.Write);
-#if ANDROID
-        var btCacheRoot = Path.Combine(FileSystem.CacheDirectory, "btcache");
-        // ⚠️ 日志必须走 BtFileLog（落盘 files/logs/bt.log），不要用 System.Diagnostics.Debug.WriteLine：
-        // · Debug.WriteLine 带 [Conditional("DEBUG")]，Release 包里整行被编译掉 → 真机零日志；
-        // · Debug 包里它走 stdout，被 logd 按进程名打 tag 且受块缓冲影响，adb logcat 抓不稳。
-        // 这两点叠加导致「安卓端磁力线路加载失败」在真机上完全拿不到引擎侧证据（2026-09-14 实测）。
-        var btService = new CatClawVideo.Core.Services.BtStreamService(btCacheRoot, BtFileLog.Write, trackerSource, btSettings)
-        {
-            MemoryCacheBytes = 32 * 1024 * 1024,
-            MaxConnections = 120,          // 移动端连接数略降（省电/省流），仍远高于旧值 50
-            MaxHalfOpenConnections = 40,
-        };
-#else
-        var btCacheRoot = CatClawVideo.Core.AppPaths.Sub("btcache");
-        var btService = new CatClawVideo.Core.Services.BtStreamService(btCacheRoot, BtFileLog.Write, trackerSource, btSettings);
+#if !ANDROID
 
         // PC「迅雷磁力播放」双引擎（链式：前者失败才试后者，全部失败回落内置 BT）：
         //  ① QEMU 本地迅雷引擎（首选）：ARM64 Android 迅雷 SDK 跑在 QEMU 里，走 P2SP 私有网络，
@@ -100,11 +80,6 @@ public static class MauiProgram
         CatClawVideo.Core.Interfaces.MagnetEngines.Thunder = new CatClawVideo.Core.Providers.ChainedMagnetEngine(
             qemuThunder, new CatClawVideo.Core.Providers.ThunderPanEngine());
 #endif
-        services.AddSingleton(btSettings);
-        services.AddSingleton(trackerSource);
-        services.AddSingleton(btService);
-        // 后台预热 tracker 列表（不阻塞启动首帧）
-        _ = Task.Run(async () => { try { await btService.WarmUpTrackersAsync(); } catch { } });
 
         // TVBox 系爬虫（ProxyOrigin 等）会把播放地址拼成 http://127.0.0.1:<port>/proxy?...
         // 端口来自爬虫自己的 drivePort()：在 6677–6999 逐端口探测 GET /proxy?do=ck。
@@ -213,14 +188,9 @@ public static class MauiProgram
                           $"js={CatClawVideo.Core.Models.SiteRegistry.JsSpiderAvailable} " +
                           $"桥目录={CatClawVideo.Core.Providers.JavaSpiderRuntime.FindBridgeDir() ?? "(未找到)"}");
 
-        services.AddSingleton(btService);
 
-        // 下载管理器（复刻猫爪音乐）：HTTP 直链 + BT 磁力整包下载
-        // BT 引擎借用 BtStreamService 的 ClientEngine（共享 DHT 路由表，下载启动即受益于播放会话焐热的节点表）；
-        // 同磁力"流式会话 vs 下载任务"的注册冲突由 CloseStreamingSessionAsync 接管解决
-        services.AddSingleton<BitTorrentDownloadService>(sp =>
-            new BitTorrentDownloadService(sp.GetRequiredService<Core.Services.BtStreamService>(), BtFileLog.Write));
-        services.AddSingleton(sp => new DownloadManager(btFactory: () => sp.GetService<BitTorrentDownloadService>()));
+        // 下载管理器：HTTP 直链下载（内置 BT 已移除，磁力走播放页的迅雷引擎）
+        services.AddSingleton(sp => new DownloadManager());
 
         // 平台嗅探器：Android WebView 拦截 / Windows WebView2 拦截（TVBox parse=1 页面解析）
 #if ANDROID
@@ -244,9 +214,9 @@ public static class MauiProgram
         };
         var vodProvider = new CatClawVideo.Core.Providers.CompositeVodSourceProvider(            new IVodSourceProvider[]
             {
-                new CatClawVideo.Core.Providers.CatClawSourceProvider(btService),
-                new CatClawVideo.Core.Providers.MacCmsJsonProvider(btService),
-                new CatClawVideo.Core.Providers.SpiderVodProvider(jsRuntime, jarRuntime, sniffer, btService, BtFileLog.Write),
+                new CatClawVideo.Core.Providers.CatClawSourceProvider(),
+                new CatClawVideo.Core.Providers.MacCmsJsonProvider(),
+                new CatClawVideo.Core.Providers.SpiderVodProvider(jsRuntime, jarRuntime, sniffer, log: BtFileLog.Write),
             });
         services.AddSingleton<IVodSourceProvider>(vodProvider);
 
@@ -316,7 +286,6 @@ public static class MauiProgram
         // 下载管理：现在是顶部 tab（"下载"）的内容，由 MainPage 注入常驻复用
         services.AddTransient<Pages.DownloadsPage>();
         services.AddTransient<Pages.SettingsPage>();
-        services.AddTransient<Pages.BtSettingsPage>();
         services.AddTransient<Pages.DownloadDetailPage>();
         services.AddTransient<Pages.VideoPlayerPage>();
         services.AddTransient<Pages.WatchPage>();
