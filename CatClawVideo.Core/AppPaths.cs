@@ -54,6 +54,16 @@ public static class AppPaths
     /// <summary>本机根下的文件路径（目录按需创建）。</summary>
     public static string LocalOf(string fileName) => Path.Combine(Ensure(LocalRoot), fileName);
 
+    /// <summary>可再生的本机缓存根：<c>%LOCALAPPDATA%\{名}\cache</c>（封面、脚本缓存等）。</summary>
+    public static string CacheRoot => LocalSub("cache");
+
+    /// <summary>本机根下的子目录（或子目录里的文件）路径（目录按需创建）。</summary>
+    public static string LocalSub(string subDir, string? fileName = null)
+    {
+        var dir = Ensure(Path.Combine(LocalRoot, subDir));
+        return fileName is null ? dir : Path.Combine(dir, fileName);
+    }
+
     /// <summary>
     /// 首次运行的数据迁移：若 <paramref name="fileName"/> 在数据根下不存在，
     /// 就从 <paramref name="legacyDirs"/>（旧位置，按序尝试）拷一份过来。只拷不共享，失败静默。

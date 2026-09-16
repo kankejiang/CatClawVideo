@@ -224,7 +224,7 @@ public class DownloadManager : IDisposable
     public const int ConcurrentMax = 5;
 
     private static readonly string TasksFilePath =
-        Path.Combine(FileSystem.AppDataDirectory, "download_tasks.json");
+        CatClawVideo.Core.AppPaths.Of("download_tasks.json");
 
     private readonly HttpClient _http;
     /// <summary>排队任务等待"并发槽位空出"的通知信号</summary>

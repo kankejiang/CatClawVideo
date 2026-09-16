@@ -64,14 +64,14 @@ public static class MauiProgram
         services.AddSingleton<CatClawVideo.Core.Interfaces.IJsRuntimeService, CatClawVideo.Core.Services.JsRuntimeService>();
         var jsRuntime = new CatClawVideo.Core.Providers.DrpyJsSpiderRuntime(
             new CatClawVideo.Core.Services.JsRuntimeService(),
-            cacheDir: Path.Combine(FileSystem.CacheDirectory, "drpy2"),
+            cacheDir: CatClawVideo.Core.AppPaths.LocalSub("drpy2"),
             log: m => System.Diagnostics.Debug.WriteLine(m));
 
         // BT 流式引擎（磁力边下边播）：双端同一实现，仅缓存路径/内存预算按平台调参
         // 设置与 tracker 列表：BtSettings（设置页可改，保存后 RecreateEngineAsync 生效）
         //                + BtTrackerSource（ngosang 拉取 + BEP15 可达性过滤 + 每日更新，替代硬编码）
-        var btSettings = CatClawVideo.Core.Services.BtSettings.Load(FileSystem.AppDataDirectory);
-        var trackerSource = new CatClawVideo.Core.Services.BtTrackerSource(FileSystem.AppDataDirectory, BtFileLog.Write);
+        var btSettings = CatClawVideo.Core.Services.BtSettings.Load(CatClawVideo.Core.AppPaths.DataRoot);
+        var trackerSource = new CatClawVideo.Core.Services.BtTrackerSource(CatClawVideo.Core.AppPaths.DataRoot, BtFileLog.Write);
 #if ANDROID
         var btCacheRoot = Path.Combine(FileSystem.CacheDirectory, "btcache");
         // ⚠️ 日志必须走 BtFileLog（落盘 files/logs/bt.log），不要用 System.Diagnostics.Debug.WriteLine：
@@ -251,7 +251,7 @@ public static class MauiProgram
         //   内置磁盘缓存 + 并发上限 + 超时 + 失败负缓存 + 主机熔断，避免慢站把列表拖死。
         // ═══════════════════════════════════════════════════
         services.AddSingleton(new CatClawVideo.Core.Services.CoverImageService(
-            FileSystem.CacheDirectory,
+            CatClawVideo.Core.AppPaths.CacheRoot,
             DiagLog.Write,
             crossSourceCover: async (title, ct) =>
             {
