@@ -158,6 +158,15 @@ public class VodItem : INotifyPropertyChanged
 
     /// <summary>评分（MacCMS vod_score；部分源列表接口返回 0）</summary>
     public double Score { get; set; }
+
+    /// <summary>
+    /// 来源**站点名**（跨站聚合列表上屏用，如搜索结果同时命中多个站时标明出处）。
+    /// 仅界面展示，不参与落库/持久化（历史、收藏按 SourceKey 还原站点）。
+    /// </summary>
+    public string? SiteName { get; set; }
+
+    /// <summary>站点角标可见性（XAML 无 null 判断，直接绑定布尔）</summary>
+    public bool HasSiteName => !string.IsNullOrEmpty(SiteName);
 }
 
 /// <summary>播放线路（一部影片通常有多条线路，每条线路含全部剧集）</summary>

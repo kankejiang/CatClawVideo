@@ -19,6 +19,12 @@
             <CollectionView.ItemTemplate>
                 <DataTemplate>
                     <VerticalStackLayout Spacing="0">
+                        <!-- 长按（Android）/ 右键（Windows）→ 操作菜单：搜索该影片 / 取消收藏 -->
+                        <VerticalStackLayout.GestureRecognizers>
+                            <LongPressGestureRecognizer Command="{Binding MenuCommand}" />
+                            <TapGestureRecognizer NumberOfTapsRequired="1" Buttons="Secondary"
+                                                  Command="{Binding MenuCommand}" />
+                        </VerticalStackLayout.GestureRecognizers>
                         <Border StrokeThickness="0" StrokeShape="RoundRectangle 10"
                                 BackgroundColor="{DynamicResource CardBackgroundColor}"
                                 HeightRequest="{DynamicResource PosterCardHeight}"

@@ -10,16 +10,18 @@ namespace CatClawVideo.Maui.Pages;
 public partial class FavoritesPage : ContentView, ITabView
 {
     private readonly FavoritesViewModel _vm;
+    private readonly VideoDatabase _db;
 
     /// <summary>封面解析（源封面失效 → 豆瓣 → 占位海报）</summary>
     private readonly CoverImageService _covers;
 
-    public FavoritesPage(FavoritesViewModel vm, CoverImageService covers)
+    public FavoritesPage(FavoritesViewModel vm, CoverImageService covers, VideoDatabase db)
     {
         InitializeComponent();
         Wall.SizeChanged += (_, _) => PosterLayoutHelper.Apply(Wall, Wall.Width, Wall.Height);
         _vm = vm;
         _covers = covers;
+        _db = db;
         BindingContext = _vm;
     }
 
@@ -30,6 +32,12 @@ public partial class FavoritesPage : ContentView, ITabView
 #else
         PosterLayoutHelper.Apply(Wall, Wall.Width, Wall.Height);
 #endif
+        await ReloadWallAsync();
+    }
+
+    /// <summary>重建海报墙（进入页面 / 取消收藏后刷新共用）</summary>
+    private async Task ReloadWallAsync()
+    {
         await _vm.LoadCommand.ExecuteAsync(null);
 
         EmptyLabel.IsVisible = _vm.Favorites.Count == 0;
@@ -40,19 +48,21 @@ public partial class FavoritesPage : ContentView, ITabView
             Meta = string.Join(" · ", new[] { f.Year, f.Category }.Where(s => !string.IsNullOrEmpty(s))),
             Remark = f.Remarks,
             OnOpen = () => _ = OpenFavoriteAsync(f),
+            MenuCommand = new Command(() => _ = ShowCardMenuAsync(f)),
         }).ToList();
 
         Wall.ItemsSource = cards;
         CoverResolver.Attach(_covers, cards);   // 卡片先出，封面异步补齐（失败 → 占位海报）
     }
 
-    /// <summary>收藏卡点击 → 观看页（还原站点 type/api 路由，同搜索结果）</summary>
+    /// <summary>收藏卡点击 → 观看页（还原站点 type/api 路由，同搜索结果）。
+    /// 所属源已失效（订阅换源/删源）时**直接跨源搜回该片**，而不是只弹一句「请重新收藏」了事。</summary>
     private async Task OpenFavoriteAsync(FavoriteEntry fav)
     {
         var site = SiteRegistry.Find(fav.SourceKey);
         if (site == null)
         {
-            try { await Shell.Current.DisplayAlertAsync("提示", "该收藏所属源已失效，请重新收藏", "确定"); } catch { }
+            await SearchTitleAsync(fav.Title);
             return;
         }
 
@@ -67,6 +77,54 @@ public partial class FavoritesPage : ContentView, ITabView
                     $"&cover={Uri.EscapeDataString(fav.Cover ?? "")}";
         await Shell.Current.GoToAsync(query);
     }
+
+    /// <summary>跨源搜索片名（推入搜索页并自动开搜）</summary>
+    private static async Task SearchTitleAsync(string title)
+    {
+        try { await Shell.Current.GoToAsync($"search?q={Uri.EscapeDataString(title)}"); }
+        catch { }
+    }
+
+    /// <summary>长按（Android）/ 右键（Windows）卡片 → 操作菜单</summary>
+    private async Task ShowCardMenuAsync(FavoriteEntry fav)
+    {
+        var choice = await AlertActionAsync(fav.Title, "搜索该影片", "取消收藏");
+        switch (choice)
+        {
+            case "搜索该影片":
+                await SearchTitleAsync(fav.Title);
+                break;
+            case "取消收藏":
+                await RemoveFavoriteAsync(fav);
+                break;
+        }
+    }
+
+    /// <summary>直接取消收藏（不必进详情页）</summary>
+    private async Task RemoveFavoriteAsync(FavoriteEntry fav)
+    {
+        try
+        {
+            await _db.RemoveFavoriteAsync(fav);
+            await ReloadWallAsync();
+        }
+        catch (Exception ex)
+        {
+            await AlertAsync("提示", $"取消收藏失败：{ex.Message}");
+        }
+    }
+
+    // ════════════════ 弹层：ContentView 自己不能弹，借宿主页面 ════════════════
+
+    private static Page? RootPage => Application.Current?.Windows.FirstOrDefault()?.Page;
+
+    private static Task AlertAsync(string title, string message) =>
+        RootPage is { } p ? p.DisplayAlertAsync(title, message, "确定") : Task.CompletedTask;
+
+    private static Task<string?> AlertActionAsync(string title, params string[] buttons) =>
+        RootPage is { } p
+            ? p.DisplayActionSheetAsync(title, "取消", null, buttons)
+            : Task.FromResult<string?>(null);
 
     private void OnCardSelected(object? sender, SelectionChangedEventArgs e)
     {

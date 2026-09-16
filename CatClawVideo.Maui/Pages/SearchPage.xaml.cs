@@ -11,8 +11,20 @@ namespace CatClawVideo.Maui.Pages;
 /// 搜索页：关键词 + 热搜词（豆瓣热门片单，TVBox 同源）+ 跨源真实搜索（并发搜全部可播站点，聚合结果）。
 /// 结果卡点击 → 观看页（携带 type/api/itemId 路由）。
 /// </summary>
+/// <summary>支持带关键词进入：<c>search?q=片名</c>（收藏所属源失效时直接跨源找回该片）。</summary>
+[QueryProperty(nameof(Keyword), "q")]
 public partial class SearchPage : ContentPage
 {
+    /// <summary>路由入参关键词（Shell 已 URL 解码）；进入页面时消费一次并自动搜索。</summary>
+    private string? _autoKeyword;
+
+    /// <summary><c>search?q=...</c> 入参。仅用于自动搜索，不在页面上长期保存。</summary>
+    public string? Keyword
+    {
+        get => _autoKeyword;
+        set => _autoKeyword = value;
+    }
+
     private readonly IVodSourceProvider _provider;
 
     /// <summary>封面解析（源封面失效 → 豆瓣 → 占位海报）</summary>
@@ -53,6 +65,15 @@ public partial class SearchPage : ContentPage
 #if WINDOWS
         PosterLayoutHelper.Apply(ResultGrid, ResultGrid.Width, ResultGrid.Height, cap: 252);
 #endif
+        // 带关键词进入（收藏所属源失效 → 直接跨源搜索该片）：填框并自动搜
+        var auto = _autoKeyword;
+        _autoKeyword = null;
+        if (!string.IsNullOrWhiteSpace(auto))
+        {
+            SearchEntry.Text = auto;
+            _ = DoSearchAsync(auto);
+        }
+
         if (_hotLoaded) return;
         _hotLoaded = true;
 
@@ -133,7 +154,8 @@ public partial class SearchPage : ContentPage
                         : new List<VodItem>();
                     if (items.Count == 0) return;
 
-                    foreach (var it in items) it.Category ??= site.Name;
+                    // 跨站聚合：每条结果标出**来源站**（卡片左下角站点角标，方便同片多站时挑源）
+                    foreach (var it in items) { it.SiteName = site.Name; it.Category ??= site.Name; }
                     List<VodItem> added;
                     lock (gate)
                     {

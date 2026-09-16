@@ -39,6 +39,12 @@ public sealed class WallCard : INotifyPropertyChanged
 
     public Action OnOpen { get; init; } = static () => { };
 
+    /// <summary>
+    /// 长按（Android）/ 右键（Windows）菜单入口；null = 该墙不提供菜单。
+    /// 收藏页用它提供「搜索该影片 / 取消收藏」——不必进详情页也能取消收藏。
+    /// </summary>
+    public System.Windows.Input.ICommand? MenuCommand { get; init; }
+
     /// <summary>携带的负载（历史页删除模式用来回查数据库 Id）</summary>
     public object? Tag { get; init; }
 

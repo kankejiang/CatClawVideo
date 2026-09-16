@@ -80,6 +80,13 @@
                                                 StrokeThickness="0" BackgroundColor="#80000000" StrokeShape="RoundRectangle 8" Padding="6,1">
                                             <Label Text="{Binding Remarks}" FontSize="10" TextColor="#FFD76E" MaxLines="1" />
                                         </Border>
+                                        <!-- 来源站角标（跨站搜索聚合，标明这条结果出自哪个站） -->
+                                        <Border HorizontalOptions="Start" VerticalOptions="End" Margin="7,0,0,7"
+                                                StrokeThickness="0" BackgroundColor="#8A000000" StrokeShape="RoundRectangle 8" Padding="6,1"
+                                                IsVisible="{Binding HasSiteName}">
+                                            <Label Text="{Binding SiteName}" FontSize="10" TextColor="#D8DDF5"
+                                                   MaxLines="1" LineBreakMode="TailTruncation" />
+                                        </Border>
                                     </Grid>
                                 </Border>
                                 <Label Text="{Binding Title}" FontSize="12.5" Margin="0,7,0,0"
