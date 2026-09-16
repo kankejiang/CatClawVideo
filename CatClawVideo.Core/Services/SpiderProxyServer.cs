@@ -30,9 +30,13 @@ namespace CatClawVideo.Core.Services;
 /// </summary>
 public sealed class SpiderProxyServer : IDisposable
 {
-    /// <summary>爬虫探测的端口区间（闭区间上界不含）。</summary>
-    public const int PortRangeStart = 6677;
-    public const int PortRangeEnd = 7000;
+    /// <summary>
+    /// 各代爬虫探测的端口（实测：<c>ProxyOrigin</c> 族在 <b>6677–6999</b> 逐端口探、
+    /// 荐片 <c>csp_JPJGuard</c> 走 <b>9978 / 9997–9999</b>；Android 侧注释的「9978…9999 整段反代」即此）。
+    /// 一个监听器只能占一个端口，所以这里把已知的候选端口**全部**监听上，
+    /// 谁先探到谁用；改写后的分片地址用「请求进来的那个端口」拼，保证可达。
+    /// </summary>
+    public static readonly int[] CandidatePorts = [6677, 9978, 9997, 9998, 9999];
 
     /// <summary>默认 UA：部分 CDN 对空 UA 直接 403。</summary>
     private const string DefaultUserAgent =
@@ -40,10 +44,14 @@ public sealed class SpiderProxyServer : IDisposable
 
     private static readonly HttpClient Http = CreateClient();
 
-    private TcpListener? _listener;
+    private readonly List<TcpListener> _listeners = [];
     private CancellationTokenSource? _cts;
 
-    /// <summary>实际监听端口（0 = 未启动）。</summary>
+    /// <summary>已监听的端口（升序）。</summary>
+    public IReadOnlyList<int> Ports => _listeners
+        .Select(l => ((IPEndPoint)l.LocalEndpoint).Port).OrderBy(p => p).ToArray();
+
+    /// <summary>主端口（第一个成功绑定的，0 = 未启动）——用于日志与「生成新地址」的默认值。</summary>
     public int Port { get; private set; }
 
     /// <summary>日志回调（可设属性，便于对象初始化器注入）。</summary>
@@ -61,34 +69,37 @@ public sealed class SpiderProxyServer : IDisposable
     }
 
     /// <summary>
-    /// 在 6677–6999 里挑第一个能占用的端口启动（6677 优先 —— 爬虫从它开始探，命中最快）。
-    /// 已在运行或全区间被占则静默返回。
+    /// 逐一把 <see cref="CandidatePorts"/> 绑上（被占的跳过，不影响其他端口）。全部失败才返回 false。
     /// </summary>
     public bool Start()
     {
-        if (_listener is not null) return true;
-        _cts = new CancellationTokenSource();
+        if (_listeners.Count > 0) return true;
+        _cts ??= new CancellationTokenSource();
 
-        for (var port = PortRangeStart; port < PortRangeEnd; port++)
+        foreach (var port in CandidatePorts)
         {
             try
             {
                 var l = new TcpListener(IPAddress.Loopback, port);
                 l.Start();
-                _listener = l;
-                Port = port;
+                _listeners.Add(l);
+                Port = Port == 0 ? port : Port;
                 _ = Task.Run(() => AcceptLoopAsync(l, _cts.Token));
-                Log?.Invoke($"[proxy] 本地代理就绪 http://127.0.0.1:{port}/proxy（爬虫 drivePort 可命中）");
-                return true;
             }
             catch (SocketException)
             {
-                // 该端口被占，试下一个（区间内可能有 QEMU/控制端等其他服务）
+                // 该端口被占（可能有别的服务）→ 跳过，其余端口照常
             }
         }
 
-        Log?.Invoke($"[proxy] {PortRangeStart}-{PortRangeEnd - 1} 内无可用端口，本地代理未启动");
-        return false;
+        if (_listeners.Count == 0)
+        {
+            Log?.Invoke($"[proxy] {string.Join('/', CandidatePorts)} 全部占用，本地代理未启动");
+            return false;
+        }
+
+        Log?.Invoke($"[proxy] 本地代理就绪 {string.Join('、', Ports.Select(p => $"http://127.0.0.1:{p}/proxy"))}（爬虫探测可命中）");
+        return true;
     }
 
     private async Task AcceptLoopAsync(TcpListener listener, CancellationToken ct)
@@ -111,6 +122,8 @@ public sealed class SpiderProxyServer : IDisposable
             try
             {
                 var stream = client.GetStream();
+                // 请求从哪个候选端口进来的：改写分片地址时要用它，否则播放器连到别的端口可能没监听
+                var localPort = client.Client.LocalEndPoint is IPEndPoint ep ? ep.Port : Port;
                 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
                 var head = await ReadHeadAsync(stream, timeout.Token).ConfigureAwait(false);
                 if (head is null) return;
@@ -160,7 +173,7 @@ public sealed class SpiderProxyServer : IDisposable
                 }
 
                 // ③ 代理取流：m3u8 改写 / 其他原样透传（含 Range）
-                await ProxyAsync(stream, url, args, lines, timeout.Token).ConfigureAwait(false);
+                await ProxyAsync(stream, url, args, lines, localPort, timeout.Token).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -170,7 +183,7 @@ public sealed class SpiderProxyServer : IDisposable
     }
 
     private async Task ProxyAsync(NetworkStream clientStream, string url, Dictionary<string, string> args,
-        string[] requestHeaders, CancellationToken ct)
+        string[] requestHeaders, int localPort, CancellationToken ct)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.TryAddWithoutValidation("User-Agent", args.GetValueOrDefault("ua") ?? DefaultUserAgent);
@@ -191,7 +204,7 @@ public sealed class SpiderProxyServer : IDisposable
         if (LooksLikePlaylist(finalUrl, contentType, body))
         {
             var text = Encoding.UTF8.GetString(body);
-            var rewritten = RewritePlaylist(text, finalUrl, args);
+            var rewritten = RewritePlaylist(text, finalUrl, args, localPort);
             await RespondBytesAsync(clientStream, "200 OK", Encoding.UTF8.GetBytes(rewritten),
                 "application/vnd.apple.mpegurl").ConfigureAwait(false);
             return;
@@ -210,7 +223,7 @@ public sealed class SpiderProxyServer : IDisposable
     }
 
     /// <summary>把播放列表里的分片/密钥地址改写成再走本代理（相对路径先补全为绝对地址）。</summary>
-    private string RewritePlaylist(string text, string playlistUrl, Dictionary<string, string> args)
+    private string RewritePlaylist(string text, string playlistUrl, Dictionary<string, string> args, int localPort)
     {
         var referer = ResolveReferer(playlistUrl, args);
         var sb = new StringBuilder(text.Length + 256);
@@ -223,18 +236,18 @@ public sealed class SpiderProxyServer : IDisposable
             {
                 // #EXT-X-KEY / #EXT-X-MAP 的 URI="..." 同样要经过本代理
                 sb.Append(line.Contains("URI=\"", StringComparison.OrdinalIgnoreCase)
-                    ? RewriteUriAttributes(line, playlistUrl, referer)
+                    ? RewriteUriAttributes(line, playlistUrl, referer, localPort)
                     : line);
                 sb.Append('\n');
                 continue;
             }
 
-            sb.Append(ProxyUrl(Absolute(playlistUrl, line), referer)).Append('\n');
+            sb.Append(ProxyUrl(Absolute(playlistUrl, line), referer, localPort)).Append('\n');
         }
         return sb.ToString();
     }
 
-    private string RewriteUriAttributes(string line, string baseUrl, string referer)
+    private string RewriteUriAttributes(string line, string baseUrl, string referer, int localPort)
     {
         const string marker = "URI=\"";
         var idx = line.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
@@ -243,15 +256,15 @@ public sealed class SpiderProxyServer : IDisposable
         var end = line.IndexOf('"', start);
         if (end < 0) return line;
         var inner = line[start..end];
-        var rewritten = ProxyUrl(Absolute(baseUrl, inner), referer);
+        var rewritten = ProxyUrl(Absolute(baseUrl, inner), referer, localPort);
         return line[..start] + rewritten + line[end..];
     }
 
     /// <summary>生成一条指向本代理的地址（url/referer 都做 URL 编码，播放器直接 GET 即可）。</summary>
-    private string ProxyUrl(string url, string? referer)
+    private static string ProxyUrl(string url, string? referer, int localPort)
     {
         var sb = new StringBuilder();
-        sb.Append("http://127.0.0.1:").Append(Port).Append("/proxy?url=").Append(Uri.EscapeDataString(url));
+        sb.Append("http://127.0.0.1:").Append(localPort).Append("/proxy?url=").Append(Uri.EscapeDataString(url));
         if (!string.IsNullOrEmpty(referer))
             sb.Append("&referer=").Append(Uri.EscapeDataString(referer));
         return sb.ToString();
@@ -378,8 +391,8 @@ public sealed class SpiderProxyServer : IDisposable
     public void Dispose()
     {
         try { _cts?.Cancel(); } catch { }
-        try { _listener?.Stop(); } catch { }
-        _listener = null;
+        foreach (var l in _listeners) { try { l.Stop(); } catch { } }
+        _listeners.Clear();
         Port = 0;
     }
 }

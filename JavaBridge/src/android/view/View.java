@@ -20,7 +20,54 @@ public class View {
     public boolean isEnabled() { return true; }
     public void setLayoutParams(ViewGroup.LayoutParams params) { }
     public ViewGroup.LayoutParams getLayoutParams() { return new ViewGroup.LayoutParams(0, 0); }
-    public Context getContext() { return null; }
+    public Context getContext() { return android.app.Application.getInstance(); }
+
+    public View findViewById(int id) { return null; }
+
+    public View getRootView() { return this; }
+
+    public ViewParent getParent() { return null; }
+
+    public int getId() { return 0; }
+
+    public void setId(int id) { }
+
+    public int getWidth() { return 0; }
+
+    public int getHeight() { return 0; }
+
+    public void invalidate() { }
+
+    public void requestLayout() { }
+
+    public boolean post(Runnable action) { if (action != null) new Thread(action).start(); return true; }
+
+    public boolean postDelayed(Runnable action, long delayMillis) { return true; }
+
+    public android.os.Handler getHandler() { return new android.os.Handler(); }
+
+    public void setTag(Object tag) { }
+
+    public Object getTag() { return null; }
+
+    public void setBackgroundColor(int color) { }
+
+    public void setOnGenericMotionListener(Object l) { }
+
+    public void setOnScrollChangeListener(Object l) { }
+
+    public void setImportantForAccessibility(int mode) { }
+
+    public void setContentDescription(CharSequence d) { }
+
+    public void setFocusable(boolean f) { }
+
+    public void setFocusableInTouchMode(boolean f) { }
+
+    public boolean performClick() { return false; }
+
+    public void bringToFront() { }
+
 
     // 监听器统一收 Object：spider 自带的匿名监听类未必实现本 stub 的同名接口，
     // 用 Object 兜住可避免 NoSuchMethodError（这些回调在 PC 上本就不会被触发）。

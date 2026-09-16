@@ -37,6 +37,20 @@ public class Context {
     public String getString(int resId, Object... formatArgs) { return ""; }
 
     /**
+     * PackageManager：TVBox 系爬虫用它读自身包名/签名做校验（<c>merge.cn.F5</c> 在端口调整线程里调）。
+     * 缺这个 getter 会抛 <c>NoSuchMethodError: android.content.pm.PackageManager
+     * android.content.Context.getPackageManager()</c> → 整条后台线程死掉。
+     */
+    public android.content.pm.PackageManager getPackageManager() {
+        return new android.content.pm.PackageManager();
+    }
+
+    /** 主线程 Looper（部分爬虫用它 post 回调）。 */
+    public android.os.Looper getMainLooper() {
+        return android.os.Looper.getMainLooper();
+    }
+
+    /**
      * 系统服务：只实现爬虫真正会用的那几个（原来一律返回 null →
      * {@code WifiManager.getConnectionInfo().getIpAddress()} 直接 NPE，
      * 导致 TVBox 系 ProxyOrigin 取不到本机 IP，本地代理地址拼不出来）。
