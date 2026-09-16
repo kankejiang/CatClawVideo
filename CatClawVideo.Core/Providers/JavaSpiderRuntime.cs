@@ -70,15 +70,27 @@ public class JavaSpiderRuntime : ISpiderRuntime
 
     public bool IsSupported { get; }
 
+    /// <summary>
+    /// 能否在本机解开 **Guard 加固**（需要 <c>vendor/dex2jar</c> + unidbg 解壳器）。
+    /// <para>与 <see cref="IsSupported"/> 分开：桥本身能跑就够跑非 Guard 的 jar 爬虫；
+    /// 之前把 dex2jar 也算进 IsSupported，导致缺一个目录就把**全部** jar 源判为不可播
+    /// （2026-09-16 实测：订阅里 46 个 csp_*Guard 站点整体消失，只剩 3 个 http 脚本源）。</para>
+    /// </summary>
+    public bool GuardUnpackAvailable { get; }
+
     public JavaSpiderRuntime(string bridgeDir, string javaExe, Action<string>? log = null)
     {
         _bridgeDir = bridgeDir;
         _javaExe = javaExe;
         _log = log;
+        // 桥可用 = bridge.jar + deps（能跑非 Guard 的 jar 爬虫）；Guard 解壳能力单独判定
+        // （2026-09-16 拆分：此前把 dex2jar 也算进来，缺它就把全部 jar 源判死 —— 用户实测 46 个源整体消失）
         IsSupported = File.Exists(Path.Combine(bridgeDir, "bridge.jar"))
-                      && Directory.Exists(Path.Combine(bridgeDir, "vendor", "deps"))
-                      && Directory.Exists(Path.Combine(bridgeDir, "vendor", "dex2jar"));
+                      && Directory.Exists(Path.Combine(bridgeDir, "vendor", "deps"));
         _unidbgReady = DetectUnidbg(bridgeDir);
+        GuardUnpackAvailable = IsSupported
+                               && Directory.Exists(Path.Combine(bridgeDir, "vendor", "dex2jar"))
+                               && _unidbgReady;
     }
 
     /// <summary>探测 unidbg 解壳器是否已随包部署（缺省时 Guard 站点自动退回非 Guard 同族 jar）。</summary>
@@ -138,15 +150,38 @@ public class JavaSpiderRuntime : ISpiderRuntime
             : candidates.OrderByDescending(c => c.Major).First().Path;
     }
 
-    /// <summary>向上查找 JavaBridge 目录（bridge.jar 所在，App 部署目录或仓库根）</summary>
+    /// <summary>
+    /// 向上查找 JavaBridge 目录（bridge.jar 所在，App 部署目录或仓库根）。
+    /// <para>⚠ 会**收集全部候选再挑能力最全**的一个：随包分发的那份只带 `bridge.jar + vendor/deps`（约 3.4MB），
+    /// 而开发机的仓库目录通常连 `vendor/dex2jar + vendor/unidbg`（Guard 解壳）一起有 —— 就近返回会把解壳能力丢掉
+    /// （2026-09-16 实测：随包副本优先后，所有 csp_*Guard 站点都报「未部署 unidbg 解壳器」解不开）。
+    /// 并列时取最近的（OrderByDescending 稳定排序，候选按由近到远收集）。</para>
+    /// </summary>
     public static string? FindBridgeDir()
     {
+        var candidates = new List<string>();
         for (var d = new DirectoryInfo(AppContext.BaseDirectory); d != null && d.Parent != null; d = d.Parent)
         {
             var cand = Path.Combine(d.FullName, "JavaBridge");
-            if (File.Exists(Path.Combine(cand, "bridge.jar"))) return cand;
+            if (File.Exists(Path.Combine(cand, "bridge.jar"))) candidates.Add(cand);
         }
-        return null;
+        if (candidates.Count == 0) return null;
+        return candidates.OrderByDescending(Score).First();
+
+        static int Score(string dir)
+        {
+            var s = 0;
+            try
+            {
+                if (Directory.Exists(Path.Combine(dir, "vendor", "deps"))) s += 1;
+                if (Directory.Exists(Path.Combine(dir, "vendor", "dex2jar"))) s += 2;
+                var un = Path.Combine(dir, "vendor", "unidbg");
+                if (File.Exists(Path.Combine(un, "unpacker.jar")) &&
+                    Directory.EnumerateFiles(un, "unidbg-android-*.jar").Any()) s += 4;
+            }
+            catch { }
+            return s;
+        }
     }
 
     // ═══════════ ISpiderRuntime 协议 ═══════════

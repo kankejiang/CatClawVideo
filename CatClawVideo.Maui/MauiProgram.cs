@@ -193,6 +193,15 @@ public static class MauiProgram
         CatClawVideo.Core.Models.SiteRegistry.JsSpiderAvailable = jsRuntime.IsSupported;
         CatClawVideo.Core.Models.SiteRegistry.JarSpiderAvailable = jarRuntime.IsSupported;
 
+        // 「源看不到」类问题的第一现场：订阅解析完/站点集合一变就记一行
+        // （可播 = type1 MacCMS + 运行时就绪的 spider 源；jar 桥可用性单独打印）
+        CatClawVideo.Core.Models.SiteRegistry.Changed += () =>
+            DiagLog.Write($"[源] 站点合计={CatClawVideo.Core.Models.SiteRegistry.Sites.Count} " +
+                          $"可播={CatClawVideo.Core.Models.SiteRegistry.Playable.Count()} " +
+                          $"jar桥={CatClawVideo.Core.Models.SiteRegistry.JarSpiderAvailable} " +
+                          $"js={CatClawVideo.Core.Models.SiteRegistry.JsSpiderAvailable} " +
+                          $"桥目录={CatClawVideo.Core.Providers.JavaSpiderRuntime.FindBridgeDir() ?? "(未找到)"}");
+
         services.AddSingleton(btService);
 
         // 下载管理器（复刻猫爪音乐）：HTTP 直链 + BT 磁力整包下载
