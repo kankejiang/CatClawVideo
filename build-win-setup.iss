@@ -1,13 +1,13 @@
 ; 猫爪影视 Windows 安装程序脚本（Inno Setup 6.3+/7）
 ; 用法: "C:\Users\lvjin\InnoSetup\ISCC.exe" build-win-setup.iss
 ;       或  .\build-win-release.ps1  （一键：publish + 编译安装包）
-; 打包源: CatClawVideo.Maui\bin\Release\net11.0-windows10.0.19041.0\win-x64\publish（self-contained 绿色目录发布）
+; 打包源: CatClawVideo.Maui\bin\Release\net11.0-windows10.0.26100.0\win-x64\publish（self-contained 绿色目录发布）
 #define MyAppName "猫爪影视"
 #ifndef MyAppVersion
 #define MyAppVersion "0.1.0"
 #endif
 #ifndef MyPublishDir
-#define MyPublishDir "CatClawVideo.Maui\bin\Release\net11.0-windows10.0.19041.0\win-x64\publish"
+#define MyPublishDir "CatClawVideo.Maui\bin\Release\net11.0-windows10.0.26100.0\win-x64\publish"
 #endif
 #define MyAppPublisher "CatClawVideo"
 #define MyAppExeName "CatClawVideo.Maui.exe"

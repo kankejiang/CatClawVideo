@@ -116,7 +116,7 @@ _Modern cross-platform video player built with .NET MAUI._
 dotnet build CatClawVideo.Maui/CatClawVideo.Maui.csproj -f net11.0-android
 
 # Windows
-dotnet build CatClawVideo.Maui/CatClawVideo.Maui.csproj -f net11.0-windows10.0.19041.0
+dotnet build CatClawVideo.Maui/CatClawVideo.Maui.csproj -f net11.0-windows10.0.26100.0
 ```
 
 > 说明：Windows Release 通过手写 `App.generated.cs` 与 XamlCompilerWrapper / MakePriWrapper 绕过 .NET 11 + WinAppSDK 的编译器问题（详见 csproj 注释）；Android Release 已关闭 AOT / R2R / 裁剪，以兼容爬虫运行时的动态代码加载。

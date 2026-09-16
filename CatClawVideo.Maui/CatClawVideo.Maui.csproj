@@ -2,7 +2,7 @@
 
 	<PropertyGroup>
 		<TargetFrameworks>net11.0-android</TargetFrameworks>
-		<TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('windows'))">$(TargetFrameworks);net11.0-windows10.0.19041.0</TargetFrameworks>
+		<TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('windows'))">$(TargetFrameworks);net11.0-windows10.0.26100.0</TargetFrameworks>
 
 		<OutputType>Exe</OutputType>
 		<RootNamespace>CatClawVideo.Maui</RootNamespace>
@@ -108,6 +108,33 @@
 		<PackageReference Include="Xamarin.AndroidX.Media3.Datasource" Version="1.10.1.1" />
 		<PackageReference Include="Xamarin.AndroidX.Media3.UI" Version="1.10.1.1" />
 	</ItemGroup>
+
+	<!-- Windows-specific: FFmpegInteropX（FFmpeg 解码注入 WinUI MediaPlayer）。
+	     根因：磁力源的 MKV 音轨是 E-AC3（实测 dyg7 源 A_EAC3），WinUI MediaPlayer 走的
+	     Media Foundation 默认没有 E-AC3/DTS 解码器（需 Dolby 扩展）——视频正常、全程无声。
+	     FFmpeg 解码音频（视频仍 D3D11 硬解），失败时回落原生 MF。 -->
+	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">
+		<PackageReference Include="FFmpegInteropX" Version="2.1.0.81200" />
+	</ItemGroup>
+
+	<!-- FFmpegInteropX 包把 FFmpegInteropX.winmd 作为 Reference 传入（供 C++ 消费），
+	     会触发 cswinrt 现场生成投影 → 需要本机安装的 Windows SDK（注册表），构建机没有。
+	     该包已自带预生成的 .NET 投影（FFmpegInteropX.DotNet.dll，与 TFM 26100 投影匹配），
+	     在 RAR 解析前移除 winmd 引用即可：类型来自预生成 dll，native dll 照常复制。 -->
+	<Target Name="RemoveFFmpegInteropXWinmdReference" BeforeTargets="ResolveAssemblyReferences" Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">
+		<ItemGroup>
+			<Reference Remove="%(Reference.Identity)" Condition="'%(Reference.Identity)' != '' And '%(Reference.Filename)' == 'FFmpegInteropX' And '%(Reference.Extension)' == '.winmd'" />
+		</ItemGroup>
+	</Target>
+
+	<PropertyGroup>
+		<!-- TFM ≥ 26100 时 .NET SDK 会启用 cswinrt 现场生成投影（CsWinRTEnabled=true），
+		     其 Windows 元数据默认按版本号去注册表找本机安装的 Windows SDK —— 构建机没装，
+		     报 "Could not find the Windows SDK in the registry"。本应用无需现场生成：
+		     Windows.* 类型走预编译的 Microsoft.Windows.SDK.NET.dll，WinAppSDK 类型走
+		     预编译的 Microsoft.WindowsAppSDK.dll —— 与 19041 TFM 下的实际行为一致。 -->
+		<CsWinRTEnabled Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">false</CsWinRTEnabled>
+	</PropertyGroup>
 
 	<!-- Android Java 源文件：宿主侧 spider 基类 com.github.catvod.crawler.Spider。
 	     spider jar 里的爬虫类全部继承该基类（Guard 加固包亦然：BaseSpiderGuard extends Spider），

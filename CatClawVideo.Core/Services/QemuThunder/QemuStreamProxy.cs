@@ -37,6 +37,7 @@ public sealed class QemuStreamProxy : IDisposable
     private long _epoch;           // 重定位代数（用于打断上游）
     private bool _upstreamEof;     // 当前 base 下已拉到文件尾
     private Socket? _upstream;     // 当前上游 socket（重定位时 close 以打断）
+    private long _bytesServed;     // 已向播放器供出的总字节数（首开探测期判定用）
     private volatile bool _stopped;
 
     private TcpListener? _listener;
@@ -97,9 +98,38 @@ public sealed class QemuStreamProxy : IDisposable
             if (epoch != _epoch) return false;
             var copy = new byte[count];
             Buffer.BlockCopy(data, offset, copy, 0, count);
+            if (_base == 0) PatchDisableSeekHead(copy);   // 仅文件头块需要修补
             _chunks.Add(copy);
             _len += count;
             return true;
+        }
+    }
+
+    // MKV EBML：SeekHead 元素的 ID（0x114D9B74）的 vint 编码（4D BB 8C）
+    private static readonly byte[] SeekHeadIdPattern = { 0x4D, 0xBB, 0x8C };
+
+    /// <summary>
+    /// 禁用 MKV 头部的整个 SeekHead 元素（把其 ID 的末字节 0x8C 改成 0x8D → 未知元素，FFmpeg 按尺寸跳过）。
+    /// <para>为什么：FFmpeg 的 matroska demuxer 读完头部会按 SeekHead seek 到文件尾读 Cues 索引，
+    /// 而引擎是顺序下载、该区间未就绪，媒体口对它挂住/拒绝——播放器永远停在 00:00（实测）。
+    /// 禁用后 demuxer 无索引可用，顺序读取 Cluster 边下边播，立即出片；代价是失去精确 seek 索引
+    /// （FFmpeg 退化为线性扫描）。只改 1 字节、不改任何长度，文件内其他所有偏移保持有效。</para>
+    /// </summary>
+    private void PatchDisableSeekHead(byte[] chunk)
+    {
+        const int scanLen = 16 * 1024;   // SeekHead 是文件第一个元素之后紧邻的元素，必在前几 KB
+        var limit = Math.Min(chunk.Length, scanLen) - SeekHeadIdPattern.Length;
+        for (var i = 0; i <= limit; i++)
+        {
+            var ok = true;
+            for (var j = 0; j < SeekHeadIdPattern.Length; j++)
+                if (chunk[i + j] != SeekHeadIdPattern[j]) { ok = false; break; }
+            if (ok)
+            {
+                chunk[i + SeekHeadIdPattern.Length - 1] = 0x8D;   // SeekHead → 未知元素
+                _log?.Invoke("[proxy] 已禁用 MKV SeekHead（顺序播放模式，不再 seek 尾部 Cues）");
+                return;
+            }
         }
     }
 
@@ -133,6 +163,20 @@ public sealed class QemuStreamProxy : IDisposable
         }
     }
 
+    /// <summary>打断当前上游连接但保留已缓冲数据（epoch 前移使在途切片作废，上游循环随即从窗口前沿重连）。
+    /// 用于引擎任务死亡后自动恢复：重新下发 DL 重建任务后，挂死在旧任务上的上游连接不会有数据，
+    /// 必须断开重连，guest 重新武装 getLocalUrl 后新连接才续流。</summary>
+    public void KickUpstream()
+    {
+        lock (_sync)
+        {
+            _epoch++;
+            _upstreamEof = false;
+            try { _upstream?.Close(); } catch { }
+            _log?.Invoke("[proxy] 任务恢复：打断上游连接，等待重连续流");
+        }
+    }
+
     private Req EnterRead(long startPos)
     {
         lock (_sync) { var r = new Req { Pos = startPos }; _requests.Add(r); return r; }
@@ -147,6 +191,7 @@ public sealed class QemuStreamProxy : IDisposable
     private async Task UpstreamLoopAsync()
     {
         var consecutiveShort = 0;
+        var consecutiveBad = 0;   // 上游连续异常（404 等）次数：指数退避，避免死循环打爆 guest
         while (!_stopped)
         {
             long epoch, from, baseOff, len;
@@ -178,26 +223,43 @@ public sealed class QemuStreamProxy : IDisposable
                     var req = $"GET {_path} HTTP/1.0\r\nHost: 127.0.0.1:{_mediaPort}\r\nRange: bytes={from}-{to}\r\n\r\n";
                     sock.Send(Encoding.ASCII.GetBytes(req));
 
-                    // ── 响应头 ──
+                    // ── 响应头 ──（15s 等不到 = 引擎没有该区间数据且挂着不给应答：
+                    // guest 代理 accept 串行，这条连接不释放会饿死所有后续连接，必须超时打断）
                     var head = new List<byte>(4096);
                     var rb = new byte[4096];
                     var hdrEnd = -1;
+                    var hdrDeadlineMs = Environment.TickCount64 + 15_000;
                     while (head.Count < 65536)
                     {
+                        if (!sock.Poll(1_000_000, SelectMode.SelectRead))
+                        {
+                            if (Environment.TickCount64 > hdrDeadlineMs) break;
+                            continue;
+                        }
                         var n = sock.Receive(rb);
                         if (n <= 0) break;
                         for (var i = 0; i < n; i++) head.Add(rb[i]);
                         hdrEnd = IndexOfHeaderEnd(head);
                         if (hdrEnd >= 0) break;
                     }
-                    if (hdrEnd < 0) { await Task.Delay(300).ConfigureAwait(false); continue; }
+                    if (hdrEnd < 0)
+                    {
+                        consecutiveBad++;
+                        var backoff = Math.Min(500L * (1L << Math.Min(consecutiveBad, 4)), 8000);
+                        _log?.Invoke($"[proxy] 上游 15s 无响应头（引擎未就绪该区间？），退避 {backoff}ms 重试");
+                        await Task.Delay((int)backoff).ConfigureAwait(false);
+                        continue;
+                    }
                     var status = Encoding.ASCII.GetString(head.ToArray(), 0, Math.Min(24, head.Count));
                     if (!status.Contains("206") && !status.Contains(" 200"))
                     {
-                        _log?.Invoke($"[proxy] 上游应答异常：{status.Trim()}");
-                        await Task.Delay(500).ConfigureAwait(false);
+                        consecutiveBad++;
+                        var backoff = Math.Min(500L * (1L << Math.Min(consecutiveBad, 4)), 8000);
+                        _log?.Invoke($"[proxy] 上游应答异常：{status.Trim()}（连续 {consecutiveBad} 次，退避 {backoff}ms）");
+                        await Task.Delay((int)backoff).ConfigureAwait(false);
                         continue;
                     }
+                    consecutiveBad = 0;
 
                     long sliceWant = to - from + 1;
                     long got = 0;
@@ -337,8 +399,10 @@ public sealed class QemuStreamProxy : IDisposable
 
             var length = last - first + 1;
             var sb = new StringBuilder(256);
-            if (hasRange) sb.Append("HTTP/1.1 206 Partial Content\r\n").Append($"Content-Range: bytes {first}-{last}/{_totalSize}\r\n");
-            else sb.Append("HTTP/1.1 200 OK\r\n");
+            // ★ 统一回 206 + Content-Range（即使请求没带 Range）：FFmpeg 的 http 层据此判定
+            //   「流可 seek」。若首个 200 响应，FFmpeg 对远端 Cues 的 seek 会退化成
+            //   「Soft-seeking by draining 1.9GB」——顺序丢读整个文件，永远开不了播（实测）。
+            sb.Append("HTTP/1.1 206 Partial Content\r\n").Append($"Content-Range: bytes {first}-{last}/{_totalSize}\r\n");
             sb.Append($"Content-Type: {_contentType}\r\n");
             sb.Append($"Content-Length: {length}\r\n");
             sb.Append("Accept-Ranges: bytes\r\n");
@@ -346,6 +410,12 @@ public sealed class QemuStreamProxy : IDisposable
             await stream.WriteAsync(Encoding.ASCII.GetBytes(sb.ToString())).ConfigureAwait(false);
 
             if (method == "HEAD") return;
+
+            // ★ 首开探测期快速失败：FFmpeg（matroska demuxer）读完头部会 seek 到文件尾读 Cues 索引，
+            //   该区间引擎通常还没下载（顺序下载），挂住等待 = 播放器永远 00:00。供出数据还很少
+            //   （<32MB，只在首开探测期）且请求落在文件前 1/4 之外时，把等待上限压到 5s：
+            //   读 Cues 失败 → FFmpeg 放弃索引、回到 0 顺序播放（失去 seek 索引但能立刻出片）。
+            var stallBudget = (_bytesServed < 32 * 1024 * 1024 && first > _totalSize / 4) ? 5_000 : 60_000;
 
             var buf = new byte[BufSize];
             var pos = first;
@@ -361,6 +431,7 @@ public sealed class QemuStreamProxy : IDisposable
                 {
                     stallMs = 0;
                     await stream.WriteAsync(buf.AsMemory(0, n)).ConfigureAwait(false);
+                    Interlocked.Add(ref _bytesServed, n);
                     pos += n;
                     UpdatePos(rq, pos);
                     continue;
@@ -368,7 +439,7 @@ public sealed class QemuStreamProxy : IDisposable
                 if (UpstreamEofLocked() && pos >= frontierNow) break;   // 正常短读（文件尾）
                 await Task.Delay(30).ConfigureAwait(false);
                 stallMs += 30;
-                if (stallMs >= 60_000) { _log?.Invoke("[proxy] 播放器请求等待数据超时（60s）"); break; }
+                if (stallMs >= stallBudget) { _log?.Invoke($"[proxy] 播放器请求等待数据超时（{stallBudget / 1000}s）"); break; }
             }
         }
         finally { ExitRead(rq); }

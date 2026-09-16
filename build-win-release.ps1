@@ -1,4 +1,4 @@
-﻿# 猫爪影视 Windows Release 一键打包脚本
+# 猫爪影视 Windows Release 一键打包脚本
 # 用法: 双击运行（打包完会暂停等待按键，方便看结果），或 .\build-win-release.ps1
 # 输出: release\windows\catclaw.video-<版本>-Setup.exe
 # 流程: ① dotnet publish 绿色目录(self-contained, 去pdb, 多语言保留) -> ② ISCC 编译 Inno Setup 安装程序
@@ -88,7 +88,7 @@ function Pause-And-Exit {
 # === 配置 ===
 $ProjectPath = "CatClawVideo.Maui\CatClawVideo.Maui.csproj"
 $Config = "Release"
-$Tfm = "net11.0-windows10.0.19041.0"
+$Tfm = "net11.0-windows10.0.26100.0"
 $Rid = "win-x64"
 $IssFile = "build-win-setup.iss"
 $DotNetPath = "C:\Program Files\dotnet\dotnet.exe"

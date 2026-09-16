@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using CatClawVideo.Core.Interfaces;
 using CatClawVideo.Core.Models;
 
@@ -64,7 +65,6 @@ public class CompositeVodSourceProvider : IVodSourceProvider
         // 磁力太多就不展开：详情页会被串行解析拖住（宁可保持现状）
         if (magnetCount == 0 || magnetCount > MaxMagnetsToExpand) return sources;
 
-        var cache = new Dictionary<string, List<Interfaces.MagnetFile>?>(StringComparer.OrdinalIgnoreCase);
         foreach (var src in sources)
         {
             var expanded = new List<VodEpisode>(src.Episodes.Count);
@@ -76,11 +76,12 @@ public class CompositeVodSourceProvider : IVodSourceProvider
                     continue;
                 }
 
-                if (!cache.TryGetValue(ep.Url, out var files))
+                if (!ListedMagnets.TryGetValue(ep.Url, out var files))
                 {
                     try { files = await engine.ListFilesAsync(ep.Url, ep.Name, ct).ConfigureAwait(false); }
                     catch { files = null; }
-                    cache[ep.Url] = files;
+                    // 只缓存成功结果：失败（引擎未就绪等）下次进详情页重探
+                    if (files is { Count: > 0 }) ListedMagnets[ep.Url] = files;
                 }
 
                 var videos = files?
@@ -105,6 +106,11 @@ public class CompositeVodSourceProvider : IVodSourceProvider
 
     /// <summary>单次详情页最多展开的磁力条数（超出则放弃展开，避免串行解析拖慢）</summary>
     private const int MaxMagnetsToExpand = 12;
+
+    /// <summary>磁力 → 文件列表 的进程级缓存：每条磁力探测要 ~5s（引擎解析种子），5 条磁力的详情页
+    /// 首次要 25s+。缓存后再次进入（含离开后回来、超引擎 10 分钟会话）直接命中，秒开。只存成功结果。</summary>
+    private static readonly ConcurrentDictionary<string, List<Interfaces.MagnetFile>?> ListedMagnets =
+        new(StringComparer.OrdinalIgnoreCase);
 
     private static readonly HashSet<string> VideoExtensions = new(StringComparer.OrdinalIgnoreCase)
     {

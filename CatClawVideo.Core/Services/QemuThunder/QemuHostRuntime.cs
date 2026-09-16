@@ -45,7 +45,7 @@ public sealed class QemuHostRuntime : IDisposable
     public static bool IsPresent(string runtimeDir) =>
         File.Exists(Path.Combine(runtimeDir, "qemu-system-aarch64.exe"))
         && File.Exists(Path.Combine(runtimeDir, "pkg_kernel"))
-        && File.Exists(Path.Combine(runtimeDir, "pkg_initrd.xz"));
+        && File.Exists(Path.Combine(runtimeDir, "pkg_initrd.gz"));
 
     public bool IsRunning => _proc is { HasExited: false };
 
@@ -76,10 +76,12 @@ public sealed class QemuHostRuntime : IDisposable
             };
             foreach (var a in new[]
             {
-                "-M", "virt", "-cpu", "max", "-m", "4096", "-smp", "4", "-nographic",
+                // -m 5120：guest RAM 需容得下 /thunder-data 的 tmpfs（3500m，见 initrd 的 /init）+ 引擎开销；
+                //  旧的 4096 + tmpfs 1500m 会在下载 ~1.57GB 时写满 tmpfs，任务以 err=114010 死亡
+                "-M", "virt", "-cpu", "max", "-m", "5120", "-smp", "4", "-nographic",
                 "-L", "share",
                 "-kernel", "pkg_kernel",
-                "-initrd", "pkg_initrd.xz",
+                "-initrd", "pkg_initrd.gz",
                 "-append", "console=ttyAMA0 rdinit=/init loglevel=4",
                 "-netdev", $"user,id=n0,hostfwd=tcp:127.0.0.1:{MediaPort}-:20080",
                 "-device", "virtio-net-pci,netdev=n0",

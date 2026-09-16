@@ -51,6 +51,11 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
     private DateTime _lastActiveUtc = DateTime.UtcNow;
     private bool _disposed;
 
+    /// <summary>磁力 → 已展开会话 的进程级历史。同一磁力重复 TASK MAGNET 会被 guest 引擎以
+    /// 9128（任务已存在）拒绝，导致 TryOpen 判失败、整条引擎链静默回落内置 BT——然后引擎与内置 BT
+    /// 同时下载同一部种子抢带宽（实测引发卡顿掉帧）。命中历史直接复用，彻底绕开重复建任务。</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Session> _history = new(StringComparer.Ordinal);
+
     public QemuThunderEngine(string runtimeDir, Action<string>? log = null)
     {
         _runtimeDir = runtimeDir;
@@ -102,8 +107,39 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
             var pick = SelectFile(s.Files, preferName);
             var hash = ResolveInfoHashHex(magnet);
 
-            // 会话已在播同一切片（播放器重试/续连）：直接复用（缓存代理还活着时最省事）
-            if (s.Played && s.PlayUrlPath.Length > 0 && s.PickIndex == pick.Index)
+            // 会话已在播同一种子：换集时**不重建任务**（同 btih 重建会被引擎以 9128 拒绝）。
+            // 引擎任务按全选下载整个种子（excludeCsv 留空），换集 = 直接把媒体口切到新文件路径，
+            // 等待引擎顺序下载覆盖到该文件（下载 3-4MB/s，未到目标集时验证循环内等待）。
+            if (s.DlSent && s.Played && s.PlayUrlPath.Length > 0)
+            {
+                if (s.PickIndex == pick.Index && _streamProxy is not null)
+                {
+                    Log($"复用已在播会话（走缓存代理）：#{pick.Index} {pick.Name}");
+                    _lastActiveUtc = DateTime.UtcNow;
+                    return new MagnetPlayback(hash, pick.Index, pick.Size, Path.GetFileName(pick.Name), _streamProxy.Url);
+                }
+
+                // 换片（同种子）：合成新文件路径并验证引擎能否供数
+                var newPath = SynthesizeUrlPath(s.Dir + "/" + pick.Name);
+                var gotNew = await VerifyBytesAsync(newPath, ct).ConfigureAwait(false);
+                if (gotNew > 0)
+                {
+                    Log($"同任务换片：#{pick.Index} {pick.Name}（引擎已可供数）");
+                    s.PickIndex = pick.Index; s.PickName = pick.Name; s.PickSize = pick.Size;
+                    s.PlayUrlPath = newPath; s.Played = true;
+                    _lastActiveUtc = DateTime.UtcNow;
+                    LastDirectMediaUrl = MediaUrl(newPath);
+                    StartStreamProxy(s);
+                    return new MagnetPlayback(hash, pick.Index, pick.Size, Path.GetFileName(pick.Name),
+                        _streamProxy?.Url ?? MediaUrl(newPath));
+                }
+                if (!s.Cancelled) Log($"换片 #{pick.Index} 引擎尚无数据（等待顺序下载中），重新下发 DL 兜底");
+                s.PickIndex = pick.Index; s.PickName = pick.Name; s.PickSize = pick.Size;
+                s.DlSent = true; s.Played = false; s.PlayUrlPath = ""; s.LastError = null;
+                LastDirectMediaUrl = null;
+                // 落到下方常规 DL 流程（全选重建；若引擎因 9128 拒绝则走回落）
+            }
+            else if (s.Played && s.PlayUrlPath.Length > 0 && s.PickIndex == pick.Index)
             {
                 if (_streamProxy is not null)
                 {
@@ -127,16 +163,28 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
             s.DlSent = true; s.Played = false; s.PlayUrlPath = ""; s.LastError = null;
             LastDirectMediaUrl = null;
 
-            var others = string.Join(',', s.Files.Where(f => f.Index != pick.Index).Take(100).Select(f => f.Index));
-            Log($"选片 #{pick.Index}（{pick.Size / 1048576.0:F1}MB，共 {s.Files.Count} 项）→ 下发 DL");
-            _server!.SetCommand($"DL -|{s.Dir}|{pick.Name}|{pick.Index}|{others}");
+            // ★ excludeCsv 传空 = 全选下载整个种子：换集时同 btih 重建任务会被 9128 拒绝，
+            //   全选让引擎顺序下载所有集，换集只需把媒体口切到新文件路径（见上方换片分支）。
+            //   tmpfs 3500m 装得下整部剧；下载顺序从种子头部开始，首集起播不受影响。
+            s.Others = "";
+            // ★ 必须显式携带种子路径：guest 的 "-" 回退会取「引擎当前上下文」的种子（最后一次
+            //   TASK MAGNET），而详情页探测/会话复用会把上下文停在别的磁力上 —— 任务会建到
+            //   错误的种子上（内容与目录错位），播放路径在引擎里 404 死循环（实测）。
+            s.DLTorrentPath = s.TorrentRawPath.Length > 0 ? s.TorrentRawPath
+                : Uri.UnescapeDataString(Uri.UnescapeDataString(s.TorrentUrlPath));
+            _server!.SetCommand($"DL {s.DLTorrentPath}|{s.Dir}|{pick.Name}|{pick.Index}|");
             _lastActiveUtc = DateTime.UtcNow;
 
             // 等阶段二 ev=play（视频地址）
             await PollUntilAsync(() => s.Cancelled || s.Played || s.LastError is not null, TimeSpan.FromSeconds(240), ct).ConfigureAwait(false);
             if (!s.Played)
             {
-                if (!s.Cancelled) Log(s.LastError ?? "等播放地址超时（240s）");
+                if (!s.Cancelled)
+                {
+                    Log(s.LastError ?? "等播放地址超时（240s）");
+                    // DL 失败（如 VM 重启后种子已不在磁盘）：剔除历史，下次重新走 TASK MAGNET 展开
+                    _history.TryRemove(magnet, out _);
+                }
                 return null;
             }
             Log($"播放地址已就绪：{s.PlayUrlPath}");
@@ -239,11 +287,12 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
     /// <summary>Phase 1：下发磁力并把 .torrent 拉回来展开文件列表（成功即缓存会话）。</summary>
     private async Task<Session?> PrepareSessionLockedAsync(string magnet, string? preferName, CancellationToken ct)
     {
-        if (_session is { } cached && cached.Magnet == magnet && cached.Files.Count > 0
-            && DateTime.UtcNow - cached.AtUtc < TimeSpan.FromMinutes(10))
+        // 历史命中：同一磁力直接复用（含文件列表/种子路径），不再发 TASK MAGNET（9128 重复任务）
+        if (_history.TryGetValue(magnet, out var hist) && hist.Files.Count > 0)
         {
             _lastActiveUtc = DateTime.UtcNow;
-            return cached;
+            _session = hist;
+            return hist;
         }
 
         // 换磁力 = 引擎会被重武装到别的文件，旧缓存代理必须立即停
@@ -305,6 +354,7 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
             }
             s.Files = entries.Select(e => new MagnetFile(e.Index, e.Size, e.Rel)).ToList();
             s.AtUtc = DateTime.UtcNow;
+            _history[magnet] = s;   // 进程级历史：重复点播/换集不再重复建任务（9128）
             Log($"文件列表 {entries.Count} 项（种子名 {tname}）");
             foreach (var f in s.Files.Take(12)) Log($"  #{f.Index,3}  {f.Size / 1048576.0,8:F1}MB  {f.Name}");
             if (s.Files.Count > 12) Log($"  … 共 {s.Files.Count} 项");
@@ -350,10 +400,62 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
                     s.PlayUrlPath = r.Msg;
                 }
                 break;
+            case "status":
+                // 任务死亡自动恢复：guest 引擎偶发中途死亡（实测 err=114010，1.57GB/1.9GB 处，
+                // 之后 st=3/速度 0 永不复生），不恢复的话播放器读到未下载区间就永远缓冲。
+                // 注意 guest 只在状态变化时上报，死亡状态只到此一报——重试循环在恢复方法内部。
+                s.LastSt = r.St;
+                s.LastDone = r.Done;
+                if (r.St == 3 && r.Err != 0 && s.DlSent && !s.Cancelled && s.Played)
+                {
+                    s.FailedErr = r.Err;
+                    _ = RecoverTaskAsync(s);
+                }
+                break;
             case "error":
                 s.LastError = $"guest 报错：{r.Msg}（st={r.St} err={r.Err}）";
                 break;
         }
+    }
+
+    /// <summary>单次播放会话内任务死亡的最大自动恢复次数（约 40s 的重试窗口；用尽后由用户换源）。</summary>
+    private const int MaxTaskRetries = 5;
+
+    /// <summary>任务死亡自动恢复：重新下发 DL（种子已在 guest 磁盘上，重建任务即续传），每个尝试
+    /// 观察最多 10s，未复活则打断缓存代理上游连接强制重连后再次重试；复活即返回并清零计数。
+    /// guest 只在状态变化时上报 status，死亡状态只报一次——所以重试必须在此循环内完成，
+    /// 不能依赖后续 status 事件再次触发。CAS 闸保证同一会话只有一个恢复循环在跑。</summary>
+    private async Task RecoverTaskAsync(Session s)
+    {
+        if (Interlocked.CompareExchange(ref s.Recovering, 1, 0) != 0) return;
+        try
+        {
+            while (!s.Cancelled && s.RetryCount < MaxTaskRetries)
+            {
+                s.RetryCount++;
+                Log($"任务死亡(err={s.FailedErr})，自动恢复 {s.RetryCount}/{MaxTaskRetries}：重新下发 DL");
+                _server?.SetCommand($"DL {s.DLTorrentPath}|{s.Dir}|{s.PickName}|{s.PickIndex}|{s.Others}");
+
+                var revived = false;
+                for (var i = 0; i < 10 && !s.Cancelled; i++)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+                    if (s.LastSt is 1 or 2) { revived = true; break; }   // 新任务已建并运行
+                }
+                // 无条件踢一次上游：旧连接可能绑在死任务的流状态上，断开重连后
+                // guest 重新武装 getLocalUrl，新连接从（可能已复活的）任务续流
+                _streamProxy?.KickUpstream();
+                if (revived)
+                {
+                    Log("任务已复活（恢复成功，续传中）");
+                    s.RetryCount = 0;
+                    break;
+                }
+            }
+            if (!s.Cancelled && s.RetryCount >= MaxTaskRetries && s.LastSt == 3)
+                Log("任务自动恢复次数用尽，放弃（请换源或重新点播）");
+        }
+        finally { Interlocked.Exchange(ref s.Recovering, 0); }
     }
 
     /// <summary>经媒体口取字节（<paramref name="maxBytes"/>=0 表示不限，上限 4MB 防呆）。</summary>
@@ -532,12 +634,19 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
         public int PickIndex = -1;
         public string PickName = "";
         public long PickSize;
+        public string Others = "";          // DL 下发时的其余文件索引串（任务死亡恢复时重放）
+        public string DLTorrentPath = "";   // DL 显式携带的种子路径（恢复时重放）
         public bool DlSent;
         public bool Played;
         public string PlayUrlPath = "";
         public string? LastError;
         public volatile bool Cancelled;
         public DateTime AtUtc = DateTime.UtcNow;
+        public int RetryCount;              // 任务死亡后的自动恢复次数（任务复活时清零）
+        public int Recovering;              // 恢复单飞闸（0=空闲 1=恢复中，Interlocked CAS）
+        public int FailedErr;               // 最近一次任务死亡的错误码（日志用）
+        public int LastSt;                  // 最近一次 status 的任务状态（1=运行 2=完成 3=失败）
+        public long LastDone;               // 最近一次 status 的已下载字节数
     }
 
     public void Dispose()
