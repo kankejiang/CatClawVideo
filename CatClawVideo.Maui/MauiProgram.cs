@@ -331,6 +331,20 @@ public static class MauiProgram
         // 启动后台恢复订阅源：解析已保存订阅 → 填充 SiteRegistry
         // （失败静默不阻塞首帧；多订阅取第一个成功者）
         // ═══════════════════════════════════════════════════
+        // ★ 启动先把**上次解析成功的站点缓存**同步灌进注册表（毫秒级、离线可用）：
+        //   否则首屏渲染时异步恢复还没回来 → 每次启动都闪「还没有可用的源 + 扫码配对」引导页
+        //   （2026-09-16 用户实测：以为数据没持久化）。联网刷新在下面后台照常进行并覆盖缓存。
+        try
+        {
+            var cachedSites = CatClawVideo.Core.Models.SiteCache.Load();
+            if (cachedSites is not null)
+            {
+                SiteRegistry.Replace(cachedSites);
+                DiagLog.Write($"[启动] 站点缓存命中 {cachedSites.Count} 个（后台联网刷新中）");
+            }
+        }
+        catch { }
+
         _ = Task.Run(async () =>
         {
             try
@@ -343,6 +357,7 @@ public static class MauiProgram
                     {
                         var sites = await subscriptionManager.LoadSubscriptionAsync(sub.SourceUrl);
                         SiteRegistry.Replace(sites);
+                        CatClawVideo.Core.Models.SiteCache.Save(sites);   // 供下次启动秒读
                         DiagLog.Write($"[启动] 订阅恢复成功: {sub.Name} ({sub.SourceUrl}) → {sites.Count} 站点");
                         System.Diagnostics.Debug.WriteLine($"[启动] 订阅恢复成功: {sub.Name} ({sub.SourceUrl})");
                         return;

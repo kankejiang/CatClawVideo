@@ -238,8 +238,9 @@ public partial class SourceConfigPage : ContentPage
             }
             skipped = sites.Count - added;
 
-            // 写入站点仓库（首页/搜索从这里取可播站点）
+            // 写入站点仓库（首页/搜索从这里取可播站点）+ 落盘缓存（下次启动秒读）
             SiteRegistry.Replace(sites);
+            Core.Models.SiteCache.Save(sites);
 
             // 订阅入库（按地址去重，重复添加只刷新站点）
             var name = new Uri(url).Host;
