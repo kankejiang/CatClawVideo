@@ -29,6 +29,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <strings.h>   // strcasecmp（KICK 命令参数解析）
 
 // 引擎函数指针表 EngineFns 已在 harness4.c 前半部分声明
 
@@ -205,6 +206,34 @@ static void start_dl(const char *torrentPath, const char *dir, const char *relPa
                                              (jobject)tid);
     long id = obj_get_long(tid, "mTaskId");
     printf("[ctrl] 建下载任务(BT) 返回 %d（9000=成功），id=%ld seq=%d\n", (int)r, id, s_seq);
+    // ★ 9128 自愈：同 btih 的任务句柄还挂在引擎里（引擎任务中途死亡 err=114010 后宿主重发 DL 必现，
+    //   引擎侧没有 deleteTask）。dlsym stopTask 停掉旧任务 → 重新 getTorrentInfo + createBtTask 重试一次；
+    //   下载目录里的已下载数据还在（tmpfs），引擎重建任务后续传，不必从头下。
+    if ((r != 9000 || id <= 0) && r == 9128 && g_task_id > 0 && g_eng.sdk) {
+        typedef jint (*fn_stop)(JNIEnv *, jobject, jlong);
+        fn_stop stopTask = (fn_stop)dlsym((void *)g_eng.sdk,
+                                          "Java_com_xunlei_downloadlib_XLLoader_stopTask");
+        printf("[ctrl]   9128=同种子任务已存在(id=%ld)，尝试 stopTask 清理（fn=%p）\n", g_task_id, (void *)stopTask);
+        if (stopTask) {
+            int sr = (int)stopTask(env, (jobject)thiz, (jlong)g_task_id);
+            printf("[ctrl]   stopTask(%ld) → %d（9000=成功；9104/9119=任务不存在/未运行）\n", g_task_id, sr);
+            if (g_eng.sdk) {   // 引擎内部索引可能随任务一起被清，重建一遍保险（手机端也是每次先取）
+                typedef jint (*fn_tinfo)(JNIEnv *, jobject, jstring, jobject);
+                fn_tinfo getTorrentInfo = (fn_tinfo)dlsym((void *)g_eng.sdk,
+                                           "Java_com_xunlei_downloadlib_XLLoader_getTorrentInfo");
+                if (getTorrentInfo) {
+                    JObj *tinfo = new_obj("com/xunlei/downloadlib/parameter/TorrentInfo");
+                    printf("[ctrl]   getTorrentInfo 重取 → %d\n",
+                           (int)getTorrentInfo(env, (jobject)thiz, (jstring)torrentPath, (jobject)tinfo));
+                }
+            }
+            jint r2 = ((fn_bttask)g_eng.createBtTask)(env, thiz, (jstring)torrentPath, (jstring)dir,
+                                                      3, 1, ++s_seq, (jobject)tid);
+            long id2 = obj_get_long(tid, "mTaskId");
+            printf("[ctrl]   重试建下载任务(BT) 返回 %d，id=%ld seq=%d\n", (int)r2, id2, s_seq);
+            if (r2 == 9000 && id2 > 0) { r = r2; id = id2; }
+        }
+    }
     if (r != 9000 || id <= 0) { ctrl_report("error", id, (int)r, 0, 0, 0, "BT 下载任务创建失败"); return; }
 
     // 资源开关：早期「救火」时加的。⚠ 2026-09-16 A/B 实锤：手机端 jar 里**没有**这些调用
@@ -456,6 +485,33 @@ static void main_loop(void) {
                 char *pp = cmd + 2; while (*pp == ' ') pp++;
                 char *ee = pp + strlen(pp); while (ee > pp && (ee[-1] == '\n' || ee[-1] == '\r')) *--ee = 0;
                 list_dir(pp[0] ? pp : EMU_SAVE_PATH);
+            } else if (!strncmp(cmd, "KICK", 4)) {
+                // KICK [REQUERY|PREFETCH|BOTH]：任务运行中对引擎「踢一脚」（宿主按需触发）。
+                //   REQUERY  = XLRequeryIndex：向 hub 重查资源（实测源断光→速度归零→114010 自杀，
+                //              疑似 hub 资源列表过期；创建时发有害，运行中救援未验证——本命令就是实验入口）
+                //   PREFETCH = XLEnterPrefetchMode：边下边播预取模式（引擎按读位置优先下载 → seek 到哪下到哪）
+                //   与 EXTRA=1 的区别：EXTRA 在任务创建瞬间连发四个调用（A/B 实锤零速度），KICK 由宿主
+                //   在任务健康运行后按需单发，时序不同，不受该结论约束。
+                const char *ka = cmd + 4; while (*ka == ' ') ka++;
+                char *ee = (char *)ka + strlen(ka); while (ee > ka && (ee[-1] == '\n' || ee[-1] == '\r')) *--ee = 0;
+                if (g_task_id > 0 && g_eng.sdk) {
+                    typedef int (*fn_l1x)(long long);
+                    fn_l1x requery  = (fn_l1x)dlsym((void *)g_eng.sdk, "XLRequeryIndex");
+                    fn_l1x prefetch = (fn_l1x)dlsym((void *)g_eng.sdk, "XLEnterPrefetchMode");
+                    int wantRq = (ka[0] == 0 || !strcasecmp(ka, "REQUERY") || !strcasecmp(ka, "BOTH"));
+                    int wantPf = (!strcasecmp(ka, "PREFETCH") || !strcasecmp(ka, "BOTH"));
+                    int rq = -1, pf = -1;
+                    if (wantRq && requery)  rq = requery((long long)g_task_id);
+                    if (wantPf && prefetch) pf = prefetch((long long)g_task_id);
+                    printf("[ctrl] KICK %s → requery=%d prefetch=%d（task=%ld；fn=%p/%p）\n",
+                           ka[0] ? ka : "BOTH", rq, pf, g_task_id, (void *)requery, (void *)prefetch);
+                    char m[80];
+                    snprintf(m, sizeof m, "requery=%d prefetch=%d", rq, pf);
+                    ctrl_report("kick", g_task_id, 0, 0, 0, 0, m);
+                } else {
+                    printf("[ctrl] KICK 忽略：无活动任务（id=%ld）\n", g_task_id);
+                    ctrl_report("kick", g_task_id, 0, 0, 0, 0, "no-task");
+                }
             } else if (!strncmp(cmd, "STOP", 4)) {
                 if (g_task_id > 0 && g_eng.startTask) { g_task_id = 0; ctrl_report("stopped", 0, 0, 0, 0, 0, ""); }
             } else if (!strncmp(cmd, "PING", 4)) {

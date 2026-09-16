@@ -42,6 +42,7 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(30) };
     private readonly Timer _idleTimer;
+    private readonly Timer _watchdog;   // 播放中巡检上游断粮（guest 对「速度=0 但任务未死」不上报，宿主必须自己盯）
 
     private QemuHostRuntime? _runtime;
     private QemuControlServer? _server;
@@ -49,6 +50,9 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
     private Session? _session;
     private QemuStreamProxy? _streamProxy;
     private DateTime _lastActiveUtc = DateTime.UtcNow;
+    private long _watchLastUpstream = -1;   // 看门狗上次采样的上游字节数
+    private int _watchFrozenTicks;          // 连续冻结采样次数（×15s）
+    private bool _watchKicked;              // 本轮断粮已 KICK 过（数据推进时复位）
     private bool _disposed;
 
     /// <summary>磁力 → 已展开会话 的进程级历史。同一磁力重复 TASK MAGNET 会被 guest 引擎以
@@ -61,6 +65,7 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
         _runtimeDir = runtimeDir;
         _log = log;
         _idleTimer = new Timer(_ => IdleCheck(), null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
+        _watchdog = new Timer(_ => WatchdogTick(), null, TimeSpan.FromSeconds(15), TimeSpan.FromSeconds(15));
         AppDomain.CurrentDomain.ProcessExit += (_, _) => Dispose();
     }
 
@@ -232,6 +237,13 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
         {
             var proxy = new QemuStreamProxy(_mediaPort, s.PlayUrlPath, s.PickSize,
                 QemuStreamProxy.ContentTypeFor(s.PickName), Log);
+            // seek 重定位 → KICK 引擎进入预取模式：让引擎优先下载 seek 目标区间
+            //（「seek 到哪下到哪」，不重定位也发无害——引擎已按读位置供数）
+            proxy.OnRelocate = () =>
+            {
+                Log("[引擎] seek 重定位 → KICK PREFETCH（区间优先下载）");
+                _server?.SetCommand("KICK PREFETCH");
+            };
             proxy.Start();
             _streamProxy = proxy;
             Log($"播放器地址改走缓存代理：{proxy.Url}");
@@ -418,13 +430,14 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
         }
     }
 
-    /// <summary>单次播放会话内任务死亡的最大自动恢复次数（约 40s 的重试窗口；用尽后由用户换源）。</summary>
+    /// <summary>单次播放会话内任务死亡的最大自动恢复次数（约 60s 的重试窗口；用尽后由用户换源）。</summary>
     private const int MaxTaskRetries = 5;
 
-    /// <summary>任务死亡自动恢复：重新下发 DL（种子已在 guest 磁盘上，重建任务即续传），每个尝试
-    /// 观察最多 10s，未复活则打断缓存代理上游连接强制重连后再次重试；复活即返回并清零计数。
-    /// guest 只在状态变化时上报 status，死亡状态只报一次——所以重试必须在此循环内完成，
-    /// 不能依赖后续 status 事件再次触发。CAS 闸保证同一会话只有一个恢复循环在跑。</summary>
+    /// <summary>任务死亡自动恢复：重新下发 DL，每个尝试观察最多 15s，未复活则打断缓存代理上游
+    /// 连接强制重连后再次重试；复活即返回并清零计数。guest 侧 start_dl 遇 9128（同种子任务句柄
+    /// 还挂在引擎里——死亡任务重建的必经之路）会自动 stopTask 清理后重试 createBtTask，已下载数据
+    /// 在 tmpfs 里由引擎续传。guest 只在状态变化时上报 status，死亡状态只报一次——所以重试必须在
+    /// 此循环内完成，不能依赖后续 status 事件再次触发。CAS 闸保证同一会话只有一个恢复循环在跑。</summary>
     private async Task RecoverTaskAsync(Session s)
     {
         if (Interlocked.CompareExchange(ref s.Recovering, 1, 0) != 0) return;
@@ -433,11 +446,13 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
             while (!s.Cancelled && s.RetryCount < MaxTaskRetries)
             {
                 s.RetryCount++;
-                Log($"任务死亡(err={s.FailedErr})，自动恢复 {s.RetryCount}/{MaxTaskRetries}：重新下发 DL");
+                var cause = s.FailedErr != 0 ? $"err={s.FailedErr}" : "上游持续断粮";
+                Log($"任务死亡（{cause}），自动恢复 {s.RetryCount}/{MaxTaskRetries}：重新下发 DL" +
+                    "（guest 侧 9128=同种子任务已存在时会自动 stopTask 清理后重建，已有数据续传）");
                 _server?.SetCommand($"DL {s.DLTorrentPath}|{s.Dir}|{s.PickName}|{s.PickIndex}|{s.Others}");
 
                 var revived = false;
-                for (var i = 0; i < 10 && !s.Cancelled; i++)
+                for (var i = 0; i < 15 && !s.Cancelled; i++)
                 {
                     await Task.Delay(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
                     if (s.LastSt is 1 or 2) { revived = true; break; }   // 新任务已建并运行
@@ -603,7 +618,55 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
         return m.Success ? m.Groups[1].Value.ToLowerInvariant() : "";
     }
 
-    // ═══════════ 空闲自停 / 释放 ═══════════
+    // ═══════════ 空闲自停 / 断粮看门狗 / 释放 ═══════════
+
+    /// <summary>播放中断粮看门狗：guest 只在「状态或进度变化」时上报——任务活着但源断光
+    /// （速度=0、进度冻结）时宿主完全失明，实测这是 err=114010 自杀的前奏。看门狗盯缓存代理
+    /// 的上游字节计数：读者还在读而上游 30s 零字节 → KICK BOTH（XLRequeryIndex 重查 hub 资源 +
+    /// XLEnterPrefetchMode 预取模式）自救；90s 仍断粮 → 按任务死亡走 RecoverTaskAsync 重建任务续传。</summary>
+    private void WatchdogTick()
+    {
+        try
+        {
+            if (_disposed) return;
+            var s = _session;
+            var p = _streamProxy;
+            if (s is null || p is null || !s.Played || s.Cancelled || s.Recovering != 0) { ResetWatch(); return; }
+            if (!p.ReaderStarving) { ResetWatch(); return; }   // 读者没在等前沿数据（暂停/顺畅播放）：不判
+            if (p.UpstreamEof) { ResetWatch(); return; }       // 已拉到文件尾：断粮属正常
+
+            var cur = p.UpstreamTotal;
+            if (cur != _watchLastUpstream)
+            {
+                _watchLastUpstream = cur;
+                _watchFrozenTicks = 0;
+                _watchKicked = false;
+                return;
+            }
+            _watchFrozenTicks++;
+            if (!_watchKicked && _watchFrozenTicks >= 2)   // ~30s 上游零字节
+            {
+                _watchKicked = true;
+                Log("[引擎] 上游 30s 断粮（播放器仍在读），KICK BOTH：requery 重查资源 + prefetch 预取模式");
+                _server?.SetCommand("KICK BOTH");
+            }
+            else if (_watchFrozenTicks >= 6)               // ~90s 仍断粮：按任务死亡处理
+            {
+                Log("[引擎] 上游 90s 断粮未复活，按任务死亡处理（重建任务续传）");
+                ResetWatch();
+                s.FailedErr = 0;
+                _ = RecoverTaskAsync(s);
+            }
+        }
+        catch { }
+    }
+
+    private void ResetWatch()
+    {
+        _watchLastUpstream = -1;
+        _watchFrozenTicks = 0;
+        _watchKicked = false;
+    }
 
     private void IdleCheck()
     {
@@ -654,6 +717,7 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
         if (_disposed) return;
         _disposed = true;
         try { _idleTimer.Dispose(); } catch { }
+        try { _watchdog.Dispose(); } catch { }
         try { _streamProxy?.Dispose(); } catch { }
         try { _runtime?.Dispose(); } catch { }
         try { _server?.Dispose(); } catch { }

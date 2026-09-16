@@ -140,7 +140,11 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
             // FFmpeg（这正是无声问题的解）；视频保持默认（D3D11 硬解优先）。
             // 内置读前缓冲兜底网络抖动，减少播放器饥饿。
             var config = new FFmpegInteropX.MediaSourceConfig();
-            config.General.ReadAheadBufferEnabled = true;
+            // ★ 绝不能开 ReadAheadBuffer：它会包一层 FFmpegInteropX 自带的 AVIOContext，
+            //   其 seek 回调不完整 → avio 判「不可 seek」→ 一切 seek（恢复进度/拖进度条）都退化成
+            //   「Soft-seeking by draining」顺序丢读整个未下载区间 → 卡死黑屏 + 反复重开（实测 15:36 会话）。
+            //   读前缓冲由宿主 QemuStreamProxy（64MB 窗口）承担，这层是冗余且有害的。
+            config.General.ReadAheadBufferEnabled = false;
             // ★ 初始 demux 提速：引擎媒体口按下载节奏节流（~1MB/s），FFmpeg 默认 probesize 会顺序
             //   拉几十 MB，CreateFromUri 要等 1-2 分钟。MKV（H264/AAC）从 Tracks 头即可识别，
             //   砍小 probesize/analyzeduration 让打开秒级完成；eac3 解码不受影响（音轨信息在头部）。
@@ -149,6 +153,18 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
             // ★ 强制 http 可 seek（默认 -1 探测会误判为不可 seek → 对 Cues 的 seek 退化成
             //   「Soft-seeking by draining 1.9GB」顺序丢读，永远开不了播，实测）。
             config.FFmpegOptions["seekable"] = "1";
+            // ★ 短距离 seek 阈值必须设小值：FFmpeg 8.1 http.c 的
+            //   「remaining(uint64) <= ffurl_get_short_seek(h)」在底层无 get_short_seek 回调时
+            //   返回负数 ENOSYS，被宽化成 uint64 巨数 → 条件恒真 → 任意距离的 seek 都走
+            //   「Soft-seeking drain」（把中间所有字节顺序读掉）而不是发新 Range 请求 —— 拖动
+            //   seek 也会变成 331MB 级别的假死读。设为 4KB 后大距离 seek 强制重连发 Range。
+            config.FFmpegOptions["short_seek_size"] = "4096";
+            // ★ 必须开 FastSeek：磁力流 MKV 没有 Cues 索引（文件尾未下载），普通 seek 走
+            //   av_seek_frame → matroska_read_seek 无索引直接失败（无 avio 请求、位置弹回）——
+            //   实测 16:45 会话：Seek 请求 1415.9s 后零 Range 请求。FastSeek 走
+            //   avformat_seek_file 的通用二分搜索（用 Cluster 时间戳 + avio seek 探测），
+            //   无索引也能 seek —— ffmpeg CLI 实测同一条流 seek 成功（Range 57MB 处）。
+            config.General.FastSeek = true;
             // ★ 绝不能对 CreateFromUri 设超时：数据供给被引擎节流，初始化就是要几十秒；
             //   超时放弃的实例仍在后台解码，但 Source 已换成别的——表现为黑屏。等它完成即可。
             var interop = await FFmpegInteropX.FFmpegMediaSource.CreateFromUriAsync(url, config)
@@ -200,6 +216,7 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
 
     void IVideoPlayerImplementation.Seek(TimeSpan position)
     {
+        Maui.Services.BtFileLog.Write($"[player] Seek 请求：{position.TotalSeconds:F1}s（session={_mediaPlayer?.PlaybackSession != null}）");
         if (_mediaPlayer?.PlaybackSession != null)
             _mediaPlayer.PlaybackSession.Position = position;
     }

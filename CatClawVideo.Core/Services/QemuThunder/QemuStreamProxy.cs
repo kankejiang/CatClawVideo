@@ -38,7 +38,37 @@ public sealed class QemuStreamProxy : IDisposable
     private bool _upstreamEof;     // 当前 base 下已拉到文件尾
     private Socket? _upstream;     // 当前上游 socket（重定位时 close 以打断）
     private long _bytesServed;     // 已向播放器供出的总字节数（首开探测期判定用）
+    private long _upstreamTotal;   // 上游累计收到的字节数（看门狗判断「断粮」用）
     private volatile bool _stopped;
+
+    /// <summary>上游累计收到的字节数（引擎看门狗：两个采样点无增长 = 上游断粮）。</summary>
+    public long UpstreamTotal => Interlocked.Read(ref _upstreamTotal);
+
+    /// <summary>是否有播放器读者在读（真实播放中才判断粮，暂停/空闲不算）。</summary>
+    public bool HasReaders { get { lock (_sync) return _requests.Count > 0; } }
+
+    /// <summary>读者正在等待「缓存前沿之外」的数据（真饥饿）。暂停时读者也挂着但停在已缓冲区，
+    /// 不算饥饿——看门狗用它区分「播放器在等数据」和「暂停不动」。</summary>
+    public bool ReaderStarving
+    {
+        get
+        {
+            lock (_sync)
+            {
+                if (_requests.Count == 0) return false;
+                var frontier = _base + _len;
+                foreach (var r in _requests)
+                    if (r.Pos >= frontier - 256 * 1024) return true;   // 读者贴着前沿等数据
+                return false;
+            }
+        }
+    }
+
+    /// <summary>上游已拉到当前文件的尾（EOF 后断粮属正常，看门狗跳过）。</summary>
+    public bool UpstreamEof => UpstreamEofLocked();
+
+    /// <summary>播放器 seek 重定位回调（宿主借此 KICK 引擎做区间优先下载）。</summary>
+    public Action? OnRelocate;
 
     private TcpListener? _listener;
 
@@ -98,38 +128,9 @@ public sealed class QemuStreamProxy : IDisposable
             if (epoch != _epoch) return false;
             var copy = new byte[count];
             Buffer.BlockCopy(data, offset, copy, 0, count);
-            if (_base == 0) PatchDisableSeekHead(copy);   // 仅文件头块需要修补
             _chunks.Add(copy);
             _len += count;
             return true;
-        }
-    }
-
-    // MKV EBML：SeekHead 元素的 ID（0x114D9B74）的 vint 编码（4D BB 8C）
-    private static readonly byte[] SeekHeadIdPattern = { 0x4D, 0xBB, 0x8C };
-
-    /// <summary>
-    /// 禁用 MKV 头部的整个 SeekHead 元素（把其 ID 的末字节 0x8C 改成 0x8D → 未知元素，FFmpeg 按尺寸跳过）。
-    /// <para>为什么：FFmpeg 的 matroska demuxer 读完头部会按 SeekHead seek 到文件尾读 Cues 索引，
-    /// 而引擎是顺序下载、该区间未就绪，媒体口对它挂住/拒绝——播放器永远停在 00:00（实测）。
-    /// 禁用后 demuxer 无索引可用，顺序读取 Cluster 边下边播，立即出片；代价是失去精确 seek 索引
-    /// （FFmpeg 退化为线性扫描）。只改 1 字节、不改任何长度，文件内其他所有偏移保持有效。</para>
-    /// </summary>
-    private void PatchDisableSeekHead(byte[] chunk)
-    {
-        const int scanLen = 16 * 1024;   // SeekHead 是文件第一个元素之后紧邻的元素，必在前几 KB
-        var limit = Math.Min(chunk.Length, scanLen) - SeekHeadIdPattern.Length;
-        for (var i = 0; i <= limit; i++)
-        {
-            var ok = true;
-            for (var j = 0; j < SeekHeadIdPattern.Length; j++)
-                if (chunk[i + j] != SeekHeadIdPattern[j]) { ok = false; break; }
-            if (ok)
-            {
-                chunk[i + SeekHeadIdPattern.Length - 1] = 0x8D;   // SeekHead → 未知元素
-                _log?.Invoke("[proxy] 已禁用 MKV SeekHead（顺序播放模式，不再 seek 尾部 Cues）");
-                return;
-            }
         }
     }
 
@@ -150,6 +151,7 @@ public sealed class QemuStreamProxy : IDisposable
 
     private void Recenter(long newBase, string why)
     {
+        var moved = false;
         lock (_sync)
         {
             if (newBase >= _base && newBase < _base + _len) return;   // 已在窗口内
@@ -159,7 +161,12 @@ public sealed class QemuStreamProxy : IDisposable
             _epoch++;
             _upstreamEof = false;
             try { _upstream?.Close(); } catch { }   // 打断正在进行的上游读取
-            _log?.Invoke($"[proxy] 重定位 → {_base / 1048576.0:F1}MB（{why}）");
+            moved = true;
+        }
+        if (moved)
+        {
+            _log?.Invoke($"[proxy] 重定位 → {Math.Max(0, newBase) / 1048576.0:F1}MB（{why}）");
+            try { OnRelocate?.Invoke(); } catch { }   // 宿主可借此 KICK 引擎（区间优先下载）
         }
     }
 
@@ -238,6 +245,7 @@ public sealed class QemuStreamProxy : IDisposable
                         }
                         var n = sock.Receive(rb);
                         if (n <= 0) break;
+                        Interlocked.Add(ref _upstreamTotal, n);
                         for (var i = 0; i < n; i++) head.Add(rb[i]);
                         hdrEnd = IndexOfHeaderEnd(head);
                         if (hdrEnd >= 0) break;
@@ -269,6 +277,7 @@ public sealed class QemuStreamProxy : IDisposable
                         if (!Append(epoch, head.ToArray(), hdrEnd + 4, (int)extra)) abandoned = true;
                         else got = extra;
                     }
+                    Interlocked.Add(ref _upstreamTotal, Math.Max(0, extra));
 
                     if (status.Contains(" 200") && from > 0 && !abandoned)
                     {
@@ -306,6 +315,7 @@ public sealed class QemuStreamProxy : IDisposable
                         if (!sock.Poll(1_000_000, SelectMode.SelectRead)) continue;   // 1s 超时：回循环复查
                         var n = sock.Receive(buf);
                         if (n <= 0) break;                                            // 切片结束 / 对端关闭
+                        Interlocked.Add(ref _upstreamTotal, n);
                         if (!Append(epoch, buf, 0, n)) { abandoned = true; break; }   // 被重定位
                         got += n;
                     }
@@ -390,6 +400,46 @@ public sealed class QemuStreamProxy : IDisposable
         var last = Math.Min(end, _totalSize - 1);
         if (last < first) last = first;
 
+        // 请求可见性：验证「avio 层 seek 是否真的走到协议层」（Seekable 修复的证据链）
+        _log?.Invoke($"[proxy-req] {method} bytes={first}-{last}（窗口 [{_base / 1048576.0:F1}|{(_base + _len) / 1048576.0:F1}MB] 已供出 {_bytesServed / 1048576.0:F1}MB）");
+
+        // ── 预等待：请求落在缓存前沿之外时（首开读 Cues / 拖进度条），先给引擎「按需下载该区间」
+        //    的时间。引擎收到未下载区间的读请求会优先拉取对应分片（=「seek 到哪下到哪」的物理
+        //    基础，KICK PREFETCH 进一步强化）。数据到位才回 206；超时回 416 干净拒绝。
+        //    ⚠ 绝不能 206 后再掐断：那会让 avio 记住「流坏了」，此后一切 seek 退化成
+        //    Soft-seeking drain（顺序丢读整个未下载区间 = 卡死黑屏，实测 15:36 会话）。
+        {
+            long frontier;
+            lock (_sync) frontier = _base + _len;
+            if (first > frontier)
+            {
+                var isCuesProbe = _bytesServed < 32 * 1024 * 1024 && first > _totalSize / 4;
+                var budgetMs = isCuesProbe ? 20_000 : 45_000;   // Cues 在文件尾（几 MB），健康 swarm 1-3s 可达
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var lastUp = UpstreamTotal;
+                var frozenMs = 0;
+                var delivered = false;
+                while (sw.ElapsedMilliseconds < budgetMs && !_stopped)
+                {
+                    lock (_sync) frontier = _base + _len;
+                    if (first < frontier + 256 * 1024) { delivered = true; break; }
+                    await Task.Delay(200).ConfigureAwait(false);
+                    var up = UpstreamTotal;
+                    if (up != lastUp) { frozenMs = 0; lastUp = up; }   // 引擎在按需拉取：等待有效
+                    else if ((frozenMs += 200) > 8000) break;          // 上游冻结 8s：引擎供不了数，早失败
+                }
+                if (!delivered)
+                {
+                    _log?.Invoke($"[proxy] 远端区间引擎未按需供数（{(isCuesProbe ? "Cues 探测" : "拖动 seek")}，等了 {sw.ElapsedMilliseconds}ms）→ 416 干净拒绝：{first}-{last}");
+                    var err416 = Encoding.ASCII.GetBytes(
+                        $"HTTP/1.1 416 Requested Range Not Satisfiable\r\nContent-Range: bytes */{_totalSize}\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n");
+                    await stream.WriteAsync(err416).ConfigureAwait(false);
+                    return;
+                }
+                _log?.Invoke($"[proxy] 远端区间已按需就绪（{sw.ElapsedMilliseconds}ms）：{first}");
+            }
+        }
+
         var rq = EnterRead(first);
         try
         {
@@ -411,11 +461,9 @@ public sealed class QemuStreamProxy : IDisposable
 
             if (method == "HEAD") return;
 
-            // ★ 首开探测期快速失败：FFmpeg（matroska demuxer）读完头部会 seek 到文件尾读 Cues 索引，
-            //   该区间引擎通常还没下载（顺序下载），挂住等待 = 播放器永远 00:00。供出数据还很少
-            //   （<32MB，只在首开探测期）且请求落在文件前 1/4 之外时，把等待上限压到 5s：
-            //   读 Cues 失败 → FFmpeg 放弃索引、回到 0 顺序播放（失去 seek 索引但能立刻出片）。
-            var stallBudget = (_bytesServed < 32 * 1024 * 1024 && first > _totalSize / 4) ? 5_000 : 60_000;
+            // 等待预算：60s（引擎对 seek 目标区间按需下载，通常数秒～数十秒可出数）。
+            // 首开探测期的远端区间已在上面被 416 干净拒绝，走不到这里。
+            const int stallBudget = 60_000;
 
             var buf = new byte[BufSize];
             var pos = first;
