@@ -129,12 +129,66 @@ public class Server {
                 cls.getMethod("init", Context.class, String.class).invoke(instance, new Context(), ext == null ? "" : ext);
             } catch (NoSuchMethodException ignored) { }
 
+            // ⚠ TVBox 公共类的**静态 Context**（新版 InitOrigin 是新土豆/影视仓系爬虫的公共入口）：
+            //   spider 常用 InitOrigin.context().getSharedPreferences(...) 做缓存/配置，宿主不注入就 NPE。
+            //   实测 2026-09-16：新6V 的 playerContent 抛
+            //     Cannot invoke "android.content.Context.getSharedPreferences(String,int)"
+            //     because the return value of "com.github.catvod.spider.InitOrigin.context()" is null
+            //   → 播放地址解析失败 → 播放页只能跨站回退（用户感知「加载很慢」）。
+            for (String holder : new String[]{
+                    "com.github.catvod.spider.InitOrigin",
+                    "com.github.catvod.spider.Init",
+                    "com.github.catvod.spider.merge.InitOrigin"}) {
+                injectStaticContext(loader, holder);
+            }
+
             SPIDERS.put(site, instance);
             return "loaded";
         }
     }
 
+    /**
+     * 把宿主桩 Context 注入 TVBox 公共类的静态 context：
+     * ① 静态字段（<c>context</c> / <c>mContext</c>，多数分支就是 public static Context context）；
+     * ② 静态 init(Context) / init(Context, String)。
+     * 类不存在或注入失败都静默忽略（不同年代的 jar 公共类名/签名不一致，注入是**尽力而为**）。
+     */
+    private static void injectStaticContext(ClassLoader loader, String className) {
+        try {
+            Class<?> c = loader.loadClass(className);
+            // ⚠ 必须注入 **Application**（不是裸 Context）：TVBox 的 InitOrigin 里
+            //   `public static Application context()` 返回的就是 Application 实例，
+            //   init(Context) 内部会强转成 Application —— 传裸 Context 会被 ClassCastException
+            //   吞掉，context() 依旧返回 null（实测 2026-09-16：传 Context 无效，改 Application 后 NPE 消失）。
+            Context ctx = new android.app.Application();
+            for (String fn : new String[]{"context", "mContext", "appContext", "N"}) {
+                try {
+                    java.lang.reflect.Field f = c.getDeclaredField(fn);
+                    f.setAccessible(true);
+                    if (java.lang.reflect.Modifier.isStatic(f.getModifiers()) && f.get(null) == null) {
+                        f.set(null, ctx);
+                    }
+                } catch (Throwable ignored) { }
+            }
+            for (java.lang.reflect.Method m : c.getDeclaredMethods()) {
+                if (!"init".equals(m.getName()) || !java.lang.reflect.Modifier.isStatic(m.getModifiers())) continue;
+                Class<?>[] ps = m.getParameterTypes();
+                try {
+                    m.setAccessible(true);
+                    if (ps.length == 1 && ps[0] == Context.class) {
+                        m.invoke(null, ctx);
+                    } else if (ps.length == 2 && ps[0] == Context.class && ps[1] == String.class) {
+                        m.invoke(null, ctx, "");
+                    }
+                } catch (Throwable ignored) { }
+            }
+        } catch (Throwable ignored) { }
+    }
+
     private static String call(String site, String method, org.json.JSONArray args) throws Exception {
+        // 慢调用留痕（>300ms 打 stderr → 宿主日志的 [jvm] stderr 行）：
+        // 「播放页加载很慢」要能一眼看出是爬虫自身耗时还是宿主侧排队（实测 2026-09-16 需要此数据）
+        final long t0 = System.currentTimeMillis();
         synchronized (LOCK) {
             for (int i = 0; i < args.length(); i++) {
                 String a = args.optString(i);
@@ -171,7 +225,12 @@ public class Server {
                         .invoke(instance, args.optString(0), args.optString(1), new ArrayList<String>());
                 default -> throw new IllegalArgumentException("unknown method: " + method);
             }
-            return result == null ? "{}" : result.toString();
+            var out = result == null ? "{}" : result.toString();
+            var dt = System.currentTimeMillis() - t0;
+            if (dt > 300) {
+                System.err.println("[srv] " + site + "." + method + " 耗时 " + dt + "ms，结果 " + out.length() + " 字节");
+            }
+            return out;
         }
     }
 }

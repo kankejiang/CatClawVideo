@@ -58,11 +58,54 @@ public partial class SourceConfigPage : ContentPage
     {
         base.OnAppearing();
         _ = LoadSubsFromDbAsync();
+        // ⚠ 重启后「站点列表」不能空着（2026-09-16 用户实测）：启动恢复已把订阅站点灌进
+        // SiteRegistry，而页面本地 _sites 只在「手动添加订阅」时才会填 → 这里从注册表回填一份。
+        SeedSitesFromRegistry();
         MainThread.BeginInvokeOnMainThread(async () =>
         {
             await Task.Delay(120);
             SubEntry.Focus();
         });
+    }
+
+    /// <summary>把启动恢复出来的站点回填到页面列表（按 Key 去重，不覆盖手动添加的条目）。</summary>
+    private void SeedSitesFromRegistry()
+    {
+        try
+        {
+            var existing = _sites.Select(s => s.Site.Key).ToHashSet(StringComparer.Ordinal);
+            var added = 0;
+            foreach (var site in Core.Models.SiteRegistry.Sites)
+            {
+                if (!existing.Add(site.Key)) continue;
+                _sites.Add(BuildRow(site));
+                added++;
+            }
+            if (added > 0 || _sites.Count > 0) RebuildSites();
+        }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[源配置] 站点回填失败: {ex.Message}"); }
+    }
+
+    /// <summary>由站点信息构造列表行（类型名 + 备注；手动添加与启动回填共用同一口径）。</summary>
+    private static SiteRow BuildRow(VodSiteInfo s)
+    {
+        var typeName = s.SpiderKind switch
+        {
+            VodSpiderKind.Jar => "spider jar",
+            VodSpiderKind.Script => "spider 脚本",
+            _ => s.Type switch
+            {
+                0 => "xml",
+                1 => "MacCMS json",
+                CatClawSourceDoc.SiteType => "猫爪源",
+                CatClawSourceWeb.WebSiteType => "猫爪源(web)",
+                _ => $"type {s.Type}",
+            },
+        };
+        var note = s.SpiderKind == VodSpiderKind.Script && CatClawVideo.Core.Models.SiteRegistry.JsSpiderAvailable
+            ? null
+            : s.StatusNote;
+        return new SiteRow(s.Name, typeName, note, s);
     }
 
     /// <summary>从数据库加载订阅列表（数据库可能仍在后台建表，失败静默下次再载）</summary>
@@ -190,23 +233,7 @@ public partial class SourceConfigPage : ContentPage
             foreach (var s in sites)
             {
                 if (!existing.Add(s.Name)) continue;
-                var typeName = s.SpiderKind switch
-                {
-                    VodSpiderKind.Jar => "spider jar",
-                    VodSpiderKind.Script => "spider 脚本",
-                    _ => s.Type switch
-                    {
-                        0 => "xml",
-                        1 => "MacCMS json",
-                        CatClawSourceDoc.SiteType => "猫爪源",
-                        CatClawSourceWeb.WebSiteType => "猫爪源(web)",
-                        _ => $"type {s.Type}",
-                    },
-                };
-                _sites.Add(new SiteRow(s.Name, typeName,
-                    s.SpiderKind == VodSpiderKind.Script && CatClawVideo.Core.Models.SiteRegistry.JsSpiderAvailable
-                        ? null
-                        : s.StatusNote, s));
+                _sites.Add(BuildRow(s));   // 类型名/备注口径与启动回填一致
                 added++;
             }
             skipped = sites.Count - added;
