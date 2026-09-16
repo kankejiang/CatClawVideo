@@ -182,6 +182,17 @@ public class Server {
                     }
                 } catch (Throwable ignored) { }
             }
+
+            // ⚠ InitOrigin.i 是 <clinit> 里 `Class.forName("android.app.ActivityThread")` 存下来的
+            //   Class<?>，它被 getActivity()/context() 直接用来 getDeclaredMethod("currentActivityThread")
+            //   → 拿不到就直接 NPE（Cannot invoke "java.lang.Class.getDeclaredMethod(...)" because
+            //   "com.github.catvod.spider.InitOrigin.i" is null，实测 2026-09-16）。
+            //   桥里已有 android.app.ActivityThread 桩；这里再显式调一次 setClass 兜底，
+            //   不依赖 jar 里那个被混淆的类名字符串解出来正好等于我们的桩名。
+            try {
+                java.lang.reflect.Method setClass = c.getMethod("setClass", Class.class);
+                setClass.invoke(null, Class.forName("android.app.ActivityThread", false, Server.class.getClassLoader()));
+            } catch (Throwable ignored) { }
         } catch (Throwable ignored) { }
     }
 

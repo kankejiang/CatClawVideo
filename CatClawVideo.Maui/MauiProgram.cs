@@ -105,6 +105,15 @@ public static class MauiProgram
         services.AddSingleton(btService);
         // 后台预热 tracker 列表（不阻塞启动首帧）
         _ = Task.Run(async () => { try { await btService.WarmUpTrackersAsync(); } catch { } });
+
+        // TVBox 系爬虫（ProxyOrigin 等）会把播放地址拼成 http://127.0.0.1:<port>/proxy?...
+        // 端口来自爬虫自己的 drivePort()：在 6677–6999 逐端口探测 GET /proxy?do=ck。
+        // 宿主不提供该服务 → 端口缓存非法 → 地址端口为空 → .NET 抛
+        // 「Invalid URI: Invalid port specified.」→ 播放页「播放失败：加载失败」。
+        // 必须早于任何播放地址解析，故放启动最前；监听失败不影响其他能力（Start 返回 false 只记日志）。
+        var spiderProxy = new CatClawVideo.Core.Services.SpiderProxyServer { Log = BtFileLog.Write };
+        spiderProxy.Start();
+        services.AddSingleton(spiderProxy);
 #if ANDROID
         var jarRuntime = new Platforms.Android.DexSpiderRuntime(
             Path.Combine(FileSystem.CacheDirectory, "spider"),

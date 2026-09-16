@@ -11,6 +11,12 @@ public class Context {
     public static final int MODE_WORLD_WRITEABLE = 2;
     public static final int MODE_APPEND = 3;
 
+    /** 系统服务名（TVBox 系爬虫用 {@code getSystemService(Context.WIFI_SERVICE)} 取本机 IP）。 */
+    public static final String WIFI_SERVICE = "wifi";
+    public static final String CONNECTIVITY_SERVICE = "connectivity";
+    public static final String ACTIVITY_SERVICE = "activity";
+    public static final String NOTIFICATION_SERVICE = "notification";
+
     private final File baseDir = new File(System.getProperty("user.dir"), "data");
 
     public File getFilesDir() { File f = new File(baseDir, "files"); f.mkdirs(); return f; }
@@ -30,7 +36,22 @@ public class Context {
     public String getString(int resId) { return ""; }
     public String getString(int resId, Object... formatArgs) { return ""; }
 
-    public Object getSystemService(String name) { return null; }
+    /**
+     * 系统服务：只实现爬虫真正会用的那几个（原来一律返回 null →
+     * {@code WifiManager.getConnectionInfo().getIpAddress()} 直接 NPE，
+     * 导致 TVBox 系 ProxyOrigin 取不到本机 IP，本地代理地址拼不出来）。
+     */
+    public Object getSystemService(String name) {
+        if (name == null) return null;
+        switch (name) {
+            case WIFI_SERVICE:
+                return new android.net.wifi.WifiManager();
+            case "window":
+                return new android.view.WindowManager();
+            default:
+                return null;
+        }
+    }
     public String getSystemServiceName(Class<?> serviceClass) { return null; }
 
     public java.lang.ClassLoader getClassLoader() { return Context.class.getClassLoader(); }
