@@ -147,11 +147,11 @@ public partial class SearchPage : ContentPage
             {
                 try
                 {
-                    var searchTask = _provider.SearchAsync(site, kw);
-                    var done = await Task.WhenAny(searchTask, Task.Delay(12000));
-                    var items = done == searchTask && searchTask.IsCompletedSuccessfully
-                        ? searchTask.Result
-                        : new List<VodItem>();
+                    // ⚠ 不要用 Task.WhenAny(search, Delay(12s)) 把「迟到的结果」丢掉：
+                    //   实测 2026-09-16 某盘搜站点 14.2s 才返回 10.6KB（几十条），被整批丢弃
+                    //   → 用户看到的条数远少于实际可用。改成「先到先上屏，迟到照样收」，
+                    //   总时长由外层两段式等待控制（12s 先出 + 再等 20s 补）。
+                    var items = await _provider.SearchAsync(site, kw);
                     if (items.Count == 0) return;
 
                     // 跨站聚合：每条结果标出**来源站**（卡片左下角站点角标，方便同片多站时挑源）
@@ -173,8 +173,13 @@ public partial class SearchPage : ContentPage
                 {
                     Interlocked.Increment(ref doneCount);
                 }
-            });
-            await Task.WhenAll(tasks);
+            }).ToArray();
+
+            // 两段式等待：12s 内到达的先上屏（不等慢站）；慢站再给 20s，迟到的结果照样补进列表。
+            // 总上限 ≈32s，避免个别死站把整页拖到桥那边的 90s 调用超时。
+            var all = Task.WhenAll(tasks);
+            await Task.WhenAny(all, Task.Delay(12000));
+            await Task.WhenAny(all, Task.Delay(20000));
 
             MainThread.BeginInvokeOnMainThread(() =>
             {

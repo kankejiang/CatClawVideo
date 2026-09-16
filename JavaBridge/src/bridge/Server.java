@@ -101,6 +101,24 @@ public class Server {
             if (SPIDERS.containsKey(site)) return "loaded";
             URLClassLoader loader = loaderFor(jars);
 
+            // ⚠⚠ 必须在**实例化之前**注入 TVBox 公共类的 Context/Application。
+            //   实测 2026-09-16：csp_S_zpsGuard（JPan/ZPan 等一批站点）的构造函数与 init(ext)
+            //   里就会调 InitOrigin.context().getSharedPreferences(...)；晚注入（原来放在本方法末尾）
+            //   → 抛 "Cannot invoke android.content.Context.getSharedPreferences(String,int) because
+            //   the return value of InitOrigin.context() is null" → **整站 load 失败**。
+            //   用户可见症状极具误导性：搜索「0 个结果」，而日志里只有一句英文 NPE。
+            Context appContext = new android.app.Application();
+            try {
+                Class<?> initCls = loader.loadClass("com.github.catvod.spider.Init");
+                initCls.getMethod("init", Context.class).invoke(null, appContext);
+            } catch (Throwable ignored) { }
+            for (String holder : new String[]{
+                    "com.github.catvod.spider.InitOrigin",
+                    "com.github.catvod.spider.Init",
+                    "com.github.catvod.spider.merge.InitOrigin"}) {
+                injectStaticContext(loader, holder, appContext);
+            }
+
             Class<?> cls = null;
             for (String p : new String[]{"com.github.catvod.spider.", "com.github.catvod.crawler.", ""}) {
                 try { cls = loader.loadClass(p + className); break; } catch (ClassNotFoundException ignored) { }
@@ -108,12 +126,6 @@ public class Server {
             if (cls == null) throw new ClassNotFoundException(className);
 
             Object instance = cls.getDeclaredConstructor().newInstance();
-
-            // Guard 框架入口：先初始化 com.github.catvod.spider.Init 单例
-            try {
-                Class<?> initCls = loader.loadClass("com.github.catvod.spider.Init");
-                initCls.getMethod("init", Context.class).invoke(null, new android.app.Application());
-            } catch (Exception ignored) { }
 
             // 与 TVBox JarLoader.getSpider 的调用序列一致：siteKey -> initApi -> init。
             // siteKey 供爬虫读取自身站点 key；initApi 注入 SpiderApi（XBPQ 等爬虫会覆盖它并调用
@@ -129,17 +141,9 @@ public class Server {
                 cls.getMethod("init", Context.class, String.class).invoke(instance, new Context(), ext == null ? "" : ext);
             } catch (NoSuchMethodException ignored) { }
 
-            // ⚠ TVBox 公共类的**静态 Context**（新版 InitOrigin 是新土豆/影视仓系爬虫的公共入口）：
-            //   spider 常用 InitOrigin.context().getSharedPreferences(...) 做缓存/配置，宿主不注入就 NPE。
-            //   实测 2026-09-16：新6V 的 playerContent 抛
-            //     Cannot invoke "android.content.Context.getSharedPreferences(String,int)"
-            //     because the return value of "com.github.catvod.spider.InitOrigin.context()" is null
-            //   → 播放地址解析失败 → 播放页只能跨站回退（用户感知「加载很慢」）。
-            for (String holder : new String[]{
-                    "com.github.catvod.spider.InitOrigin",
-                    "com.github.catvod.spider.Init",
-                    "com.github.catvod.spider.merge.InitOrigin"}) {
-                injectStaticContext(loader, holder);
+            // 兜底再注入一次（有的爬虫在 init 里才把公共类换掉/重建单例）
+            for (String holder : new String[]{"com.github.catvod.spider.InitOrigin", "com.github.catvod.spider.merge.InitOrigin"}) {
+                injectStaticContext(loader, holder, appContext);
             }
 
             SPIDERS.put(site, instance);
@@ -153,14 +157,14 @@ public class Server {
      * ② 静态 init(Context) / init(Context, String)。
      * 类不存在或注入失败都静默忽略（不同年代的 jar 公共类名/签名不一致，注入是**尽力而为**）。
      */
-    private static void injectStaticContext(ClassLoader loader, String className) {
+    private static void injectStaticContext(ClassLoader loader, String className, Context ctx) {
         try {
             Class<?> c = loader.loadClass(className);
             // ⚠ 必须注入 **Application**（不是裸 Context）：TVBox 的 InitOrigin 里
             //   `public static Application context()` 返回的就是 Application 实例，
             //   init(Context) 内部会强转成 Application —— 传裸 Context 会被 ClassCastException
             //   吞掉，context() 依旧返回 null（实测 2026-09-16：传 Context 无效，改 Application 后 NPE 消失）。
-            Context ctx = new android.app.Application();
+            //   ctx 由调用方传入（同一个实例注入到所有公共类，避免各自 new 出一堆孤岛）。
             for (String fn : new String[]{"context", "mContext", "appContext", "N"}) {
                 try {
                     java.lang.reflect.Field f = c.getDeclaredField(fn);
