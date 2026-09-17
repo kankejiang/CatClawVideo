@@ -161,25 +161,24 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
                     return new MagnetPlayback(hash, pick.Index, pick.Size, Path.GetFileName(pick.Name), _streamProxy.Url);
                 }
 
-                // 换片（同种子）：合成新文件路径并验证引擎能否供数
+                // 换片（同种子）：**绝不重建任务** —— 2026-09-17 实测血的教训：
+                //   第 2 集尚未下载到时 VerifyBytes 探测失败 → 旧逻辑「重新下发 DL 兜底」→
+                //   guest 9128 自愈 stopTask 把**正在 6MB/s 供数的老任务停掉**（st=1→st=4 速度=0），
+                //   而引擎句柄不释放 → 4 次退避重试全部 9128 → 播放彻底死锁。
+                //   老任务本就全选下载整个种子，媒体口**按路径**供数；未下载到的区间靠顺序下载补上，
+                //   只需把播放路径切到新文件、起代理等待即可（代理上游循环持续读，数据一到即播）。
                 var newPath = SynthesizeUrlPath(s.Dir + "/" + pick.Name);
-                var gotNew = await VerifyBytesAsync(newPath, ct).ConfigureAwait(false);
-                if (gotNew > 0)
-                {
-                    Log($"同任务换片：#{pick.Index} {pick.Name}（引擎已可供数）");
-                    s.PickIndex = pick.Index; s.PickName = pick.Name; s.PickSize = pick.Size;
-                    s.PlayUrlPath = newPath; s.Played = true;
-                    _lastActiveUtc = DateTime.UtcNow;
-                    LastDirectMediaUrl = MediaUrl(newPath);
-                    StartStreamProxy(s);
-                    return new MagnetPlayback(hash, pick.Index, pick.Size, Path.GetFileName(pick.Name),
-                        _streamProxy?.Url ?? MediaUrl(newPath));
-                }
-                if (!s.Cancelled) Log($"换片 #{pick.Index} 引擎尚无数据（等待顺序下载中），重新下发 DL 兜底");
+                var gotNew = await VerifyOnceAsync(newPath, ct).ConfigureAwait(false);   // 快探一次（不再 60s 轮询）
+                Log(gotNew > 0
+                    ? $"同任务换片：#{pick.Index} {pick.Name}（引擎已可供数）"
+                    : $"同任务换片：#{pick.Index} {pick.Name}（引擎暂无数据，切路径等待顺序下载补上）");
                 s.PickIndex = pick.Index; s.PickName = pick.Name; s.PickSize = pick.Size;
-                s.DlSent = true; s.Played = false; s.PlayUrlPath = ""; s.LastError = null;
-                LastDirectMediaUrl = null;
-                // 落到下方常规 DL 流程（全选重建；若引擎因 9128 拒绝则走回落）
+                s.PlayUrlPath = newPath; s.Played = true;
+                _lastActiveUtc = DateTime.UtcNow;
+                LastDirectMediaUrl = MediaUrl(newPath);
+                StartStreamProxy(s);
+                return new MagnetPlayback(hash, pick.Index, pick.Size, Path.GetFileName(pick.Name),
+                    _streamProxy?.Url ?? MediaUrl(newPath));
             }
             else if (s.Played && s.PlayUrlPath.Length > 0 && s.PickIndex == pick.Index)
             {
@@ -189,16 +188,13 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
                     _lastActiveUtc = DateTime.UtcNow;
                     return new MagnetPlayback(hash, pick.Index, pick.Size, Path.GetFileName(pick.Name), _streamProxy.Url);
                 }
-                var reuse = await VerifyOnceAsync(s.PlayUrlPath, ct).ConfigureAwait(false);
-                if (reuse > 0)
-                {
-                    Log($"复用已在播会话：#{pick.Index} {pick.Name}");
-                    _lastActiveUtc = DateTime.UtcNow;
-                    StartStreamProxy(s);
-                    return new MagnetPlayback(hash, pick.Index, pick.Size, Path.GetFileName(pick.Name),
-                        _streamProxy?.Url ?? MediaUrl(s.PlayUrlPath));
-                }
-                Log("旧播放地址已失效，重新下发 DL");
+                // 同一集重开：**不重建任务**（同上，重建必 9128 且自杀）。直接切回原路径起代理，
+                // 引擎续供；原任务已死时数据供不上，由看门狗 RecoverTask 兜底（那是唯一该重建的时机）。
+                Log($"复用会话路径重开：#{pick.Index} {pick.Name}（不重建任务）");
+                _lastActiveUtc = DateTime.UtcNow;
+                StartStreamProxy(s);
+                return new MagnetPlayback(hash, pick.Index, pick.Size, Path.GetFileName(pick.Name),
+                    _streamProxy?.Url ?? MediaUrl(s.PlayUrlPath));
             }
 
             s.PickIndex = pick.Index; s.PickName = pick.Name; s.PickSize = pick.Size;
