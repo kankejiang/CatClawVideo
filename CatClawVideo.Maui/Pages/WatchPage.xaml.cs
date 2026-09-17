@@ -139,6 +139,25 @@ public partial class WatchPage : ContentPage, IQueryAttributable
             }
         });
         Player.StateChanged += (_, _) => MainThread.BeginInvokeOnMainThread(UpdatePlayIcon);
+        // 自然播完 → 自动连播下一集（留 3s 让用户反应；期间手动换集/切源则放弃自动连播）
+        Player.MediaEnded += (_, _) => MainThread.BeginInvokeOnMainThread(async () =>
+        {
+            _playing = false;
+            UpdatePlayIcon();
+            if (_currentSourceIndex < 0 || _currentSourceIndex >= _sources.Count) return;
+            var episodes = _sources[_currentSourceIndex].Episodes;
+            var endedIndex = _currentEpisodeIndex;
+            var next = endedIndex + 1;
+            if (next < 0 || next >= episodes.Count)
+            {
+                try { await ShowTipAsync("已经是最后一集了"); } catch { }
+                return;
+            }
+            try { await ShowTipAsync("本集播完，3 秒后自动播放下一集…"); } catch { }
+            await Task.Delay(3000);
+            if (_currentEpisodeIndex != endedIndex || _currentSourceIndex < 0 || _currentSourceIndex >= _sources.Count) return;
+            SkipEpisode(1);
+        });
         // 播放失败必须有可见反馈（此前磁力/解析失败静默，用户以为"没反应"）
         Player.MediaFailed += (_, _) => MainThread.BeginInvokeOnMainThread(async () =>
         {
