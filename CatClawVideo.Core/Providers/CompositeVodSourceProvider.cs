@@ -106,9 +106,56 @@ public class CompositeVodSourceProvider : IVodSourceProvider
                 foreach (var f in videos)
                     expanded.Add(new VodEpisode { Name = f.Name, Url = ep.Url, Flag = ep.Flag });
             }
-            src.Episodes = expanded;
+            src.Episodes = SortExpandedEpisodes(expanded);
         }
         return sources;
+    }
+
+    /// <summary>
+    /// 展开后按「集号」排序（2026-09-17 实测：多打包磁力 01-05-1080p / 01-05-2160p / 06-09…
+    /// 展开的列表天然按磁力包顺序排列，连播到包尾会跳进下一个包的<b>第 1 集</b>——
+    /// 1080p 第 5 集播完自动连播到 2160p 第 1 集，重新下载 5.7GB）。
+    /// 排序键 = (是否首选分辨率, 集号, 原顺序)：首选分辨率 = 第一个展开文件的分辨率
+    /// （站点通常把主打清晰度的包排前面），保证连播沿首选线 1→N 一路走完才进其他线。
+    /// </summary>
+    private static List<VodEpisode> SortExpandedEpisodes(List<VodEpisode> expanded)
+    {
+        if (expanded.Count <= 1) return expanded;
+        // 先按 (集号, 分辨率) 去重：分包包与全集打包包常含同名同集文件（如 01.1080p 同时
+        // 出现在 01-05-1080p 与 全集打包-1080p 两个种子里），不去重连播会在同集内容上
+        // 跨种子重来。保留先展开的（站点主打包顺序）。
+        var seen = new HashSet<(int, string)>();
+        var deduped = new List<VodEpisode>(expanded.Count);
+        foreach (var ep in expanded)
+        {
+            if (!seen.Add((EpisodeNumberOf(ep.Name), ResolutionOf(ep.Name)))) continue;
+            deduped.Add(ep);
+        }
+        var preferredRes = ResolutionOf(deduped[0].Name);
+        return deduped
+            .Select((ep, idx) => (Ep: ep, Idx: idx))
+            .OrderBy(t => ResolutionOf(t.Ep.Name) == preferredRes ? 0 : 1)
+            .ThenBy(t => EpisodeNumberOf(t.Ep.Name))
+            .ThenBy(t => t.Idx)
+            .Select(t => t.Ep)
+            .ToList();
+    }
+
+    /// <summary>文件名里的分辨率标记（"2160p"/"1080p"/"720p"，无则空串）。</summary>
+    private static string ResolutionOf(string name)
+    {
+        foreach (var res in new[] { "2160p", "1080p", "720p" })
+            if (name.Contains(res, StringComparison.OrdinalIgnoreCase))
+                return res;
+        return "";
+    }
+
+    /// <summary>从文件名提取集号（"01.1080p…"/"第07集"/"EP12…"）；解析不出返回 9999（排最后、保持原序）。</summary>
+    private static int EpisodeNumberOf(string name)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(
+            name, @"^(?:\s*第\s*)?(\d{1,4})(?![0-9])", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return m.Success && int.TryParse(m.Groups[1].Value, out var n) ? n : 9999;
     }
 
     /// <summary>单次详情页最多展开的磁力条数（超出则放弃展开，避免串行解析拖慢）</summary>

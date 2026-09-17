@@ -958,6 +958,11 @@ public partial class WatchPage : ContentPage, IQueryAttributable
 
         _currentEpisode = episode;
         var generation = ++_playGeneration;
+        // ★ 换集立即掐灭旧画面（2026-09-17 用户反馈）：Stop 暂停旧会话 + Source=null 卸载
+        //   FFmpeg interop（画面立即变黑），解析期间不再继续播旧视频、也不再白白拉旧流数据。
+        //   buffering 转圈立刻可见，新流就绪后自动接管。
+        try { Player.Stop(); } catch { }
+        try { Player.Headers = null; Player.Source = null; } catch { }
         ShowBuffering(true);
         try
         {
