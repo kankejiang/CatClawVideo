@@ -17,7 +17,15 @@ internal static class BtFileLog
             var line = $"[{DateTime.Now:HH:mm:ss.fff}] {msg}";
             lock (Lock)
             {
-                File.AppendAllText(Path.Combine(dir, "bt.log"), line + Environment.NewLine);
+                try
+                {
+                    File.AppendAllText(Path.Combine(dir, "bt.log"), line + Environment.NewLine);
+                }
+                catch
+                {
+                    // bt.log 被残留实例以独占方式锁住时（僵尸进程），降级写备份文件，保住现场证据
+                    File.AppendAllText(Path.Combine(dir, "bt-fallback.log"), line + Environment.NewLine);
+                }
             }
             System.Diagnostics.Debug.WriteLine("[bt] " + msg);
         }

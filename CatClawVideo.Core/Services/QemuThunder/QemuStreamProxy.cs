@@ -39,6 +39,8 @@ public sealed class QemuStreamProxy : IDisposable
     private Socket? _upstream;     // 当前上游 socket（重定位时 close 以打断）
     private long _bytesServed;     // 已向播放器供出的总字节数（首开探测期判定用）
     private long _upstreamTotal;   // 上游累计收到的字节数（看门狗判断「断粮」用）
+    private bool _preflightActive; // 预等待进行中（同窗口的其他请求排队等它，禁止 Recenter 乒乓）
+    private long _preflightTarget;
     private volatile bool _stopped;
 
     /// <summary>上游累计收到的字节数（引擎看门狗：两个采样点无增长 = 上游断粮）。</summary>
@@ -226,7 +228,12 @@ public sealed class QemuStreamProxy : IDisposable
                 lock (_sync) _upstream = sock;
                 try
                 {
-                    var to = Math.Min(from + SliceBytes - 1, _totalSize - 1);
+                    // ★ 请求区间至少 256KB（即使逼近/越过文件尾也向越界方向要满 256KB）：
+                    //   引擎对未下载区间的「按需供数」靠持续的分片级读触发（rangetest 实测：
+                    //   读 407MB/引擎仅下 88MB，206 真数据 0.3s 返回），而单发 1.2KB 的
+                    //   尾部小请求（如 Cues）不会触发——按需调度以读得「够多」为前提。
+                    //   越界部分引擎按 piece 对齐取数后按实有数据应答（206 截断）。
+                    var to = Math.Min(from + SliceBytes - 1, Math.Max(_totalSize - 1, from + 256 * 1024 - 1));
                     var req = $"GET {_path} HTTP/1.0\r\nHost: 127.0.0.1:{_mediaPort}\r\nRange: bytes={from}-{to}\r\n\r\n";
                     sock.Send(Encoding.ASCII.GetBytes(req));
 
@@ -408,10 +415,48 @@ public sealed class QemuStreamProxy : IDisposable
         //    基础，KICK PREFETCH 进一步强化）。数据到位才回 206；超时回 416 干净拒绝。
         //    ⚠ 绝不能 206 后再掐断：那会让 avio 记住「流坏了」，此后一切 seek 退化成
         //    Soft-seeking drain（顺序丢读整个未下载区间 = 卡死黑屏，实测 15:36 会话）。
+        //    ⚠ 同一时刻只允许一个预等待窗口：并发请求（主打开 + Cues 探测）若各自 Recenter
+        //    会乒乓清掉对方缓存 → 主流被截断（"File ended prematurely at pos 5812" 实测）。
         {
             long frontier;
             lock (_sync) frontier = _base + _len;
-            if (first > frontier)
+            var needWait = false;
+            lock (_sync)
+            {
+                if (first > frontier)
+                {
+                    if (_preflightActive && _preflightTarget != first)
+                    {
+                        needWait = true;   // 别人在等另一个区间：等它的结果，不要抢窗口
+                    }
+                    else
+                    {
+                        _preflightActive = true;
+                        _preflightTarget = first;
+                    }
+                }
+            }
+            if (needWait)
+            {
+                var sw2 = System.Diagnostics.Stopwatch.StartNew();
+                while (sw2.ElapsedMilliseconds < 30_000 && !_stopped)
+                {
+                    lock (_sync) frontier = _base + _len;
+                    if (first < frontier + 256 * 1024) break;
+                    if (!_preflightActive) break;
+                    await Task.Delay(200).ConfigureAwait(false);
+                }
+                lock (_sync) frontier = _base + _len;
+                if (first > frontier)
+                {
+                    _log?.Invoke($"[proxy] 等待他人预等待超时仍无数据 → 416：{first}-{last}");
+                    var err416b = Encoding.ASCII.GetBytes(
+                        $"HTTP/1.1 416 Requested Range Not Satisfiable\r\nContent-Range: bytes */{_totalSize}\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n");
+                    await stream.WriteAsync(err416b).ConfigureAwait(false);
+                    return;
+                }
+            }
+            else if (first > frontier)
             {
                 var isCuesProbe = _bytesServed < 32 * 1024 * 1024 && first > _totalSize / 4;
                 var budgetMs = isCuesProbe ? 20_000 : 45_000;   // Cues 在文件尾（几 MB），健康 swarm 1-3s 可达
@@ -428,6 +473,7 @@ public sealed class QemuStreamProxy : IDisposable
                     if (up != lastUp) { frozenMs = 0; lastUp = up; }   // 引擎在按需拉取：等待有效
                     else if ((frozenMs += 200) > 8000) break;          // 上游冻结 8s：引擎供不了数，早失败
                 }
+                lock (_sync) _preflightActive = false;
                 if (!delivered)
                 {
                     _log?.Invoke($"[proxy] 远端区间引擎未按需供数（{(isCuesProbe ? "Cues 探测" : "拖动 seek")}，等了 {sw.ElapsedMilliseconds}ms）→ 416 干净拒绝：{first}-{last}");
@@ -445,7 +491,8 @@ public sealed class QemuStreamProxy : IDisposable
         {
             long baseOff, frontier;
             lock (_sync) { baseOff = _base; frontier = _base + _len; }
-            if (first < baseOff || first > frontier) Recenter(first, "播放器请求窗口外");
+            if ((first < baseOff || first > frontier) && !_preflightActive)
+                Recenter(first, "播放器请求窗口外");   // 预等待进行中时不抢窗口（防乒乓）
 
             var length = last - first + 1;
             var sb = new StringBuilder(256);

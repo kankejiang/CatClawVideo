@@ -20,7 +20,7 @@ using System.Text;
 using CatClawVideo.Core.Services.QemuThunder;
 
 var argList = args.ToList();
-var mode = argList.Count > 0 && (argList[0] == "bench" || argList[0] == "proxy-bench" || argList[0] == "download") ? argList[0] : "";
+var mode = argList.Count > 0 && (argList[0] == "bench" || argList[0] == "proxy-bench" || argList[0] == "download" || argList[0] == "seektest" || argList[0] == "rangetest") ? argList[0] : "";
 if (mode.Length > 0) argList.RemoveAt(0);
 
 var sw = Stopwatch.StartNew();
@@ -82,6 +82,76 @@ if (mode == "download")
     var magic = Convert.ToHexString(head).ToLowerInvariant();
     Log(magic == "1a45dfa3" ? "🎉 文件头校验通过（MKV）" : $"⚠ 文件头异常：{magic}");
     return magic == "1a45dfa3" ? 0 : 6;
+}
+
+// ═══ seektest 模式：验证引擎「读位置驱动的区间优先」——任务下载中持续读 50% 位置 ═══
+if (mode == "seektest")
+{
+    Log("══ seektest：下载启动后持续读 50% 区间，观察引擎是否把分片调度跳过去 ══");
+    long dTotal = 0, dDone = 0;
+    var dlTask = Task.Run(() => engine.DownloadToFileAsync(magnet, prefer,
+        destPathFor: _ => Path.Combine(Path.GetTempPath(), "hosttest-seektest.mkv"),
+        progress: (d, t) => { dDone = d; dTotal = t; },
+        ct: CancellationToken.None));
+    var deadline = DateTime.UtcNow + TimeSpan.FromMinutes(8);
+    while (DateTime.UtcNow < deadline && dDone < 60 * 1024 * 1024)
+    {
+        Log($"  顺序下载中 {dDone / 1048576.0:F0}MB");
+        await Task.Delay(5000);
+    }
+    if (dDone < 60 * 1024 * 1024) { Log("✗ 下载未启动或过慢"); return 7; }
+    var mediaUrl = engine.LastDirectMediaUrl;
+    if (string.IsNullOrEmpty(mediaUrl)) { Log("✗ 拿不到下载文件的媒体口地址"); return 8; }
+
+    var off = (long)(dTotal * 0.5);
+    Log($"  开始持续读 50% 位置（{off / 1048576.0:F0}MB），每轮 256KB；同时观察顺序进度是否跳变");
+    var doneAtStart = dDone;
+    for (var i = 1; i <= 40; i++)
+    {
+        var (fb, tt, bytes) = await RawGetAsync(mediaUrl, off, 262144);
+        Log($"  读第{i,2}轮: bytes={bytes} TTFB={fb,5:F0}ms total={tt,5:F0}ms | 引擎进度 {dDone / 1048576.0:F0}MB（起点 {doneAtStart / 1048576.0:F0}MB）");
+        if (bytes < 1024) { Log("  ✗ 该区间读不到字节"); break; }
+        off += bytes;   // 模拟播放器连续读
+        await Task.Delay(1000);
+    }
+    Log(dDone > doneAtStart + (long)(dTotal * 0.3)
+        ? "🎉 引擎进度大幅跳变 → 读位置驱动区间优先【有效】"
+        : "⚠ 引擎进度未跳变 → 引擎不支持读位置驱动的区间优先（顺序下载不受 seek 影响）");
+    return 0;
+}
+
+// ═══ rangetest 模式：判定引擎对未下载区间的 Range 请求是真供数还是忽略 Range 从头供数 ═══
+if (mode == "rangetest")
+{
+    Log("══ rangetest：下载 60MB 后，对比读 0 位置与读 50% 位置的响应（状态码/内容哈希）══");
+    long dTotal = 0, dDone = 0;
+    var dlTask = Task.Run(() => engine.DownloadToFileAsync(magnet, prefer,
+        destPathFor: _ => Path.Combine(Path.GetTempPath(), "hosttest-rangetest.mkv"),
+        progress: (d, t) => { dDone = d; dTotal = t; },
+        ct: CancellationToken.None));
+    var deadline = DateTime.UtcNow + TimeSpan.FromMinutes(8);
+    while (DateTime.UtcNow < deadline && dDone < 60 * 1024 * 1024)
+    {
+        Log($"  顺序下载中 {dDone / 1048576.0:F0}MB");
+        await Task.Delay(5000);
+    }
+    if (dDone < 60 * 1024 * 1024) { Log("✗ 下载未启动或过慢"); return 7; }
+    var mediaUrl = engine.LastDirectMediaUrl;
+    if (string.IsNullOrEmpty(mediaUrl)) { Log("✗ 拿不到媒体口地址"); return 8; }
+
+    var off50 = (long)(dTotal * 0.5);
+    Log($"  引擎已下 {dDone / 1048576.0:F0}MB；请求 0 与 {off50 / 1048576.0:F0}MB 各 256KB");
+    var (sA, hA, fA, bA) = await RawGetHashed(mediaUrl, 0, 262144);
+    Log($"  读 0MB    : HTTP={sA} 前16字节={fA} md5={hA[..8]} bytes={bA}");
+    var (sB, hB, fB, bB) = await RawGetHashed(mediaUrl, off50, 262144);
+    Log($"  读 50%    : HTTP={sB} 前16字节={fB} md5={hB[..8]} bytes={bB}");
+    if (sB.Contains("206") && hA != hB)
+        Log("🎉 HTTP 206 且内容不同 → 引擎对未下载区间【真供数】（附加源/按需拉取）→ seek 优先可实现");
+    else if (sB.Contains("206") && hA == hB)
+        Log("⚠ 206 但内容相同 → 引擎忽略 Range 从 0 供数（假 206）");
+    else
+        Log($"⚠ 状态 {sB.Trim()} → 引擎不按 Range 供数（可能 200 从头或拒绝）");
+    return 0;
 }
 
 Log("══ 阶段一：磁力 → 文件列表 ══");
@@ -180,6 +250,44 @@ static long? ParseContentLength(string head)
             && long.TryParse(l[(i + 1)..].Trim(), out var v)) return v;
     }
     return null;
+}
+
+/// <summary>带状态行与内容哈希的 Range 读取（rangetest 用）：返回 (状态行首段, body md5, body 前16字节hex, body 长度)。
+/// 20s 上限；响应头后的 body 全部计入哈希（Content-Length 或到连接关闭）。</summary>
+async Task<(string status, string md5, string head16, long bytes)> RawGetHashed(string url, long from, int count)
+{
+    var u = new Uri(url);
+    using var tcp = new TcpClient();
+    await tcp.ConnectAsync(u.Host, u.Port);
+    var ns = tcp.GetStream();
+    var req = $"GET {u.PathAndQuery} HTTP/1.0\r\nHost: {u.Host}:{u.Port}\r\nRange: bytes={from}-{from + count - 1}\r\n\r\n";
+    await ns.WriteAsync(Encoding.ASCII.GetBytes(req));
+    var buf = new byte[65536];
+    var head = new List<byte>(4096);
+    var body = new List<byte>(count);
+    var headEnd = -1;
+    using var cts = new CancellationTokenSource(20_000);
+    while (true)
+    {
+        int n;
+        try { n = await ns.ReadAsync(buf, cts.Token); } catch { break; }
+        if (n <= 0) break;
+        for (var i = 0; i < n; i++)
+        {
+            if (headEnd < 0)
+            {
+                head.Add(buf[i]);
+                if (i + 3 < n && buf[i] == 13 && buf[i + 1] == 10 && buf[i + 2] == 13 && buf[i + 3] == 10) headEnd = head.Count;
+            }
+            else body.Add(buf[i]);
+        }
+        if (body.Count >= count) break;
+    }
+    var headText = Encoding.ASCII.GetString(head.ToArray());
+    var status = headText.Split('\r')[0].Trim();
+    var md5 = Convert.ToHexString(System.Security.Cryptography.MD5.HashData(body.ToArray())).ToLowerInvariant();
+    var first16 = Convert.ToHexString(body.Take(16).ToArray()).ToLowerInvariant();
+    return (status, md5, first16, body.Count);
 }
 
 async Task BenchAsync(string url, string tag)

@@ -19,6 +19,8 @@ public sealed class QemuHostRuntime : IDisposable
 {
     public string RuntimeDir { get; }
     public int MediaPort { get; }
+    /// <summary>本实例使用的 initrd 文件名（多实例场景：下载引擎用独立控制口的 pkg_initrd_dl.gz）</summary>
+    public string InitrdName { get; }
     public string ExePath => Path.Combine(RuntimeDir, "qemu-system-aarch64.exe");
     public string ConsoleLogPath { get; }
 
@@ -28,23 +30,27 @@ public sealed class QemuHostRuntime : IDisposable
     private StreamWriter? _fileLog;
     private int _filtered;
 
-    public QemuHostRuntime(string runtimeDir, int mediaPort, Action<string>? log = null)
+    /// <param name="initrdName">initrd 文件名；多实例（如下载专用引擎）传独立控制口的第二份 initrd。</param>
+    /// <param name="consoleLogTag">控制台日志文件名后缀（多实例避免互相覆盖）。</param>
+    public QemuHostRuntime(string runtimeDir, int mediaPort, Action<string>? log = null,
+        string initrdName = "pkg_initrd.gz", string consoleLogTag = "")
     {
         RuntimeDir = runtimeDir;
         MediaPort = mediaPort;
+        InitrdName = initrdName;
         _log = log;
         // Debug/Release 隔离（见 AppPaths）
-        ConsoleLogPath = AppPaths.LocalOf("qemu-console.log");
+        ConsoleLogPath = AppPaths.LocalOf($"qemu-console{consoleLogTag}.log");
     }
 
     /// <summary>运行时文件是否齐全（缺一件就视为未部署，引擎判未就绪、静默回落）。</summary>
-    public bool IsRuntimePresent => IsPresent(RuntimeDir);
+    public bool IsRuntimePresent => IsPresent(RuntimeDir, InitrdName);
 
     /// <summary>给定目录是否是一套完整的运行时（扁平布局）。</summary>
-    public static bool IsPresent(string runtimeDir) =>
+    public static bool IsPresent(string runtimeDir, string initrdName = "pkg_initrd.gz") =>
         File.Exists(Path.Combine(runtimeDir, "qemu-system-aarch64.exe"))
         && File.Exists(Path.Combine(runtimeDir, "pkg_kernel"))
-        && File.Exists(Path.Combine(runtimeDir, "pkg_initrd.gz"));
+        && File.Exists(Path.Combine(runtimeDir, initrdName));
 
     public bool IsRunning => _proc is { HasExited: false };
 
@@ -80,7 +86,7 @@ public sealed class QemuHostRuntime : IDisposable
                 "-M", "virt", "-cpu", "max", "-m", "5120", "-smp", "4", "-nographic",
                 "-L", "share",
                 "-kernel", "pkg_kernel",
-                "-initrd", "pkg_initrd.gz",
+                "-initrd", InitrdName,
                 "-append", "console=ttyAMA0 rdinit=/init loglevel=4",
                 "-netdev", $"user,id=n0,hostfwd=tcp:127.0.0.1:{MediaPort}-:20080",
                 "-device", "virtio-net-pci,netdev=n0",

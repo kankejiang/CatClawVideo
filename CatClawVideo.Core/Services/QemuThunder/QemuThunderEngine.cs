@@ -24,6 +24,7 @@ namespace CatClawVideo.Core.Services.QemuThunder;
 public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
 {
     /// <summary>控制口：烧死在 initrd 里（guest 每秒回连宿主 10.0.2.2:18080），改不了。</summary>
+    /// <summary>默认控制口（多实例时各用各的，见构造参数）</summary>
     public const int CtrlPort = 18080;
 
     /// <summary>媒体口首选值（实际会在被占时向后探测空闲端口）。</summary>
@@ -39,6 +40,10 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
 
     private readonly string _runtimeDir;
     private readonly Action<string>? _log;
+    /// <summary>本实例的控制口（多实例场景：下载引擎用 18081，配套 pkg_initrd_dl.gz）</summary>
+    private readonly int _ctrlPort;
+    /// <summary>本实例的 initrd 文件名与控制台日志标签（多实例隔离）</summary>
+    private readonly string _initrdName, _consoleTag;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(30) };
     private readonly Timer _idleTimer;
@@ -46,7 +51,7 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
 
     private QemuHostRuntime? _runtime;
     private QemuControlServer? _server;
-    private int _mediaPort = PreferredMediaPort;
+    private int _mediaPort;
     private Session? _session;
     private QemuStreamProxy? _streamProxy;
     private DateTime _lastActiveUtc = DateTime.UtcNow;
@@ -60,10 +65,18 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
     /// 同时下载同一部种子抢带宽（实测引发卡顿掉帧）。命中历史直接复用，彻底绕开重复建任务。</summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Session> _history = new(StringComparer.Ordinal);
 
-    public QemuThunderEngine(string runtimeDir, Action<string>? log = null)
+    /// <summary>引擎实例：同 runtime 可跑多个（播放/下载各一），靠控制口/initrd/媒体口/日志名隔离。
+    /// 各实例的 VM 懒启动互不干扰 → 「边下边播」天然成立（下载 VM 与播放 VM 并行）。</summary>
+    public QemuThunderEngine(string runtimeDir, Action<string>? log = null,
+        int ctrlPort = 18080, int mediaPortBase = PreferredMediaPort,
+        string initrdName = "pkg_initrd.gz", string consoleTag = "")
     {
         _runtimeDir = runtimeDir;
         _log = log;
+        _ctrlPort = ctrlPort;
+        _mediaPort = mediaPortBase;
+        _initrdName = initrdName;
+        _consoleTag = consoleTag;
         _idleTimer = new Timer(_ => IdleCheck(), null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
         _watchdog = new Timer(_ => WatchdogTick(), null, TimeSpan.FromSeconds(15), TimeSpan.FromSeconds(15));
         AppDomain.CurrentDomain.ProcessExit += (_, _) => Dispose();
@@ -72,7 +85,7 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
     public string Name => "迅雷(QEMU)";
 
     /// <summary>运行时文件已部署即算「就绪」；VM 懒启动发生在首次任务。</summary>
-    public bool IsReady => QemuHostRuntime.IsPresent(_runtimeDir);
+    public bool IsReady => QemuHostRuntime.IsPresent(_runtimeDir, _initrdName);
 
     // ═══════════ IPreferredMagnetEngine ═══════════
 
@@ -257,8 +270,7 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
                 : Uri.UnescapeDataString(Uri.UnescapeDataString(s.TorrentUrlPath));
             _server!.SetCommand($"DL {s.DLTorrentPath}|{s.Dir}|{pick.Name}|{pick.Index}|{exclude}");
             _lastActiveUtc = DateTime.UtcNow;
-
-            // 等 guest 回报 st=2（SUCCESS）。期间 LastDone/LastTotal 即文件进度。
+            LastDirectMediaUrl = MediaUrl(SynthesizeUrlPath(s.Dir + "/" + pick.Name));   // 下载文件的媒体口地址（调试/seektest 用）
             var deadline = DateTime.UtcNow + TimeSpan.FromMinutes(180);
             while (!ct.IsCancellationRequested && !s.Cancelled && _session == s && s.LastSt != 2)
             {
@@ -394,7 +406,7 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
         {
             try
             {
-                _server = new QemuControlServer(CtrlPort);
+                _server = new QemuControlServer(_ctrlPort);
                 _server.ReportReceived += OnReport;
                 _server.Log += Log;
                 _server.Start();
@@ -410,8 +422,8 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
         if (_runtime is null || !_runtime.IsRunning)
         {
             _runtime?.Dispose();
-            _mediaPort = PickFreePort(PreferredMediaPort);
-            _runtime = new QemuHostRuntime(_runtimeDir, _mediaPort, Log);
+            _mediaPort = PickFreePort(_mediaPort);
+            _runtime = new QemuHostRuntime(_runtimeDir, _mediaPort, Log, _initrdName, _consoleTag);
             _server.ResetFirstPoll();
             if (!await _runtime.StartAsync(ct).ConfigureAwait(false)) return false;
 
