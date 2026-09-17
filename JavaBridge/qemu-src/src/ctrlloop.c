@@ -217,20 +217,27 @@ static void start_dl(const char *torrentPath, const char *dir, const char *relPa
         if (stopTask) {
             int sr = (int)stopTask(env, (jobject)thiz, (jlong)g_task_id);
             printf("[ctrl]   stopTask(%ld) → %d（9000=成功；9104/9119=任务不存在/未运行）\n", g_task_id, sr);
-            if (g_eng.sdk) {   // 引擎内部索引可能随任务一起被清，重建一遍保险（手机端也是每次先取）
-                typedef jint (*fn_tinfo)(JNIEnv *, jobject, jstring, jobject);
-                fn_tinfo getTorrentInfo = (fn_tinfo)dlsym((void *)g_eng.sdk,
-                                           "Java_com_xunlei_downloadlib_XLLoader_getTorrentInfo");
+            // ★ 引擎清理任务句柄是**异步**的：stopTask 返回 9000 后立即重建仍撞 9128
+            //   （2026-09-17 实测：127ms 后重建失败 → 会话死亡 → 「迅雷无法解析该磁力链接」）。
+            //   退避重试：0.5s / 1.5s / 3s / 3s，共 4 次；每次重建前重取 getTorrentInfo（对齐手机端）。
+            typedef jint (*fn_tinfo)(JNIEnv *, jobject, jstring, jobject);
+            fn_tinfo getTorrentInfo = (fn_tinfo)dlsym((void *)g_eng.sdk,
+                                                       "Java_com_xunlei_downloadlib_XLLoader_getTorrentInfo");
+            jint r2 = 0; long id2 = -1;
+            for (int attempt = 0; attempt < 4 && (r2 != 9000 || id2 <= 0); attempt++) {
+                long us = attempt == 0 ? 500000L : (attempt == 1 ? 1500000L : 3000000L);
+                printf("[ctrl]   等待引擎清理任务句柄 %ldms 后重建（第 %d 次）\n", us / 1000, attempt + 1);
+                usleep((useconds_t)us);
                 if (getTorrentInfo) {
                     JObj *tinfo = new_obj("com/xunlei/downloadlib/parameter/TorrentInfo");
                     printf("[ctrl]   getTorrentInfo 重取 → %d\n",
                            (int)getTorrentInfo(env, (jobject)thiz, (jstring)torrentPath, (jobject)tinfo));
                 }
+                r2 = ((fn_bttask)g_eng.createBtTask)(env, thiz, (jstring)torrentPath, (jstring)dir,
+                                                     3, 1, ++s_seq, (jobject)tid);
+                id2 = obj_get_long(tid, "mTaskId");
+                printf("[ctrl]   重试建下载任务(BT) 返回 %d，id=%ld seq=%d\n", (int)r2, id2, s_seq);
             }
-            jint r2 = ((fn_bttask)g_eng.createBtTask)(env, thiz, (jstring)torrentPath, (jstring)dir,
-                                                      3, 1, ++s_seq, (jobject)tid);
-            long id2 = obj_get_long(tid, "mTaskId");
-            printf("[ctrl]   重试建下载任务(BT) 返回 %d，id=%ld seq=%d\n", (int)r2, id2, s_seq);
             if (r2 == 9000 && id2 > 0) { r = r2; id = id2; }
         }
     }
