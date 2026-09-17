@@ -228,12 +228,18 @@ public sealed class QemuStreamProxy : IDisposable
                 lock (_sync) _upstream = sock;
                 try
                 {
-                    // ★ 请求区间至少 256KB（即使逼近/越过文件尾也向越界方向要满 256KB）：
-                    //   引擎对未下载区间的「按需供数」靠持续的分片级读触发（rangetest 实测：
-                    //   读 407MB/引擎仅下 88MB，206 真数据 0.3s 返回），而单发 1.2KB 的
-                    //   尾部小请求（如 Cues）不会触发——按需调度以读得「够多」为前提。
-                    //   越界部分引擎按 piece 对齐取数后按实有数据应答（206 截断）。
-                    var to = Math.Min(from + SliceBytes - 1, Math.Max(_totalSize - 1, from + 256 * 1024 - 1));
+                    // ★ 请求区间至少 256KB：引擎对未下载区间的「按需供数」靠分片级读触发
+                    //   （rangetest 实测：读 407MB/引擎仅下 88MB，206 真数据 0.3s 返回；
+                    //   尾部 256KB 同样可用），而单发 1.2KB 的尾部小请求（如 Cues）不触发。
+                    //   ⚠ 引擎拒绝越界 Range（实测 to 越过文件尾即失败）——尾部小 slice 改为
+                    //   「向后扩展」：from 前移至覆盖满 256KB，前移段与缓存重叠的部分读后丢弃。
+                    var to = Math.Min(from + SliceBytes - 1, _totalSize - 1);
+                    long overlapSkip = 0;
+                    if (to - from + 1 < 256 * 1024 && from > 0)
+                    {
+                        overlapSkip = Math.Min(from, 256 * 1024 - (to - from + 1));
+                        from -= overlapSkip;
+                    }
                     var req = $"GET {_path} HTTP/1.0\r\nHost: 127.0.0.1:{_mediaPort}\r\nRange: bytes={from}-{to}\r\n\r\n";
                     sock.Send(Encoding.ASCII.GetBytes(req));
 
@@ -276,15 +282,42 @@ public sealed class QemuStreamProxy : IDisposable
                     }
                     consecutiveBad = 0;
 
-                    long sliceWant = to - from + 1;
+                    var overlapSkipTotal = overlapSkip;
+                    long sliceWant = to - from + 1 - overlapSkipTotal;   // 需要新入缓存的字节数（扣除向后扩展的重叠段）
                     long got = 0;
                     var extra = head.Count - (hdrEnd + 4);
                     if (extra > 0)
                     {
-                        if (!Append(epoch, head.ToArray(), hdrEnd + 4, (int)extra)) abandoned = true;
-                        else got = extra;
+                        // 向后扩展产生的重叠段：extra 的前 overlapSkip 部分与缓存重复，跳过不入缓存
+                        var exOff = hdrEnd + 4;
+                        var exLen = (int)extra;
+                        if (overlapSkipTotal > 0)
+                        {
+                            var drop = (int)Math.Min(exLen, overlapSkipTotal);
+                            exOff += drop; exLen -= drop;
+                        }
+                        if (exLen > 0)
+                        {
+                            if (!Append(epoch, head.ToArray(), exOff, exLen)) abandoned = true;
+                            got = exLen;
+                        }
                     }
                     Interlocked.Add(ref _upstreamTotal, Math.Max(0, extra));
+
+                    if (overlapSkipTotal > 0 && !abandoned)
+                    {
+                        // 流上剩余的与缓存重叠字节：读丢（读动作本身用于触发引擎按需供数）
+                        var discard = new byte[BufSize];
+                        var left = overlapSkipTotal - Math.Max(0, extra);
+                        while (left > 0 && !_stopped && !abandoned)
+                        {
+                            if (!sock.Poll(1_000_000, SelectMode.SelectRead)) break;
+                            var n = sock.Receive(discard);
+                            if (n <= 0) { abandoned = true; break; }
+                            Interlocked.Add(ref _upstreamTotal, n);
+                            left -= n;
+                        }
+                    }
 
                     if (status.Contains(" 200") && from > 0 && !abandoned)
                     {
@@ -329,7 +362,8 @@ public sealed class QemuStreamProxy : IDisposable
 
                     lock (_sync)
                     {
-                        if (!abandoned && epoch == _epoch && from + got >= _totalSize) _upstreamEof = true;
+                        // EOF 判定：请求起点 + 向后扩展重叠段 + 已入缓存字节 覆盖到文件尾
+                        if (!abandoned && epoch == _epoch && from + overlapSkipTotal + got >= _totalSize) _upstreamEof = true;
                     }
                     consecutiveShort = (!abandoned && got < sliceWant) ? consecutiveShort + 1 : 0;
                 }

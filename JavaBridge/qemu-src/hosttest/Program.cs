@@ -140,17 +140,18 @@ if (mode == "rangetest")
     if (string.IsNullOrEmpty(mediaUrl)) { Log("✗ 拿不到媒体口地址"); return 8; }
 
     var off50 = (long)(dTotal * 0.5);
-    Log($"  引擎已下 {dDone / 1048576.0:F0}MB；请求 0 与 {off50 / 1048576.0:F0}MB 各 256KB");
+    var offTail = Math.Max(0, dTotal - 300 * 1024);   // 尾部 300KB 处（覆盖 Cues 位置）
+    Log($"  引擎已下 {dDone / 1048576.0:F0}MB；请求 0 / {off50 / 1048576.0:F0}MB / 尾部{offTail / 1048576.0:F0}MB 各 256KB");
     var (sA, hA, fA, bA) = await RawGetHashed(mediaUrl, 0, 262144);
     Log($"  读 0MB    : HTTP={sA} 前16字节={fA} md5={hA[..8]} bytes={bA}");
     var (sB, hB, fB, bB) = await RawGetHashed(mediaUrl, off50, 262144);
     Log($"  读 50%    : HTTP={sB} 前16字节={fB} md5={hB[..8]} bytes={bB}");
-    if (sB.Contains("206") && hA != hB)
-        Log("🎉 HTTP 206 且内容不同 → 引擎对未下载区间【真供数】（附加源/按需拉取）→ seek 优先可实现");
-    else if (sB.Contains("206") && hA == hB)
-        Log("⚠ 206 但内容相同 → 引擎忽略 Range 从 0 供数（假 206）");
+    var (sC, hC, fC, bC) = await RawGetHashed(mediaUrl, offTail, 262144);
+    Log($"  读 尾部   : HTTP={sC} 前16字节={fC} md5={hC[..8]} bytes={bC}");
+    if (sC.Contains("206") && bC > 100 * 1024)
+        Log("🎉 尾部按需供数【可用】→ Cues 可获取 → 真 seek 可实现");
     else
-        Log($"⚠ 状态 {sB.Trim()} → 引擎不按 Range 供数（可能 200 从头或拒绝）");
+        Log("⚠ 尾部按需供数不可用（最后 piece 跨界或无源）→ seek 仍受限于顺序下载");
     return 0;
 }
 
