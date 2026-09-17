@@ -41,6 +41,12 @@ public sealed class QemuStreamProxy : IDisposable
     private long _upstreamTotal;   // 上游累计收到的字节数（看门狗判断「断粮」用）
     private bool _preflightActive; // 预等待进行中（同窗口的其他请求排队等它，禁止 Recenter 乒乓）
     private long _preflightTarget;
+    private readonly string? _cacheDir;   // 磁盘缓存目录（null = 关闭）：{btcache}/{btih}/{fileIndex}/
+    // 磁盘缓存攒写：分块**整块落盘**（StreamCache 以「长度=期望」判完整，半块不落盘防稀疏洞）。
+    // pending 是当前未满 4MB 块的攒写缓冲；只有上游线程 Feed，Recenter/KickUpstream 弃置（均持 _sync）。
+    private readonly byte[] _diskPending = new byte[StreamCache.ChunkSize];
+    private long _diskPendingStart;      // pending[0] 对应的文件绝对偏移（总是块界）
+    private int _diskPendingLen;
     private volatile bool _stopped;
 
     /// <summary>上游累计收到的字节数（引擎看门狗：两个采样点无增长 = 上游断粮）。</summary>
@@ -79,13 +85,15 @@ public sealed class QemuStreamProxy : IDisposable
     /// <summary>播放器应使用的地址（127.0.0.1 随机端口）。</summary>
     public string Url { get; private set; } = "";
 
-    public QemuStreamProxy(int mediaPort, string path, long totalSize, string contentType, Action<string>? log = null)
+    public QemuStreamProxy(int mediaPort, string path, long totalSize, string contentType, Action<string>? log = null,
+        string? cacheDir = null)
     {
         _mediaPort = mediaPort;
         _path = path;
         _totalSize = Math.Max(totalSize, 1);
         _contentType = contentType;
         _log = log;
+        _cacheDir = cacheDir;
     }
 
     public void Start()
@@ -121,19 +129,23 @@ public sealed class QemuStreamProxy : IDisposable
         }
     }
 
-    /// <summary>上游数据入缓冲；epoch 不一致（已被重定位）返回 false = 调用方应丢弃本切片。</summary>
+    /// <summary>上游数据入缓冲；epoch 不一致（已被重定位）返回 false = 调用方应丢弃本切片。
+    /// 同时写穿磁盘缓存（_cacheDir 非 null 时）——落盘失败不影响播放，只影响下次点播速度。</summary>
     private bool Append(long epoch, byte[] data, int offset, int count)
     {
         if (count <= 0) return true;
+        long absPos;
         lock (_sync)
         {
             if (epoch != _epoch) return false;
+            absPos = _base + _len;
             var copy = new byte[count];
             Buffer.BlockCopy(data, offset, copy, 0, count);
             _chunks.Add(copy);
             _len += count;
-            return true;
         }
+        if (_cacheDir is not null) DiskFeed(absPos, data, offset, count);   // 锁外落盘（4MB 写 ~10ms，别挡读者）
+        return true;
     }
 
     /// <summary>按最慢读者回收已消费的前缀（保持 KeepBackBytes 余量）。</summary>
@@ -162,13 +174,20 @@ public sealed class QemuStreamProxy : IDisposable
             _len = 0;
             _epoch++;
             _upstreamEof = false;
+            _diskPendingLen = 0;               // 磁盘攒写同步弃置（新区间与半块不连续）
             try { _upstream?.Close(); } catch { }   // 打断正在进行的上游读取
             moved = true;
         }
         if (moved)
         {
-            _log?.Invoke($"[proxy] 重定位 → {Math.Max(0, newBase) / 1048576.0:F1}MB（{why}）");
-            try { OnRelocate?.Invoke(); } catch { }   // 宿主可借此 KICK 引擎（区间优先下载）
+            // 磁盘已覆盖该块（重看/回跳）：数据可直接秒供，不必 KICK 引擎预取（否则引擎白白重下）
+            var diskCovered = _cacheDir is not null &&
+                StreamCache.ChunkComplete(_cacheDir, _totalSize, Math.Max(0, newBase) / StreamCache.ChunkSize);
+            _log?.Invoke($"[proxy] 重定位 → {Math.Max(0, newBase) / 1048576.0:F1}MB（{why}{(diskCovered ? "，磁盘已覆盖" : "")}）");
+            if (!diskCovered)
+            {
+                try { OnRelocate?.Invoke(); } catch { }   // 宿主可借此 KICK 引擎（区间优先下载）
+            }
         }
     }
 
@@ -181,6 +200,7 @@ public sealed class QemuStreamProxy : IDisposable
         {
             _epoch++;
             _upstreamEof = false;
+            _diskPendingLen = 0;   // 上游打断：磁盘攒写半块弃置（后续重新拉的数据重攒）
             try { _upstream?.Close(); } catch { }
             _log?.Invoke("[proxy] 任务恢复：打断上游连接，等待重连续流");
         }
@@ -194,6 +214,99 @@ public sealed class QemuStreamProxy : IDisposable
     private void ExitRead(Req r) { lock (_sync) _requests.Remove(r); }
 
     private void UpdatePos(Req r, long pos) { lock (_sync) r.Pos = pos; }
+
+    // ═══════════ 磁盘缓存（分块整块落盘；重看/换集秒供，2026-09-17 用户要求）═══════════
+
+    /// <summary>向磁盘缓存喂入连续数据流（绝对偏移单调前进）。攒满一个 4MB 分块即整块落盘；
+    /// 不连续（重定位换了区间）或回退的数据弃置当前半块——半块永不落盘，保证「块文件长度=完整数据」。</summary>
+    private void DiskFeed(long abs, byte[] data, int offset, int count)
+    {
+        if (_cacheDir is null || count <= 0) return;
+        var done = 0;
+        while (done < count)
+        {
+            long pStart; int pLen;
+            lock (_sync) { pStart = _diskPendingStart; pLen = _diskPendingLen; }
+
+            if (pLen > 0 && abs + done > pStart + pLen) { DiscardDiskPending(); continue; }   // 跳变：半块弃置重对齐
+            if (pLen > 0 && abs + done < pStart + pLen) break;                                // 回退重叠：早已写过
+
+            if (pLen == 0)
+            {
+                var rem = (int)((abs + done) % StreamCache.ChunkSize);
+                if (rem != 0)
+                {
+                    // 块界之前的零头不缓存（否则块文件带稀疏洞）——只影响缓存覆盖率，不影响正确性
+                    done += Math.Min(count - done, StreamCache.ChunkSize - rem);
+                    continue;
+                }
+                lock (_sync) _diskPendingStart = abs + done;   // 从块界起攒
+            }
+
+            var take = (int)Math.Min(count - done, StreamCache.ChunkSize - pLen);
+            lock (_sync)
+            {
+                Buffer.BlockCopy(data, offset + done, _diskPending, pLen, take);
+                _diskPendingLen = pLen + take;
+            }
+            done += take;
+            if (pLen + take == StreamCache.ChunkSize) FlushDiskChunk();   // 攒满整块 → 落盘
+        }
+    }
+
+    /// <summary>整块落盘（异步：4MB 写盘 ~10ms，别挡上游续拉；快照复用 pending 不阻塞后续喂入）。</summary>
+    private void FlushDiskChunk()
+    {
+        long chunkIndex; byte[] snapshot;
+        lock (_sync)
+        {
+            if (_diskPendingLen != StreamCache.ChunkSize) return;
+            chunkIndex = _diskPendingStart / StreamCache.ChunkSize;
+            snapshot = new byte[StreamCache.ChunkSize];
+            Buffer.BlockCopy(_diskPending, 0, snapshot, 0, StreamCache.ChunkSize);
+            _diskPendingLen = 0;
+        }
+        var cd = _cacheDir!;
+        Task.Run(() => StreamCache.WriteWholeChunk(cd, chunkIndex, snapshot, StreamCache.ChunkSize));
+    }
+
+    /// <summary>文件尾的不足 4MB 半块落盘（EOF 时调用）——尾块含 Cues，重看秒开的关键。</summary>
+    private void FlushDiskPartial()
+    {
+        long chunkIndex; byte[] snapshot; int len;
+        lock (_sync)
+        {
+            if (_diskPendingLen == 0) return;
+            chunkIndex = _diskPendingStart / StreamCache.ChunkSize;
+            len = _diskPendingLen;
+            snapshot = new byte[len];
+            Buffer.BlockCopy(_diskPending, 0, snapshot, 0, len);
+            _diskPendingLen = 0;
+        }
+        var cd = _cacheDir!;
+        Task.Run(() => StreamCache.WriteWholeChunk(cd, chunkIndex, snapshot, len));
+    }
+
+    private void DiscardDiskPending() { lock (_sync) _diskPendingLen = 0; }
+
+    /// <summary>从磁盘缓存读 <c>[pos, pos+count)</c>：命中连续完整块则填充 dest，遇未缓存块止步。</summary>
+    private int ReadDisk(long pos, byte[] dest, int count)
+    {
+        if (_cacheDir is null) return 0;
+        var done = 0;
+        while (done < count)
+        {
+            var abs = pos + done;
+            var ci = abs / StreamCache.ChunkSize;
+            if (!StreamCache.ChunkComplete(_cacheDir, _totalSize, ci)) break;
+            var within = (int)(abs - ci * StreamCache.ChunkSize);
+            var take = (int)Math.Min(count - done, StreamCache.ChunkSize - within);
+            var n = StreamCache.ReadChunkData(_cacheDir, ci, within, dest, done, take);
+            if (n < take) { done += Math.Max(0, n); break; }   // 读异常/短读：止步，下次重试
+            done += n;
+        }
+        return done;
+    }
 
     // ═══════════ 上游：单连接顺序续拉 ═══════════
 
@@ -213,10 +326,23 @@ public sealed class QemuStreamProxy : IDisposable
             }
 
             if (slowest < 0) { await Task.Delay(100).ConfigureAwait(false); continue; }          // 无读者：不预读
+            // 读者已推进到窗口前沿 64MB 之外（磁盘缓存供数 / 快速拖动）：追窗再拉，
+            // 避免上游从旧前沿顺序狂拉读者早已消费的数据（重看场景 = 引擎白白重下整文件）
+            if (slowest > baseOff + len + CapBytes)
+            {
+                Recenter(slowest - KeepBackBytes, "读者已由磁盘供数，追窗");
+                await Task.Delay(50).ConfigureAwait(false);
+                continue;
+            }
             var ahead = (baseOff + len) - slowest;
             if (ahead >= CapBytes) { Trim(slowest); await Task.Delay(100).ConfigureAwait(false); continue; }   // 缓冲够前：反压
             if (UpstreamEofLocked()) { await Task.Delay(100).ConfigureAwait(false); continue; }
-            if (from >= _totalSize) { lock (_sync) _upstreamEof = true; continue; }
+            if (from >= _totalSize)
+            {
+                lock (_sync) _upstreamEof = true;
+                FlushDiskPartial();   // 文件尾半块落盘（含 Cues，重看秒开）
+                continue;
+            }
             if (consecutiveShort > 3) { await Task.Delay(500).ConfigureAwait(false); consecutiveShort = 0; }
 
             // 有读者在缓存窗口以下的位置（被重定位甩下）时也会走到这——它们会自行退出，无需特殊处理
@@ -288,12 +414,15 @@ public sealed class QemuStreamProxy : IDisposable
                     var extra = head.Count - (hdrEnd + 4);
                     if (extra > 0)
                     {
-                        // 向后扩展产生的重叠段：extra 的前 overlapSkip 部分与缓存重复，跳过不入缓存
+                        // 向后扩展产生的重叠段：extra 的前 overlapSkip 部分与缓存重复，不入内存窗。
+                        // 但它是真实文件数据（206 的 [from, from+drop)）→ 喂磁盘缓存（绝对偏移写入，无洞问题：
+                        // DiskFeed 只从块界攒、半块不落盘）
                         var exOff = hdrEnd + 4;
                         var exLen = (int)extra;
                         if (overlapSkipTotal > 0)
                         {
                             var drop = (int)Math.Min(exLen, overlapSkipTotal);
+                            if (_cacheDir is not null) DiskFeed(from, head.ToArray(), exOff, drop);
                             exOff += drop; exLen -= drop;
                         }
                         if (exLen > 0)
@@ -306,15 +435,19 @@ public sealed class QemuStreamProxy : IDisposable
 
                     if (overlapSkipTotal > 0 && !abandoned)
                     {
-                        // 流上剩余的与缓存重叠字节：读丢（读动作本身用于触发引擎按需供数）
+                        // 流上剩余的与缓存重叠字节：读丢（读动作本身用于触发引擎按需供数）；
+                        // 磁盘缓存开启时同样喂盘（这些是 from+extra 起的真实文件数据）
                         var discard = new byte[BufSize];
                         var left = overlapSkipTotal - Math.Max(0, extra);
+                        long diskAbs = from + extra;
                         while (left > 0 && !_stopped && !abandoned)
                         {
                             if (!sock.Poll(1_000_000, SelectMode.SelectRead)) break;
                             var n = sock.Receive(discard);
                             if (n <= 0) { abandoned = true; break; }
                             Interlocked.Add(ref _upstreamTotal, n);
+                            if (_cacheDir is not null) DiskFeed(diskAbs, discard, 0, (int)Math.Min(n, left));
+                            diskAbs += n;
                             left -= n;
                         }
                     }
@@ -360,11 +493,14 @@ public sealed class QemuStreamProxy : IDisposable
                         got += n;
                     }
 
+                    var reachedEof = false;
                     lock (_sync)
                     {
                         // EOF 判定：请求起点 + 向后扩展重叠段 + 已入缓存字节 覆盖到文件尾
-                        if (!abandoned && epoch == _epoch && from + overlapSkipTotal + got >= _totalSize) _upstreamEof = true;
+                        reachedEof = !abandoned && epoch == _epoch && from + overlapSkipTotal + got >= _totalSize;
+                        if (reachedEof) _upstreamEof = true;
                     }
+                    if (reachedEof) FlushDiskPartial();   // 尾部半块落盘（含 Cues）
                     consecutiveShort = (!abandoned && got < sliceWant) ? consecutiveShort + 1 : 0;
                 }
                 finally { lock (_sync) _upstream = null; }
@@ -442,7 +578,9 @@ public sealed class QemuStreamProxy : IDisposable
         if (last < first) last = first;
 
         // 请求可见性：验证「avio 层 seek 是否真的走到协议层」（Seekable 修复的证据链）
-        _log?.Invoke($"[proxy-req] {method} bytes={first}-{last}（窗口 [{_base / 1048576.0:F1}|{(_base + _len) / 1048576.0:F1}MB] 已供出 {_bytesServed / 1048576.0:F1}MB）");
+        var diskHit = _cacheDir is not null &&
+            StreamCache.ChunkComplete(_cacheDir, _totalSize, first / StreamCache.ChunkSize);
+        _log?.Invoke($"[proxy-req] {method} bytes={first}-{last}（窗口 [{_base / 1048576.0:F1}|{(_base + _len) / 1048576.0:F1}MB] 已供出 {_bytesServed / 1048576.0:F1}MB）{(diskHit ? "【磁盘命中】" : "")}");
 
         // ── 预等待：请求落在缓存前沿之外时（首开读 Cues / 拖进度条），先给引擎「按需下载该区间」
         //    的时间。引擎收到未下载区间的读请求会优先拉取对应分片（=「seek 到哪下到哪」的物理
@@ -451,13 +589,14 @@ public sealed class QemuStreamProxy : IDisposable
         //    Soft-seeking drain（顺序丢读整个未下载区间 = 卡死黑屏，实测 15:36 会话）。
         //    ⚠ 同一时刻只允许一个预等待窗口：并发请求（主打开 + Cues 探测）若各自 Recenter
         //    会乒乓清掉对方缓存 → 主流被截断（"File ended prematurely at pos 5812" 实测）。
+        //    ★ 磁盘已覆盖请求块（重看/换集回看）时完全绕过预等待：数据本地秒供，不打扰引擎。
         {
             long frontier;
             lock (_sync) frontier = _base + _len;
             var needWait = false;
-            lock (_sync)
+            if (first > frontier && !diskHit)
             {
-                if (first > frontier)
+                lock (_sync)
                 {
                     if (_preflightActive && _preflightTarget != first)
                     {
@@ -490,7 +629,7 @@ public sealed class QemuStreamProxy : IDisposable
                     return;
                 }
             }
-            else if (first > frontier)
+            else if (first > frontier && !diskHit)
             {
                 var isCuesProbe = _bytesServed < 32 * 1024 * 1024 && first > _totalSize / 4;
                 var budgetMs = isCuesProbe ? 20_000 : 45_000;   // Cues 在文件尾（几 MB），健康 swarm 1-3s 可达
@@ -553,9 +692,11 @@ public sealed class QemuStreamProxy : IDisposable
             {
                 long baseNow, frontierNow;
                 lock (_sync) { baseNow = _base; frontierNow = _base + _len; }
-                if (pos < baseNow) { _log?.Invoke("[proxy] 请求被重定位甩下，提前结束（播放器会重发）"); break; }
 
-                var n = ReadAt(pos, buf, (int)Math.Min(buf.Length, last - pos + 1));
+                var want = (int)Math.Min(buf.Length, last - pos + 1);
+                var n = ReadAt(pos, buf, want);
+                if (n <= 0 && _cacheDir is not null)
+                    n = ReadDisk(pos, buf, want);   // 磁盘缓存命中：绕过上游秒供（重看/换集回看秒开）
                 if (n > 0)
                 {
                     stallMs = 0;
@@ -565,6 +706,8 @@ public sealed class QemuStreamProxy : IDisposable
                     UpdatePos(rq, pos);
                     continue;
                 }
+                if (pos < baseNow) { _log?.Invoke("[proxy] 请求被重定位甩下，提前结束（播放器会重发）"); break; }
+
                 if (UpstreamEofLocked() && pos >= frontierNow) break;   // 正常短读（文件尾）
                 await Task.Delay(30).ConfigureAwait(false);
                 stallMs += 30;

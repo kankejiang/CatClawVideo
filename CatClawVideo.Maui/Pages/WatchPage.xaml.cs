@@ -141,10 +141,15 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         Player.StateChanged += (_, _) => MainThread.BeginInvokeOnMainThread(UpdatePlayIcon);
         // 自然播完 → 自动连播下一集。⚠ 提示不能用 ShowTipAsync（模态弹窗会卡住流程，
         // 用户点确定才换集——2026-09-17 用户实测反馈），静默 3s 后直接换，期间手动换集则放弃。
+        // ⚠ 换集/重开瞬间会收到旧流拆除的残留 MediaEnded（实测引发连环跳集）：
+        //   播放位置离片尾超过 15s 的 "ended" 一律忽略。
         Player.MediaEnded += (_, _) => MainThread.BeginInvokeOnMainThread(async () =>
         {
             _playing = false;
             UpdatePlayIcon();
+            if (Player.Duration > TimeSpan.Zero &&
+                Player.Position < Player.Duration - TimeSpan.FromSeconds(15))
+                return;   // 残留事件：位置远未到片尾
             if (_currentSourceIndex < 0 || _currentSourceIndex >= _sources.Count) return;
             var endedIndex = _currentEpisodeIndex;
             var next = endedIndex + 1;

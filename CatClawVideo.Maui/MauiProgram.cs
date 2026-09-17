@@ -80,6 +80,9 @@ public static class MauiProgram
         // 所以 ① 用 QEMU 承载原生跑；② 走官方网盘 API。
         var qemuThunder = new CatClawVideo.Core.Services.QemuThunder.QemuThunderEngine(
             Path.Combine(AppContext.BaseDirectory, "ThunderRuntime"), BtFileLog.Write);
+        // 磁力点播磁盘缓存（2026-09-17 用户要求）：播放数据 4MB 分块落盘、10GB LRU（5~15GB 可调），
+        // 重进/换集已看区间直接磁盘秒供，不再从头下载
+        qemuThunder.StreamCacheRoot = CatClawVideo.Core.AppPaths.Sub("btcache");
         CatClawVideo.Core.Interfaces.MagnetEngines.Thunder = new CatClawVideo.Core.Providers.ChainedMagnetEngine(
             qemuThunder, new CatClawVideo.Core.Providers.ThunderPanEngine());
         // 磁力下载也走同一个迅雷引擎（下载管理页的磁力任务：引擎独占下载 → 媒体口导出本机）

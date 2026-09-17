@@ -87,6 +87,13 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
     /// <summary>运行时文件已部署即算「就绪」；VM 懒启动发生在首次任务。</summary>
     public bool IsReady => QemuHostRuntime.IsPresent(_runtimeDir, _initrdName);
 
+    /// <summary>磁力点播磁盘缓存根目录（null = 关闭，默认关）。由宿主注入（AppPaths.Sub("btcache")）：
+    /// 播放数据 4MB 分块落盘，重看/换集回看直接磁盘秒供，不再依赖引擎 tmpfs（VM 重启即空）。</summary>
+    public string? StreamCacheRoot { get; set; }
+
+    /// <summary>磁盘缓存容量上限（LRU 超限自动删最旧分块），默认 10GB（用户要求 5~15GB 区间中值）。</summary>
+    public long StreamCacheCapBytes { get; set; } = StreamCache.DefaultCapBytes;
+
     // ═══════════ IPreferredMagnetEngine ═══════════
 
     public async Task<bool> EnsureReadyAsync()
@@ -379,8 +386,26 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
         old?.Dispose();
         try
         {
+            // 磁盘缓存（2026-09-17 用户要求 5~15GB LRU）：按 btih+文件索引分目录，
+            // 重看/换集回看直接磁盘秒供，不再依赖引擎 tmpfs（重启即空）
+            string? cacheDir = null;
+            if (StreamCacheRoot is not null)
+            {
+                try
+                {
+                    cacheDir = StreamCache.DirFor(StreamCacheRoot, ResolveInfoHashHex(s.Magnet), s.PickIndex);
+                    var root = StreamCacheRoot;
+                    var cap = StreamCacheCapBytes;
+                    _ = Task.Run(() => StreamCache.EnforceCap(root, cap, Log));   // 后台清理，不拖慢起播
+                }
+                catch (Exception ex)
+                {
+                    cacheDir = null;
+                    Log($"[缓存] 磁盘缓存目录初始化失败（本次会话不落盘）：{ex.Message}");
+                }
+            }
             var proxy = new QemuStreamProxy(_mediaPort, s.PlayUrlPath, s.PickSize,
-                QemuStreamProxy.ContentTypeFor(s.PickName), Log);
+                QemuStreamProxy.ContentTypeFor(s.PickName), Log, cacheDir);
             // seek 重定位 → KICK 引擎进入预取模式：让引擎优先下载 seek 目标区间
             //（「seek 到哪下到哪」，不重定位也发无害——引擎已按读位置供数）
             proxy.OnRelocate = () =>
