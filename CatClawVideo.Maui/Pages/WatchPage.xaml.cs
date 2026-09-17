@@ -139,21 +139,20 @@ public partial class WatchPage : ContentPage, IQueryAttributable
             }
         });
         Player.StateChanged += (_, _) => MainThread.BeginInvokeOnMainThread(UpdatePlayIcon);
-        // 自然播完 → 自动连播下一集（留 3s 让用户反应；期间手动换集/切源则放弃自动连播）
+        // 自然播完 → 自动连播下一集。⚠ 提示不能用 ShowTipAsync（模态弹窗会卡住流程，
+        // 用户点确定才换集——2026-09-17 用户实测反馈），静默 3s 后直接换，期间手动换集则放弃。
         Player.MediaEnded += (_, _) => MainThread.BeginInvokeOnMainThread(async () =>
         {
             _playing = false;
             UpdatePlayIcon();
             if (_currentSourceIndex < 0 || _currentSourceIndex >= _sources.Count) return;
-            var episodes = _sources[_currentSourceIndex].Episodes;
             var endedIndex = _currentEpisodeIndex;
             var next = endedIndex + 1;
-            if (next < 0 || next >= episodes.Count)
+            if (next < 0 || next >= _sources[_currentSourceIndex].Episodes.Count)
             {
                 try { await ShowTipAsync("已经是最后一集了"); } catch { }
                 return;
             }
-            try { await ShowTipAsync("本集播完，3 秒后自动播放下一集…"); } catch { }
             await Task.Delay(3000);
             if (_currentEpisodeIndex != endedIndex || _currentSourceIndex < 0 || _currentSourceIndex >= _sources.Count) return;
             SkipEpisode(1);
