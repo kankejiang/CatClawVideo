@@ -141,20 +141,12 @@ public partial class DownloadsPage : ContentView, ITabView
         }
     }
 
-    /// <summary>右上角 ＋ ：新建下载任务（支持 http/https 直链与 magnet: 磁力链接）</summary>
+    /// <summary>右上角 ＋ ：新建下载任务（支持 http/https 直链与 magnet: 磁力链接——磁力走迅雷引擎）</summary>
     private async void OnAddDownloadTapped(object? sender, EventArgs e)
     {
-        var url = await PromptAsync("新建下载", "输入下载地址\n支持：http/https 直链", "开始下载", "取消",
-            placeholder: "https://...", keyboard: Keyboard.Url);
+        var url = await PromptAsync("新建下载", "输入下载地址\n支持：http/https 直链 · magnet: 磁力（迅雷引擎）", "开始下载", "取消",
+            placeholder: "https://... 或 magnet:?xt=urn:btih:...", keyboard: Keyboard.Url);
         if (string.IsNullOrWhiteSpace(url)) return;
-
-        // 内置 BT 已移除：磁力链接不再进入下载队列（公共 BT 网络实测无速度）
-        if (url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase))
-        {
-            await AlertAsync("磁力下载已移除",
-                "内置 BT 引擎已移除。磁力请直接在播放页边下边播（走迅雷引擎），或把链接复制到迅雷客户端下载。", "知道了");
-            return;
-        }
 
         string? name = null;
         if (!url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase))

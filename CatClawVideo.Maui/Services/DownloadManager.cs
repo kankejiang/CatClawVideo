@@ -227,6 +227,8 @@ public class DownloadManager : IDisposable
         CatClawVideo.Core.AppPaths.Of("download_tasks.json");
 
     private readonly HttpClient _http;
+    /// <summary>迅雷磁力引擎（仅 Windows 注入；磁力下载=引擎独占下载+经媒体口导出本机）</summary>
+    private readonly CatClawVideo.Core.Services.QemuThunder.QemuThunderEngine? _thunder;
     /// <summary>排队任务等待"并发槽位空出"的通知信号</summary>
     private readonly SemaphoreSlim _slotWake = new(0);
     private readonly Dictionary<string, CancellationTokenSource> _ctsMap = new();
@@ -246,8 +248,9 @@ public class DownloadManager : IDisposable
     /// <summary>单个任务进度/状态变化时触发</summary>
     public event Action<DownloadTaskItem>? TaskUpdated;
 
-    public DownloadManager()
+    public DownloadManager(CatClawVideo.Core.Services.QemuThunder.QemuThunderEngine? thunderEngine = null)
     {
+        _thunder = thunderEngine;
         _http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
         _http.DefaultRequestHeaders.Add("User-Agent", "CatClawVideo/1.0");
         ConcurrentLimit = LoadConcurrentLimit();
@@ -317,18 +320,16 @@ public class DownloadManager : IDisposable
         return item;
     }
 
-    /// <summary>
-    /// 内置 BT 引擎已移除（公共 BT 网络实测无速度，见 docs/playback-latency-analysis.md）：
-    /// 历史遗留的磁力任务统一置为失败并给出指引，避免静默卡在"排队中"。
-    /// </summary>
-    private void MarkMagnetGone(DownloadTaskItem task)
+    /// <summary>新建磁力下载任务（Windows：迅雷引擎独占下载选中文件后经媒体口导出本机）。
+    /// 与播放共用同一个引擎 VM：下载期间起播会打断下载（以播放优先），任务可重试续传。</summary>
+    public DownloadTaskItem EnqueueMagnet(string magnet, string? fileName = null)
     {
-        UpdateTask(task, t =>
-        {
-            t.Status = DownloadStatus.Failed;
-            t.Error = "内置 BT 下载已移除：磁力请用播放器（迅雷引擎）边下边播，或复制链接到迅雷客户端";
-            t.SpeedText = "";
-        });
+        var name = SanitizeFileName(string.IsNullOrWhiteSpace(fileName)
+            ? DeriveMagnetName(magnet)
+            : fileName);
+        var item = CreateTask(magnet, name, "magnet");
+        _ = RunAsync(item);
+        return item;
     }
 
     private DownloadTaskItem CreateTask(string url, string fileName, string kind)
@@ -380,27 +381,24 @@ public class DownloadManager : IDisposable
         }
     }
 
-    /// <summary>继续任务（重新发起下载；BT 由引擎校验已下数据后续传）</summary>
+    /// <summary>继续任务（重新发起下载；磁力走迅雷引擎重建任务续传，HTTP 用 .part 断点续传）</summary>
     public void Resume(string id)
     {
         var task = Find(id);
-        // 磁力任务的 Queued 是"死状态"：它不走并发槽位队列，一旦进入且无人推回
-        // Downloading 就永远卡在"排队中"且三个操作按钮都不显示。
-        // 所以磁力任务允许从 Paused / Queued 两种状态继续（Queued 覆盖 App 重启后
-        // 从持久化恢复的任务——它们的管理器已不存在，必须走完整重跑）。
         if (task == null) return;
         if (task.Kind == "magnet")
         {
-            if (task.Status is not (DownloadStatus.Paused or DownloadStatus.Queued)) return;
-        }
-        else if (task.Status != DownloadStatus.Paused) return;
-
-        if (task.Kind == "magnet")
-        {
+            // 磁力任务的 Queued 是"死状态"：它不走并发槽位队列，一旦进入且无人推回
+            // Downloading 就永远卡在"排队中"且三个操作按钮都不显示。
+            // 所以磁力任务允许从 Paused / Queued 两种状态继续（Queued 覆盖 App 重启后
+            // 从持久化恢复的任务——它们的管理器已不存在，必须走完整重跑）。
+            if (task.Status is not (DownloadStatus.Paused or DownloadStatus.Queued or DownloadStatus.Failed)) return;
             UpdateTask(task, t => { t.Status = DownloadStatus.Queued; t.IsPaused = false; t.Error = ""; });
-            MarkMagnetGone(task);
+            _ = RunAsync(task);
             return;
         }
+        if (task.Status != DownloadStatus.Paused) return;
+
         UpdateTask(task, t =>
         {
             t.Status = DownloadStatus.Queued;
@@ -475,14 +473,13 @@ public class DownloadManager : IDisposable
         return fileError;
     }
 
-    /// <summary>失败任务重试 / HTTP 已完成任务重新下载（BT 已完成不重下，避免覆盖）</summary>
+    /// <summary>失败任务重试 / 已完成任务重新下载（磁力已完成的重新导出引擎侧文件，若 tmpfs 仍在）</summary>
     public void Retry(string id)
     {
         var task = Find(id);
         if (task == null || task.Status is not (DownloadStatus.Failed or DownloadStatus.Completed)) return;
         if (task.Status == DownloadStatus.Completed)
         {
-            if (task.Kind == "magnet") return;
             DeletePartFile(task);
             try { if (File.Exists(task.LocalPath)) File.Delete(task.LocalPath); } catch { }
         }
@@ -492,10 +489,7 @@ public class DownloadManager : IDisposable
             t.Error = "";
             t.DownloadedBytes = 0;
         });
-        if (task.Kind == "magnet")
-            MarkMagnetGone(task);
-        else
-            _ = RunAsync(task);
+        _ = RunAsync(task);
     }
 
     // ═══════════════════════════════════════════════════════
@@ -549,7 +543,10 @@ public class DownloadManager : IDisposable
             UpdateTask(task, t => { t.Status = DownloadStatus.Downloading; t.IsPaused = false; });
             try
             {
-                await DownloadFromUrlAsync(task, cts.Token).ConfigureAwait(false);
+                if (task.Kind == "magnet")
+                    await DownloadMagnetAsync(task, cts.Token).ConfigureAwait(false);
+                else
+                    await DownloadFromUrlAsync(task, cts.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -589,6 +586,57 @@ public class DownloadManager : IDisposable
     {
         lock (_lock) _active--;
         try { _slotWake.Release(1); } catch (SemaphoreFullException) { }
+    }
+
+    /// <summary>磁力下载（迅雷引擎）：引擎解析文件列表 → 选中文件（任务名匹配，否则最大视频）独占
+    /// 下载 → 完成后经媒体口导出到本机下载目录。进度/速度沿用任务卡片展示；
+    /// 与播放共用同一个 VM（单会话），播放优先——被打断的任务置失败，重试可从 .part 续传。</summary>
+    private async Task DownloadMagnetAsync(DownloadTaskItem task, CancellationToken ct)
+    {
+        var engine = _thunder;
+        if (engine is null || !engine.IsReady)
+        {
+            MarkFailed(task, "迅雷引擎不可用：磁力下载目前仅 Windows 版支持");
+            return;
+        }
+
+        long lastTick = 0, lastBytes = 0;
+        var ok = false;
+        try
+        {
+            ok = await engine.DownloadToFileAsync(
+                task.Url, task.Name,
+                destPathFor: pickName =>
+                {
+                    // 引擎解析出的真实文件名（含扩展名）回填任务，并去重
+                    var newPath = GetUniquePath(Path.Combine(DownloadFolderPath, SanitizeFileName(pickName)));
+                    UpdateTask(task, t => { t.Name = Path.GetFileName(newPath); t.LocalPath = newPath; });
+                    return newPath;
+                },
+                progress: (done, total) =>
+                {
+                    var now = Environment.TickCount64;
+                    string? speedText = null;
+                    if (lastTick != 0 && now - lastTick >= 500)
+                    {
+                        var bps = (long)((done - lastBytes) / Math.Max((now - lastTick) / 1000.0, 0.001));
+                        speedText = DownloadTaskItem.FormatBytes(bps) + "/s";
+                    }
+                    if (lastTick == 0 || now - lastTick >= 500) { lastTick = now; lastBytes = done; }
+                    UpdateTask(task, t => { t.TotalBytes = total; t.DownloadedBytes = done; if (speedText != null) t.SpeedText = speedText; });
+                },
+                ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { return; }
+
+        if (ok)
+        {
+            FinalizeDownload(task, task.LocalPath + ".part");
+        }
+        else if (!ct.IsCancellationRequested && task.Status == DownloadStatus.Downloading)
+        {
+            MarkFailed(task, "磁力下载未完成（引擎被播放占用、超时或无源；重试可从已下部分续传）");
+        }
     }
 
     /// <summary>HTTP 下载：先探测总大小，再流式写入临时文件。存在有效 .part 时优先用 Range 断点续传。</summary>
@@ -841,9 +889,6 @@ public class DownloadManager : IDisposable
                     IsPaused = status == DownloadStatus.Paused
                 };
                 Tasks.Add(item);
-
-                // 内置 BT 已移除：历史遗留的磁力任务直接标记为失败，避免卡在"排队中"
-                if (dto.Kind == "magnet") MarkMagnetGone(item);
             }
         }
         catch { }

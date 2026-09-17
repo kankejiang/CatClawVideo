@@ -66,6 +66,9 @@ public static class MauiProgram
             new CatClawVideo.Core.Services.JsRuntimeService(),
             cacheDir: CatClawVideo.Core.AppPaths.LocalSub("drpy2"),
             log: m => System.Diagnostics.Debug.WriteLine(m));
+        // 磁力下载引擎（Windows 下方赋值；Android 恒 null → 磁力下载任务提示不支持）
+        CatClawVideo.Core.Services.QemuThunder.QemuThunderEngine? magnetDownloadEngine = null;
+
 #if !ANDROID
 
         // PC「迅雷磁力播放」双引擎（链式：前者失败才试后者，全部失败回落内置 BT）：
@@ -79,6 +82,8 @@ public static class MauiProgram
             Path.Combine(AppContext.BaseDirectory, "ThunderRuntime"), BtFileLog.Write);
         CatClawVideo.Core.Interfaces.MagnetEngines.Thunder = new CatClawVideo.Core.Providers.ChainedMagnetEngine(
             qemuThunder, new CatClawVideo.Core.Providers.ThunderPanEngine());
+        // 磁力下载也走同一个迅雷引擎（下载管理页的磁力任务：引擎独占下载 → 媒体口导出本机）
+        magnetDownloadEngine = qemuThunder;
 #endif
 
         // TVBox 系爬虫（ProxyOrigin 等）会把播放地址拼成 http://127.0.0.1:<port>/proxy?...
@@ -189,8 +194,8 @@ public static class MauiProgram
                           $"桥目录={CatClawVideo.Core.Providers.JavaSpiderRuntime.FindBridgeDir() ?? "(未找到)"}");
 
 
-        // 下载管理器：HTTP 直链下载（内置 BT 已移除，磁力走播放页的迅雷引擎）
-        services.AddSingleton(sp => new DownloadManager());
+        // 下载管理器：HTTP 直链 + 磁力下载（Windows 注入迅雷引擎；Android 磁力暂不支持）
+        services.AddSingleton(sp => new DownloadManager(magnetDownloadEngine));
 
         // 平台嗅探器：Android WebView 拦截 / Windows WebView2 拦截（TVBox parse=1 页面解析）
 #if ANDROID

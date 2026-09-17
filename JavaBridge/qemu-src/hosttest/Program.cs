@@ -20,7 +20,7 @@ using System.Text;
 using CatClawVideo.Core.Services.QemuThunder;
 
 var argList = args.ToList();
-var mode = argList.Count > 0 && (argList[0] == "bench" || argList[0] == "proxy-bench") ? argList[0] : "";
+var mode = argList.Count > 0 && (argList[0] == "bench" || argList[0] == "proxy-bench" || argList[0] == "download") ? argList[0] : "";
 if (mode.Length > 0) argList.RemoveAt(0);
 
 var sw = Stopwatch.StartNew();
@@ -54,6 +54,35 @@ if (!QemuHostRuntime.IsPresent(runtimeDir)) return 1;
 
 using var engine = new QemuThunderEngine(runtimeDir, Log);
 Log($"引擎 IsReady={engine.IsReady}");
+
+// ═══ 下载模式：磁力 → 选中文件独占下载 → 媒体口导出本机 ═══
+if (mode == "download")
+{
+    var dest = Path.Combine(Path.GetTempPath(), "hosttest-dl-test.mkv");
+    try { if (File.Exists(dest)) File.Delete(dest); } catch { }
+    try { if (File.Exists(dest + ".part")) File.Delete(dest + ".part"); } catch { }
+    Log("══ 磁力下载模式：引擎独占下载 → 导出本机 ══");
+    var lastPct = -1;
+    var ok = await engine.DownloadToFileAsync(magnet, prefer,
+        destPathFor: pickName => dest,
+        progress: (done, total) =>
+        {
+            if (total <= 0) return;
+            var pct = (int)(done * 100 / total);
+            if (pct != lastPct && pct % 5 == 0) { lastPct = pct; Log($"  下载进度 {pct}%（{done / 1048576.0:F0}/{total / 1048576.0:F0}MB）"); }
+        },
+        ct: CancellationToken.None);
+    if (!ok) { Log("✗ 磁力下载失败"); return 5; }
+    if (File.Exists(dest + ".part")) File.Move(dest + ".part", dest);   // 引擎契约：写 .part，调用方改名
+    var fi = new FileInfo(dest);
+    Log($"✓ 下载完成：{dest}（{fi.Length / 1048576.0:F1}MB）");
+    // 抽验文件头：MKV EBML 魔数 1A 45 DF A3
+    var head = new byte[4];
+    await using (var fs = File.OpenRead(dest)) await fs.ReadExactlyAsync(head);
+    var magic = Convert.ToHexString(head).ToLowerInvariant();
+    Log(magic == "1a45dfa3" ? "🎉 文件头校验通过（MKV）" : $"⚠ 文件头异常：{magic}");
+    return magic == "1a45dfa3" ? 0 : 6;
+}
 
 Log("══ 阶段一：磁力 → 文件列表 ══");
 var files = await engine.ListFilesAsync(magnet, prefer);

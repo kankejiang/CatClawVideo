@@ -215,6 +215,138 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
     /// <summary>最近一次会话的**直连媒体口** URL（调试/基准用；播放器走的是缓存代理地址）。</summary>
     public string? LastDirectMediaUrl { get; private set; }
 
+    /// <summary>
+    /// 磁力下载：选中文件（<paramref name="preferName"/> 匹配，否则最大视频文件）由引擎独占下载，
+    /// 完成后经媒体口拉回宿主磁盘（写 <c>destPath+".part"</c>，支持断点续传）。
+    /// </summary>
+    /// <param name="destPathFor">由引擎解析出的真实文件名（含扩展名）→ 返回宿主保存全路径（调用方负责改名/去重/更新任务字段）。</param>
+    /// <param name="progress">(已下载字节, 总字节)——引擎下载阶段与导出阶段共用，约 1s/次回调。</param>
+    /// <returns>false = 失败/被取消（原因见日志）。</returns>
+    /// <remarks>
+    /// ⚠ 单 VM 单会话：本方法**不持锁等待**（setup 持 <see cref="_gate"/>，下载轮询在锁外），
+    /// 下载期间发起播放会重建任务（9128 自愈）把下载会话顶掉——此时本方法快速失败返回 false，
+    /// 以播放优先；调用方可择机重试（.part 已拉部分可续传）。
+    /// 引擎 tmpfs 是易失存储：导出完成前 VM 退出会丢数据，.part 之外的进度不作数。
+    /// </remarks>
+    public async Task<bool> DownloadToFileAsync(string magnet, string preferName,
+        Func<string, string> destPathFor, Action<long, long>? progress, CancellationToken ct)
+    {
+        if (!IsReady) { Log("磁力下载不可用：迅雷引擎运行时缺失"); return false; }
+
+        Session? s;
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (!await EnsureStartedLockedAsync(ct).ConfigureAwait(false)) return false;
+            s = await PrepareSessionLockedAsync(magnet, preferName, ct).ConfigureAwait(false);
+            if (s is null) return false;
+
+            var pick = SelectFile(s.Files, preferName);
+            var destPath = destPathFor(pick.Name);
+            Log($"磁力下载：选中 #{pick.Index} {pick.Name}（{pick.Size / 1048576.0:F1}MB）→ {destPath}");
+
+            // 独占下载：反选其余文件（引擎任务总量收敛为所选文件，进度即文件进度）。
+            // guest 反选参数最多 64 项（idxs[64]），超出时退化全选（st=2 = 整种子完成）。
+            var exclude = s.Files.Count <= 65
+                ? string.Join(",", s.Files.Where(f => f.Index != pick.Index).Select(f => f.Index))
+                : "";
+            s.PickIndex = pick.Index; s.PickName = pick.Name; s.PickSize = pick.Size;
+            s.DlSent = true; s.Played = false; s.PlayUrlPath = ""; s.LastError = null;
+            s.Others = exclude;
+            s.DLTorrentPath = s.TorrentRawPath.Length > 0 ? s.TorrentRawPath
+                : Uri.UnescapeDataString(Uri.UnescapeDataString(s.TorrentUrlPath));
+            _server!.SetCommand($"DL {s.DLTorrentPath}|{s.Dir}|{pick.Name}|{pick.Index}|{exclude}");
+            _lastActiveUtc = DateTime.UtcNow;
+
+            // 等 guest 回报 st=2（SUCCESS）。期间 LastDone/LastTotal 即文件进度。
+            var deadline = DateTime.UtcNow + TimeSpan.FromMinutes(180);
+            while (!ct.IsCancellationRequested && !s.Cancelled && _session == s && s.LastSt != 2)
+            {
+                if (s.LastSt == 3 || s.LastError is not null)
+                {
+                    Log($"磁力下载失败：{s.LastError ?? $"引擎状态 st={s.LastSt}"}");
+                    return false;
+                }
+                progress?.Invoke(s.LastDone, s.LastTotal > 0 ? s.LastTotal : pick.Size);
+                if (DateTime.UtcNow > deadline) { Log("磁力下载超时（180 分钟）"); return false; }
+                try { await Task.Delay(1000, ct).ConfigureAwait(false); }
+                catch (OperationCanceledException) { return false; }
+            }
+            if (s.Cancelled || _session != s)
+            {
+                Log("磁力下载中断：会话被播放/其他任务替换（以播放优先），稍后重试可续传");
+                return false;
+            }
+            Log("引擎侧下载完成（st=2），开始导出到本机");
+
+            var encoded = SynthesizeUrlPath(s.Dir + "/" + pick.Name);
+            return await PullToFileAsync(encoded, pick.Size, destPath, progress, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { return false; }
+        catch (Exception ex) { Log($"磁力下载异常：{ex.GetType().Name}: {ex.Message}"); return false; }
+        finally { _gate.Release(); }
+    }
+
+    /// <summary>经媒体口把引擎已就绪的文件拉回宿主磁盘（写 <c>destPath+".part"</c>，Range 断点续传，
+    /// 连接中断自动重试最多 5 次）。totalSize 为引擎侧文件大小。</summary>
+    private async Task<bool> PullToFileAsync(string encodedPath, long totalSize, string destPath,
+        Action<long, long>? progress, CancellationToken ct)
+    {
+        var partPath = destPath + ".part";
+        for (var attempt = 1; attempt <= 5; attempt++)
+        {
+            long start = 0;
+            try { if (File.Exists(partPath)) start = new FileInfo(partPath).Length; } catch { start = 0; }
+            if (totalSize > 0 && start >= totalSize) { Log("导出完成（.part 已齐）"); return true; }
+
+            try
+            {
+                using var req = new HttpRequestMessage(HttpMethod.Get, MediaUrl(encodedPath));
+                if (start > 0) req.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(start, null);
+                using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+                var code = (int)resp.StatusCode;
+                long total;
+                if (code == 206)
+                {
+                    total = resp.Content.Headers.ContentRange?.Length ?? totalSize;   // ContentRange.Length = 文件全长
+                }
+                else if (code == 200)
+                {
+                    start = 0;   // 引擎未按 Range 应答：从头拉
+                    total = resp.Content.Headers.ContentLength ?? totalSize;
+                }
+                else
+                {
+                    Log($"导出失败：HTTP {code}（第 {attempt}/5 次，2s 后重试）");
+                    await Task.Delay(2000, ct).ConfigureAwait(false);
+                    continue;
+                }
+
+                await using var src = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+                await using var dst = new FileStream(partPath, start > 0 ? FileMode.Append : FileMode.Create, FileAccess.Write);
+                var buf = new byte[262144];
+                long read = start;
+                int n;
+                while ((n = await src.ReadAsync(buf, ct).ConfigureAwait(false)) > 0)
+                {
+                    await dst.WriteAsync(buf, 0, n, ct).ConfigureAwait(false);
+                    read += n;
+                    progress?.Invoke(read, total);
+                }
+                if (total <= 0 || read >= total) { Log($"导出完成：{read / 1048576.0:F1}MB"); return true; }
+                Log($"导出中断于 {read}/{total}（第 {attempt}/5 次，续传重试）");
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                Log($"导出异常：{ex.GetType().Name}: {ex.Message}（第 {attempt}/5 次，续传重试）");
+            }
+            try { await Task.Delay(2000, ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { throw; }
+        }
+        return false;
+    }
+
     /// <summary>停止当前任务（保留 VM；空闲计时器过会儿会收掉它）。</summary>
     public void Stop()
     {
@@ -418,6 +550,7 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
                 // 注意 guest 只在状态变化时上报，死亡状态只到此一报——重试循环在恢复方法内部。
                 s.LastSt = r.St;
                 s.LastDone = r.Done;
+                s.LastTotal = r.Total;
                 if (r.St == 3 && r.Err != 0 && s.DlSent && !s.Cancelled && s.Played)
                 {
                     s.FailedErr = r.Err;
@@ -710,6 +843,7 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
         public int FailedErr;               // 最近一次任务死亡的错误码（日志用）
         public int LastSt;                  // 最近一次 status 的任务状态（1=运行 2=完成 3=失败）
         public long LastDone;               // 最近一次 status 的已下载字节数
+        public long LastTotal;              // 最近一次 status 的任务总字节数
     }
 
     public void Dispose()
