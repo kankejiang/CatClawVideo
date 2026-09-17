@@ -143,12 +143,14 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         // 用户点确定才换集——2026-09-17 用户实测反馈），静默 3s 后直接换，期间手动换集则放弃。
         // ⚠ 换集/重开瞬间会收到旧流拆除的残留 MediaEnded（实测引发连环跳集）：
         //   播放位置离片尾超过 15s 的 "ended" 一律忽略。
+        // ⚠ Duration 未知（≤0）也忽略：MP4 的 moov / MKV 的 Cues 在文件尾，起播探测拿不到时
+        //   FFmpeg frames:0 → 播放器报时长 0 → 刚挂上就 "ended"（进度条满格 + 秒跳下一集，实测）。
         Player.MediaEnded += (_, _) => MainThread.BeginInvokeOnMainThread(async () =>
         {
             _playing = false;
             UpdatePlayIcon();
-            if (Player.Duration > TimeSpan.Zero &&
-                Player.Position < Player.Duration - TimeSpan.FromSeconds(15))
+            if (Player.Duration <= TimeSpan.Zero) return;          // 时长未知：起播失败态，绝非自然播完
+            if (Player.Position < Player.Duration - TimeSpan.FromSeconds(15))
                 return;   // 残留事件：位置远未到片尾
             if (_currentSourceIndex < 0 || _currentSourceIndex >= _sources.Count) return;
             var endedIndex = _currentEpisodeIndex;

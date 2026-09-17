@@ -308,6 +308,140 @@ public sealed class QemuStreamProxy : IDisposable
         return done;
     }
 
+    private bool DiskCovers(long pos) =>
+        _cacheDir is not null && StreamCache.ChunkComplete(_cacheDir, _totalSize, pos / StreamCache.ChunkSize);
+
+    // ── 按需供数预取（2026-09-17）：预等待期间读者尚未 EnterRead，上游循环判「无读者」不拉数据
+    //    （slowest<0 → continue），引擎收不到任何读请求 → 按需供数无从触发 → 预等待纯等 20s → 416。
+    //    MP4 的 moov 在文件尾：416 = 拿不到 moov = frames:0 = Duration 未知 → 起播即 MediaEnded。
+    //    故预等待时必须**主动**对目标块发 ≥256KB 的 Range 读（触发引擎分片级按需供数），
+    //    数据攒整块落磁盘缓存，服务循环 ReadDisk 命中秒供。独立连接，与上游顺序拉互不干扰。──
+
+    private readonly object _prefetchSync = new();
+    private readonly HashSet<long> _prefetching = [];
+
+    /// <summary>请求落在缓存前沿之外时启动：对 pos 所在 4MB 块整块预取落盘（去重、异步）。</summary>
+    private void KickOnDemandPrefetch(long pos)
+    {
+        if (_cacheDir is null || _stopped) return;
+        var ci = pos / StreamCache.ChunkSize;
+        lock (_prefetchSync)
+        {
+            if (!_prefetching.Add(ci)) return;   // 已在拉
+        }
+        _ = Task.Run(() => PrefetchChunkAsync(ci));
+    }
+
+    private async Task PrefetchChunkAsync(long ci)
+    {
+        var cd = _cacheDir!;
+        try
+        {
+            if (StreamCache.ChunkComplete(cd, _totalSize, ci)) return;
+            var from = ci * StreamCache.ChunkSize;
+            var to = Math.Min(from + StreamCache.ChunkSize - 1, _totalSize - 1);
+            var want = (int)(to - from + 1);
+            // 尾块可能不足 256KB（引擎对 <256KB 的小请求不做按需供数）→ 向后扩展凑满，
+            // 扩展段与上游循环同思路：读后丢弃，不写入缓存数据
+            var ext = want < 256 * 1024 && from > 0 ? Math.Min(from, 256 * 1024 - want) : 0;
+            var from2 = from - ext;
+            var data = new byte[want];
+            var got = 0;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var consecutiveBad = 0;
+            while (got < want && !_stopped && sw.ElapsedMilliseconds < 90_000)
+            {
+                try
+                {
+                    using var sock = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+                    sock.Connect(IPAddress.Loopback, _mediaPort);
+                    // 首轮从 from2（含扩展段）；重试从 from+got（扩展段已消费过）
+                    var rangeStart = got == 0 ? from2 : from + got;
+                    var req = $"GET {_path} HTTP/1.0\r\nHost: 127.0.0.1:{_mediaPort}\r\nRange: bytes={rangeStart}-{to}\r\n\r\n";
+                    sock.Send(Encoding.ASCII.GetBytes(req));
+
+                    // 响应头（15s 等不到 = 引擎无该区间数据且挂着 → 断开退避重试）
+                    var head = new List<byte>(4096);
+                    var rb = new byte[65536];
+                    var hdrEnd = -1;
+                    var deadline = Environment.TickCount64 + 15_000;
+                    while (head.Count < 262144)
+                    {
+                        if (!sock.Poll(1_000_000, SelectMode.SelectRead))
+                        {
+                            if (Environment.TickCount64 > deadline) break;
+                            continue;
+                        }
+                        var n = sock.Receive(rb);
+                        if (n <= 0) break;
+                        for (var i = 0; i < n; i++) head.Add(rb[i]);
+                        hdrEnd = IndexOfHeaderEnd(head);
+                        if (hdrEnd >= 0) break;
+                    }
+                    var status = Encoding.ASCII.GetString(head.ToArray(), 0, Math.Min(24, head.Count));
+                    if (hdrEnd < 0 || (!status.Contains("206") && !(status.Contains(" 200") && from2 == 0)))
+                    {
+                        if (++consecutiveBad > 6) break;
+                        await Task.Delay((int)Math.Min(500L * (1L << consecutiveBad), 8000L)).ConfigureAwait(false);
+                        continue;
+                    }
+                    consecutiveBad = 0;
+
+                    // 响应体布局：[from2, to] = 扩展段(ext 字节，读丢) + 目标数据(want 字节)。
+                    // 首轮请求从 from2 起（先丢扩展段）；断线重试从 from+got 起（扩展段已消费）
+                    var consumedExt = got == 0 ? ext : 0;
+                    var ex = head.Count - (hdrEnd + 4);
+                    if (ex > 0)
+                    {
+                        // 头部已带出的 body：先丢弃其中的扩展段前缀，再把目标数据收进 data
+                        var headBuf = head.ToArray();
+                        var off = hdrEnd + 4;
+                        var drop = (int)Math.Min(ex, (int)consumedExt);
+                        off += drop; consumedExt -= drop;
+                        var n = Math.Min(ex - drop, want - got);
+                        if (n > 0)
+                        {
+                            Buffer.BlockCopy(headBuf, off, data, got, n);
+                            got += n;
+                        }
+                    }
+                    while (consumedExt > 0 && !_stopped)
+                    {
+                        if (!sock.Poll(1_000_000, SelectMode.SelectRead)) continue;
+                        var n = sock.Receive(rb);
+                        if (n <= 0) break;
+                        consumedExt -= n;   // 流上剩余扩展段：读丢
+                    }
+                    while (got < want && !_stopped)
+                    {
+                        if (!sock.Poll(1_000_000, SelectMode.SelectRead)) continue;
+                        var n = sock.Receive(data, got, want - got, SocketFlags.None);
+                        if (n <= 0) break;
+                        got += n;
+                    }
+                }
+                catch (Exception)
+                {
+                    if (++consecutiveBad > 6) break;
+                    await Task.Delay(500).ConfigureAwait(false);
+                }
+            }
+            if (got == want)
+            {
+                StreamCache.WriteWholeChunk(cd, ci, data, want);
+                _log?.Invoke($"[proxy] 按需预取块 #{ci}（{from / 1048576.0:F1}MB）完成：{got / 1024}KB / {sw.ElapsedMilliseconds}ms");
+            }
+            else
+            {
+                _log?.Invoke($"[proxy] 按需预取块 #{ci} 未完成：{got / 1024}KB / {want / 1024}KB（{sw.ElapsedMilliseconds}ms）——半块弃置");
+            }
+        }
+        finally
+        {
+            lock (_prefetchSync) _prefetching.Remove(ci);
+        }
+    }
+
     // ═══════════ 上游：单连接顺序续拉 ═══════════
 
     private async Task UpstreamLoopAsync()
@@ -596,6 +730,7 @@ public sealed class QemuStreamProxy : IDisposable
             var needWait = false;
             if (first > frontier && !diskHit)
             {
+                KickOnDemandPrefetch(first);   // ★ 预等待必须主动触发引擎按需供数（上游循环此时尚无读者，不会拉）
                 lock (_sync)
                 {
                     if (_preflightActive && _preflightTarget != first)
@@ -615,12 +750,12 @@ public sealed class QemuStreamProxy : IDisposable
                 while (sw2.ElapsedMilliseconds < 30_000 && !_stopped)
                 {
                     lock (_sync) frontier = _base + _len;
-                    if (first < frontier + 256 * 1024) break;
+                    if (first < frontier + 256 * 1024 || DiskCovers(first)) break;
                     if (!_preflightActive) break;
                     await Task.Delay(200).ConfigureAwait(false);
                 }
                 lock (_sync) frontier = _base + _len;
-                if (first > frontier)
+                if (first > frontier && !DiskCovers(first))
                 {
                     _log?.Invoke($"[proxy] 等待他人预等待超时仍无数据 → 416：{first}-{last}");
                     var err416b = Encoding.ASCII.GetBytes(
@@ -640,7 +775,7 @@ public sealed class QemuStreamProxy : IDisposable
                 while (sw.ElapsedMilliseconds < budgetMs && !_stopped)
                 {
                     lock (_sync) frontier = _base + _len;
-                    if (first < frontier + 256 * 1024) { delivered = true; break; }
+                    if (first < frontier + 256 * 1024 || DiskCovers(first)) { delivered = true; break; }   // 预取块落盘也算就绪
                     await Task.Delay(200).ConfigureAwait(false);
                     var up = UpstreamTotal;
                     if (up != lastUp) { frozenMs = 0; lastUp = up; }   // 引擎在按需拉取：等待有效
