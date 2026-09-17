@@ -18,6 +18,9 @@ public sealed class ChainedMagnetEngine : IPreferredMagnetEngine
 
     public bool IsReady => _engines.Any(e => e.IsReady);
 
+    /// <summary>链上任一引擎忙碌即视为忙碌（探测让位判断用）。</summary>
+    public bool IsBusy => _engines.Any(e => e.IsBusy);
+
     public async Task<bool> EnsureReadyAsync()
     {
         var any = false;

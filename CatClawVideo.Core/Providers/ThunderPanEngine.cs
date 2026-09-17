@@ -86,6 +86,9 @@ public sealed class ThunderPanEngine : IPreferredMagnetEngine
 
     public bool IsReady => _ready;
 
+    /// <summary>网盘引擎无本地会话/下载任务，探测不会互顶（恒 false）。</summary>
+    public bool IsBusy => false;
+
     /// <summary>当前是否需要人工登录（供 UI 提示）</summary>
     public string? LoginHint { get; private set; }
 

@@ -27,6 +27,10 @@ public interface IPreferredMagnetEngine
     /// <summary>是否已就绪（未就绪时调用方不会尝试）</summary>
     bool IsReady { get; }
 
+    /// <summary>是否有活跃的播放/下载会话。探测类调用（磁力展开）应让位：
+    /// 单会话引擎下探测会顶掉播放会话，且下载中建新任务被引擎拒绝（9111）。</summary>
+    bool IsBusy { get; }
+
     /// <summary>初始化引擎（幂等，只真正尝试一次）</summary>
     Task<bool> EnsureReadyAsync();
 

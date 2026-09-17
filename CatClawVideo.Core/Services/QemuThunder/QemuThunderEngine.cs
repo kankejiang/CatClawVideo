@@ -87,6 +87,15 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
     /// <summary>运行时文件已部署即算「就绪」；VM 懒启动发生在首次任务。</summary>
     public bool IsReady => QemuHostRuntime.IsPresent(_runtimeDir, _initrdName);
 
+    /// <summary>引擎是否有活跃的播放/下载会话（已下发 DL 且未被替换）。探测类操作
+    /// （详情页磁力展开）必须让位：PrepareSession 会替换 _session 并 Dispose 缓存代理，
+    /// 顶掉 45Mbps 下载中的播放会话 = 黑屏 + 引擎拒建新任务（9111）+「无法解析磁力」弹窗
+    /// （2026-09-17 师兄太稳健 实测）。</summary>
+    public bool IsBusy
+    {
+        get { var s = _session; return s is not null && (s.DlSent || _streamProxy is not null); }
+    }
+
     /// <summary>磁力点播磁盘缓存根目录（null = 关闭，默认关）。由宿主注入（AppPaths.Sub("btcache")）：
     /// 播放数据 4MB 分块落盘，重看/换集回看直接磁盘秒供，不再依赖引擎 tmpfs（VM 重启即空）。</summary>
     public string? StreamCacheRoot { get; set; }
@@ -111,6 +120,14 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            // ★ 探测让位：引擎有活跃播放/下载会话时**不得**进入 PrepareSession——它会替换
+            //   _session 并 Dispose 播放中的缓存代理（黑屏），且引擎下载中建新任务被拒（9111），
+            //   两头全输（2026-09-17 实测）。跳过本次探测；未缓存的磁力下次进详情页重探。
+            if (_session is not null && (_session.DlSent || _streamProxy is not null))
+            {
+                Log($"磁力探测让位：引擎正忙（活跃会话 #{_session.PickIndex} {_session.Name}），跳过 {preferName}");
+                return null;
+            }
             if (!await EnsureStartedLockedAsync(ct).ConfigureAwait(false)) return null;
             var s = await PrepareSessionLockedAsync(magnet, preferName, ct).ConfigureAwait(false);
             return s?.Files.ToList();

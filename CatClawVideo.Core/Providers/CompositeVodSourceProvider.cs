@@ -67,9 +67,16 @@ public class CompositeVodSourceProvider : IVodSourceProvider
 
         foreach (var src in sources)
         {
+            // ★ 播放/下载活跃时让位（引擎 IsBusy）：展开探测会与播放会话抢引擎（单会话互顶），
+            //   引擎下载中建新任务还会被拒（9111）——顶掉 45Mbps 下载中的播放 = 黑屏 + 弹窗。
+            //   本次未展开的磁力下次进详情页再探。
+            if (engine.IsBusy) return sources;
+
             var expanded = new List<VodEpisode>(src.Episodes.Count);
             foreach (var ep in src.Episodes)
             {
+                if (engine.IsBusy) break;
+
                 if (!ep.Url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase))
                 {
                     expanded.Add(ep);
