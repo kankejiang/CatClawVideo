@@ -28,6 +28,10 @@ internal static class BtFileLog
                 }
             }
             System.Diagnostics.Debug.WriteLine("[bt] " + msg);
+
+            // 镜像进「诊断日志」（tag=BT）：磁力链路的问题现场（节点数/供数/seek）最需要随
+            // 诊断包一起交出来。仅开启时写入，且服务侧有限流，不会把诊断日志刷爆。
+            DiagnosticLog.WriteTagged("D", "BT", msg);
         }
         catch
         {

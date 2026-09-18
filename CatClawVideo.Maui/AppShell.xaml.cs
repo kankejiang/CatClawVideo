@@ -26,6 +26,9 @@ public partial class AppShell : Shell
         // 关于页（设置 → 关于）
         Routing.RegisterRoute("about", typeof(Pages.AboutPage));
 
+        // 诊断日志页（设置 → 诊断日志；开关开启后可查看/导出 Debug 级日志）
+        Routing.RegisterRoute("diagnosticlog", typeof(Pages.DiagnosticLogPage));
+
         // 任务详情页（下载卡片 ℹ 进入；照搬 Motrix 任务详情）
         Routing.RegisterRoute("downloaddetail", typeof(Pages.DownloadDetailPage));
     }

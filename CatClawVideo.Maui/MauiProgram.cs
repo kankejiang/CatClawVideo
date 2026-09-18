@@ -306,6 +306,7 @@ public static class MauiProgram
         services.AddTransient<Pages.HistoryPage>();
         services.AddTransient<Pages.LocalMediaPage>();
         services.AddTransient<Pages.AboutPage>();
+        services.AddTransient<Pages.DiagnosticLogPage>();
 
 #if DEBUG
         builder.Logging.AddDebug();
@@ -315,6 +316,10 @@ public static class MauiProgram
 
         // Core 层日志 → DiagLog（Android 上同时进 logcat，tag=CatClawDiag）
         CatClawVideo.Core.Providers.CatClawLog.Sink = DiagLog.Write;
+
+        // 诊断日志服务：构造即注册进 Core.Log 门面（设置页开关控制，默认关闭、关闭时零开销）。
+        // 必须在 builder.Build() 之后构造 —— 它读 Preferences 与 AppPaths，依赖已初始化的平台层。
+        _ = new Services.DiagnosticLog();
         Services = app.Services;
 
         // ═══════════════════════════════════════════════════

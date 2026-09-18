@@ -22,5 +22,10 @@ public static class DiagLog
                 $"{DateTime.Now:HH:mm:ss.fff} {msg}{Environment.NewLine}");
         }
         catch { }
+
+        // 镜像进「诊断日志」（设置页开关控制，关闭时零开销）：
+        // 本类是 App 内用得最广的日志出口，镜像后用户一开开关即可拿到完整运行轨迹，
+        // 不必再让用户手动去翻 home-debug.log（2026-09-18 用户要求）。
+        CatClawVideo.Maui.Services.DiagnosticLog.WriteTagged("D", "App", msg);
     }
 }

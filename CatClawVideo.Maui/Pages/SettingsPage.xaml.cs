@@ -36,7 +36,49 @@ public partial class SettingsPage : ContentView, ITabView
         LoadNodeSettings();
         LoadNodeHostSettings();
         LoadCacheCapSetting();
+        LoadDiagnosticLogSetting();
         return Task.CompletedTask;
+    }
+
+    // ═══════════ 诊断日志（2026-09-18 用户要求：对齐猫爪音乐，可抓 Debug 级日志）═══════════
+
+    /// <summary>回填开关状态时抑制 Toggled 回写（否则打开设置页会把默认关误写成开）</summary>
+    private bool _diagLogLoading;
+
+    private void LoadDiagnosticLogSetting()
+    {
+        _diagLogLoading = true;
+        try
+        {
+            DiagnosticLogSwitch.IsToggled = Services.DiagnosticLog.Instance?.IsEnabled ?? false;
+        }
+        catch { }
+        finally { _diagLogLoading = false; }
+    }
+
+    /// <summary>开关：开启即开始记录；关闭时立即刷盘（最后几行往往是关键现场）</summary>
+    private void OnDiagnosticLogToggled(object? sender, ToggledEventArgs e)
+    {
+        if (_diagLogLoading) return;
+        try
+        {
+            if (Services.DiagnosticLog.Instance is not { } log) return;
+            log.IsEnabled = e.Value;
+
+            if (e.Value)
+            {
+                var logDir = Core.AppPaths.Sub("logs");
+                Core.Logging.Log.Info("Settings", "诊断日志已开启（" + logDir + "）");
+                log.Flush();
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>进查看页（筛选/导出诊断包）</summary>
+    private async void OnDiagnosticLogClicked(object? sender, TappedEventArgs e)
+    {
+        try { await Shell.Current.GoToAsync("diagnosticlog"); } catch { }
     }
 
     // ═══════════ 磁力缓存上限（2026-09-17 用户要求：5~15GB 偏小，默认提到 20GB 且可调）═══════════
