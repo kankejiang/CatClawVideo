@@ -175,6 +175,43 @@ public class MainActivity : MauiAppCompatActivity
             System.Diagnostics.Debug.WriteLine($"[Chrome] 沉浸式切换失败: {ex.Message}");
         }
     }
+
+    /// <summary>
+    /// 只控制**状态栏**显隐（导航栏保持原样）。
+    ///
+    /// <para>用于「关于页」这类希望顶部内容直达屏幕顶端、但不应吃掉底部手势条的页面
+    /// （<see cref="SetImmersive"/> 会连导航栏一起隐藏，语义太宽）。</para>
+    ///
+    /// <para>状态栏隐藏后其区域高度归零，页面不必再预留顶部安全区
+    /// —— 这正是去掉「顶部不透明深色带」的关键。</para>
+    /// </summary>
+    public static void SetStatusBarVisible(bool visible)
+    {
+        try
+        {
+            var activity = Microsoft.Maui.ApplicationModel.Platform.CurrentActivity;
+            if (activity?.Window is not { } window) return;
+
+            var controller = WindowCompat.GetInsetsController(window, window.DecorView);
+            if (controller == null) return;
+
+            if (visible)
+            {
+                controller.Show(WindowInsetsCompat.Type.StatusBars());
+            }
+            else
+            {
+                controller.Hide(WindowInsetsCompat.Type.StatusBars());
+                // 允许从屏幕顶部下滑临时唤出状态栏（否则用户点不到通知/电量）
+                controller.SystemBarsBehavior =
+                    WindowInsetsControllerCompat.BehaviorShowTransientBarsBySwipe;
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[Chrome] 状态栏切换失败: {ex.Message}");
+        }
+    }
 }
 
 /// <summary>

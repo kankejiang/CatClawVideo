@@ -17,11 +17,33 @@ public partial class AboutPage : ContentPage
     public AboutPage(AboutViewModel vm)
     {
         InitializeComponent();
+        // 注：本页**不再**补顶部安全区 —— 它自己隐藏状态栏（见 OnAppearing），
+        // 补 inset 反而会在页首留出一条与渐变内容不连续的不透明深色带
+        // （2026-09-18 用户实测报告：要求「删除顶部深蓝色空白区域 + 关于页不显示系统状态栏」）。
         BindingContext = vm;
         vm.UpdateCheckCompleted += OnUpdateCheckCompleted;
         vm.UpdateCheckFailed += OnUpdateCheckFailed;
         UpdateNotesLayout.SizeChanged += OnNotesLayoutSizeChanged;
     }
+
+#if ANDROID
+    /// <summary>
+    /// 本页不显示系统状态栏（返回按钮已改为浮在内容区内，无需预留顶部安全区）。
+    /// 只隐藏状态栏、保留导航栏 —— 不要用 SetImmersive（那会连底部手势条一起吃掉）。
+    /// </summary>
+    protected override void OnAppearing()
+    {
+        base.OnAppearing();
+        MainActivity.SetStatusBarVisible(false);
+    }
+
+    /// <summary>离开本页必须恢复状态栏，否则会在其它页面一直缺席。</summary>
+    protected override void OnDisappearing()
+    {
+        base.OnDisappearing();
+        MainActivity.SetStatusBarVisible(true);
+    }
+#endif
 
     /// <summary>
     /// 日志内容比上限高时给 ScrollView 定高（出现滚动），不足时保持自适应（避免卡片下方留白）。

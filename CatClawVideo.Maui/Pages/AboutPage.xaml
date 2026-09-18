@@ -11,29 +11,16 @@
         <BackButtonBehavior IsVisible="False" />
     </Shell.BackButtonBehavior>
 
-    <Grid RowDefinitions="Auto,*"
-          BackgroundColor="{DynamicResource WindowBackgroundColor}">
-
-        <!-- 顶部：自定义返回 + 标题 -->
-        <Grid Grid.Row="0" ColumnDefinitions="Auto,Auto,*" ColumnSpacing="12"
-              Padding="24,14,24,6">
-            <Border Grid.Column="0" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
-                    StrokeShape="RoundRectangle 12" WidthRequest="38" HeightRequest="38">
-                <Image Source="ic_back.png" WidthRequest="18" HeightRequest="18"
-                       HorizontalOptions="Center" VerticalOptions="Center" />
-                <Border.GestureRecognizers>
-                    <TapGestureRecognizer Tapped="OnBackTapped" />
-                </Border.GestureRecognizers>
-            </Border>
-            <Label Grid.Column="1" Text="关于" FontSize="15" FontFamily="OpenSansSemibold"
-                   TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
-        </Grid>
+    <!-- 无独立顶栏：返回按钮改为浮在内容区之上。
+         原先「顶部安全区 padding + 独立标题行」在页首堆出一条与渐变内容不连续的不透明深色带
+         （2026-09-18 用户实测报告），去掉标题行并由本页自行隐藏状态栏后即消失。 -->
+    <Grid BackgroundColor="{DynamicResource WindowBackgroundColor}">
 
         <!-- ═══ 主体：左右分栏（横屏，手机同样使用本布局） ═══
              左 42%：品牌区（无卡片框，融入背景，图标辉光）
              右 58%：简介 + 行式操作列表 + 检查更新 + 版权
              背景：左上紫色径向光晕，像影院幕布灯 -->
-        <Grid Grid.Row="1" ColumnDefinitions="42*,58*">
+        <Grid ColumnDefinitions="42*,58*">
             <Grid.Background>
                 <RadialGradientBrush Center="0.16,0.0" Radius="0.72">
                     <GradientStop Color="#4D9B7ED8" Offset="0" />
@@ -222,8 +209,24 @@
             </ScrollView>
         </Grid>
 
+        <!-- 悬浮返回 + 标题：位于内容区之上（同层后声明者绘制在上层），
+             宽度只占自身内容、靠左上角，不遮挡右栏列表的点击。 -->
+        <Grid ColumnDefinitions="Auto,Auto" ColumnSpacing="12"
+              Padding="24,16,0,0" VerticalOptions="Start" HorizontalOptions="Start">
+            <Border Grid.Column="0" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
+                    StrokeShape="RoundRectangle 12" WidthRequest="38" HeightRequest="38">
+                <Image Source="ic_back.png" WidthRequest="18" HeightRequest="18"
+                       HorizontalOptions="Center" VerticalOptions="Center" />
+                <Border.GestureRecognizers>
+                    <TapGestureRecognizer Tapped="OnBackTapped" />
+                </Border.GestureRecognizers>
+            </Border>
+            <Label Grid.Column="1" Text="关于" FontSize="15" FontFamily="OpenSansSemibold"
+                   TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
+        </Grid>
+
         <!-- ═══ 检查更新弹窗（自定义卡片，替代系统 DisplayAlert） ═══ -->
-        <Grid x:Name="UpdateOverlay" Grid.RowSpan="2" IsVisible="False" BackgroundColor="#AA0A0A18">
+        <Grid x:Name="UpdateOverlay" IsVisible="False" BackgroundColor="#AA0A0A18">
             <Border x:Name="UpdateCard" WidthRequest="470" HorizontalOptions="Center" VerticalOptions="Center"
                     StrokeThickness="1" StrokeShape="RoundRectangle 20" Stroke="#22FFFFFF"
                     BackgroundColor="#FF1E1E30" Padding="24,22">
