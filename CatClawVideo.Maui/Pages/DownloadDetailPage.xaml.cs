@@ -4,8 +4,9 @@ using CatClawVideo.Maui.Services;
 namespace CatClawVideo.Maui.Pages;
 
 /// <summary>
-/// 任务详情页（照搬 Motrix 任务详情）：基本信息 / 进度（分片地图 + 速率统计）/ Tracker / 文件（可勾选）。
-/// <para>「连接」tab 为引擎能力说明：MonoTorrent 3.0.1 不暴露逐条 peer 明细。</para>
+/// 任务详情页（照搬 Motrix 任务详情）：基本信息 / 进度 / Tracker / 文件。
+/// <para>内置 BT 引擎已移除（2026-09-16）：磁力任务改由迅雷引擎承载，
+/// 宿主拿不到分片地图与逐条 peer 明细，故这些区块展示任务级进度并说明原因。</para>
 /// </summary>
 [QueryProperty(nameof(TaskId), "id")]
 public partial class DownloadDetailPage : ContentPage
@@ -93,72 +94,32 @@ public partial class DownloadDetailPage : ContentPage
                 _ => "STOPPED",
             };
 
-            CatClawVideo.Core.Services.BtTorrentStats? stats = null;   // 内置 BT 已移除：不再有 BT 统计
+            CatClawVideo.Core.Services.BtTorrentStats? stats = null;   // 内置 BT 已移除：不再有分片/peer 明细
             _lastStats = stats;
-            if (stats == null)
-            {
-                // HTTP 任务：只有基础统计
-                InfoHash.Text = "（非 BT 任务）";
-                InfoPieceSize.Text = InfoPieceCount.Text = "-";
-                InfoTotal.Text = DownloadTaskItem.FormatBytes(task.TotalBytes);
-                PieceMap.Pieces = null;
-                ProgressBarView.Progress = task.Progress;
-                ProgressText.Text = $"{task.Progress * 100:F2}%";
-                ProgressBytes.Text = $"{DownloadTaskItem.FormatBytes(task.DownloadedBytes)} / {DownloadTaskItem.FormatBytes(task.TotalBytes)}";
-                StatSeeds.Text = StatConnections.Text = StatDown.Text = StatUp.Text = StatUploaded.Text = StatRatio.Text = "-";
-                TrackerHeader.Text = "非 BT 任务无 tracker";
-                FileSelectionSummary.Text = "";
-                return;
-            }
 
-            InfoHash.Text = stats.InfoHash;
-            InfoPieceSize.Text = stats.PieceLength > 0 ? DownloadTaskItem.FormatBytes(stats.PieceLength) : "获取中…";
-            InfoPieceCount.Text = stats.Pieces.Length > 0 ? stats.Pieces.Length.ToString() : "获取中…";
-            InfoTotal.Text = stats.TotalBytes > 0 ? DownloadTaskItem.FormatBytes(stats.TotalBytes) : "获取中…";
-
-            PieceMap.Pieces = stats.Pieces;
-            ProgressBarView.Progress = Math.Clamp(stats.ProgressPercent / 100.0, 0, 1);
-            ProgressText.Text = $"{stats.ProgressPercent:F2}%";
-            var remain = stats.RemainingSeconds > 0
-                ? $"　剩余 {FormatDuration(stats.RemainingSeconds)}"
-                : "";
-            ProgressBytes.Text = $"{DownloadTaskItem.FormatBytes(stats.DownloadedBytes)} / {DownloadTaskItem.FormatBytes(stats.TotalBytes)}{remain}";
-            StatSeeds.Text = stats.Seeds.ToString();
-            StatConnections.Text = stats.Connections.ToString();
-            StatDown.Text = $"{DownloadTaskItem.FormatBytes(stats.DownloadRate)}/s";
-            StatUp.Text = $"{DownloadTaskItem.FormatBytes(stats.UploadRate)}/s";
-            StatUploaded.Text = DownloadTaskItem.FormatBytes(stats.UploadedBytes);
-            StatRatio.Text = stats.ShareRatio.ToString("F4");
-
-            ConnSummary.Text = $"当前连接：{stats.Connections} 个　种子：{stats.Seeds}　下载者：{stats.Leeches}";
-
-            // Tracker 列表（状态着色）
-            TrackerHeader.Text = $"共 {stats.Trackers.Count} 个 tracker";
-            if (TrackerListHost.Children.Count != stats.Trackers.Count)
-            {
-                TrackerListHost.Children.Clear();
-                foreach (var t in stats.Trackers)
-                {
-                    var row = new Label
-                    {
-                        FontSize = 11.5,
-                        LineBreakMode = LineBreakMode.TailTruncation,
-                        TextColor = (Color)Application.Current!.Resources["TextSecondaryColor"],
-                    };
-                    TrackerListHost.Children.Add(row);
-                }
-            }
-            for (int i = 0; i < stats.Trackers.Count && i < TrackerListHost.Children.Count; i++)
-            {
-                var t = stats.Trackers[i];
-                if (TrackerListHost.Children[i] is Label l)
-                    l.Text = string.IsNullOrEmpty(t.Message) ? $"{t.Url}　[{t.Status}]" : $"{t.Url}　[{t.Status}] {t.Message}";
-            }
-
-            // 文件列表（结构变化时重建）
-            if (_fileChecks.Count != stats.Files.Count)
-                BuildFileList(stats.Files);
-            UpdateFileSummary(stats.Files);
+            // 所有任务（HTTP 直链 / 磁力）都走这条基础展示路径。
+            // 磁力现在由迅雷引擎（QEMU 内的独立下载器）承载，宿主拿不到分片图与 peer 明细，
+            // 因此这里展示任务级进度/速度；引擎侧的下载与导出进度由任务卡片自身上报。
+            InfoHash.Text = task.IsMagnet ? "（磁力任务：迅雷引擎）" : "（HTTP 直链任务）";
+            InfoPieceSize.Text = InfoPieceCount.Text = "-";
+            InfoTotal.Text = DownloadTaskItem.FormatBytes(task.TotalBytes);
+            PieceMap.Pieces = null;
+            ProgressBarView.Progress = task.Progress;
+            ProgressText.Text = $"{task.Progress * 100:F2}%";
+            ProgressBytes.Text = $"{DownloadTaskItem.FormatBytes(task.DownloadedBytes)} / {DownloadTaskItem.FormatBytes(task.TotalBytes)}";
+            StatSeeds.Text = StatConnections.Text = StatUploaded.Text = StatRatio.Text = "-";
+            StatDown.Text = string.IsNullOrWhiteSpace(task.SpeedText) ? "-" : task.SpeedText;
+            StatUp.Text = "-";
+            TrackerHeader.Text = task.IsMagnet
+                ? "磁力任务由迅雷引擎解析与下载，宿主不持有 tracker 列表"
+                : "HTTP 直链任务无 tracker";
+            ConnSummary.Text = task.IsMagnet
+                ? "磁力下载由迅雷引擎（QEMU 内）承载：连接/种子明细在引擎侧，宿主仅上报任务级进度"
+                : "HTTP 直链任务无连接明细";
+            FileSelectionSummary.Text = "";
+            TrackerListHost.Children.Clear();
+            FileListHost.Children.Clear();
+            _fileChecks.Clear();
         }
         catch { }
     }

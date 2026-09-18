@@ -35,14 +35,24 @@ public partial class App : Application
     /// <summary>
     /// 播放页原地全屏：窗口切换 FullScreen/Overlapped presenter（不重建页面/播放器）。
     /// 非 Windows 平台由各页自行处理（Android 走横屏 + 沉浸式）。
+    ///
+    /// <para><b>幂等</b>（2026-09-19 用户实测「全屏时 NVIDIA 浮窗反复闪烁」）：重复调用
+    /// <c>SetPresenter</c> 会让窗口经历一次「退出全屏 → 再进全屏」的状态抖动，
+    /// 这类抖动会被 GPU 厂商的覆盖层（NVIDIA GeForce Experience / AMD 等）识别为
+    /// 全屏状态变化并弹出/刷新它们的提示浮窗 —— 表现为浮窗闪烁。故状态未变时直接返回。</para>
     /// </summary>
     public static void SetWindowFullscreen(bool fullscreen)
     {
         try
         {
-            _appWindow?.SetPresenter(Microsoft.UI.Windowing.AppWindowPresenterKind.FullScreen);
-            if (!fullscreen && _appWindow != null)
-                _appWindow.SetPresenter(Microsoft.UI.Windowing.AppWindowPresenterKind.Overlapped);
+            if (_appWindow == null) return;
+
+            var want = fullscreen
+                ? Microsoft.UI.Windowing.AppWindowPresenterKind.FullScreen
+                : Microsoft.UI.Windowing.AppWindowPresenterKind.Overlapped;
+            if (_appWindow.Presenter.Kind == want) return;   // 已是目标状态：不重复设置
+
+            _appWindow.SetPresenter(want);
         }
         catch (Exception ex)
         {

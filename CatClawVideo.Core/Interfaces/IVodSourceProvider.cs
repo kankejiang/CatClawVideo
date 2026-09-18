@@ -34,6 +34,24 @@ public interface IVodSourceProvider
 }
 
 /// <summary>
+/// 「渐进式」播放线路加载（可选能力，仅聚合 Provider 实现）。
+///
+/// <para><b>为什么需要</b>：磁力站的详情页要把「一条打包磁力」展开成「种子内每个文件 = 一集」，
+/// 而引擎侧是**单会话串行**探测 —— 实测一条磁力 0.2~3.1s，一次详情页最多 8 条打包磁力，
+/// 全展开要 8~15s。这段时间用户盯着空白选集栏，体感就是「磁力片特别慢」。</para>
+///
+/// <para><b>做法</b>：先 yield 一次**未展开**的原始线路（站点本来给的集名，立即可上屏），
+/// 之后每完成一条磁力的展开就再 yield 一次完整列表，界面按序刷新。用户在几百毫秒内
+/// 就能看到选集内容，后续只是集名从打包名细化为真实文件名。</para>
+/// </summary>
+public interface IProgressiveVodSourceProvider
+{
+    /// <summary>流式产出线路列表：首个元素为未展开版本，随后每次展开有进展再产出。</summary>
+    IAsyncEnumerable<List<VodPlaySource>> StreamPlaySourcesAsync(
+        VodSiteInfo site, VodItem item, CancellationToken ct = default);
+}
+
+/// <summary>
 /// 订阅源管理器抽象：负责拉取/解析 TVBox 与影视仓多仓订阅地址，产出统一站点列表。
 /// 基础架构阶段仅定义契约，实现随订阅源功能开发落地。
 /// </summary>

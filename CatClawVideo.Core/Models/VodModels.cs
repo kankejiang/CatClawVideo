@@ -130,6 +130,24 @@ public class VodItem : INotifyPropertyChanged
         }
     }
 
+    private bool _isFocused;
+
+    /// <summary>
+    /// 遥控器 / 键盘焦点（仅界面态，不持久化）。
+    /// 海报墙用 DataTrigger 绑定它绘制焦点环 —— 列表项本身不可聚焦控件，
+    /// 焦点由页面的 <c>IRemoteKeyHandler</c> 显式驱动。
+    /// </summary>
+    public bool IsFocused
+    {
+        get => _isFocused;
+        set
+        {
+            if (_isFocused == value) return;
+            _isFocused = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsFocused)));
+        }
+    }
+
     public event PropertyChangedEventHandler? PropertyChanged;
 
     /// <summary>分类（如：动作片 / 国产剧）</summary>

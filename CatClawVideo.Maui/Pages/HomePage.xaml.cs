@@ -1,5 +1,6 @@
 using CatClawVideo.Core.Interfaces;
 using CatClawVideo.Core.Models;
+using CatClawVideo.Maui.Services;
 using CatClawVideo.Maui.ViewModels;
 
 namespace CatClawVideo.Maui.Pages;
@@ -7,10 +8,29 @@ namespace CatClawVideo.Maui.Pages;
 /// <summary>
 /// 首页：MacCMS 真实源（分类 + 影片列表）。
 /// 海报卡点击 → 观看页（携带源/影片参数拉真实详情与选集）。
+///
+/// <para><b>遥控器 / 键盘导航</b>：三层焦点 —— 切换源 → 分类 chips → 海报墙。
+/// ↑↓ 在层间与层内移动，←→ 在分类 chips 内横向移动、在海报墙内按列移动，
+/// OK 激活，Back 逐层退出（海报 → 分类 → 切换源 → 顶部 tab）。
+/// 焦点态由本页显式驱动（列表项与 chip 都不是原生可聚焦控件）。</para>
 /// </summary>
-public partial class HomePage : ContentView, ITabView
+public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
 {
     private readonly HomeViewModel _vm;
+
+    // ─────────── 焦点分层 ───────────
+    private const int LayerTopNav = 0;
+    private const int LayerSwitchSite = 1;
+    private const int LayerChips = 2;
+    private const int LayerPosters = 3;
+    private int _layer = LayerSwitchSite;
+
+    private int _chipIndex;
+    private int _posterIndex;
+    private int _posterColumns = 6;
+
+    /// <summary>分类 chip 的焦点壳（与 Categories 一一对应，随集合变化重建）。</summary>
+    private readonly List<Border> _chipShells = new();
 
     public HomePage(HomeViewModel vm)
     {
@@ -19,7 +39,12 @@ public partial class HomePage : ContentView, ITabView
         BindingContext = _vm;
 
         // 分类集合变化 / 选中项变化时刷新 chip 高亮
-        _vm.Categories.CollectionChanged += (_, _) => MainThread.BeginInvokeOnMainThread(UpdateChipStyles);
+        _vm.Categories.CollectionChanged += (_, _) =>
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                RebuildChipShells();
+                UpdateChipStyles();
+            });
         _vm.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName == nameof(HomeViewModel.SelectedCategoryId))
@@ -27,14 +52,27 @@ public partial class HomePage : ContentView, ITabView
         };
 
         // 海报墙布局：与历史/收藏页一致，统一走 PosterLayoutHelper（固定卡片尺寸，列数自适应）
-        PosterGrid.SizeChanged += (_, _) => ApplyPosterLayout();
+        PosterGrid.SizeChanged += (_, _) =>
+        {
+            ApplyPosterLayout();
+            CaptureColumns();
+        };
+
+        // 列表数据变化后（首次加载/翻页）刷新列数并复位越界焦点
+        _vm.Items.CollectionChanged += (_, _) => MainThread.BeginInvokeOnMainThread(OnItemsChanged);
     }
 
     public Task OnTabShownAsync()
     {
         ApplyPosterLayout();
+        CaptureColumns();
+        _layer = LayerSwitchSite;
+        RenderFocus();
+        RemoteKeyRouter.Push(this);
         return _vm.LoadHomeCommand.ExecuteAsync(null);
     }
+
+    // ═══════════════════════ 布局 ═══════════════════════
 
     /// <summary>海报墙布局：与历史/收藏页同一套 PosterLayoutHelper（Android 卡高 182 / Windows 252，宽 2:3，列数自适应）</summary>
     private void ApplyPosterLayout()
@@ -45,6 +83,296 @@ public partial class HomePage : ContentView, ITabView
         PosterLayoutHelper.Apply(PosterGrid, PosterGrid.Width, PosterGrid.Height);
 #endif
     }
+
+    /// <summary>记录当前列数（方向键上下移动需要按列换算索引）。</summary>
+    private void CaptureColumns()
+    {
+        if (PosterGrid.ItemsLayout is GridItemsLayout g && g.Span > 0)
+            _posterColumns = g.Span;
+    }
+
+    private void OnItemsChanged()
+    {
+        CaptureColumns();
+        if (_posterIndex >= _vm.Items.Count) _posterIndex = Math.Max(0, _vm.Items.Count - 1);
+        RenderFocus();
+    }
+
+    // ═══════════════════════ 分类 chips ═══════════════════════
+
+    /// <summary>
+    /// 给每个分类 chip 包一层透明焦点壳（描边不占布局：用负 margin 抵消 padding）。
+    ///
+    /// <para>chip 由 <c>BindableLayout</c> 从 <c>Categories</c> 生成，无法在 XAML 里逐个加壳。
+    /// 集合变化回调触发时子项可能尚未完成布局，故延后一轮再包装；
+    /// 已包装过的（Content 就是原 chip）直接跳过，保证幂等。</para>
+    /// </summary>
+    private void RebuildChipShells()
+    {
+        _ = Dispatcher.DispatchDelayed(TimeSpan.FromMilliseconds(30), () =>
+        {
+            try
+            {
+                _chipShells.Clear();
+                for (int i = 0; i < CategoryChipHost.Children.Count; i++)
+                {
+                    if (CategoryChipHost.Children[i] is not Border existing) continue;
+
+                    // 已是外壳（其 Content 是 Border）→ 直接复用
+                    if (existing.Content is Border)
+                    {
+                        _chipShells.Add(existing);
+                        continue;
+                    }
+
+                    var shell = new Border
+                    {
+                        StrokeThickness = 2,
+                        Stroke = Colors.Transparent,
+                        StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 16 },
+                        Padding = new Thickness(2),
+                        Margin = new Thickness(-2),
+                        Content = existing,
+                    };
+                    CategoryChipHost.Children[i] = shell;
+                    _chipShells.Add(shell);
+                }
+
+                if (_chipIndex >= _chipShells.Count) _chipIndex = Math.Max(0, _chipShells.Count - 1);
+                UpdateChipStyles();
+            }
+            catch { }
+        });
+    }
+
+    /// <summary>选中分类 chip 用主题色实底 + 白字；焦点另加描边（与选中态独立，可并存）。</summary>
+    private void UpdateChipStyles()
+    {
+        var res = Application.Current?.Resources;
+        var active = res?["PrimaryColor"] as Color ?? Colors.Purple;
+        var inactive = res?["ChipInactiveColor"] as Color ?? Colors.Gray;
+        var activeText = Colors.White;
+        var inactiveText = res?["TextSecondaryColor"] as Color ?? Colors.Gray;
+
+        for (int i = 0; i < _chipShells.Count; i++)
+        {
+            bool focused = _layer == LayerChips && i == _chipIndex;
+            _chipShells[i].Stroke = focused ? (res?["PrimaryColor"] as Color ?? Colors.Purple) : Colors.Transparent;
+            _chipShells[i].Scale = focused ? 1.06 : 1.0;
+        }
+
+        foreach (var shell in _chipShells)
+        {
+            if (shell.Content is not Border chip) continue;
+            bool on = (chip.BindingContext as VodCategory)?.Id == _vm.SelectedCategoryId;
+            chip.BackgroundColor = on ? active : inactive;
+            if (chip.Content is Label label)
+                label.TextColor = on ? activeText : inactiveText;
+        }
+    }
+
+    // ═══════════════════════ 焦点渲染 ═══════════════════════
+
+    private void RenderFocus()
+    {
+        // 切换源焦点环
+        var primary = Application.Current?.Resources["PrimaryColor"] as Color ?? Colors.Purple;
+        SwitchSiteShell.Stroke = _layer == LayerSwitchSite ? primary : Colors.Transparent;
+        SwitchSiteShell.Scale = _layer == LayerSwitchSite ? 1.05 : 1.0;
+
+        UpdateChipStyles();
+
+        // 海报墙焦点：只点亮当前项，清掉其余（列表可能很长，避免全量遍历）
+        for (int i = 0; i < _vm.Items.Count; i++)
+            _vm.Items[i].IsFocused = _layer == LayerPosters && i == _posterIndex;
+    }
+
+    private void ClearPosterFocus()
+    {
+        for (int i = 0; i < _vm.Items.Count; i++)
+            _vm.Items[i].IsFocused = false;
+    }
+
+    private void FocusSwitchSite()
+    {
+        _layer = LayerSwitchSite;
+        RenderFocus();
+    }
+
+    private void FocusChips(int index = 0)
+    {
+        if (_chipShells.Count == 0) { FocusSwitchSite(); return; }
+        _layer = LayerChips;
+        _chipIndex = Math.Clamp(index, 0, _chipShells.Count - 1);
+        RenderFocus();
+    }
+
+    private void FocusPosters(int index = 0)
+    {
+        if (_vm.Items.Count == 0) { FocusChips(); return; }
+        _layer = LayerPosters;
+        _posterIndex = Math.Clamp(index, 0, _vm.Items.Count - 1);
+        RenderFocus();
+        ScrollToPoster(_posterIndex);
+    }
+
+    /// <summary>把焦点海报滚入可视区（否则遥控器移动时焦点会跑出屏幕）。</summary>
+    private void ScrollToPoster(int index)
+    {
+        try
+        {
+            if (index >= 0 && index < _vm.Items.Count)
+                PosterGrid.ScrollTo(index, position: ScrollToPosition.MakeVisible, animate: false);
+        }
+        catch { }
+    }
+
+    // ═══════════════════════ IRemoteKeyHandler ═══════════════════════
+
+    /// <summary>被主壳层要求接管焦点：从「切换源」开始。</summary>
+    public void FocusContent() => FocusSwitchSite();
+
+    public bool Handle(RemoteKey key)
+    {
+        switch (key)
+        {
+            case RemoteKey.Up:
+            case RemoteKey.Down:
+            case RemoteKey.Left:
+            case RemoteKey.Right:
+                return TryMove(key);
+
+            case RemoteKey.Enter:
+                return Activate();
+
+            case RemoteKey.Back:
+                return GoBack();
+        }
+        return false;
+    }
+
+    private bool TryMove(RemoteKey dir)
+    {
+        switch (_layer)
+        {
+            case LayerTopNav:
+                return false;
+
+            case LayerSwitchSite:
+                if (dir == RemoteKey.Down) { FocusChips(Math.Max(0, _chipIndex)); return true; }
+                if (dir == RemoteKey.Up) { _layer = LayerTopNav; RenderFocus(); return false; }  // 交还顶栏
+                return true;   // 左侧无内容，吃掉
+
+            case LayerChips:
+                switch (dir)
+                {
+                    case RemoteKey.Left:
+                        if (_chipIndex <= 0) { FocusSwitchSite(); return true; }
+                        _chipIndex--;
+                        RenderFocus();
+                        return true;
+
+                    case RemoteKey.Right:
+                        if (_chipIndex < _chipShells.Count - 1)
+                        {
+                            _chipIndex++;
+                            RenderFocus();
+                        }
+                        return true;
+
+                    case RemoteKey.Up:
+                        FocusSwitchSite();
+                        return true;
+
+                    case RemoteKey.Down:
+                        ClearPosterFocus();
+                        FocusPosters(0);
+                        return true;
+                }
+                return true;
+
+            case LayerPosters:
+                {
+                    int cols = Math.Max(1, _posterColumns);
+                    switch (dir)
+                    {
+                        case RemoteKey.Left:
+                            if (_posterIndex % cols == 0) { FocusChips(_chipIndex); return true; }  // 行首 → 回 chips
+                            _posterIndex--;
+                            RenderFocus();
+                            ScrollToPoster(_posterIndex);
+                            return true;
+
+                        case RemoteKey.Right:
+                            if (_posterIndex >= _vm.Items.Count - 1) return true;
+                            _posterIndex++;
+                            RenderFocus();
+                            ScrollToPoster(_posterIndex);
+                            return true;
+
+                        case RemoteKey.Up:
+                            if (_posterIndex - cols < 0) { ClearPosterFocus(); FocusChips(_chipIndex); return true; }
+                            _posterIndex -= cols;
+                            RenderFocus();
+                            ScrollToPoster(_posterIndex);
+                            return true;
+
+                        case RemoteKey.Down:
+                            if (_posterIndex + cols > _vm.Items.Count - 1) return true;   // 已到底
+                            _posterIndex += cols;
+                            RenderFocus();
+                            ScrollToPoster(_posterIndex);
+                            return true;
+                    }
+                    return true;
+                }
+        }
+        return false;
+    }
+
+    /// <summary>OK：切换源 → 弹源选择；分类 chip → 切分类；海报 → 进观看页。</summary>
+    private bool Activate()
+    {
+        switch (_layer)
+        {
+            case LayerSwitchSite:
+                OnSwitchSiteTapped(this, new TappedEventArgs(null));
+                return true;
+
+            case LayerChips:
+                if (_chipIndex >= 0 && _chipIndex < _vm.Categories.Count)
+                    _ = _vm.SelectCategoryAsync(_vm.Categories[_chipIndex]);
+                return true;
+
+            case LayerPosters:
+                if (_posterIndex >= 0 && _posterIndex < _vm.Items.Count)
+                    OpenItem(_vm.Items[_posterIndex]);
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>Back：海报 → 分类 → 切换源 → 交还顶栏。</summary>
+    private bool GoBack()
+    {
+        switch (_layer)
+        {
+            case LayerPosters:
+                ClearPosterFocus();
+                FocusChips(_chipIndex);
+                return true;
+            case LayerChips:
+                FocusSwitchSite();
+                return true;
+            case LayerSwitchSite:
+                _layer = LayerTopNav;
+                RenderFocus();
+                return false;   // 交还主壳层
+        }
+        return false;
+    }
+
+    // ═══════════════════════ 交互入口（鼠标 / 触屏 / OK 共用）═══════════════════════
 
     /// <summary>「切换源」点击 → 数据源选择弹窗（参考影视仓），选择后切换首页数据源</summary>
     private async void OnSwitchSiteTapped(object? sender, TappedEventArgs e)
@@ -68,30 +396,17 @@ public partial class HomePage : ContentView, ITabView
         await _vm.SelectCategoryAsync(cat);
     }
 
-    /// <summary>选中分类 chip 用主题色实底 + 白字，其余用未激活 chip 色</summary>
-    private void UpdateChipStyles()
-    {
-        var res = Application.Current?.Resources;
-        var active = res?["PrimaryColor"] as Color ?? Colors.Purple;
-        var inactive = res?["ChipInactiveColor"] as Color ?? Colors.Gray;
-        var activeText = Colors.White;
-        var inactiveText = res?["TextSecondaryColor"] as Color ?? Colors.Gray;
-
-        foreach (var child in CategoryChipHost.Children)
-        {
-            if (child is not Border chip) continue;
-            bool on = (chip.BindingContext as VodCategory)?.Id == _vm.SelectedCategoryId;
-            chip.BackgroundColor = on ? active : inactive;
-            if (chip.Content is Label label)
-                label.TextColor = on ? activeText : inactiveText;
-        }
-    }
-
-    /// <summary>海报卡点击 → 观看页（带源定位参数；type 必传——猫爪源等无 api 特征的源靠它路由）</summary>
+    /// <summary>海报卡点击 → 观看页</summary>
     private void OnPosterTapped(object? sender, TappedEventArgs e)
     {
-        if (_vm.Site is null) return;
         if ((sender as VisualElement)?.BindingContext is not VodItem item) return;
+        OpenItem(item);
+    }
+
+    /// <summary>进入观看页（带源定位参数；type 必传——猫爪源等无 api 特征的源靠它路由）</summary>
+    private void OpenItem(VodItem item)
+    {
+        if (_vm.Site is null) return;
 
         var query = $"watch?title={Uri.EscapeDataString(item.Title)}" +
                     $"&sourceKey={Uri.EscapeDataString(item.SourceKey)}" +

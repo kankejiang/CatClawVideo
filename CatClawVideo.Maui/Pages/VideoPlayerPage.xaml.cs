@@ -19,6 +19,23 @@ public partial class VideoPlayerPage : ContentPage, IQueryAttributable
     /// <summary>断点续播起始位置（秒）：观看页全屏入口携带，MediaOpened 后 seek（0 = 从头播）</summary>
     private double _startPosition;
 
+    // ─────────── 缓冲进度指示（圆环 + 中央百分比；与 WatchPage 同一套语义） ───────────
+
+    /// <summary>本次缓冲的开始时刻（「等太久就切旋转弧」的判定用）。</summary>
+    private DateTime _bufferStartUtc = DateTime.UtcNow;
+
+    /// <summary>起播缓冲的参考量：仅作进度环分母，不参与任何播放时机决策。</summary>
+    private const double StartupBufferSeconds = 8.0;
+
+    /// <summary>超过这个时长且连续可播量几乎没涨 → 切回旋转弧。</summary>
+    private const double LongWaitSeconds = 25.0;
+
+    /// <summary>上次采样的播放位置（判断「是否真的在播」）。</summary>
+    private double _bufferLastPos = -1;
+
+    /// <summary>已确认播放位置在推进。用于压制 MF 对磁力流的 Buffering 误报。</summary>
+    private bool _playbackAdvancing;
+
     public VideoPlayerPage(VideoPlayerViewModel vm, VideoPlaybackManager playback)
     {
         InitializeComponent();
@@ -37,6 +54,19 @@ public partial class VideoPlayerPage : ContentPage, IQueryAttributable
         Player.StateChanged += OnStateChanged;
         Player.MediaFailed += OnMediaFailed;
         Player.MediaEnded += OnMediaEnded;
+
+        // 控件条事件 → 播放器操作（方案 B）
+        ControlBar.ShowEpisodesButton = false;   // 全屏播放页无选集栏
+        ControlBar.ShowEpisodeStepButtons = false;
+        ControlBar.PlayPauseRequested += (_, _) => OnPlayPauseClicked(this, EventArgs.Empty);
+        ControlBar.RewindRequested += (_, _) => SeekRelative(-10);
+        ControlBar.ForwardRequested += (_, _) => SeekRelative(10);
+        ControlBar.FullscreenRequested += (_, _) => ToggleLandscape();
+        ControlBar.SeekStarted += (_, _) => OnSeekStarted(this, EventArgs.Empty);
+        ControlBar.SeekCompleted += (_, _) => OnSeekCompleted(this, EventArgs.Empty);
+        ControlBar.SeekRequested += (_, seconds) => OnSeekRequested(seconds);
+        ControlBar.SpeedRequested += (_, _) => CycleSpeed();
+        ControlBar.MuteChanged += (_, muted) => ApplyMute(muted);
 
         _hideTimer = Dispatcher.CreateTimer();
         _hideTimer.Interval = TimeSpan.FromSeconds(3.5);
@@ -117,6 +147,15 @@ public partial class VideoPlayerPage : ContentPage, IQueryAttributable
         _vm.DurationSeconds = 0;
         _vm.ControlsVisible = true;
 
+        // 加载阶段拿不到时长/前沿 → 先用旋转弧表达「在忙」，
+        // MediaOpened 后由 BeginBuffering 切到圆环百分比。
+        BufferRing.IsIndeterminate = true;
+        BufferRing.Progress = 0;
+
+        ControlBar.Title = _vm.Title;
+        ControlBar.SetProgress(0, 0);
+        SyncControlsVisibility();
+
         Player.Source = _vm.Url;
         _playback.BeginSession(_vm.Title, _vm.Url, _vm.Cover);
         RestartHideTimer();
@@ -129,6 +168,10 @@ public partial class VideoPlayerPage : ContentPage, IQueryAttributable
         if (Player.Duration != TimeSpan.Zero)
             _vm.DurationSeconds = Player.Duration.TotalSeconds;
 
+        // 元数据就绪 → 起播缓冲改用圆环百分比（此前是旋转弧）
+        BeginBuffering(Player.Position.TotalSeconds, Player.Position.TotalSeconds);
+        UpdateBufferProgress();
+
         // 断点续播：媒体就绪（时长已知）后一次性 seek；越界（接近片尾）则放弃从头播
         if (_startPosition > 0)
         {
@@ -136,6 +179,7 @@ public partial class VideoPlayerPage : ContentPage, IQueryAttributable
             _startPosition = 0;
             if (Player.Duration == TimeSpan.Zero || target < Player.Duration.TotalSeconds - 1)
             {
+                BeginBuffering(0, target);      // 续播跳到未缓冲处 → 显示缓冲进度
                 Player.Seek(TimeSpan.FromSeconds(target));
                 _vm.PositionSeconds = target;
             }
@@ -148,7 +192,97 @@ public partial class VideoPlayerPage : ContentPage, IQueryAttributable
         _vm.PositionSeconds = Player.Position.TotalSeconds;
         if (Player.Duration != TimeSpan.Zero)
             _vm.DurationSeconds = Player.Duration.TotalSeconds;
+
+        SyncControlBarProgress();
+        TickBufferingIndicator();   // 先在「真的在播」时收起指示器（MF 会误报 Buffering）
+        UpdateBufferProgress();     // 仍在缓冲：刷新百分比
     }
+
+    // ─────────── 缓冲进度 ───────────
+
+    /// <summary>声明「即将开始一次缓冲」：显示指示器并重新计时。</summary>
+    private void BeginBuffering(double anchorSeconds = -1, double targetSeconds = -1)
+    {
+        _ = anchorSeconds;
+        _ = targetSeconds;
+        _bufferStartUtc = DateTime.UtcNow;
+        _playbackAdvancing = false;
+        _bufferLastPos = -1;          // 重置采样哨兵
+        BufferRing.IsIndeterminate = false;
+        BufferRing.Progress = 0;
+    }
+
+    /// <summary>
+    /// 裁决缓冲指示器的显隐。判据一（磁力路，权威）：<see cref="VideoPlayerView.IsWaitingForData"/>
+    /// —— 代理精确知道读者是否顶到缓存前沿等数据；判据二（兜底）：播放位置是否推进
+    /// （磁力路上 MF 会在画面正常播放时仍报 Buffering，不能用它）。
+    /// </summary>
+    private void TickBufferingIndicator()
+    {
+        var pos = Player.Position.TotalSeconds;
+        var dur = Player.Duration.TotalSeconds;
+
+        // 判据一（权威，磁力路）：代理说读者顶到缓存前沿等数据。
+        // 必须**无条件**检查 —— 中途断粮时需要把指示器重新唤起来。
+        if (Player.IsWaitingForData)
+        {
+            _playbackAdvancing = false;
+            if (!_vm.IsBuffering) BeginBuffering();
+            _vm.IsBuffering = true;            // 覆盖 MF 的漏报
+            return;
+        }
+
+        // `_bufferLastPos >= 0` 不可省：初值是 -1（哨兵），否则首帧 pos=0 会被当成「推进」
+        var advancing = dur > 0 && _bufferLastPos >= 0
+                        && pos > _bufferLastPos + 0.15
+                        && pos - _bufferLastPos < 5.0      // 排除 seek 跳变
+                        && !_vm.IsSeeking;
+        _bufferLastPos = pos;
+
+        if (advancing)
+        {
+            _playbackAdvancing = true;         // 压制 MF 的 Buffering 误报
+            if (_vm.IsBuffering)
+            {
+                BufferRing.IsIndeterminate = false;
+                BufferRing.Progress = 1;
+                _vm.IsBuffering = false;
+            }
+        }
+    }
+
+    /// <summary>缓冲百分比 =「播放点往后的连续可播量」朝起播所需量推进（与 WatchPage 同源）。</summary>
+    private void UpdateBufferProgress()
+    {
+        if (!_vm.IsBuffering) return;
+
+        var dur = Player.Duration.TotalSeconds;
+        if (dur <= 0)
+        {
+            BufferRing.IsIndeterminate = true;
+            return;
+        }
+
+        var pos = Player.Position.TotalSeconds;
+        var ahead = Player.BufferedFrontier.TotalSeconds - pos;
+        if (ahead < 0) ahead = 0;
+
+        var waited = (DateTime.UtcNow - _bufferStartUtc).TotalSeconds;
+        if (waited > LongWaitSeconds && ahead < 1.0)
+        {
+            BufferRing.IsIndeterminate = true;   // 抢不到数据：别挂着不动的数字
+            return;
+        }
+
+        var need = Math.Max(1.0, Math.Min(dur, StartupBufferSeconds));
+        BufferRing.IsIndeterminate = false;
+        BufferRing.Progress = Math.Clamp(ahead / need, 0, 0.99);
+    }
+
+    /// <summary>把进度推给控件条（三层进度轴由它自绘，含已缓冲区间）。</summary>
+    private void SyncControlBarProgress() =>
+        ControlBar.SetProgress(_vm.PositionSeconds, _vm.DurationSeconds,
+            Player.BufferedPosition.TotalSeconds);
 
     private void OnStateChanged(object? sender, EventArgs e)
     {
@@ -156,10 +290,20 @@ public partial class VideoPlayerPage : ContentPage, IQueryAttributable
         _vm.IsBuffering = Player.CurrentState
             is VideoPlayerState.Preparing or VideoPlayerState.Buffering;
 
-        // 图标切换
+        // 图标切换（中央大键与控件条播放键同源）
         var icon = _vm.IsPlaying ? "ic_pause.png" : "ic_play.png";
         CenterPlayButton.Source = icon;
-        BottomPlayButton.Source = icon;
+        ControlBar.IsPlaying = _vm.IsPlaying;
+
+        // 中央大键与底部播放键互斥：播放中隐藏中央键，避免出现两个「暂停」
+        CenterPlayButton.IsVisible = _vm.ControlsVisible && !_vm.IsPlaying;
+
+        // 缓冲指示：进入缓冲 → 显示（位置已在推进的话不重复唤起，避免闪烁）；恢复播放 → 收起
+        var state = Player.CurrentState;
+        if (state == VideoPlayerState.Buffering && !_playbackAdvancing)
+            BeginBuffering();
+        else if (state == VideoPlayerState.Playing)
+            _playbackAdvancing = false;
 
         if (_vm.IsPlaying) RestartHideTimer();
     }
@@ -176,8 +320,77 @@ public partial class VideoPlayerPage : ContentPage, IQueryAttributable
         _vm.IsPlaying = false;
         _vm.PositionSeconds = _vm.DurationSeconds;
         CenterPlayButton.Source = "ic_play.png";
-        BottomPlayButton.Source = "ic_play.png";
+        ControlBar.IsPlaying = false;
+        CenterPlayButton.IsVisible = true;
         _vm.ControlsVisible = true;
+    }
+
+    /// <summary>静音前的音量（恢复用）。</summary>
+    private double _volumeBeforeMute = 1.0;
+
+    /// <summary>应用静音（音量归零 / 恢复）；记住静音前音量，避免恢复时丢失。</summary>
+    private void ApplyMute(bool muted)
+    {
+        if (muted)
+        {
+            if (Player.Volume > 0) _volumeBeforeMute = Player.Volume;
+            Player.Volume = 0;
+        }
+        else
+        {
+            Player.Volume = _volumeBeforeMute > 0 ? _volumeBeforeMute : 1.0;
+        }
+        ControlBar.IsMuted = muted;   // 回填，保证按钮文案与实际一致
+    }
+
+    /// <summary>循环切换播放速率（档位见 VideoPlayerView.SpeedPresets）。</summary>
+    private void CycleSpeed()
+    {
+        var presets = CatClawVideo.Maui.Controls.VideoPlayerView.SpeedPresets;
+        var idx = Array.FindIndex(presets, p => Math.Abs(p - Player.Speed) < 0.01);
+        var next = presets[(idx + 1) % presets.Length];
+        Player.Speed = next;
+        ControlBar.SpeedValue = next;
+    }
+
+    /// <summary>±10s / 拖动进度：相对跳转（控件条只报绝对秒数，这里做边界收口）。</summary>
+    private void OnSeekRequested(double seconds)
+    {
+        if (_vm.DurationSeconds > 0)
+            seconds = Math.Clamp(seconds, 0, _vm.DurationSeconds - 1);
+        if (seconds < 0) return;
+
+        // 跳向未缓冲区域 → 显示缓冲进度（判断用未抬升的原始前沿）
+        var from = Player.Position.TotalSeconds;
+        if (seconds > Player.BufferedFrontier.TotalSeconds + 0.5)
+            BeginBuffering(from, seconds);
+
+        Player.Seek(TimeSpan.FromSeconds(seconds));
+        _vm.PositionSeconds = seconds;
+        SyncControlBarProgress();
+    }
+
+    private void SeekRelative(double deltaSeconds)
+    {
+        var from = Player.Position.TotalSeconds;
+        var target = Player.Position.TotalSeconds + deltaSeconds;
+        var max = _vm.DurationSeconds > 0 ? _vm.DurationSeconds - 1 : double.MaxValue;
+        target = Math.Clamp(target, 0, max);
+
+        // 只在前进到未缓冲区域时提示（后退通常已缓冲，瞬时完成）
+        if (deltaSeconds > 0 && target > Player.BufferedFrontier.TotalSeconds + 0.5)
+            BeginBuffering(from, target);
+
+        Player.Seek(TimeSpan.FromSeconds(target));
+        _vm.PositionSeconds = target;
+        SyncControlBarProgress();
+        RestartHideTimer();
+    }
+
+    /// <summary>底栏全屏键：Android 走横竖屏切换（本页已全屏，语义等同）。</summary>
+    private void ToggleLandscape()
+    {
+        _vm.ToggleLandscapeCommand.Execute(null);
     }
 
     // ════════════════ 控制层交互 ════════════════
@@ -185,6 +398,7 @@ public partial class VideoPlayerPage : ContentPage, IQueryAttributable
     private void OnSurfaceTapped(object? sender, TappedEventArgs e)
     {
         _vm.ToggleControlsCommand.Execute(null);
+        SyncControlsVisibility();
         if (_vm.ControlsVisible) RestartHideTimer();
     }
 
@@ -222,11 +436,9 @@ public partial class VideoPlayerPage : ContentPage, IQueryAttributable
 
     private void OnSeekCompleted(object? sender, EventArgs e)
     {
-        // Slider.Value 在拖动中持续变化，完成时即为目标位置
-        var target = ProgressBar.Value;
-        _vm.PositionSeconds = target;
-        Player.Seek(TimeSpan.FromSeconds(target));
+        // 拖动过程中已通过 SeekRequested 实时 seek，这里只收尾状态
         _vm.IsSeeking = false;
+        SyncControlBarProgress();
         RestartHideTimer();
     }
 
@@ -243,5 +455,11 @@ public partial class VideoPlayerPage : ContentPage, IQueryAttributable
     {
         if (_vm.IsPlaying && !_vm.IsSeeking)
             _vm.ControlsVisible = false;
+    }
+
+    /// <summary>控件层显隐：中央大键只在「暂停」时出现（与控件条播放键互斥）。</summary>
+    private void SyncControlsVisibility()
+    {
+        CenterPlayButton.IsVisible = _vm.ControlsVisible && !_vm.IsPlaying;
     }
 }

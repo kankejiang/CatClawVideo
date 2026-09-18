@@ -41,6 +41,128 @@ public class CompositeVodSourceProvider : IVodSourceProvider
     }
 
     /// <summary>
+    /// 流式线路加载：先把**首个磁力**展开好再上屏（保证首播集名正确），
+    /// 其余磁力后台继续展开、每完成一条刷新一次选集栏。
+    ///
+    /// <para>⚠ 为什么首个磁力必须同步展开：未展开时集名是站点给的打包名
+    /// （如「第四季01-03-1080p.mp4」），而引擎的 preferName 按文件名匹配、
+    /// 匹配不到时会退化选「最大的视频文件」——**可能播错集**。所以宁可多等这一条
+    /// （实测 0.2~3.1s），也不能拿错误的集名起播。</para>
+    /// </summary>
+    public async IAsyncEnumerable<List<VodPlaySource>> StreamPlaySourcesAsync(
+        VodSiteInfo site, VodItem item,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var sources = await Required(site).GetPlaySourcesAsync(site, item, ct).ConfigureAwait(false);
+
+        var engine = Interfaces.MagnetEngines.Thunder;
+        if (engine is null || !engine.IsReady)
+        {
+            yield return Clone(sources);
+            yield break;
+        }
+
+        var magnetCount = sources
+            .SelectMany(s => s.Episodes)
+            .Count(e => e.Url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase));
+        if (magnetCount == 0 || magnetCount > MaxMagnetsToExpand)
+        {
+            yield return Clone(sources);
+            yield break;
+        }
+
+        using var gate = new SemaphoreSlim(1, 1);   // 引擎侧本就串行，这里保证顺序产出
+
+        // ① 同步展开首个可探磁力 —— 首播集名必须准确
+        await ExpandFirstMagnetAsync(sources, engine, gate, ct).ConfigureAwait(false);
+
+        // ② 上屏：此时首集已是真实文件名（若首探失败则退回原始名，行为同改动前）
+        yield return Clone(sources);
+
+        // ③ 其余磁力继续展开：每完成一条推一次
+        foreach (var src in sources)
+        {
+            for (int i = 0; i < src.Episodes.Count; i++)
+            {
+                var ep = src.Episodes[i];
+                if (!ep.Url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase)) continue;
+                if (ListedMagnets.ContainsKey(ep.Url) || TryDiskCache(ep.Url, out _)) continue;  // 已探过
+                if (engine.IsBusy) continue;
+                if (ct.IsCancellationRequested) yield break;
+
+                var changed = await ExpandSingleMagnetAsync(src, i, engine, gate, ct).ConfigureAwait(false);
+                if (changed) yield return Clone(sources);
+            }
+        }
+    }
+
+    /// <summary>展开第一条可探磁力（只做一条，保证首屏集名准确）。</summary>
+    private static async Task<bool> ExpandFirstMagnetAsync(
+        List<VodPlaySource> sources, IPreferredMagnetEngine engine, SemaphoreSlim gate, CancellationToken ct)
+    {
+        foreach (var src in sources)
+            for (int i = 0; i < src.Episodes.Count; i++)
+            {
+                if (!src.Episodes[i].Url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase)) continue;
+                if (engine.IsBusy) return false;
+
+                // 缓存命中无需再探（ExpandSingleMagnetAsync 内部会走缓存并回填）
+                var ok = await ExpandSingleMagnetAsync(src, i, engine, gate, ct).ConfigureAwait(false);
+                if (ok || ListedMagnets.ContainsKey(src.Episodes[i].Url) || TryDiskCache(src.Episodes[i].Url, out _))
+                    return true;
+            }
+        return false;
+    }
+
+    /// <summary>
+    /// 展开单条磁力并把结果并回 <paramref name="src"/>。返回是否真的发生了替换。
+    /// 内部无异常（失败静默返回 false），以便调用方安全地 yield。
+    /// </summary>
+    private static async Task<bool> ExpandSingleMagnetAsync(
+        VodPlaySource src, int index, IPreferredMagnetEngine engine, SemaphoreSlim gate, CancellationToken ct)
+    {
+        if (index < 0 || index >= src.Episodes.Count) return false;
+        var ep = src.Episodes[index];
+
+        // 缓存命中：直接用（首次进入详情页时磁盘缓存即来源于此）
+        List<Interfaces.MagnetFile>? files;
+        if (!ListedMagnets.TryGetValue(ep.Url, out files) && !TryDiskCache(ep.Url, out files))
+        {
+            files = await ProbeOneAsync(engine, ep, gate, ct).ConfigureAwait(false);
+        }
+        if (files is not { Count: > 0 }) return false;
+
+        var videos = files
+            .Where(f => VideoExtensions.Contains(Path.GetExtension(f.Name)))
+            .OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (videos.Count == 0) return false;
+
+        // 幂等：已是展开态（首项名字与种子内首文件一致）就不重复替换
+        if (src.Episodes[index].Name == videos[0].Name) return false;
+
+        var rebuilt = new List<VodEpisode>(src.Episodes.Count + videos.Count - 1);
+        for (int k = 0; k < src.Episodes.Count; k++)
+        {
+            if (k == index)
+                foreach (var f in videos)
+                    rebuilt.Add(new VodEpisode { Name = f.Name, Url = ep.Url, Flag = ep.Flag });
+            else
+                rebuilt.Add(src.Episodes[k]);
+        }
+        src.Episodes = SortExpandedEpisodes(rebuilt);
+        return true;
+    }
+
+    /// <summary>深拷贝线路（避免把内部可变 List 交给界面后被后续展开改写而闪烁）。</summary>
+    private static List<VodPlaySource> Clone(List<VodPlaySource> sources) =>
+        sources.Select(s => new VodPlaySource
+        {
+            Name = s.Name,
+            Episodes = s.Episodes.ToList(),
+        }).ToList();
+
+    /// <summary>
     /// 把「一条磁力 = 一集」展开成「种子里的每个视频文件 = 一集」。
     ///
     /// <para><b>为什么必须做</b>：磁力站的 vod_play_url 往往是几个**打包磁力**。例如
@@ -67,41 +189,70 @@ public class CompositeVodSourceProvider : IVodSourceProvider
 
         foreach (var src in sources)
         {
-            // ★ 播放/下载活跃时让位（引擎 IsBusy）：展开探测会与播放会话抢引擎（单会话互顶），
-            //   引擎下载中建新任务还会被拒（9111）——顶掉 45Mbps 下载中的播放 = 黑屏 + 弹窗。
-            //   本次未展开的磁力下次进详情页再探。
-            if (engine.IsBusy) return sources;
+            var isMagnet = new bool[src.Episodes.Count];
+            for (int i = 0; i < src.Episodes.Count; i++)
+                isMagnet[i] = src.Episodes[i].Url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase);
 
-            var expanded = new List<VodEpisode>(src.Episodes.Count);
-            foreach (var ep in src.Episodes)
+            // 探测任务化（原来是就地串行 await）：引擎侧 ListFilesAsync 内部持有 _gate
+            //   （单 VM 单会话的硬约束，不能并发建任务），所以**真正的探测仍是串行**——
+            //   这里任务化换来的是：缓存命中项零开销短路、以及各探测的宿主侧开销
+            //  （HTTP 尝试/Bencode 解析/磁盘缓存写入）能重叠在等待间隙里。
+            //   想要大幅提速只能靠缓存命中（见下方磁盘缓存）与 VM 预热。
+            var probes = new Task<List<Interfaces.MagnetFile>?>[src.Episodes.Count];
+            using var probeGate = new SemaphoreSlim(ProbeConcurrency);
+
+            for (int i = 0; i < src.Episodes.Count; i++)
             {
-                if (engine.IsBusy) break;
+                if (!isMagnet[i]) { probes[i] = Task.FromResult<List<Interfaces.MagnetFile>?>(null); continue; }
 
-                if (!ep.Url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase))
+                var ep = src.Episodes[i];
+
+                // 先查进程级缓存（命中零开销）：命中时**即使引擎忙也照样套用真实文件名**。
+                // 播放中 IsBusy 只应阻止「再去探测新磁力」，不该连带丢弃已缓存的结果 ——
+                // 否则播放时选集栏永远显示站点给的打包名（如「第四季01-03-1080p」），
+                // 而不是种子内真实文件名。
+                if (ListedMagnets.TryGetValue(ep.Url, out var cached))
                 {
-                    expanded.Add(ep);
+                    probes[i] = Task.FromResult(cached);
                     continue;
                 }
 
-                if (!ListedMagnets.TryGetValue(ep.Url, out var files))
+                // 再查磁盘缓存（跨启动复用）：磁力文件列表是种子里写死的元数据，永不变更，
+                // 同一个磁力没必要每次启动都重探一遍。
+                if (TryDiskCache(ep.Url, out var diskCached))
                 {
-                    try { files = await engine.ListFilesAsync(ep.Url, ep.Name, ct).ConfigureAwait(false); }
-                    catch { files = null; }
-                    // 只缓存成功结果：失败（引擎未就绪等）下次进详情页重探
-                    if (files is { Count: > 0 }) ListedMagnets[ep.Url] = files;
+                    ListedMagnets[ep.Url] = diskCached;   // 回填进程级，后续零开销
+                    probes[i] = Task.FromResult<List<Interfaces.MagnetFile>?>(diskCached);
+                    continue;
                 }
 
-                var videos = files?
+                // ★ 未缓存 + 引擎忙（播放/下载中）：探测会与播放会话抢引擎（单会话互顶），
+                //   引擎下载中建新任务还会被拒（9111）——顶掉 45Mbps 下载中的播放 = 黑屏 + 弹窗。
+                //   本次保持原名，下次进详情页再探。
+                if (engine.IsBusy)
+                {
+                    probes[i] = Task.FromResult<List<Interfaces.MagnetFile>?>(null);
+                    continue;
+                }
+
+                probes[i] = ProbeOneAsync(engine, ep, probeGate, ct);
+            }
+
+            var results = await Task.WhenAll(probes).ConfigureAwait(false);
+
+            var expanded = new List<VodEpisode>(src.Episodes.Count);
+            for (int i = 0; i < src.Episodes.Count; i++)
+            {
+                var ep = src.Episodes[i];
+                if (!isMagnet[i]) { expanded.Add(ep); continue; }
+
+                var videos = results[i]?
                     .Where(f => VideoExtensions.Contains(Path.GetExtension(f.Name)))
                     .OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase)
                     .ToList();
 
                 // 展开失败（或种子内没有视频文件）→ 保留原本那一条，行为与改动前一致
-                if (videos is null || videos.Count == 0)
-                {
-                    expanded.Add(ep);
-                    continue;
-                }
+                if (videos is null || videos.Count == 0) { expanded.Add(ep); continue; }
 
                 foreach (var f in videos)
                     expanded.Add(new VodEpisode { Name = f.Name, Url = ep.Url, Flag = ep.Flag });
@@ -109,6 +260,108 @@ public class CompositeVodSourceProvider : IVodSourceProvider
             src.Episodes = SortExpandedEpisodes(expanded);
         }
         return sources;
+    }
+
+    /// <summary>探测单条磁力的文件列表；成功即写进程级 + 磁盘缓存。失败返回 null（调用方保留原集名）。</summary>
+    private static async Task<List<Interfaces.MagnetFile>?> ProbeOneAsync(
+        IPreferredMagnetEngine engine, VodEpisode ep, SemaphoreSlim gate, CancellationToken ct)
+    {
+        await gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var files = await engine.ListFilesAsync(ep.Url, ep.Name, ct).ConfigureAwait(false);
+            // 只缓存成功结果：失败（引擎未就绪等）下次进详情页重探
+            if (files is { Count: > 0 })
+            {
+                ListedMagnets[ep.Url] = files;
+                SaveDiskCache(ep.Url, files);
+            }
+            return files;
+        }
+        catch { return null; }
+        finally { gate.Release(); }
+    }
+
+    /// <summary>探测并发上限。引擎侧 _gate 已串行化真正的探测，这里只限制排队任务数，
+    /// 避免一次详情页（实测最多 8 个打包磁力）把任务/句柄堆起来。</summary>
+    private const int ProbeConcurrency = 4;
+
+    // ═══════════ 探测结果磁盘缓存（跨启动复用）═══════════
+    //
+    // 进程内缓存在 Application 重启后即失效，而磁力文件列表**是种子里写死的元数据**，
+    // 永远不会变 —— 同一个磁力没必要每次启动都重新探测一遍（每条 0.2~3s）。
+    // 落盘后「上次看过的剧」再次进入详情页可直接展开选集，零网络零等待。
+
+    private const int MaxDiskCacheFiles = 2000;
+
+    private static readonly string DiskCachePath =
+        Path.Combine(CatClawVideo.Core.AppPaths.DataRoot, "magnet-files.json");
+
+    private static readonly object DiskCacheSync = new();
+    private static bool _diskCacheLoaded;
+
+    /// <summary>按磁力链接建索引的磁盘缓存：<c>{ magnet: [文件…] }</c></summary>
+    private static readonly Dictionary<string, List<Interfaces.MagnetFile>> DiskCache =
+        new(StringComparer.Ordinal);
+
+    /// <summary>首次访问时加载磁盘缓存（懒加载，避免启动期做 IO）。</summary>
+    private static void EnsureDiskCacheLoaded()
+    {
+        if (_diskCacheLoaded) return;
+        lock (DiskCacheSync)
+        {
+            if (_diskCacheLoaded) return;
+            _diskCacheLoaded = true;
+            try
+            {
+                if (!File.Exists(DiskCachePath)) return;
+                var json = File.ReadAllText(DiskCachePath);
+                var data = System.Text.Json.JsonSerializer
+                    .Deserialize<Dictionary<string, List<Interfaces.MagnetFile>>>(json);
+                if (data is null) return;
+                foreach (var kv in data)
+                {
+                    if (kv.Value is { Count: > 0 }) DiskCache[kv.Key] = kv.Value;
+                }
+            }
+            catch { /* 缓存损坏 → 当作空，下次探测会重建 */ }
+        }
+    }
+
+    /// <summary>取磁盘缓存（不存在返回 false）。</summary>
+    private static bool TryDiskCache(string magnet, out List<Interfaces.MagnetFile> files)
+    {
+        EnsureDiskCacheLoaded();
+        lock (DiskCacheSync) return DiskCache.TryGetValue(magnet, out files!);
+    }
+
+    /// <summary>写入磁盘缓存（超出上限时丢最旧的一半；异步落盘不挡调用方）。</summary>
+    private static void SaveDiskCache(string magnet, List<Interfaces.MagnetFile> files)
+    {
+        Dictionary<string, List<Interfaces.MagnetFile>> snapshot;
+        lock (DiskCacheSync)
+        {
+            EnsureDiskCacheLoaded();
+            DiskCache[magnet] = files;
+            if (DiskCache.Count > MaxDiskCacheFiles)
+            {
+                // 不做 LRU（重建代价可控），超限直接裁掉前一半，避免文件无限增长
+                foreach (var k in DiskCache.Keys.Take(DiskCache.Count / 2).ToList())
+                    DiskCache.Remove(k);
+            }
+            snapshot = new Dictionary<string, List<Interfaces.MagnetFile>>(DiskCache);
+        }
+
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(DiskCachePath)!);
+                File.WriteAllText(DiskCachePath,
+                    System.Text.Json.JsonSerializer.Serialize(snapshot));
+            }
+            catch { /* 落盘失败不影响本次展开 */ }
+        });
     }
 
     /// <summary>

@@ -63,6 +63,33 @@ public class MainActivity : MauiAppCompatActivity
     }
 
     /// <summary>
+    /// 电视遥控 / 外接键盘的方向键接入：先翻译成统一的 <see cref="Services.RemoteKey"/>
+    /// 再交给 <see cref="Services.RemoteKeyRouter"/>（焦点在两个 <c>DpadCenter</c> 之间移动时
+    /// 需要连续触发，故不依赖 OnKeyUp）。
+    ///
+    /// <para>被消费则返回 <c>true</c>（不向系统继续派发，避免同时触发原生焦点或默认 Back 退出）；
+    /// 未消费则回落 <c>base</c>，保留 Android 默认行为（如根页面按返回退出应用）。</para>
+    /// </summary>
+    public override bool OnKeyDown(Keycode keyCode, Android.Views.KeyEvent? e)
+    {
+        Services.RemoteKey? remote = keyCode switch
+        {
+            Keycode.DpadUp => Services.RemoteKey.Up,
+            Keycode.DpadDown => Services.RemoteKey.Down,
+            Keycode.DpadLeft => Services.RemoteKey.Left,
+            Keycode.DpadRight => Services.RemoteKey.Right,
+            Keycode.DpadCenter or Keycode.Enter or Keycode.NumpadEnter => Services.RemoteKey.Enter,
+            Keycode.Back or Keycode.Escape => Services.RemoteKey.Back,
+            _ => null,
+        };
+
+        if (remote is { } key && Services.RemoteKeyRouter.Handle(key))
+            return true;
+
+        return base.OnKeyDown(keyCode, e);
+    }
+
+    /// <summary>
     /// 挂载一次性（重复数次）全局布局监听：每次真实布局后都重新强制 Edge-to-Edge，
     /// 覆盖 Splash 关闭、主题切换等可能把窗口重置为「内容止于导航栏」的时机，确保启动即全屏。
     /// （照搬猫爪音乐——MAUI 的 AndroidWindow 会在 OnCreate 之后把 DecorFitsSystemWindows

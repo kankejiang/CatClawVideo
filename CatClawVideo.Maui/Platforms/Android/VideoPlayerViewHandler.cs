@@ -172,6 +172,21 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, PlayerView>, 
 
     void IVideoPlayerImplementation.SetVolume(double volume) { if (_player != null) _player.Volume = (float)volume; }
 
+    /// <summary>播放速率：ExoPlayer 用 <c>PlaybackParameters</c>（音高不变，即变速不变调）。</summary>
+    void IVideoPlayerImplementation.SetSpeed(double speed)
+    {
+        if (_player == null) return;
+        try
+        {
+            var rate = (float)Math.Clamp(speed, 0.25, 4.0);
+            _player.PlaybackParameters = new AndroidX.Media3.Common.PlaybackParameters(rate);
+        }
+        catch (Exception ex)
+        {
+            Maui.Services.BtFileLog.Write($"[player] 设置倍速失败（{speed}）：{ex.Message}");
+        }
+    }
+
     void IVideoPlayerImplementation.SetAspect(VideoAspect aspect)
     {
         // AspectFit/AspectFill/Fill → PlayerView.ResizeMode（int 常量）
@@ -194,6 +209,16 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, PlayerView>, 
 
     TimeSpan IVideoPlayerImplementation.GetDuration() =>
         _player == null || _player.Duration < 0 ? TimeSpan.Zero : TimeSpan.FromMilliseconds(_player.Duration);
+
+    /// <summary>已缓冲位置：ExoPlayer 的 BufferedPosition（下载缓冲区的末端）。</summary>
+    TimeSpan IVideoPlayerImplementation.GetBufferedPosition() =>
+        _player == null ? TimeSpan.Zero : TimeSpan.FromMilliseconds(Math.Max(0, _player.BufferedPosition));
+
+    /// <summary>ExoPlayer 的 BufferedPosition 是真实的连续缓冲末端 —— 可信。</summary>
+    bool IVideoPlayerImplementation.IsBufferedPositionReliable => true;
+
+    /// <summary>Android 无宿主流缓存代理（磁力走迅雷 SDK）—— 交回宿主用位置推进判断。</summary>
+    bool IVideoPlayerImplementation.IsWaitingForData => false;
 
     // ═══════════════════ 播放事件桥 ═══════════════════
 

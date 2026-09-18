@@ -197,7 +197,8 @@ public partial class DownloadsPage : ContentView, ITabView
         }
     }
 
-    /// <summary>点击任务卡片：已完成任务找视频文件直接进播放页；磁力目录取最大的视频文件</summary>
+    /// <summary>点击任务卡片：已完成任务找视频文件直接进播放页；磁力目录取最大的视频文件。
+    /// <para>记录路径缺失时在下载目录里按任务名兜底找一次（见 DownloadManager.ReconcileWithDisk 的说明）。</para></summary>
     private async void OnTaskTapped(object? sender, TappedEventArgs e)
     {
         if (sender is not Border { BindingContext: DownloadTaskItem item }) return;
@@ -207,8 +208,15 @@ public partial class DownloadsPage : ContentView, ITabView
         var isDir = Directory.Exists(path);
         if (!isDir && !File.Exists(path))
         {
-            await AlertAsync("提示", "文件不存在或已被移动", "确定");
-            return;
+            // 兜底：记录路径失效时，在下载目录里按「任务名子串」找该任务的成品
+            var found = _manager.TryFindArtifact(item);
+            if (found is null)
+            {
+                await AlertAsync("提示", "文件不存在或已被移动", "确定");
+                return;
+            }
+            path = found;
+            isDir = false;
         }
 
         // 定位可播放的视频文件：文件直接用；目录（BT 多文件）取最大的视频文件

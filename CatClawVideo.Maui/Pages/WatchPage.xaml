@@ -61,10 +61,12 @@
                                                   Aspect="AspectFit"
                                                   ShouldKeepScreenOn="True" />
 
+                        <!-- 缓冲指示：圆环进度 + 中央百分比（解析/时长未知时自动退化为旋转弧） -->
                         <Grid x:Name="BufferingIndicator" IsVisible="False">
-                            <ActivityIndicator IsRunning="True" Color="{DynamicResource PrimaryColor}"
-                                               WidthRequest="40" HeightRequest="40"
-                                               HorizontalOptions="Center" VerticalOptions="Center" />
+                            <!-- 半透明底衬：深色画面上保证百分比可读（磁力/暗景常见） -->
+                            <BoxView Color="#59000000" InputTransparent="True" />
+                            <controls:BufferProgressView x:Name="BufferRing"
+                                                         Diameter="64" />
                         </Grid>
 
                         <!-- 控制覆盖层：中央播放/暂停 + 底部进度 -->
@@ -75,14 +77,15 @@
                                 <TapGestureRecognizer Tapped="OnSurfaceTapped" />
                             </Grid.GestureRecognizers>
 
-                            <!-- 网速徽章：鼠标移入播放画面显示（BT 播放时），右上角 -->
+                            <!-- 倍速徽章：播放速率 ≠ 1.0 时常驻，右上角。
+                                 （原为 BT 网速徽章，内置 BT 移除后网速已无数据源，改作倍速提示。） -->
                             <Border x:Name="SpeedBadge" IsVisible="False" InputTransparent="True"
                                     StrokeThickness="0" BackgroundColor="#80000000"
                                     StrokeShape="RoundRectangle 6" Padding="8,4"
                                     HorizontalOptions="End" VerticalOptions="Start" Margin="0,10,12,0">
                                 <HorizontalStackLayout Spacing="5">
-                                    <Image Source="ic_download_white.png" WidthRequest="11" HeightRequest="11" VerticalOptions="Center" />
-                                    <Label x:Name="SpeedLabel" Text="0 KB/s" FontSize="11" TextColor="#FFD76E" VerticalOptions="Center" />
+                                    <Label Text="»" FontSize="12" TextColor="#FFD76E" VerticalOptions="Center" />
+                                    <Label x:Name="SpeedLabel" Text="1.5× 播放" FontSize="11" TextColor="#FFD76E" VerticalOptions="Center" />
                                 </HorizontalStackLayout>
                             </Border>
                             <ImageButton x:Name="CenterPlayButton"
@@ -91,80 +94,30 @@
                                          BackgroundColor="#66000000"
                                          HorizontalOptions="Center" VerticalOptions="Center"
                                          Clicked="OnPlayPauseClicked" />
-                            <!-- 控制条：上排 = 上一集/下一集（左） + 播放/快退/快进（右）；
-                                 下排 = 进度条。图标用白箭头：单箭头=切集，双箭头=±10s 快捷 seek -->
-                            <Grid x:Name="ControlBar" VerticalOptions="End" RowDefinitions="Auto,Auto"
-                                  RowSpacing="8" Padding="14,8,14,12"
-                                  BackgroundColor="#99000000">
-                                <!-- 上排：双层结构——底层左右组（‹ › | «« »»），
-                                     上层播放键全宽居中（与画面中央大键严格同轴，不随两侧宽度漂移） -->
-                                <Grid Grid.Row="0">
-                                    <Grid ColumnDefinitions="Auto,*,Auto">
-                                        <HorizontalStackLayout Grid.Column="0" Spacing="22" VerticalOptions="Center">
-                                            <Grid HorizontalOptions="Center">
-                                                <Grid.GestureRecognizers>
-                                                    <TapGestureRecognizer Tapped="OnPrevEpisodeClicked" />
-                                                </Grid.GestureRecognizers>
-                                                <Image Source="ic_arrow_left_white.png" WidthRequest="26" HeightRequest="26" />
-                                            </Grid>
-                                            <Grid HorizontalOptions="Center">
-                                                <Grid.GestureRecognizers>
-                                                    <TapGestureRecognizer Tapped="OnNextEpisodeClicked" />
-                                                </Grid.GestureRecognizers>
-                                                <Image Source="ic_arrow_right_white.png" WidthRequest="26" HeightRequest="26" />
-                                            </Grid>
-                                        </HorizontalStackLayout>
-                                        <HorizontalStackLayout Grid.Column="2" Spacing="22" VerticalOptions="Center">
-                                            <Grid HorizontalOptions="Center">
-                                                <Grid.GestureRecognizers>
-                                                    <TapGestureRecognizer Tapped="OnRewindClicked" />
-                                                </Grid.GestureRecognizers>
-                                                <HorizontalStackLayout Spacing="-8" VerticalOptions="Center">
-                                                    <Image Source="ic_arrow_left_white.png" WidthRequest="18" HeightRequest="18" />
-                                                    <Image Source="ic_arrow_left_white.png" WidthRequest="18" HeightRequest="18" />
-                                                </HorizontalStackLayout>
-                                            </Grid>
-                                            <Grid HorizontalOptions="Center">
-                                                <Grid.GestureRecognizers>
-                                                    <TapGestureRecognizer Tapped="OnForwardClicked" />
-                                                </Grid.GestureRecognizers>
-                                                <HorizontalStackLayout Spacing="-8" VerticalOptions="Center">
-                                                    <Image Source="ic_arrow_right_white.png" WidthRequest="18" HeightRequest="18" />
-                                                    <Image Source="ic_arrow_right_white.png" WidthRequest="18" HeightRequest="18" />
-                                                </HorizontalStackLayout>
-                                            </Grid>
-                                        </HorizontalStackLayout>
-                                    </Grid>
-                                    <ImageButton x:Name="SmallPlayButton"
-                                                 Source="ic_pause.png"
-                                                 WidthRequest="32" HeightRequest="32"
-                                                 BackgroundColor="Transparent"
-                                                 HorizontalOptions="Center" VerticalOptions="Center"
-                                                 Clicked="OnPlayPauseClicked" />
-                                </Grid>
-                                <!-- 下排：进度条 + 时间 + 全屏 -->
-                                <!-- 下排：进度条 + 时间 + 全屏 -->
-                                <Grid Grid.Row="1" ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10">
-                                    <Label Grid.Column="0" x:Name="PositionLabel" Text="00:00"
-                                           FontSize="10.5" FontFamily="OpenSansSemibold" TextColor="White"
-                                           VerticalOptions="Center" />
-                                    <Slider Grid.Column="1" x:Name="ProgressBar"
-                                            Minimum="0" Maximum="100" Value="0"
-                                            MinimumTrackColor="{DynamicResource PrimaryColor}"
-                                            MaximumTrackColor="#40FFFFFF" ThumbColor="White"
-                                            VerticalOptions="Center"
-                                            DragStarted="OnSeekStarted" DragCompleted="OnSeekCompleted" />
-                                    <Label Grid.Column="2" x:Name="DurationLabel" Text="--:--"
-                                           FontSize="10.5" FontFamily="OpenSansSemibold" TextColor="White"
-                                           VerticalOptions="Center" />
-                                    <ImageButton Grid.Column="3" x:Name="FullScreenButton"
-                                                 Source="ic_fullscreen.png"
-                                                 WidthRequest="26" HeightRequest="24"
-                                                 BackgroundColor="Transparent"
-                                                 VerticalOptions="Center"
-                                                 Clicked="OnToggleFullscreenClicked" />
-                                </Grid>
-                            </Grid>
+                            <!-- 控件条（方案 B · 悬浮双行面板，与全屏播放页共用同一控件） -->
+                            <controls:PlaybackControlBar x:Name="ControlBar" />
+
+                        </Grid>
+
+                        <!-- ═══ 全屏选集浮层 ═══
+                             ⚠ 放在 PlayerHost 内部（播放器之上、ControlsOverlay 之外），两个原因：
+                               ① WinUI 的 MediaPlayerElement 是 DirectX 交换链（SwapChainPanel），会盖住
+                                  其外部的同级/上层 MAUI 元素（airspace）——放页面级时浮层完全不显示；
+                               ② 必须**放在 ControlsOverlay 之外**：该层带「点击画面切换控制层」手势
+                                  且会被 3s 自动隐藏连带藏掉子元素，浮层放进去会两者都中招。
+                             非全屏时选集栏常驻右列，本层不参与。 -->
+                        <Grid x:Name="EpisodesOverlay" IsVisible="False">
+                            <BoxView Color="#B3000000">
+                                <BoxView.GestureRecognizers>
+                                    <TapGestureRecognizer Tapped="OnEpisodesOverlayBackdropTapped" />
+                                </BoxView.GestureRecognizers>
+                            </BoxView>
+
+                            <Grid x:Name="EpisodesOverlayHost"
+                                  WidthRequest="360"
+                                  HorizontalOptions="End"
+                                  VerticalOptions="Fill"
+                                  Margin="0,10,10,10" />
                         </Grid>
                     </Grid>
                 </Border>

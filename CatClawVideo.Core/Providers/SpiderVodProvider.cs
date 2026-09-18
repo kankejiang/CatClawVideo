@@ -142,7 +142,12 @@ public class SpiderVodProvider : IVodSourceProvider
 
         var opened = await engine.TryOpenAsync(url, episode.Name, ct)
             ?? throw new NotSupportedException("迅雷无法解析该磁力链接（无可用资源或资源不存在）");
-        return new PlayRequest { Title = episode.Name, Url = opened.Url, Headers = play.Headers };
+
+        // 展示名取**种子内真实文件名**而非站点给的打包名：磁力站的起播名往往是
+        // 「第四季01-03-1080p」这种打包描述（磁力 dn），看不出正在播哪个文件；
+        // 引擎解析时已拿到真实文件名，直接用它。
+        var display = string.IsNullOrWhiteSpace(opened.FileName) ? episode.Name : opened.FileName;
+        return new PlayRequest { Title = display, Url = opened.Url, Headers = play.Headers };
     }
 
     /// <summary>

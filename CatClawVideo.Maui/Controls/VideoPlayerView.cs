@@ -47,8 +47,38 @@ public interface IVideoPlayerImplementation
     void SetAspect(VideoAspect aspect);
     void KeepScreenOn(bool keep);
 
+    /// <summary>设置播放速率（1.0 = 常速）。平台不支持时应静默忽略。</summary>
+    void SetSpeed(double speed);
+
     TimeSpan GetPosition();
     TimeSpan GetDuration();
+
+    /// <summary>
+    /// 已缓冲到的位置（用于进度轴的缓冲条）。
+    /// 无法获知时返回当前位置（表现为「不画缓冲」），不要返回 0 —— 那会让缓冲条倒退。
+    /// </summary>
+    TimeSpan GetBufferedPosition();
+
+    /// <summary>
+    /// 上面返回的缓冲位置是否**可信**（即「从当前点到该位置是连续可播的」）。
+    ///
+    /// <para><b>为什么需要</b>：磁力边下边播时平台拿不到真正的缓冲区间（Windows 的 MF 对
+    /// FFmpegInteropX 包装的非自适应流不报 <c>BufferedRanges</c>），只能回落到
+    /// 「已下载字节比例 × 总时长」。而 P2P 是**乱序下载**——已下载 95% 并不代表当前位置往后
+    /// 连续可播，这个值会严重虚高。宿主据此算「缓冲百分比」会直接跳到 100% 卡死。</para>
+    ///
+    /// <para>返回 false 时宿主改用时长的经验估算，避免显示误导性的数字。</para>
+    /// </summary>
+    bool IsBufferedPositionReliable { get; }
+
+    /// <summary>
+    /// 播放器是否**正在等数据**（读到已缓冲范围之外 = 真饥饿）。
+    ///
+    /// <para><b>这是磁力路上唯一权威的缓冲信号</b>：磁力流经宿主的读前缓存代理
+    /// （<c>QemuStreamProxy</c>），代理确切知道「读者有没有顶到缓存前沿等数据」——
+    /// 不需要任何估算。直链路没有代理，返回 false（调用方回落位置推进判断）。</para>
+    /// </summary>
+    bool IsWaitingForData { get; }
 }
 
 /// <summary>
@@ -142,6 +172,32 @@ public partial class VideoPlayerView : View
     /// <summary>总时长（未加载为 0）</summary>
     public TimeSpan Duration { get; private set; }
 
+    /// <summary>已缓冲到的位置（进度轴缓冲条用；不支持时为当前位置。
+    /// ⚠ 已被抬到不低于 <see cref="Position"/>，用于绘制进度条；要算「缓冲进度」请用
+    /// <see cref="BufferedFrontier"/>）</summary>
+    public TimeSpan BufferedPosition { get; private set; }
+
+    /// <summary>
+    /// 已缓冲前沿（**未**与播放位置取 max 的原始值）。
+    ///
+    /// <para><b>为什么单独暴露</b>：快进到未缓冲区域时，播放器的 <see cref="Position"/> 会立刻跳到
+    /// 目标点，而真正下载到的前沿还停在后面 —— 「还要缓冲到这里」的百分比必须用这个原始值；
+    /// 用 <see cref="BufferedPosition"/>（已抬到 position）会恒等于 100%，指示器立刻消失。</para>
+    /// </summary>
+    public TimeSpan BufferedFrontier { get; private set; }
+
+    /// <summary>
+    /// <see cref="BufferedFrontier"/> 是否可信（连续可播）。磁力边下边播时平台只能按
+    /// 「已下载字节比例」估算，P2P 乱序下载会让该值虚高 → 宿主不用它算百分比。
+    /// </summary>
+    public bool IsBufferedPositionReliable { get; private set; }
+
+    /// <summary>
+    /// 播放器是否正在等数据（权威信号，仅磁力路有效）。
+    /// 磁力流经 <c>QemuStreamProxy</c>，代理确切知道读者是否顶到缓存前沿 —— 无需估算。
+    /// </summary>
+    public bool IsWaitingForData { get; private set; }
+
     /// <summary>失败原因（Failed 状态时有效）</summary>
     public string? ErrorMessage { get; private set; }
 
@@ -183,6 +239,25 @@ public partial class VideoPlayerView : View
 
     public void Seek(TimeSpan position) => Implementation?.Seek(position);
 
+    /// <summary>播放速率（1.0 = 常速）。切换源后会自动重新应用。</summary>
+    public double Speed
+    {
+        get => _speed;
+        set
+        {
+            var v = Math.Clamp(value, MinSpeed, MaxSpeed);
+            if (Math.Abs(v - _speed) < 0.001) return;
+            _speed = v;
+            try { Implementation?.SetSpeed(v); } catch { }
+        }
+    }
+
+    private double _speed = 1.0;
+
+    /// <summary>可选速率档位（遥控器/触屏都在这一组里循环）。</summary>
+    public static readonly double[] SpeedPresets = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0];
+    private const double MinSpeed = 0.25, MaxSpeed = 4.0;
+
     // ═══════════════════ 属性变更路由 ═══════════════════
 
     private static void OnSourceChanged(BindableObject bindable, object oldValue, object newValue)
@@ -222,6 +297,11 @@ public partial class VideoPlayerView : View
 
         UpdateState(VideoPlayerState.Preparing);
         Implementation?.SetSource(url, Headers);
+
+        // 换源/换集后重新套用**速率与音量**：换媒体会把它们重置回默认值，
+        // 不补的话用户会觉得「切了一集倍速就丢了 / 静音自己解除了」。
+        try { Implementation?.SetSpeed(_speed); } catch { }
+        try { Implementation?.SetVolume(Volume); } catch { }
     }
 
     // ═══════════════════ 平台层回调 ═══════════════════
@@ -235,9 +315,12 @@ public partial class VideoPlayerView : View
 
         UpdateState(state);
 
-        // 播放中开轮询，其他状态停轮询
-        if (state == VideoPlayerState.Playing) StartPositionTimer();
-        else if (state != VideoPlayerState.Buffering) StopPositionTimer();
+        // 播放中 / 缓冲中都开轮询：
+        //   - 播放中：刷新 Position/Duration，驱动进度条
+        //   - 缓冲中：Position 不动但**缓冲前沿在推进**，缓冲百分比要靠它刷新
+        //     （此前缓冲态不轮询，宿主拿不到前沿变化 → 百分比不会动）
+        if (state is VideoPlayerState.Playing or VideoPlayerState.Buffering) StartPositionTimer();
+        else StopPositionTimer();
     }
 
     /// <summary>平台层上报媒体打开成功（仅首个 READY 时由 Handler 触发一次）</summary>
@@ -308,13 +391,39 @@ public partial class VideoPlayerView : View
     private void PollPosition()
     {
         if (Implementation == null) return;
+
         var pos = Implementation.GetPosition();
         var dur = Implementation.GetDuration();
-        if (pos != Position || dur != Duration)
-        {
-            Position = pos;
-            if (dur > Duration) Duration = dur;
-            PositionChanged?.Invoke(this, EventArgs.Empty);
-        }
+
+        // 缓冲位置单独取：个别平台/源拿不到准确值，失败时退化为当前位置（不画缓冲条）
+        TimeSpan buf;
+        try { buf = Implementation.GetBufferedPosition(); }
+        catch { buf = pos; }
+
+        // 原始前沿先留档（算缓冲百分比用），再做「不低于播放位置」的抬升（画进度条用）
+        var frontier = buf;
+        if (buf < pos) buf = pos;   // 缓冲绝不落后于播放位置，否则进度条会「倒退」
+
+        // 可信度：由平台层判定（磁力按字节估算时为 false）
+        bool reliable;
+        try { reliable = Implementation.IsBufferedPositionReliable; }
+        catch { reliable = false; }
+
+        bool waiting;
+        try { waiting = Implementation.IsWaitingForData; }
+        catch { waiting = false; }
+
+        Position = pos;
+        if (dur > Duration) Duration = dur;
+        BufferedPosition = buf;
+        BufferedFrontier = frontier;
+        IsBufferedPositionReliable = reliable;
+        IsWaitingForData = waiting;
+
+        // **无条件**每 250ms 上报一次（不再按「值有变化」过滤）：
+        //   ① 卡住时 Position/前沿都不变，按变化上报会让宿主的缓冲指示器僵死；
+        //   ② 磁力流 MF 可能一边正常播放一边把 PlaybackState 报成 Buffering，
+        //      宿主只能靠「位置有没有推进」判断真假缓冲 —— 那需要连续的采样点。
+        PositionChanged?.Invoke(this, EventArgs.Empty);
     }
 }

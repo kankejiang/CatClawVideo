@@ -26,12 +26,16 @@
                                   HorizontalOptions="Fill"
                                   VerticalOptions="Fill" />
 
-        <!-- 缓冲指示 -->
-        <ActivityIndicator x:Name="BufferingIndicator"
-                           IsVisible="{Binding IsBuffering}"
-                           IsRunning="{Binding IsBuffering}"
-                           Color="{DynamicResource PrimaryColor}"
-                           WidthRequest="48" HeightRequest="48" />
+        <!-- 缓冲指示：圆环进度 + 中央百分比（不遮整屏，只覆盖中央区域） -->
+        <Grid x:Name="BufferingIndicator"
+              IsVisible="{Binding IsBuffering}"
+              HorizontalOptions="Center"
+              VerticalOptions="Center">
+            <BoxView Color="#59000000" InputTransparent="True"
+                     WidthRequest="110" HeightRequest="110"
+                     CornerRadius="55" />
+            <controls:BufferProgressView x:Name="BufferRing" Diameter="76" />
+        </Grid>
 
         <!-- 错误面板 -->
         <VerticalStackLayout x:Name="ErrorPanel"
@@ -61,9 +65,9 @@
                     Clicked="OnRetryClicked" />
         </VerticalStackLayout>
 
-        <!-- ═══ 自定义控制层 ═══ -->
+        <!-- ═══ 自定义控制层（方案 B · 悬浮双行面板） ═══ -->
         <Grid x:Name="ControlsOverlay"
-              RowDefinitions="Auto,*,Auto"
+              RowDefinitions="Auto,*"
               IsVisible="{Binding ControlsVisible}"
               InputTransparent="False">
 
@@ -99,7 +103,7 @@
                              IsVisible="False" />
             </Grid>
 
-            <!-- 中央播放/暂停 -->
+            <!-- 中央播放/暂停（仅在暂停时出现，与底部常驻播放键互斥，避免重复） -->
             <ImageButton Grid.Row="1"
                          x:Name="CenterPlayButton"
                          Source="ic_play.png"
@@ -110,45 +114,8 @@
                          VerticalOptions="Center"
                          Clicked="OnPlayPauseClicked" />
 
-            <!-- 底栏：播放/暂停 + 进度条 + 时长 -->
-            <Grid Grid.Row="2"
-                  ColumnDefinitions="Auto,Auto,*,Auto"
-                  ColumnSpacing="10"
-                  Padding="14,8,14,12"
-                  BackgroundColor="#66000000">
-                <ImageButton Grid.Column="0"
-                             x:Name="BottomPlayButton"
-                             Source="ic_pause.png"
-                             WidthRequest="40" HeightRequest="40"
-                             CornerRadius="20"
-                             BackgroundColor="Transparent"
-                             Clicked="OnPlayPauseClicked" />
-                <Label Grid.Column="1"
-                       Text="{Binding PositionLabel}"
-                       FontSize="12"
-                       FontFamily="OpenSansSemibold"
-                       TextColor="White"
-                       VerticalOptions="Center"
-                       HorizontalOptions="Center" />
-                <Slider Grid.Column="2"
-                        x:Name="ProgressBar"
-                        MinimumTrackColor="{DynamicResource PrimaryColor}"
-                        MaximumTrackColor="#40FFFFFF"
-                        ThumbColor="White"
-                        Minimum="0"
-                        Maximum="100"
-                        Value="0"
-                        VerticalOptions="Center"
-                        DragStarted="OnSeekStarted"
-                        DragCompleted="OnSeekCompleted" />
-                <Label Grid.Column="3"
-                       Text="{Binding DurationLabel}"
-                       FontSize="12"
-                       FontFamily="OpenSansSemibold"
-                       TextColor="White"
-                       VerticalOptions="Center"
-                       HorizontalOptions="Center" />
-            </Grid>
+            <!-- 底部悬浮控件条（方案 B） -->
+            <controls:PlaybackControlBar Grid.Row="1" x:Name="ControlBar" />
 
         </Grid>
 

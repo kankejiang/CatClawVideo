@@ -388,12 +388,27 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IPlaybackSession
                 var buf = new byte[262144];
                 long read = start;
                 int n;
+
+                // ★ 进度上报必须节流（2026-09-19 用户实测「下载时窗口未响应」）：
+                //   导出以 256KB 为一块，1.3GB ≈ 5200 次；每次回调都经宿主 UpdateTask 投递
+                //   MainThread，几千个任务瞬间灌满 UI 消息队列 → 界面整体卡死。
+                //   这里限到 ~2 次/秒（与引擎下载阶段的 1s 节拍一致），只影响展示精度，不影响速度。
+                var lastReport = Environment.TickCount64;
+                void Report(bool force)
+                {
+                    var now = Environment.TickCount64;
+                    if (!force && now - lastReport < 500) return;
+                    lastReport = now;
+                    progress?.Invoke(read, total);
+                }
+
                 while ((n = await src.ReadAsync(buf, ct).ConfigureAwait(false)) > 0)
                 {
                     await dst.WriteAsync(buf, 0, n, ct).ConfigureAwait(false);
                     read += n;
-                    progress?.Invoke(read, total);
+                    Report(force: false);
                 }
+                Report(force: true);   // 收尾必报一次（否则进度停在节流点、显示不满）
                 if (total <= 0 || read >= total) { Log($"导出完成：{read / 1048576.0:F1}MB"); return true; }
                 Log($"导出中断于 {read}/{total}（第 {attempt}/5 次，续传重试）");
             }
@@ -628,8 +643,14 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IPlaybackSession
         //   否则比原逻辑更糟，故把 ParseTorrent 放进等待循环里，只有解析成功才结束等待。
         var directTorrentPath = SynthesizeUrlPath("/thunder-data/" + s.Name);
         (List<TorrentEntry> Files, string Name)? parsed = null;
-        var waitDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(120);
-        while (DateTime.UtcNow < waitDeadline)
+        // ★ 自适应超时（原固定 120s）：种子通常 0.2~3s 就落盘（实测），而**死链磁力**会一路
+        //   空等到 120s —— 用户看到的是「选集栏转了 2 分钟然后啥也没有」。改为：
+        //   前 15s 高频轮询（正常磁力都在这段内落盘），之后退到 1s 一次，总上限 45s。
+        //   15s 内没动静基本可判死链（引擎拿不到任何节点），早失败早提示。
+        var startUtc = DateTime.UtcNow;
+        var hardDeadline = startUtc + TimeSpan.FromSeconds(45);
+        var softDeadline = startUtc + TimeSpan.FromSeconds(15);
+        while (DateTime.UtcNow < hardDeadline)
         {
             if (s.Cancelled) return null;
             if (s.LastError is not null) { Log(s.LastError); _session = null; return null; }
@@ -652,12 +673,14 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IPlaybackSession
                 }
                 catch { /* 种子仍在写：解析失败不算失败，继续等 */ }
             }
-            try { await Task.Delay(250, ct).ConfigureAwait(false); }
+            // 慢档：15s 后降频，避免长尾死链把控制口刷满
+            var delayMs = DateTime.UtcNow < softDeadline ? 250 : 1000;
+            try { await Task.Delay(delayMs, ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { return null; }
         }
         if (parsed is null)
         {
-            Log("等种子落盘超时（120s）");
+            Log($"等种子落盘超时（{(DateTime.UtcNow - startUtc).TotalSeconds:F0}s，疑似死链或无资源）");
             _session = null;
             return null;
         }

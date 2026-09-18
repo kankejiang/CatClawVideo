@@ -126,7 +126,10 @@ public class CatClawSourceProvider : IVodSourceProvider
                 throw new NotSupportedException("磁力播放需要迅雷引擎，当前不可用；请确认迅雷运行时已就绪");
             var opened = await engine.TryOpenAsync(url, episode.Name, ct)
                 ?? throw new NotSupportedException("迅雷无法解析该磁力链接（无可用资源）");
-            return new PlayRequest { Title = episode.Name, Url = opened.Url };
+
+            // 展示名用种子内真实文件名（而非磁力 dn 打包名），见 SpiderVodProvider 同类注释
+            var display = string.IsNullOrWhiteSpace(opened.FileName) ? episode.Name : opened.FileName;
+            return new PlayRequest { Title = display, Url = opened.Url };
         }
 
         // web 模式：非直链 URL（播放入口页）→ 规则引擎实时解析直链（时效签名现取现用）

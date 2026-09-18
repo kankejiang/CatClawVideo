@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>猫爪影视 · 播放控件重设计（三套方案）</title>
+<style>
+  :root{
+    --bg:#12102B; --surface:#1B1840; --card:#332F5A; --card2:#3A3668;
+    --primary:#9B7ED8; --primary-dark:#7C5DCE; --accent:#55D6FF;
+    --text:#F5F6FF; --text2:#BCC0DD; --text3:#868CAE;
+    --divider:rgba(255,255,255,.08);
+    --focus:#B79BFF;
+    --bar:rgba(255,255,255,.22);
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#08070F;font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    color:var(--text);padding:44px 40px 90px}
+  h1{font-size:23px}
+  .sub{color:var(--text3);font-size:13px;line-height:1.85;margin:8px 0 30px;max-width:1000px}
+  .sec{max-width:1400px;margin-bottom:64px}
+  .sec-h{display:flex;align-items:center;gap:12px;margin-bottom:6px}
+  .sec-h h2{font-size:17px}
+  .tag{font-size:11px;padding:3px 11px;border-radius:99px;background:rgba(155,126,216,.18);color:#C9B6F2;font-weight:700}
+  .tag.bad{background:rgba(255,110,110,.16);color:#FFB3B3}
+  .sec-d{font-size:12.5px;color:var(--text3);line-height:1.8;margin-bottom:16px;max-width:1040px}
+  .sec-d b{color:var(--text2)}
+
+  /* ── 播放器外框 ── */
+  .player{position:relative;width:1280px;height:720px;border-radius:14px;overflow:hidden;
+    background:#000;box-shadow:0 26px 64px rgba(0,0,0,.7);flex:none}
+  .player.pc{width:1140px;height:640px}
+  .video{position:absolute;inset:0;
+    background:
+      radial-gradient(ellipse at 30% 20%, rgba(155,126,216,.34), transparent 55%),
+      radial-gradient(ellipse at 72% 78%, rgba(85,214,255,.18), transparent 52%),
+      linear-gradient(135deg,#2A1F3D 0%, #1A1630 45%, #0E0C22 100%)}
+  /* 画面里的假"人物/字幕"块，帮助判断对比度 */
+  .fg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    font-size:15px;color:rgba(255,255,255,.16);letter-spacing:6px}
+
+  /* ── 顶栏（三方案共用形态） ── */
+  .top{position:absolute;top:0;left:0;right:0;height:64px;display:flex;align-items:center;gap:14px;
+    padding:0 20px;background:linear-gradient(180deg,rgba(0,0,0,.72),transparent);z-index:5}
+  .tbtn{width:38px;height:38px;border-radius:11px;display:flex;align-items:center;justify-content:center;
+    background:rgba(255,255,255,.10);color:#fff;font-size:15px;flex:none;border:none}
+  .ttl{font-size:15px;font-weight:700;text-shadow:0 2px 8px rgba(0,0,0,.6)}
+  .tsub{font-size:11.5px;color:rgba(255,255,255,.55);margin-top:2px}
+  .tright{margin-left:auto;display:flex;gap:10px;align-items:center}
+
+  /* ── 焦点环 ── */
+  .foc{outline:2.5px solid var(--focus);outline-offset:2px;
+    box-shadow:0 0 0 6px rgba(155,126,216,.22),0 8px 26px rgba(124,93,206,.5)}
+
+  /* ═══════════ 方案 A · 沉浸式单行 ═══════════ */
+  /* 底部渐隐 + 一条主进度轴，控件全部挂在这条轴上 */
+  .a-bar{position:absolute;left:0;right:0;bottom:0;z-index:6;
+    padding:26px 30px 22px;
+    background:linear-gradient(0deg,rgba(0,0,0,.88) 30%,rgba(0,0,0,.55) 65%,transparent)}
+  .a-row{display:flex;align-items:center;gap:16px}
+  /* 进度轴 */
+  .axis{position:relative;height:26px;display:flex;align-items:center;cursor:pointer;flex:1}
+  .axis .track{position:absolute;left:0;right:0;height:5px;border-radius:99px;background:rgba(255,255,255,.24)}
+  .axis .buf{position:absolute;left:0;height:5px;border-radius:99px;background:rgba(255,255,255,.34);width:62%}
+  .axis .fill{position:absolute;left:0;height:5px;border-radius:99px;
+    background:linear-gradient(90deg,var(--primary),var(--accent));width:18%;
+    box-shadow:0 0 14px rgba(155,126,216,.6)}
+  .axis .knob{position:absolute;left:18%;width:15px;height:15px;border-radius:99px;background:#fff;
+    transform:translate(-50%,0);box-shadow:0 0 0 5px rgba(155,126,216,.30),0 2px 8px rgba(0,0,0,.5)}
+  /* hover 加粗 */
+  .axis:hover .track,.axis:hover .buf,.axis:hover .fill{height:9px}
+  .axis:hover .knob{width:19px;height:19px}
+  .axis .track,.axis .buf,.axis .fill{transition:height .14s}
+  /* 进度预览气泡 */
+  .axis .bubble{position:absolute;bottom:26px;left:38%;transform:translateX(-50%);
+    background:rgba(20,16,40,.95);border:1px solid var(--divider);border-radius:8px;
+    padding:5px 10px;font-size:12px;font-weight:700;opacity:.0;transition:opacity .14s;white-space:nowrap}
+  .axis:hover .bubble{opacity:1}
+
+  .a-time{font-size:13px;font-variant-numeric:tabular-nums;color:var(--text2);flex:none;
+    min-width:52px;text-align:center}
+  .a-time.now{color:#fff;font-weight:700}
+
+  /* 主控键组：居中 */
+  .a-ctrl{display:flex;align-items:center;justify-content:center;gap:8px;flex:1}
+  .rbtn{width:44px;height:44px;border-radius:13px;display:flex;align-items:center;justify-content:center;
+    background:transparent;color:#fff;font-size:17px;border:none;position:relative}
+  .rbtn:hover{background:rgba(255,255,255,.12)}
+  .rbtn.big{width:56px;height:56px;border-radius:18px;background:rgba(255,255,255,.14);font-size:22px}
+  .rbtn.big:hover{background:rgba(255,255,255,.22)}
+  .rbtn .badge{position:absolute;bottom:5px;font-size:8.5px;font-weight:800;color:rgba(255,255,255,.85)}
+  .a-side{display:flex;align-items:center;gap:8px;flex:none}
+  .chip{height:34px;padding:0 13px;border-radius:10px;display:flex;align-items:center;gap:6px;
+    background:rgba(255,255,255,.10);font-size:12.5px;color:var(--text2);border:none;font-weight:600}
+
+  /* 侧边大热区（上/下一集） */
+  .edge{position:absolute;top:64px;bottom:120px;width:90px;display:flex;align-items:center;justify-content:center;
+    z-index:4;opacity:.55;color:#fff;font-size:26px}
+  .edge.l{left:0} .edge.r{right:0}
+
+  /* ═══════════ 方案 B · 双行分区 ═══════════ */
+  .b-bar{position:absolute;left:24px;right:24px;bottom:20px;z-index:6;border-radius:18px;
+    background:rgba(16,13,34,.90);border:1px solid var(--divider);
+    backdrop-filter:blur(14px);padding:16px 22px 14px;
+    box-shadow:0 16px 44px rgba(0,0,0,.6)}
+  .b-1{display:flex;align-items:center;gap:18px;margin-bottom:12px}
+  .b-grp{display:flex;align-items:center;gap:8px}
+  .b-sep{width:1px;height:26px;background:var(--divider)}
+  .b-2{display:flex;align-items:center;gap:14px}
+  .b-title{flex:1;min-width:0}
+  .b-title .t{font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .b-title .s{font-size:11px;color:var(--text3);margin-top:2px}
+  .b-btn{height:40px;min-width:40px;padding:0 12px;border-radius:11px;display:flex;align-items:center;
+    justify-content:center;gap:7px;background:rgba(255,255,255,.09);color:#fff;font-size:13px;
+    border:none;font-weight:600}
+  .b-btn:hover{background:rgba(255,255,255,.16)}
+  .b-btn.play{background:var(--primary);box-shadow:0 6px 18px rgba(124,93,206,.45);min-width:52px}
+
+  /* ═══════════ 方案 C · 电视 / 遥控器优先 ═══════════ */
+  .c-bar{position:absolute;left:0;right:0;bottom:0;z-index:6;
+    background:linear-gradient(0deg,rgba(0,0,0,.94) 40%,rgba(0,0,0,.6) 75%,transparent);
+    padding:30px 46px 16px}
+  .c-axis{position:relative;height:34px;display:flex;align-items:center;margin-bottom:16px}
+  .c-axis .track{position:absolute;left:0;right:0;height:8px;border-radius:99px;background:rgba(255,255,255,.24)}
+  .c-axis .fill{position:absolute;left:0;height:8px;border-radius:99px;
+    background:linear-gradient(90deg,var(--primary),var(--accent));width:18%}
+  .c-axis .knob{position:absolute;left:18%;width:22px;height:22px;border-radius:99px;background:#fff;
+    transform:translate(-50%,0)}
+  .c-axis.focused{padding:0;border-radius:12px}
+  .c-axis.focused .knob{box-shadow:0 0 0 6px rgba(155,126,216,.35),0 0 22px rgba(155,126,216,.7)}
+  .c-axis.focused .track,.c-axis.focused .fill{height:11px}
+  .c-row{display:flex;align-items:center;justify-content:center;gap:20px}
+  .c-btn{height:62px;min-width:62px;padding:0 18px;border-radius:18px;display:flex;align-items:center;
+    justify-content:center;gap:9px;background:rgba(255,255,255,.10);color:#fff;font-size:15px;
+    font-weight:700;border:none}
+  .c-btn.play{background:var(--primary);min-width:108px;font-size:16px;
+    box-shadow:0 8px 26px rgba(124,93,206,.5)}
+  .c-hint{display:flex;align-items:center;gap:26px;justify-content:center;margin-top:16px;
+    font-size:12.5px;color:rgba(255,255,255,.55)}
+  kbd{display:inline-block;min-width:24px;text-align:center;background:rgba(255,255,255,.14);
+    border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:2px 7px;font-size:11.5px;font-family:inherit;color:#fff}
+
+  /* ── 对比表 ── */
+  table{border-collapse:collapse;font-size:12.5px;width:100%;max-width:1100px}
+  th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--divider);vertical-align:top}
+  th{color:var(--text3);font-size:11.5px;font-weight:600;letter-spacing:.4px}
+  code{background:rgba(255,255,255,.07);border-radius:5px;padding:1px 6px;font-size:11.5px}
+  .note{font-size:11.5px;color:var(--text3);line-height:1.85;margin-top:16px;max-width:1040px;
+    border-left:2px solid rgba(155,126,216,.5);padding-left:12px}
+  .note b{color:var(--text2)}
+
+  /* ── 现状剖析 ── */
+  .diag{display:flex;gap:16px;flex-wrap:wrap;margin-top:6px}
+  .diag .d{width:430px;border:1px solid var(--divider);border-radius:14px;background:var(--card);padding:16px}
+  .diag .d h4{font-size:13px;margin-bottom:8px;color:#FFB3B3}
+  .diag .d p{font-size:12px;color:var(--text3);line-height:1.75}
+</style>
+</head>
+<body>
+
+<h1>猫爪影视 · 播放控件重设计</h1>
+<p class="sub">
+  目标：把播放区域的控制层做成「一眼看懂、遥控器好使、三端统一」的一套控件。<br>
+  先出模板，确认方向后再改 <code>VideoPlayerPage</code> / <code>WatchPage</code> 的 XAML。
+</p>
+
+<!-- ══════════ 现状问题 ══════════ -->
+<section class="sec">
+  <div class="sec-h"><h2>一、现状问题（基于你的截图）</h2><span class="tag bad">待解决</span></div>
+  <div class="diag">
+    <div class="d"><h4>① 进度条几乎看不见</h4>
+      <p>进度轴太细、对比度低，45 分钟的片子只能靠猜位置；已缓冲区间也没有表达。</p></div>
+    <div class="d"><h4>② 控件语义混在一起</h4>
+      <p>左侧 <code>‹ ›</code> 是切集、右侧 <code>«« »»</code> 是 ±10s，图标形态相近却行为不同，容易误点。</p></div>
+    <div class="d"><h4>③ 中央键与底栏键重复</h4>
+      <p>同一个「暂停」出现两次，信息冗余；底栏空间本可以留给更有用的入口（倍速 / 选集 / 音轨）。</p></div>
+    <div class="d"><h4>④ 时间与全屏被挤到边缘</h4>
+      <p>时间贴左、全屏贴右，视觉上不成组；遥控器焦点也没有明确落点。</p></div>
+  </div>
+</section>
+
+<!-- ══════════ 方案 A ══════════ -->
+<section class="sec">
+  <div class="sec-h"><h2>二、方案 A · 沉浸式单行（推荐）</h2><span class="tag">进度轴主导</span></div>
+  <div class="sec-d">
+    只保留 <b>一条主进度轴</b>，所有控件挂在它两侧，底栏从「两行」压成 <b>一行</b>，画面遮挡最小。<br>
+    进度轴：加粗到 5px（悬停/焦点 9px）+ 已缓冲区间 + 拖拽气泡预览 + 发光进度。左右侧边是大面积切集热区。
+  </div>
+  <div class="player">
+    <div class="video"></div><div class="fg">影 片 画 面</div>
+
+    <!-- 切集大热区 -->
+    <div class="edge l">‹</div>
+    <div class="edge r">›</div>
+
+    <!-- 顶栏 -->
+    <div class="top">
+      <div class="tbtn">‹</div>
+      <div>
+        <div class="ttl">生涯典时</div>
+        <div class="tsub">第 12 集 · 线路二 · 1080P</div>
+      </div>
+      <div class="tright">
+        <div class="chip">⚡ 倍速 1.0×</div>
+        <div class="chip">☰ 选集</div>
+      </div>
+    </div>
+
+    <!-- 底栏（单行） -->
+    <div class="a-bar">
+      <div class="a-row">
+        <!-- 左：主控 -->
+        <div class="a-side">
+          <div class="rbtn" title="上一集">‹</div>
+          <div class="rbtn big">❚❚</div>
+          <div class="rbtn" title="下一集">›</div>
+        </div>
+
+        <!-- 中：时间 + 进度轴 + 时间 -->
+        <div class="a-row" style="flex:1;gap:12px">
+          <div class="a-time now">02:07</div>
+          <div class="axis">
+            <div class="track"></div>
+            <div class="buf"></div>
+            <div class="fill"></div>
+            <div class="knob"></div>
+            <div class="bubble">16:48</div>
+          </div>
+          <div class="a-time">45:34</div>
+        </div>
+
+        <!-- 右：快捷 -->
+        <div class="a-side">
+          <div class="rbtn" title="后退 10 秒">«<span class="badge">10</span></div>
+          <div class="rbtn" title="前进 10 秒">»<span class="badge">10</span></div>
+          <div class="rbtn" title="音量">🔊</div>
+          <div class="rbtn" title="全屏">⛶</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="note">
+    <b>遥控器落点</b>：焦点默认落在进度轴上（←→ 直接 ±10s 微调），↑ 跳到底部按钮排，再 ↑ 到顶栏。
+    进度轴获得焦点时加粗并高亮滑块，与「普通按钮焦点环」区分。
+  </div>
+</section>
+
+<!-- ══════════ 方案 B ══════════ -->
+<section class="sec">
+  <div class="sec-h"><h2>三、方案 B · 悬浮双行面板</h2><span class="tag">功能最全</span></div>
+  <div class="sec-d">
+    底部做成一块<b>悬浮玻璃面板</b>（不贴边），两行布局：上行是「信息 + 功能键」，下行是「时间 + 进度 + 全屏」。<br>
+    适合桌面端：鼠标活动范围集中，可放更多入口；代价是遮挡画面更多。
+  </div>
+  <div class="player pc">
+    <div class="video"></div><div class="fg">影 片 画 面</div>
+
+    <div class="top">
+      <div class="tbtn">‹</div>
+      <div>
+        <div class="ttl">生涯典时</div>
+        <div class="tsub">第 12 集 · 线路二</div>
+      </div>
+      <div class="tright"><div class="chip">⚙ 设置</div></div>
+    </div>
+
+    <div class="b-bar">
+      <!-- 上行：信息 + 功能键 -->
+      <div class="b-1">
+        <div class="b-title">
+          <div class="t">生涯典时 · 第 12 集</div>
+          <div class="s">线路二 · 1080P · 已缓冲 62%</div>
+        </div>
+        <div class="b-grp">
+          <div class="b-btn">‹ 上一集</div>
+          <div class="b-btn play foc">❚❚ 暂停</div>
+          <div class="b-btn">下一集 ›</div>
+        </div>
+        <div class="b-sep"></div>
+        <div class="b-grp">
+          <div class="b-btn">−10s</div>
+          <div class="b-btn">+10s</div>
+        </div>
+        <div class="b-sep"></div>
+        <div class="b-grp">
+          <div class="b-btn">1.0×</div>
+          <div class="b-btn">🔊</div>
+          <div class="b-btn">☰</div>
+        </div>
+      </div>
+
+      <!-- 下行：时间 + 进度 + 全屏 -->
+      <div class="b-2">
+        <div class="a-time now" style="min-width:56px">02:07</div>
+        <div class="axis">
+          <div class="track"></div>
+          <div class="buf"></div>
+          <div class="fill"></div>
+          <div class="knob"></div>
+          <div class="bubble">16:48</div>
+        </div>
+        <div class="a-time" style="min-width:56px">45:34</div>
+        <div class="b-btn">⛶</div>
+      </div>
+    </div>
+  </div>
+  <div class="note">
+    <b>适合场景</b>：Windows 桌面（鼠标 + 宽屏）。焦点环样式与设置页统一（<code>.foc</code>），
+    遥控器/键盘 Tab 可逐键移动；但面板较高，电视端会挡住较多画面。
+  </div>
+</section>
+
+<!-- ══════════ 方案 C ══════════ -->
+<section class="sec">
+  <div class="sec-h"><h2>四、方案 C · 电视 / 遥控器优先</h2><span class="tag">大焦点</span></div>
+  <div class="sec-d">
+    控件放大（62px 高按钮、108px 主键），焦点环醒目，底部常驻<b>按键提示条</b>。<br>
+    进度轴本身就是可聚焦控件：焦点在轴上时 ←→ 调进度、↑↓ 切到按钮排。
+  </div>
+  <div class="player">
+    <div class="video"></div><div class="fg">影 片 画 面</div>
+
+    <div class="top">
+      <div class="tbtn" style="width:44px;height:44px;font-size:17px">‹</div>
+      <div>
+        <div class="ttl" style="font-size:17px">生涯典时</div>
+        <div class="tsub" style="font-size:12.5px">第 12 集 · 线路二</div>
+      </div>
+    </div>
+
+    <div class="c-bar">
+      <!-- 可聚焦进度轴 -->
+      <div class="c-axis focused">
+        <div class="track"></div>
+        <div class="fill"></div>
+        <div class="knob"></div>
+      </div>
+      <div class="c-row">
+        <div class="c-btn">‹ 上一集</div>
+        <div class="c-btn">−10s</div>
+        <div class="c-btn play foc">❚❚ 暂停</div>
+        <div class="c-btn">+10s</div>
+        <div class="c-btn">下一集 ›</div>
+        <div class="c-btn">1.0×</div>
+        <div class="c-btn">☰ 选集</div>
+        <div class="c-btn">🔊</div>
+      </div>
+      <div class="c-hint">
+        <span><kbd>←</kbd><kbd>→</kbd>调进度</span>
+        <span><kbd>↑</kbd><kbd>↓</kbd>切换控件</span>
+        <span><kbd>OK</kbd>执行</span>
+        <span><kbd>Back</kbd>退出</span>
+        <span style="margin-left:auto;color:var(--focus);font-weight:700">焦点：进度 02:07 / 45:34</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 通用点 ══════════ -->
+<section class="sec">
+  <div class="sec-h"><h2>五、三套方案共用的改进点</h2></div>
+  <table>
+    <tr><th style="width:150px">项目</th><th>做法</th></tr>
+    <tr><td><b>进度轴</b></td>
+      <td>默认 5px / 悬停与焦点 9~11px；分三层：底轨 → <b>已缓冲</b>（白 34%）→ 已播放（紫青渐变 + 发光）；拖拽时显示时间气泡预览。</td></tr>
+    <tr><td><b>切集 vs 快进</b></td>
+      <td>用<b>位置</b>和<b>形态</b>双重区分：切集是单箭头放在控制条两端（A 方案另有大面积边缘热区），快进快退是双箭头 + <code>10</code> 角标，成组放在右侧。</td></tr>
+    <tr><td><b>去重复</b></td>
+      <td>中央大键只在<b>暂停/无操作</b>时出现；底部播放键是常驻主键，两者互斥显示（不再同时出现两个「暂停」）。</td></tr>
+    <tr><td><b>时间显示</b></td>
+      <td>时间紧贴进度轴两端（不再贴屏幕边缘），等宽数字避免跳动；当前时间加粗白色、总时长次级色。</td></tr>
+    <tr><td><b>自动隐藏</b></td>
+      <td>鼠标移动 / 按键 / 焦点变化即重置计时；<b>焦点在控件上时禁止隐藏</b>（遥控器场景必须，否则焦点会消失）。</td></tr>
+  </table>
+  <div class="note">
+    <b>关于遥控器</b>：播放页需要新增 <code>IRemoteKeyHandler</code> 实现 ——
+    焦点分层「顶栏 → 进度轴 → 按钮排」，<code>←→</code> 在进度轴上 ±10s、在按钮排内横向移动，
+    <code>OK</code> 执行，<code>Back</code> 逐层退回后退出播放。<br>
+    这与刚做完的设置页 / 首页焦点体系是同一套（<code>RemoteKeyRouter</code>），可复用。
+  </div>
+</section>
+
+</body>
+</html>

@@ -91,6 +91,21 @@ public static class MauiProgram
             qemuThunder, new CatClawVideo.Core.Providers.ThunderPanEngine());
         // 磁力下载也走同一个迅雷引擎（下载管理页的磁力任务：引擎独占下载 → 媒体口导出本机）
         magnetDownloadEngine = qemuThunder;
+
+        // ★ VM 预热：QEMU 冷启动实测 11s（39.4s 起进程 → 50.5s 就绪），而它发生在**用户点开
+        //   磁力片的那一刻**，直接叠进「海报 → 选集」的等待里。放到启动后的后台线程先跑起来，
+        //   用户浏览首页/找片的时间足够 VM 就绪，点磁力时省掉这 11s。
+        //   延迟 3s 起，避让启动首屏的 UI 与订阅解析；失败无害（首次播放时仍会懒启动重试）。
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+                await qemuThunder.EnsureReadyAsync().ConfigureAwait(false);
+                BtFileLog.Write("[qemu] 预热完成（VM 已就绪，磁力点播无需冷启动等待）");
+            }
+            catch (Exception ex) { BtFileLog.Write($"[qemu] 预热失败（不影响后续懒启动）：{ex.Message}"); }
+        });
 #endif
 
         // TVBox 系爬虫（ProxyOrigin 等）会把播放地址拼成 http://127.0.0.1:<port>/proxy?...

@@ -46,14 +46,28 @@ public partial class DownloadsViewModel : ObservableObject, IDisposable
     private void OnTasksChanged() => RefreshStats();
     private void OnTaskUpdated(DownloadTaskItem _) => RefreshStats();
 
-    /// <summary>刷新下载统计（由 DownloadsPage 在更改下载目录后调用）</summary>
+    /// <summary>刷新下载统计（由 DownloadsPage 在更改下载目录后调用）。
+    /// <para>订阅了 TaskUpdated（进度上报）→ 调用频繁，故先算再比，值没变就不触发属性通知
+    /// （避免每次进度回调都惊动绑定系统）。</para></summary>
     public void RefreshStats()
     {
-        TotalCount = Tasks.Count;
-        ActiveCount = Tasks.Count(t => t.Status is DownloadStatus.Queued or DownloadStatus.Downloading);
-        CompletedCount = Tasks.Count(t => t.Status == DownloadStatus.Completed);
-        DownloadPath = _manager.DownloadFolderPath;
-        OnPropertyChanged(nameof(IsEmpty));
+        int total = Tasks.Count, active = 0, completed = 0;
+        foreach (var t in Tasks)
+        {
+            if (t.Status is DownloadStatus.Queued or DownloadStatus.Downloading) active++;
+            else if (t.Status == DownloadStatus.Completed) completed++;
+        }
+
+        if (TotalCount != total)
+        {
+            TotalCount = total;
+            OnPropertyChanged(nameof(IsEmpty));
+        }
+        if (ActiveCount != active) ActiveCount = active;
+        if (CompletedCount != completed) CompletedCount = completed;
+
+        var path = _manager.DownloadFolderPath;
+        if (DownloadPath != path) DownloadPath = path;
     }
 
     /// <summary>新建下载任务（http/https 直链与 magnet: 磁力——磁力走迅雷引擎下载）</summary>

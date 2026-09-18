@@ -24,16 +24,22 @@
                    Margin="14,0,14,0" LineBreakMode="TailTruncation" MaxLines="1"
                    TextColor="{DynamicResource TextHintColor}" VerticalOptions="Center" />
 
-            <Border Grid.Column="2" StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,6"
-                    BackgroundColor="{DynamicResource ChipInactiveColor}">
-                <HorizontalStackLayout Spacing="6">
-                    <Label Text="切换源" FontSize="11.5"
-                           TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
-                    <Image Source="ic_refresh_white.png" WidthRequest="12" HeightRequest="12" VerticalOptions="Center" />
-                </HorizontalStackLayout>
-                <Border.GestureRecognizers>
-                    <TapGestureRecognizer Tapped="OnSwitchSiteTapped" />
-                </Border.GestureRecognizers>
+            <!-- 切换源（遥控器可聚焦，见 HomePage.xaml.cs 的 SwitchSiteShell 焦点环） -->
+            <Border x:Name="SwitchSiteShell" Grid.Column="2"
+                    StrokeThickness="2" Stroke="Transparent"
+                    StrokeShape="RoundRectangle 16" Padding="2" Margin="-2"
+                    HorizontalOptions="End" VerticalOptions="Center">
+                <Border StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,6"
+                        BackgroundColor="{DynamicResource ChipInactiveColor}">
+                    <HorizontalStackLayout Spacing="6">
+                        <Label Text="切换源" FontSize="11.5"
+                               TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
+                        <Image Source="ic_refresh_white.png" WidthRequest="12" HeightRequest="12" VerticalOptions="Center" />
+                    </HorizontalStackLayout>
+                    <Border.GestureRecognizers>
+                        <TapGestureRecognizer Tapped="OnSwitchSiteTapped" />
+                    </Border.GestureRecognizers>
+                </Border>
             </Border>
         </Grid>
 
@@ -76,6 +82,15 @@
                                 BackgroundColor="{DynamicResource CardBackgroundColor}"
                                 HeightRequest="{DynamicResource PosterCardHeight}"
                                 WidthRequest="{DynamicResource PosterCardWidth}" HorizontalOptions="Center">
+                            <!-- 遥控器焦点环：由 VodItem.IsFocused 驱动（列表项非可聚焦控件，
+                                 焦点由 HomePage 的 IRemoteKeyHandler 显式管理） -->
+                            <Border.Triggers>
+                                <DataTrigger TargetType="Border" Binding="{Binding IsFocused}" Value="True">
+                                    <Setter Property="Stroke" Value="{DynamicResource PrimaryColor}" />
+                                    <Setter Property="StrokeThickness" Value="3" />
+                                    <Setter Property="Scale" Value="1.04" />
+                                </DataTrigger>
+                            </Border.Triggers>
                             <Grid>
                                 <Image Source="{Binding CoverDisplay}" Aspect="AspectFill" />
                                 <!-- 占位海报（本地渲染，零网络）：封面解析不到时显示，保证绝不留白 -->

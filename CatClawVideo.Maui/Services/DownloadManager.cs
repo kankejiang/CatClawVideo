@@ -233,11 +233,23 @@ public class DownloadManager : IDisposable
     private readonly SemaphoreSlim _slotWake = new(0);
     private readonly Dictionary<string, CancellationTokenSource> _ctsMap = new();
     private readonly object _lock = new();
+    /// <summary>落盘串行化（主线程与后台线程都会触发保存，避免写出半截文件）</summary>
+    private readonly object _saveLock = new();
     private int _active;
     private bool _disposed;
 
+    /// <summary>对账时可认领为「已完成成果」的视频扩展名。</summary>
+    private static readonly HashSet<string> ReconcileVideoExts = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".mp4", ".mkv", ".avi", ".ts", ".mov", ".wmv", ".flv", ".m2ts", ".webm", ".mpg", ".mpeg", ".m4v", ".rmvb", ".rm"
+    };
+
     /// <summary>当前最大并发下载任务数</summary>
     public int ConcurrentLimit { get; private set; } = DefaultConcurrent;
+
+    /// <summary>是否支持磁力下载（需迅雷引擎就绪；Android 端恒为 false）。
+    /// 宿主据此在点击「下载」时给出明确反馈，而不是让任务建了再失败。</summary>
+    public bool SupportsMagnetDownload => _thunder is { IsReady: true };
 
     /// <summary>下载任务集合（按创建时间排序）</summary>
     public ObservableCollection<DownloadTaskItem> Tasks { get; } = new();
@@ -466,9 +478,12 @@ public class DownloadManager : IDisposable
                     }
                 }
             }
-            MainThread.BeginInvokeOnMainThread(() => Tasks.Remove(task));
-            SaveTasksOnMainThread();
-            TasksChanged?.Invoke();
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                Tasks.Remove(task);
+                SaveTasks();
+                TasksChanged?.Invoke();
+            });
         }
         return fileError;
     }
@@ -615,14 +630,19 @@ public class DownloadManager : IDisposable
                 },
                 progress: (done, total) =>
                 {
+                    // ★ 节流必须在**投递之前**判定（2026-09-19 实测）：UpdateTask 内部是
+                    //   MainThread.BeginInvokeOnMainThread，若把它放在频率判断之外，即使不需要
+                    //   刷新速度也照样每次投递一个 UI 任务，足以灌满消息队列导致界面未响应。
                     var now = Environment.TickCount64;
+                    if (lastTick != 0 && now - lastTick < 500) return;
+
                     string? speedText = null;
-                    if (lastTick != 0 && now - lastTick >= 500)
+                    if (lastTick != 0)
                     {
                         var bps = (long)((done - lastBytes) / Math.Max((now - lastTick) / 1000.0, 0.001));
                         speedText = DownloadTaskItem.FormatBytes(bps) + "/s";
                     }
-                    if (lastTick == 0 || now - lastTick >= 500) { lastTick = now; lastBytes = done; }
+                    lastTick = now; lastBytes = done;
                     UpdateTask(task, t => { t.TotalBytes = total; t.DownloadedBytes = done; if (speedText != null) t.SpeedText = speedText; });
                 },
                 ct).ConfigureAwait(false);
@@ -730,24 +750,40 @@ public class DownloadManager : IDisposable
             MarkFailed(task, $"写入文件失败：{ex.Message}");
             return;
         }
-        UpdateTask(task, t =>
+
+        // ★ 状态变更 + 落盘必须在**同一次主线程派发**里完成（2026-09-19 实测事故）：
+        //   此前是 UpdateTask（派发主线程）+ SaveTasksOnMainThread（再派发一次），
+        //   两次派发之间若主线程被别的工作堵住、用户此时强关进程，磁盘上留下的就是
+        //   「任务刚创建时」的旧快照 —— 进度归零、点不动播放，而文件其实是好的。
+        //   合并成一次派发后，状态与持久化要么都完成、要么都不发生。
+        MainThread.BeginInvokeOnMainThread(() =>
         {
-            t.Status = DownloadStatus.Completed;
-            t.SpeedText = "";
-            try { t.TotalBytes = new FileInfo(task.LocalPath).Length; } catch { }
-            t.DownloadedBytes = t.TotalBytes;
+            task.Status = DownloadStatus.Completed;
+            task.SpeedText = "";
+            try { task.TotalBytes = new FileInfo(task.LocalPath).Length; } catch { }
+            task.DownloadedBytes = task.TotalBytes;
+            task.RaiseDerivedChanged();
+            TaskUpdated?.Invoke(task);
+            SaveTasks();            // 直接写盘（已加锁），不排队
+            TasksChanged?.Invoke();
         });
-        SaveTasksOnMainThread();
-        TasksChanged?.Invoke();
     }
 
     private void MarkFailed(DownloadTaskItem task, string message)
     {
         BtFileLog.Write($"[dm] 任务失败 {task.Id}：{message}");
         DeletePartFile(task);
-        UpdateTask(task, t => { t.Status = DownloadStatus.Failed; t.Error = message; t.SpeedText = ""; });
-        SaveTasksOnMainThread();
-        TasksChanged?.Invoke();
+        // 状态与落盘合并为一次派发（理由见 FinalizeDownload）
+        MainThread.BeginInvokeOnMainThread(() =>
+        {
+            task.Status = DownloadStatus.Failed;
+            task.Error = message;
+            task.SpeedText = "";
+            task.RaiseDerivedChanged();
+            TaskUpdated?.Invoke(task);
+            SaveTasks();
+            TasksChanged?.Invoke();
+        });
     }
 
     // ═══════════════════════════════════════════════════════
@@ -756,13 +792,17 @@ public class DownloadManager : IDisposable
 
     private void AddTask(DownloadTaskItem item)
     {
-        MainThread.BeginInvokeOnMainThread(() => Tasks.Insert(0, item));
-        SaveTasksOnMainThread();
-        TasksChanged?.Invoke();
+        // 建任务与落盘同一次派发：新建后即使立刻强关进程，任务记录也在磁盘上
+        MainThread.BeginInvokeOnMainThread(() =>
+        {
+            Tasks.Insert(0, item);
+            SaveTasks();
+            TasksChanged?.Invoke();
+        });
     }
 
-    /// <summary>把任务列表序列化落盘。⚠ 必须投递主线程执行：状态修改与 Tasks 增删均异步投递
-    /// 主线程，主线程 FIFO 保证先应用内存状态再序列化（音乐版历史 bug：线程池先跑会写旧状态）。</summary>
+    /// <summary>把任务列表序列化落盘（投递主线程执行，保证内存状态已应用）。
+    /// 关键状态变更路径请直接调用 <see cref="SaveTasks"/>（已在主线程派发内），避免二次排队。</summary>
     private void SaveTasksOnMainThread() => MainThread.BeginInvokeOnMainThread(SaveTasks);
 
     private void UpdateTask(DownloadTaskItem task, Action<DownloadTaskItem> apply)
@@ -837,6 +877,9 @@ public class DownloadManager : IDisposable
         public string Error { get; set; } = "";
     }
 
+    /// <summary>序列化任务列表落盘。主线程与后台线程都会调用，串行化避免写出半截文件。
+    /// ⚠ 不依赖 MainThread：状态是必须持久化的关键数据，不能因为 UI 忙就丢掉
+    /// （2026-09-19 实测：进度风暴堵住主线程 → 已完成状态没写盘 → 重启后进度归零）。</summary>
     private void SaveTasks()
     {
         try
@@ -858,7 +901,14 @@ public class DownloadManager : IDisposable
                     Error = t.Error
                 }).ToList();
             }
-            File.WriteAllText(TasksFilePath, JsonSerializer.Serialize(list));
+            var json = JsonSerializer.Serialize(list);
+            lock (_saveLock)
+            {
+                // 先写临时文件再替换：避免进程在写一半时被杀导致 JSON 损坏（整份任务列表丢失）
+                var tmp = TasksFilePath + ".tmp";
+                File.WriteAllText(tmp, json);
+                File.Move(tmp, TasksFilePath, overwrite: true);
+            }
         }
         catch { }
     }
@@ -890,9 +940,133 @@ public class DownloadManager : IDisposable
                 };
                 Tasks.Add(item);
             }
+
+            ReconcileWithDisk();
         }
         catch { }
     }
+
+    /// <summary>
+    /// 启动对账：把「未完成但磁盘上其实已有成品」的任务修正为已完成。
+    ///
+    /// <para><b>为什么必需</b>（2026-09-19 用户实测）：导出完成后立即写盘的时机若被打断
+    /// （UI 线程被进度回调灌满、用户强关进程），落盘里留下的是**任务刚创建时**的快照
+    /// （Status=Queued、0 字节、LocalPath 还带着种子名而非真实文件名），而磁盘上文件是好的。
+    /// 结果：进度显示 0、点不动播放 —— 已下载成果明明在，用户体验却是「白下了」。</para>
+    ///
+    /// <para>匹配用「任务名做子串」：引擎导出后的真实文件名通常包含任务名
+    /// （如任务名「流人.Slow.Horses.S06E01.6v电影 地址发布页 www.6v123.net 收藏不迷路」
+    /// → 文件名「流人.Slow.Horses.S06E01.Circle.of.Life.1080p.HD中英双字[...].mp4」）。
+    /// 命中且大小与原记录明显不符（未完成态）时，取该目录下最大的匹配视频。</para>
+    /// </summary>
+    private void ReconcileWithDisk()
+    {
+        var dir = DownloadFolderPath;
+        if (!Directory.Exists(dir)) return;
+
+        List<string> files;
+        try
+        {
+            files = Directory.EnumerateFiles(dir, "*", SearchOption.TopDirectoryOnly)
+                .Where(f => ReconcileVideoExts.Contains(Path.GetExtension(f)))
+                .ToList();
+        }
+        catch { return; }
+        if (files.Count == 0) return;
+
+        var owned = new HashSet<string>(Tasks.Select(t => t.LocalPath), StringComparer.OrdinalIgnoreCase);
+
+        foreach (var task in Tasks)
+        {
+            // 只救「未完成」且文件不在记录里的任务
+            if (task.Status is DownloadStatus.Completed or DownloadStatus.Canceled) continue;
+            if (File.Exists(task.LocalPath)) continue;          // 记录路径本身就在 → 走正常加载
+
+            var hit = FindArtifact(files, owned, task);
+            if (hit is null) continue;
+
+            long size = 0;
+            try { size = new FileInfo(hit).Length; } catch { }
+            if (size <= 0) continue;
+
+            task.LocalPath = hit;
+            task.Name = Path.GetFileName(hit);
+            task.TotalBytes = size;
+            task.DownloadedBytes = size;
+            task.Status = DownloadStatus.Completed;
+            task.Error = string.Empty;
+            task.IsPaused = false;
+            owned.Add(hit);
+            BtFileLog.Write($"[dm] 启动对账：任务 {task.Id} 认领磁盘成品 {Path.GetFileName(hit)}（{size / 1048576.0:F1}MB）");
+        }
+
+        SaveTasks();   // 修正结果立即落盘，避免下次重启再对一次
+    }
+
+    /// <summary>
+    /// 按任务名在下载目录里查找该任务的成品文件（播放入口在记录路径失效时的兜底）。
+    /// 找到会**顺带修正任务记录并落盘**，避免下次点击又找不到。
+    /// </summary>
+    public string? TryFindArtifact(DownloadTaskItem task)
+    {
+        var dir = DownloadFolderPath;
+        if (!Directory.Exists(dir)) return null;
+
+        List<string> files;
+        try
+        {
+            files = Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories)
+                .Where(f => ReconcileVideoExts.Contains(Path.GetExtension(f)))
+                .ToList();
+        }
+        catch { return null; }
+        if (files.Count == 0) return null;
+
+        var owned = new HashSet<string>(
+            Tasks.Where(t => !ReferenceEquals(t, task)).Select(t => t.LocalPath),
+            StringComparer.OrdinalIgnoreCase);
+
+        var hit = FindArtifact(files, owned, task);
+        if (hit is null) return null;
+
+        long size = 0;
+        try { size = new FileInfo(hit).Length; } catch { }
+        task.LocalPath = hit;
+        task.Name = Path.GetFileName(hit);
+        if (size > 0) { task.TotalBytes = size; task.DownloadedBytes = size; }
+        task.Status = DownloadStatus.Completed;
+        task.RaiseDerivedChanged();
+        SaveTasks();
+        BtFileLog.Write($"[dm] 点击播放兜底命中：{Path.GetFileName(hit)}");
+        return hit;
+    }
+
+    /// <summary>在候选文件里找该任务的成品：优先任务名子串匹配（排除已被其他任务认领的）。</summary>
+    private static string? FindArtifact(List<string> files, HashSet<string> owned, DownloadTaskItem task)
+    {
+        var key = NormalizeForMatch(task.Name);
+        IEnumerable<string> candidates = files;
+
+        if (key.Length >= 4)
+        {
+            // 任务名常带站点水印（「地址发布页 www.6v123.net 收藏不迷路」），而真实文件名不含，
+            // 故用「任务名去掉水印后的主体」做匹配 —— 取前 12 个字符就足够唯一。
+            var stem = NormalizeForMatch(key[..Math.Min(key.Length, 12)]);
+            var matched = files
+                .Where(f => NormalizeForMatch(Path.GetFileName(f)).Contains(stem, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (matched.Count > 0) candidates = matched;
+        }
+
+        return candidates
+            .Where(f => !owned.Contains(f))
+            .OrderByDescending(f => { try { return new FileInfo(f).Length; } catch { return 0L; } })
+            .FirstOrDefault();
+    }
+
+    /// <summary>归一化用于子串匹配：去掉空白与常见分隔符。</summary>
+    private static string NormalizeForMatch(string s) =>
+        new string(s.Where(c => !char.IsWhiteSpace(c) && c != '.' && c != '_' && c != '-').ToArray());
 
     public void Dispose()
     {

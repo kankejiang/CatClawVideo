@@ -163,7 +163,7 @@
                 <!-- ═══ Tab3 连接（引擎能力说明） ═══ -->
                 <VerticalStackLayout x:Name="Panel3" Spacing="10" IsVisible="False">
                     <Label x:Name="ConnSummary" FontSize="13" TextColor="{DynamicResource TextPrimaryColor}" />
-                    <Label Text="当前内置 BT 引擎（MonoTorrent）不暴露逐条 peer 连接明细（地址/客户端/单连接速率），仅提供连接数、种子数与下载者数统计。"
+                    <Label Text="磁力任务由迅雷引擎（QEMU 内）解析与下载；HTTP 任务为直连下载。逐条 peer 明细（地址/客户端/单连接速率）由引擎侧持有，宿主仅能展示任务级进度与速率。"
                            FontSize="12" TextColor="{DynamicResource TextHintColor}" LineBreakMode="WordWrap" />
                 </VerticalStackLayout>
 

@@ -51,6 +51,47 @@ public sealed class QemuStreamProxy : IDisposable
     /// <summary>上游累计收到的字节数（引擎看门狗：两个采样点无增长 = 上游断粮）。</summary>
     public long UpstreamTotal => Interlocked.Read(ref _upstreamTotal);
 
+    /// <summary>
+    /// 已连续缓冲到的**文件字节偏移**（<c>_base + _len</c>）。
+    /// 供播放器把「缓冲位置」换算成时间：磁力流走的是自定义 HTTP + FFmpeg，
+    /// 媒体框架不报告 BufferedRanges，只能由宿主自己的读前缓存代理提供。
+    /// </summary>
+    public long BufferedFrontierBytes
+    {
+        get { lock (_sync) return _base + _len; }
+    }
+
+    /// <summary>当前文件总字节数（缓冲比例换算用）。</summary>
+    public long TotalBytes => _totalSize;
+
+    /// <summary>
+    /// 从**最慢读者**当前位置到缓存前沿的连续可播字节数。
+    ///
+    /// <para><b>为什么用它而不是「已下载比例」</b>：磁力是乱序 P2P 下载，`已下载字节比例`
+    /// 衡量整片进度，与「当前位置往后还能连续播多久」无关（实测虚高到让缓冲百分比直接
+    /// 跳到 100%）。本属性给出的才是播放器真正能吃到的连续数据量 —— 它是**单调、诚实**的：
+    /// 引擎供不上数据时它就停住不动。</para>
+    /// </summary>
+    public long ReaderAheadBytes
+    {
+        get
+        {
+            lock (_sync)
+            {
+                if (_requests.Count == 0) return _len;
+                var slowest = _requests.Min(r => r.Pos);
+                var ahead = (_base + _len) - slowest;
+                return ahead > 0 ? ahead : 0;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 当前活跃的缓存代理（同一时刻只允许一个磁力播放会话）。
+    /// 播放层据此查询缓冲前沿；非磁力播放时为 null。
+    /// </summary>
+    public static QemuStreamProxy? Current { get; internal set; }
+
     /// <summary>是否有播放器读者在读（真实播放中才判断粮，暂停/空闲不算）。</summary>
     public bool HasReaders { get { lock (_sync) return _requests.Count > 0; } }
 
@@ -100,6 +141,7 @@ public sealed class QemuStreamProxy : IDisposable
         _listener = new TcpListener(IPAddress.Loopback, 0);
         _listener.Start();
         Url = $"http://127.0.0.1:{((IPEndPoint)_listener.LocalEndpoint).Port}/s";
+        Current = this;
         _ = Task.Run(UpstreamLoopAsync);
         _ = Task.Run(AcceptLoopAsync);
         _log?.Invoke($"[proxy] 读前缓存代理就绪 {Url}（上游 127.0.0.1:{_mediaPort}）");

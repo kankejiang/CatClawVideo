@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>猫爪影视 · 设置页 · 方案 A（横屏通用 / 遥控器优先）</title>
+<style>
+  :root{
+    --bg:#12102B; --surface:#2A2755; --card:#332F5A; --card2:#3A3668;
+    --primary:#9B7ED8; --primary-dark:#7C5DCE; --accent:#55D6FF;
+    --text:#F5F6FF; --text2:#BCC0DD; --text3:#868CAE;
+    --divider:rgba(255,255,255,.08); --chip:rgba(255,255,255,.08);
+    --input:rgba(255,255,255,.05); --focus:#B79BFF;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#08070F;font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    color:var(--text);padding:44px 40px 90px}
+  h1{font-size:23px}
+  .sub{color:var(--text3);font-size:13px;line-height:1.85;margin:8px 0 32px;max-width:920px}
+  .sec{max-width:1360px;margin-bottom:62px}
+  .sec-h{display:flex;align-items:center;gap:12px;margin-bottom:6px}
+  .sec-h h2{font-size:17px}
+  .tag{font-size:11px;padding:3px 11px;border-radius:99px;background:rgba(155,126,216,.18);
+    color:#C9B6F2;font-weight:700}
+  .sec-d{font-size:12.5px;color:var(--text3);line-height:1.8;margin-bottom:18px;max-width:960px}
+  .cols{display:flex;gap:34px;align-items:flex-start;flex-wrap:wrap}
+
+  /* 窗口外框 */
+  .frame{border-radius:16px;border:1px solid rgba(255,255,255,.10);overflow:hidden;
+    box-shadow:0 26px 64px rgba(0,0,0,.62);display:flex;flex-direction:column;
+    background:var(--bg);flex:none;position:relative}
+  .tv{width:1280px;height:700px}
+  .narrow{width:880px;height:540px}
+  .cap{font-size:11.5px;color:var(--text3);margin-top:10px;line-height:1.6}
+
+  /* 顶栏 */
+  .top{height:46px;flex:none;display:flex;align-items:center;gap:16px;padding:0 20px;
+    border-bottom:1px solid var(--divider);background:linear-gradient(180deg,rgba(255,255,255,.03),transparent)}
+  .logo{display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:700}
+  .logo i{width:22px;height:22px;border-radius:7px;display:flex;align-items:center;justify-content:center;
+    font-size:12px;font-style:normal;background:linear-gradient(135deg,#F7A8C8,#F55E9C)}
+  .nav{display:flex;gap:5px;margin-left:6px}
+  .nav b{font-weight:500;font-size:12.5px;color:var(--text2);padding:5px 13px;border-radius:99px}
+  .nav b.on{background:var(--primary);color:#fff;font-weight:700}
+  .srch{margin-left:auto;width:210px;height:29px;border-radius:99px;background:var(--input);
+    border:1px solid rgba(255,255,255,.09);display:flex;align-items:center;gap:7px;
+    padding:0 12px;font-size:11.5px;color:var(--text3)}
+  .wb{display:flex;gap:15px;color:var(--text3);font-size:11px;margin-left:8px}
+
+  /* 焦点态（三种） */
+  .fr{border-radius:11px;position:relative;z-index:2;
+    box-shadow:0 0 0 2.5px var(--focus),0 0 0 7px rgba(155,126,216,.24),0 10px 28px rgba(124,93,206,.4)}
+  .fr-row{background-color:rgba(155,126,216,.17) !important}
+  .fr-row::before{content:"";position:absolute;left:0;top:12%;bottom:12%;width:3.5px;
+    border-radius:0 4px 4px 0;background:var(--focus);box-shadow:0 0 14px var(--focus)}
+  .fr-rail{background-color:rgba(155,126,216,.20) !important}
+  .fr-rail::before{content:"";position:absolute;left:0;top:16%;bottom:16%;width:3.5px;border-radius:0 4px 4px 0;
+    background:var(--focus);box-shadow:0 0 14px var(--focus)}
+  .sc{transform:scale(1.02)}
+
+  /* 左导航 */
+  .rail{width:216px;flex:none;border-right:1px solid var(--divider);padding:20px 12px;
+    display:flex;flex-direction:column;gap:4px;background:rgba(255,255,255,.014)}
+  .rail .rh{font-size:12px;font-weight:800;color:var(--text3);letter-spacing:1.4px;padding:4px 12px 14px}
+  .rail .ri{display:flex;align-items:center;gap:12px;padding:12px 13px;border-radius:12px;
+    font-size:13.5px;color:var(--text2)}
+  .rail .ri i{font-style:normal;font-size:15px;width:19px;text-align:center}
+  .rail .ri.on{background:rgba(155,126,216,.14);color:#fff;font-weight:700}
+
+  /* 内容区 */
+  .content{flex:1;min-width:0;padding:22px 30px;overflow:hidden}
+  .ctx{font-size:11.5px;color:var(--text3);letter-spacing:1.2px;font-weight:700;margin-bottom:3px}
+  .ctitle{font-size:20px;font-weight:800;margin-bottom:16px}
+  .gh{font-size:11.5px;font-weight:700;letter-spacing:1px;color:var(--text3);padding:0 2px 9px}
+  .grp{border:1px solid var(--divider);border-radius:14px;overflow:hidden;
+    background:rgba(255,255,255,.028);margin-bottom:16px}
+  .row{display:flex;align-items:center;gap:15px;padding:15px 18px;min-height:58px}
+  .row+.row{border-top:1px solid var(--divider)}
+  .row .lb{flex:1;min-width:0}
+  .row .lb .a{font-size:14.5px;font-weight:600}
+  .row .lb .b{font-size:11.5px;color:var(--text3);margin-top:3px;line-height:1.55}
+  .row .val{font-size:13px;color:var(--text2);flex:none}
+  .arrow{color:var(--text3);font-size:16px;opacity:.5;flex:none}
+  .step{display:inline-flex;align-items:center;height:34px;border-radius:9px;flex:none;
+    background:var(--input);border:1px solid rgba(255,255,255,.10);overflow:hidden}
+  .step span{width:32px;height:100%;display:flex;align-items:center;justify-content:center;
+    color:var(--text3);font-size:13px}
+  .step em{font-style:normal;min-width:66px;text-align:center;font-size:13.5px;font-weight:700;padding:0 4px}
+  .sw{width:44px;height:24px;border-radius:99px;background:rgba(255,255,255,.16);position:relative;flex:none}
+  .sw::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:99px;background:#fff}
+  .sw.on{background:var(--primary)}
+  .sw.on::after{left:23px}
+  .ico{width:40px;height:40px;border-radius:12px;flex:none;display:flex;align-items:center;justify-content:center;font-size:16px}
+  .i-p{background:rgba(155,126,216,.16)} .i-c{background:rgba(85,214,255,.14)}
+  .i-k{background:rgba(245,94,156,.14)} .i-g{background:rgba(120,255,190,.13)}
+
+  /* 底部按键提示（TV 必备） */
+  .hint{height:44px;flex:none;display:flex;align-items:center;gap:24px;padding:0 24px;
+    border-top:1px solid var(--divider);background:linear-gradient(0deg,rgba(255,255,255,.035),transparent);
+    font-size:12px;color:var(--text3)}
+  .hint span{display:flex;align-items:center;gap:8px}
+  .hint .now{margin-left:auto;color:var(--focus);font-weight:600}
+
+  kbd{display:inline-block;min-width:25px;text-align:center;background:rgba(255,255,255,.10);
+    border:1px solid rgba(255,255,255,.15);border-bottom-width:2px;border-radius:6px;
+    padding:2px 7px;font-size:11.5px;font-family:inherit;color:var(--text)}
+
+  table{border-collapse:collapse;font-size:12.5px;width:100%;max-width:880px}
+  th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--divider);vertical-align:top}
+  th{color:var(--text3);font-size:11.5px;font-weight:600;letter-spacing:.4px}
+  code{background:rgba(255,255,255,.07);border-radius:5px;padding:1px 6px;font-size:11.5px}
+  .note{font-size:11.5px;color:var(--text3);line-height:1.85;margin-top:16px;max-width:960px;
+    border-left:2px solid rgba(155,126,216,.5);padding-left:12px}
+  .note b{color:var(--text2)}
+</style>
+</head>
+<body>
+
+<h1>猫爪影视 · 设置页 · 方案 A</h1>
+<p class="sub">
+  左导航 + 内容区，<b>只做横屏</b>（项目 Android 本就是 <code>SensorLandscape</code> 基准，一套布局三端通用）。<br>
+  遥控器是一等公民：<b>↑↓ 栏内移动 · ←→ 换栏或调值 · OK 激活 · Back 返回</b>。
+</p>
+
+<!-- ═══════ 焦点态三种 ═══════ -->
+<section class="sec">
+  <div class="sec-h"><h2>一、焦点态（全页统一三种）</h2><span class="tag">3 米可辨</span></div>
+  <div class="sec-d">离屏幕 3 米也要一眼找到焦点。列表行加左侧竖条（方向感更强），可调值整块高亮表示「←→ 可直接调」。</div>
+  <div class="cols">
+    <div class="frame" style="width:430px;height:auto;padding:16px;gap:12px;background:var(--card)">
+      <div class="row" style="padding:12px;min-height:0;border-radius:11px">
+        <span class="ico i-c" style="width:34px;height:34px;border-radius:10px;font-size:14px">▶</span>
+        <span class="lb"><span class="a" style="font-size:13.5px">默认倍速</span></span><span class="val">1.0×</span></div>
+      <div class="cap">① 常态 —— 低对比，不抢注意力</div>
+    </div>
+    <div class="frame" style="width:430px;height:auto;padding:16px;gap:12px;background:var(--card)">
+      <div class="row fr fr-row fr-row sc" style="padding:12px;min-height:0;border-radius:11px">
+        <span class="ico i-c" style="width:34px;height:34px;border-radius:10px;font-size:14px">▶</span>
+        <span class="lb"><span class="a" style="font-size:13.5px">默认倍速</span></span><span class="val">1.0×</span></div>
+      <div class="cap">② 列表行焦点 —— 描边 + 柔光 + 左竖条 + 微放大</div>
+    </div>
+    <div class="frame" style="width:430px;height:auto;padding:16px;gap:12px;background:var(--card)">
+      <div class="row fr sc" style="padding:12px;min-height:0;border-radius:11px">
+        <span class="lb"><span class="a" style="font-size:13.5px">磁力缓存上限</span></span>
+        <span class="step" style="border-color:var(--focus)"><span>◀</span><em>20 GB</em><span>▶</span></span></div>
+      <div class="cap">③ 可调值焦点 —— 整块高亮，←→ 直接调，不进二级页</div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════ 状态 1：焦点在侧栏 ═══════ -->
+<section class="sec">
+  <div class="sec-h"><h2>二、状态 ① —— 焦点在左侧导航</h2></div>
+  <div class="sec-d">初始焦点落在侧栏第一项。此时 <kbd>↑</kbd><kbd>↓</kbd> 换分类，<kbd>→</kbd> / <kbd>OK</kbd> 进入内容区。</div>
+  <div class="frame tv">
+    <div class="top">
+      <div class="logo"><i>🐾</i>猫爪影视</div>
+      <div class="nav"><b>首页</b><b>历史</b><b>收藏</b><b>下载</b><b>本地</b><b class="on">设置</b></div>
+      <div class="srch">🔍 搜索影片 / 演员</div>
+      <div class="wb"><span>—</span><span>▢</span><span>✕</span></div>
+    </div>
+    <div style="flex:1;display:flex;min-height:0">
+      <aside class="rail">
+        <div class="rh">设 置</div>
+        <div class="ri on fr fr-rail sc"><i>🧩</i>内容源</div>
+        <div class="ri"><i>▶</i>播放</div>
+        <div class="ri"><i>📄</i>诊断日志</div>
+        <div class="ri"><i>ℹ</i>关于</div>
+      </aside>
+      <main class="content">
+        <div class="ctx">内容源</div>
+        <div class="ctitle">订阅源管理</div>
+        <div class="grp">
+          <div class="row"><span class="ico i-p">🧩</span>
+            <span class="lb"><span class="a">TVBox / 影视仓订阅</span>
+            <span class="b">支持多仓自动识别；不内置任何源，添加后首页 / 搜索立即生效</span></span>
+            <span class="val">2 个已添加</span><span class="arrow">›</span></div>
+          <div class="row"><span class="ico i-c">＋</span>
+            <span class="lb"><span class="a">新增订阅</span>
+            <span class="b">进入后可粘贴地址 / 从文件导入</span></span><span class="arrow">›</span></div>
+        </div>
+        <div class="gh">当前分类下的其他项</div>
+        <div class="grp">
+          <div class="row"><span class="lb"><span class="a">站点状态</span>
+            <span class="b">查看各源可用性 / 切换默认源</span></span><span class="arrow">›</span></div>
+        </div>
+      </main>
+    </div>
+    <div class="hint">
+      <span><kbd>↑</kbd><kbd>↓</kbd>换分类</span>
+      <span><kbd>→</kbd><kbd>OK</kbd>进入内容区</span>
+      <span><kbd>Back</kbd>退出设置</span>
+      <span class="now">焦点：内容源</span>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════ 状态 2：焦点在内容区 ═══════ -->
+<section class="sec">
+  <div class="sec-h"><h2>三、状态 ② —— 焦点在内容区（含可直接调值的项）</h2></div>
+  <div class="sec-d">焦点进入内容区后 <kbd>↑</kbd><kbd>↓</kbd> 逐行走，<kbd>←</kbd> 回到侧栏。<br>
+    注意「磁力缓存上限」：焦点落在整块上，<kbd>←</kbd><kbd>→</kbd> 直接改值 —— 遥控器上这是最省事的做法。</div>
+  <div class="frame tv">
+    <div class="top">
+      <div class="logo"><i>🐾</i>猫爪影视</div>
+      <div class="nav"><b>首页</b><b>历史</b><b>收藏</b><b>下载</b><b>本地</b><b class="on">设置</b></div>
+      <div class="srch">🔍 搜索影片 / 演员</div>
+      <div class="wb"><span>—</span><span>▢</span><span>✕</span></div>
+    </div>
+    <div style="flex:1;display:flex;min-height:0">
+      <aside class="rail">
+        <div class="rh">设 置</div>
+        <div class="ri on"><i>▶</i>播放</div>
+        <div class="ri"><i>🧩</i>内容源</div>
+        <div class="ri"><i>📄</i>诊断日志</div>
+        <div class="ri"><i>ℹ</i>关于</div>
+      </aside>
+      <main class="content">
+        <div class="ctx">播放</div>
+        <div class="ctitle">播放设置</div>
+        <div class="grp">
+          <div class="row fr sc">
+            <span class="lb"><span class="a">磁力缓存上限</span>
+            <span class="b">边下边播的落盘数据；已看区间重进秒开，超限自动清最旧</span></span>
+            <span class="step" style="border-color:var(--focus)"><span>◀</span><em>20 GB</em><span>▶</span></span></div>
+          <div class="row"><span class="lb"><span class="a">小窗尺寸（21:9 手机横屏）</span></span><span class="val">58% 宽 · 可展开全宽</span></div>
+          <div class="row"><span class="lb"><span class="a">默认画面比例</span></span><span class="val">保持比例（AspectFit）</span></div>
+          <div class="row"><span class="lb"><span class="a">默认倍速</span></span>
+            <span class="step"><span>◀</span><em>1.0×</em><span>▶</span></span></div>
+          <div class="row"><span class="lb"><span class="a">电视遥控焦点样式</span></span><span class="val">白色描边 + 放大</span></div>
+        </div>
+        <div class="grp">
+          <div class="row"><span class="ico i-k">📄</span>
+            <span class="lb"><span class="a">诊断日志</span>
+            <span class="b">开启后记录 Debug 级运行日志，出问题时导出交开发者排查</span></span>
+            <div class="sw on"></div><span class="arrow">›</span></div>
+        </div>
+      </main>
+    </div>
+    <div class="hint">
+      <span><kbd>↑</kbd><kbd>↓</kbd>换项</span>
+      <span><kbd>←</kbd><kbd>→</kbd>调值 / 回侧栏</span>
+      <span><kbd>OK</kbd>进入</span>
+      <span><kbd>Back</kbd>返回</span>
+      <span class="now">焦点：磁力缓存上限（←→ 调值）</span>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════ 窄横屏 ═══════ -->
+<section class="sec">
+  <div class="sec-h"><h2>四、窄横屏（手机横屏 / 小窗口 880×540）</h2><span class="tag">同一套布局</span></div>
+  <div class="sec-d">布局不变，只把侧栏收窄、字号与行高下调一档，内容区仍是列表 —— 不需要第二套设计。</div>
+  <div class="frame narrow">
+    <div class="top" style="height:40px;gap:12px;padding:0 14px">
+      <div class="logo" style="font-size:12.5px"><i style="width:19px;height:19px;font-size:10px">🐾</i>猫爪影视</div>
+      <div class="nav"><b style="font-size:11.5px;padding:4px 10px">首页</b><b style="font-size:11.5px;padding:4px 10px">历史</b>
+        <b style="font-size:11.5px;padding:4px 10px">收藏</b><b style="font-size:11.5px;padding:4px 10px">下载</b>
+        <b style="font-size:11.5px;padding:4px 10px" class="on">设置</b></div>
+      <div class="srch" style="width:150px;height:25px;font-size:10.5px">🔍 搜索</div>
+      <div class="wb"><span>✕</span></div>
+    </div>
+    <div style="flex:1;display:flex;min-height:0">
+      <aside class="rail" style="width:158px;padding:14px 9px">
+        <div class="rh" style="font-size:10.5px;padding:2px 9px 10px">设 置</div>
+        <div class="ri fr fr-rail sc" style="font-size:12.5px;padding:10px;gap:9px;border-radius:10px"><i style="font-size:13px;width:16px">🧩</i>内容源</div>
+        <div class="ri" style="font-size:12.5px;padding:10px;gap:9px"><i style="font-size:13px;width:16px">▶</i>播放</div>
+        <div class="ri" style="font-size:12.5px;padding:10px;gap:9px"><i style="font-size:13px;width:16px">📄</i>诊断日志</div>
+        <div class="ri" style="font-size:12.5px;padding:10px;gap:9px"><i style="font-size:13px;width:16px">ℹ</i>关于</div>
+      </aside>
+      <main class="content" style="padding:14px 18px">
+        <div class="ctx" style="font-size:10.5px">内容源</div>
+        <div class="ctitle" style="font-size:16px;margin-bottom:12px">订阅源管理</div>
+        <div class="grp" style="margin-bottom:12px">
+          <div class="row" style="padding:11px 13px;min-height:48px"><span class="ico i-p" style="width:32px;height:32px;font-size:13px">🧩</span>
+            <span class="lb"><span class="a" style="font-size:13px">TVBox / 影视仓订阅</span>
+            <span class="b" style="font-size:10.5px">支持多仓自动识别</span></span>
+            <span class="val" style="font-size:12px">2 个</span><span class="arrow">›</span></div>
+          <div class="row" style="padding:11px 13px;min-height:48px"><span class="ico i-c" style="width:32px;height:32px;font-size:13px">＋</span>
+            <span class="lb"><span class="a" style="font-size:13px">新增订阅</span></span><span class="arrow">›</span></div>
+        </div>
+        <div class="grp">
+          <div class="row" style="padding:11px 13px;min-height:48px"><span class="lb"><span class="a" style="font-size:13px">站点状态</span></span><span class="arrow">›</span></div>
+        </div>
+      </main>
+    </div>
+    <div class="hint" style="height:38px;font-size:11px;gap:18px;padding:0 18px">
+      <span><kbd style="font-size:10.5px">↑↓</kbd>移动</span>
+      <span><kbd style="font-size:10.5px">←→</kbd>换栏</span>
+      <span><kbd style="font-size:10.5px">OK</kbd>进入</span>
+      <span class="now">焦点：内容源</span>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════ 按键规范 ═══════ -->
+<section class="sec">
+  <div class="sec-h"><h2>五、按键映射（三端统一）</h2></div>
+  <table>
+    <tr><th style="width:170px">按键</th><th>行为</th></tr>
+    <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>栏内垂直移动（顺序 = 视觉顺序，无跳跃）</td></tr>
+    <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>① 调值（步进 / 开关）② 侧栏 ↔ 内容区 换栏 ③ 顶栏 tab 间移动</td></tr>
+    <tr><td><kbd>OK</kbd> / <kbd>Enter</kbd></td><td>进入子页 / 切换开关 / 提交</td></tr>
+    <tr><td><kbd>Back</kbd> / <kbd>Esc</kbd></td><td>返回上一级；设置根页则退出设置</td></tr>
+  </table>
+  <div class="note">
+    <b>落地方式</b>：新建可聚焦行控件（内部用 <code>VisualStateManager</code> 定义 Normal / Focused / PointerOver 三态），
+    三端共享同一份 XAML；平台层只补方向键映射。<br>
+    <b>当前仓库尚无任何焦点基础设施</b>（<code>KeyEvent</code> / <code>Focusable</code> / <code>VisualState</code> 全为 0 命中），需一并新建。<br>
+    <b>不做竖屏</b>：本页只保证横屏；Android 已是 <code>SensorLandscape</code> 基准，天然满足。
+  </div>
+</section>
+
+</body>
+</html>
