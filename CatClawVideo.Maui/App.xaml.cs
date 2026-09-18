@@ -95,10 +95,12 @@ public partial class App : Application
 #endif // ANDROID
 
 #if WINDOWS
+        // 窗口尺寸：默认 1600×800；用户调整过则回放上次尺寸（见 LoadSavedWindowSize）
+        var (initW, initH) = LoadSavedWindowSize();
         window.MinimumWidth = 900;
         window.MinimumHeight = 600;
-        window.Width = 1280;
-        window.Height = 800;
+        window.Width = initW;
+        window.Height = initH;
 
         // MAUI 内容根默认按"有标题栏"预留 ~32px 占位 → 设不可见 TitleBar 让内容延伸进标题栏区域
         window.TitleBar = new Microsoft.Maui.Controls.TitleBar { IsVisible = false };
@@ -115,23 +117,12 @@ public partial class App : Application
                 _appWindow = appWindow;
                 CurrentAppWindow = appWindow;
 
-                // 启动窗口居中（物理像素 = 逻辑 × DPI）
-                try
-                {
-                    var work = Microsoft.UI.Windowing.DisplayArea.Primary.WorkArea;
-                    int dpi = (int)GetDpiForWindow(hwnd);
-                    double scale = dpi > 0 ? dpi / 96.0 : 1.0;
-                    var winW = (int)Math.Min(1280 * scale, work.Width);
-                    var winH = (int)Math.Min(800 * scale, work.Height);
-                    appWindow.MoveAndResize(new global::Windows.Graphics.RectInt32
-                    {
-                        X = work.X + (work.Width - winW) / 2,
-                        Y = work.Y + (work.Height - winH) / 2,
-                        Width = winW,
-                        Height = winH,
-                    });
-                }
-                catch { }
+                // 启动窗口尺寸 + 居中（物理像素 = 逻辑 × DPI）：
+                // 尺寸优先回放用户上次调整值，无记录时用默认 1600×800
+                ApplyStartupWindowSize(appWindow, hwnd);
+
+                // 退出时记住窗口尺寸，下次启动回放
+                nativeWindow.Closed += (_, _) => SaveWindowSize(appWindow, hwnd);
 
                 try
                 {
@@ -426,6 +417,70 @@ public partial class App : Application
         }
         catch { }
         return null;
+    }
+
+    // ═══════════ 窗口尺寸记忆（默认 1600×800；用户调整后下次启动保持）═══════════
+
+    private const string PrefWinW = "window_width";
+    private const string PrefWinH = "window_height";
+    private const double DefaultWinW = 1600;
+    private const double DefaultWinH = 800;
+
+    /// <summary>回放窗口逻辑尺寸：优先上次用户调整值，无记录 / 值非法时用默认 1600×800。</summary>
+    private static (double Width, double Height) LoadSavedWindowSize()
+    {
+        try
+        {
+            var w = Microsoft.Maui.Storage.Preferences.Default.Get(PrefWinW, 0d);
+            var h = Microsoft.Maui.Storage.Preferences.Default.Get(PrefWinH, 0d);
+            if (w >= 400 && h >= 300) return (w, h);
+        }
+        catch { }
+        return (DefaultWinW, DefaultWinH);
+    }
+
+    /// <summary>按逻辑尺寸 × DPI 还原窗口大小并居中（只记忆尺寸，不记忆位置）。</summary>
+    private static void ApplyStartupWindowSize(Microsoft.UI.Windowing.AppWindow appWindow, IntPtr hwnd)
+    {
+        try
+        {
+            var (logicalW, logicalH) = LoadSavedWindowSize();
+            var work = Microsoft.UI.Windowing.DisplayArea.Primary.WorkArea;
+            var dpi = (int)GetDpiForWindow(hwnd);
+            var scale = dpi > 0 ? dpi / 96.0 : 1.0;
+            var winW = (int)Math.Min(logicalW * scale, work.Width);
+            var winH = (int)Math.Min(logicalH * scale, work.Height);
+            appWindow.MoveAndResize(new global::Windows.Graphics.RectInt32
+            {
+                X = work.X + (work.Width - winW) / 2,
+                Y = work.Y + (work.Height - winH) / 2,
+                Width = winW,
+                Height = winH,
+            });
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[App] ApplyStartupWindowSize failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>持久化当前窗口尺寸（换算成逻辑像素，跨不同 DPI 依然有效）。
+    /// 最大化 / 全屏 / 最小化时不覆盖 —— 用户还原窗口后仍回到上次设定尺寸。</summary>
+    private static void SaveWindowSize(Microsoft.UI.Windowing.AppWindow appWindow, IntPtr hwnd)
+    {
+        try
+        {
+            if (appWindow.Presenter.Kind != Microsoft.UI.Windowing.AppWindowPresenterKind.Overlapped) return;
+            if (appWindow.Presenter is Microsoft.UI.Windowing.OverlappedPresenter
+                { State: not Microsoft.UI.Windowing.OverlappedPresenterState.Restored }) return;
+            if (appWindow.Size.Width <= 0 || appWindow.Size.Height <= 0) return;
+
+            var dpi = (int)GetDpiForWindow(hwnd);
+            var scale = dpi > 0 ? dpi / 96.0 : 1.0;
+            Microsoft.Maui.Storage.Preferences.Default.Set(PrefWinW, appWindow.Size.Width / scale);
+            Microsoft.Maui.Storage.Preferences.Default.Set(PrefWinH, appWindow.Size.Height / scale);
+        }
+        catch { }
     }
 #endif
 }

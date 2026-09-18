@@ -28,46 +28,12 @@ public partial class HomePage : ContentView, ITabView
 
         // 海报墙布局：与历史/收藏页一致，统一走 PosterLayoutHelper（固定卡片尺寸，列数自适应）
         PosterGrid.SizeChanged += (_, _) => ApplyPosterLayout();
-
-        // 空源引导面板：列表变化时刷新可见性
-        _vm.Items.CollectionChanged += (_, _) => MainThread.BeginInvokeOnMainThread(UpdatePairPanel);
     }
 
     public Task OnTabShownAsync()
     {
         ApplyPosterLayout();
-        UpdatePairPanel();
         return _vm.LoadHomeCommand.ExecuteAsync(null);
-    }
-
-    /// <summary>
-    /// 没有可用源时显示本机地址 + 配对二维码。
-    /// 二维码内容 <c>catclaw://pair?u=http://&lt;本机IP&gt;:&lt;端口&gt;&amp;n=&lt;设备名&gt;</c>，
-    /// 手机扫码后 POST 到本机的 LinkServer 完成配对（写入解析节点地址）。
-    /// </summary>
-    private void UpdatePairPanel()
-    {
-        try
-        {
-            bool noSource = _vm.PlayableSites.Count == 0;
-            PairPanel.IsVisible = noSource;
-            if (!noSource) return;
-
-            var ip = CatClawVideo.Core.Services.LanInfo.PrimaryIPv4();
-            var port = CatClawVideo.Core.Services.LinkServer.DefaultPort;
-            var payload = Services.PairQr.Payload(ip, port);
-
-            if (PairQrImage.Source is null)
-            {
-                var png = Services.PairQr.Png(payload);
-                PairQrImage.Source = ImageSource.FromStream(() => new MemoryStream(png));
-            }
-            PairAddressLabel.Text = $"本机地址：{ip}:{port}";
-        }
-        catch (Exception ex)
-        {
-            PairAddressLabel.Text = $"二维码生成失败：{ex.Message}";
-        }
     }
 
     /// <summary>海报墙布局：与历史/收藏页同一套 PosterLayoutHelper（Android 卡高 182 / Windows 252，宽 2:3，列数自适应）</summary>

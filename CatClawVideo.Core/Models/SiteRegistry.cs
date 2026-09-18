@@ -18,10 +18,7 @@ public static class SiteRegistry
     /// <summary>站点集合变化（订阅增删后通知首页等刷新）</summary>
     public static event Action? Changed;
 
-    /// <summary>
-    /// 主动通知刷新。用于「集合没变但解析路径变了」的场景 ——
-    /// 例如扫码配对后解析节点地址变化，各页面需要重新拉取。
-    /// </summary>
+    /// <summary>主动通知刷新（集合未变但需要各页面重新拉取的场景）。</summary>
     public static void NotifyChanged() => Changed?.Invoke();
 
     /// <summary>可播站点：type=1 直连源 + 运行时已就绪的 spider 源</summary>

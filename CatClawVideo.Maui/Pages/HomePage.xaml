@@ -111,30 +111,6 @@
             </CollectionView.ItemTemplate>
         </CollectionView>
 
-        <!-- ═══ 空源引导：本机还没有可用源时，展示本机地址 + 配对二维码 ═══
-             手机扫此码即把手机的源接入本机（PC 上跑不了 Guard 加固源，靠手机当解析节点） -->
-        <Border x:Name="PairPanel" Grid.Row="2" IsVisible="False"
-                StrokeThickness="1" StrokeShape="RoundRectangle 20"
-                BackgroundColor="{DynamicResource CardBackgroundColor}"
-                Stroke="{DynamicResource DividerColor}"
-                Padding="28" HorizontalOptions="Center" VerticalOptions="Center">
-            <VerticalStackLayout Spacing="14" HorizontalOptions="Center">
-                <Label Text="还没有可用的源" FontSize="18" FontFamily="OpenSansSemibold"
-                       HorizontalOptions="Center"
-                       TextColor="{DynamicResource TextPrimaryColor}" />
-                <Label Text="手机装同款 App 后，用手机扫下面对应的二维码，即可把手机的源接入本机并开始浏览。&#10;（本机负责播放，手机只做解析——很轻，不会发烫）"
-                       FontSize="12.5" HorizontalTextAlignment="Center" MaximumWidthRequest="470"
-                       TextColor="{DynamicResource TextSecondaryColor}" />
-                <Image x:Name="PairQrImage" WidthRequest="196" HeightRequest="196"
-                       HorizontalOptions="Center" />
-                <Label x:Name="PairAddressLabel" FontSize="12" HorizontalOptions="Center"
-                       TextColor="{DynamicResource TextSecondaryColor}" />
-                <Label Text="也可以：设置 → 手机解析节点，手动填地址"
-                       FontSize="11" HorizontalOptions="Center"
-                       TextColor="{DynamicResource TextHintColor}" />
-            </VerticalStackLayout>
-        </Border>
-
     </Grid>
 
 </ContentView>

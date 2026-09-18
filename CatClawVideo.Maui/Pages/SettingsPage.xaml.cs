@@ -12,17 +12,15 @@ public partial class SettingsPage : ContentView, ITabView
     private readonly IThemeService _theme;
     private readonly ISubscriptionManager _subscriptionManager;
     private readonly VideoDatabase _db;
-    private readonly MainViewModel _mainVm;
 
     public SettingsPage(SettingsViewModel vm, IThemeService theme,
-        ISubscriptionManager subscriptionManager, VideoDatabase db, MainViewModel mainVm)
+        ISubscriptionManager subscriptionManager, VideoDatabase db)
     {
         InitializeComponent();
         _vm = vm;
         _theme = theme;
         _subscriptionManager = subscriptionManager;
         _db = db;
-        _mainVm = mainVm;
         BindingContext = _vm;
     }
 
@@ -33,8 +31,6 @@ public partial class SettingsPage : ContentView, ITabView
         _vm.SelectedDarkMode = DarkModeSetting.Dark;
         // 版本号动态填充（避免硬编码过期）
         try { AboutVersionLabel.Text = $"猫爪影视 {AppInfo.Current?.VersionString ?? "0.0.0"}"; } catch { }
-        LoadNodeSettings();
-        LoadNodeHostSettings();
         LoadCacheCapSetting();
         LoadDiagnosticLogSetting();
         return Task.CompletedTask;
@@ -117,160 +113,6 @@ public partial class SettingsPage : ContentView, ITabView
         catch { }
     }
 
-    // ═══════════ 本机作为解析节点（手机端）═══════════
-
-    /// <summary>
-    /// 手机端：显示本机节点地址/口令/二维码，并可一键配对到电脑。
-    /// PC 端则相反 —— 显示「填手机地址」的卡片。两平台共用同一份 XAML，这里按平台切换可见性。
-    /// </summary>
-    private void LoadNodeHostSettings()
-    {
-        bool isHost = CatClawVideo.Core.Providers.RemoteSpiderNode.IsNodeHost;
-        NodeHostCard.IsVisible = isHost;
-        NodeClientCard.IsVisible = !isHost;
-        if (!isHost) return;
-
-        try
-        {
-            var ip = CatClawVideo.Core.Services.LanInfo.PrimaryIPv4();
-            const int port = 8899;
-            var token = Preferences.Default.Get("node_token", "");
-
-            NodeAddressLabel.Text = $"本机节点：http://{ip}:{port}";
-            NodeTokenLabel.Text = string.IsNullOrEmpty(token) ? "（口令未生成）" : $"口令：{token}";
-
-            if (NodeQrImage.Source is null)
-            {
-                var payload = $"http://{ip}:{port}" + (string.IsNullOrEmpty(token) ? "" : $"?token={token}");
-                NodeQrImage.Source = ImageSource.FromStream(() => new MemoryStream(Services.PairQr.Png(payload, 5)));
-            }
-        }
-        catch (Exception ex)
-        {
-            NodeTokenLabel.Text = $"初始化失败：{ex.Message}";
-        }
-    }
-
-    /// <summary>把本机节点登记到电脑（POST /pair 到 PC 的 LinkServer）</summary>
-    private async void OnPairToPcClicked(object? sender, EventArgs e)
-    {
-        var raw = PcAddressEntry.Text?.Trim() ?? "";
-        if (string.IsNullOrEmpty(raw))
-        {
-            PairStatusLabel.Text = "请先填电脑上显示的地址（形如 192.168.1.5:8900）";
-            return;
-        }
-
-        // 容错：允许只填 IP、填 http://、末尾带 /
-        var hostPort = raw.Replace("http://", "").Replace("https://", "").TrimEnd('/');
-        var url = $"http://{hostPort}/pair";
-
-        PairButton.IsEnabled = false;
-        PairStatusLabel.Text = "正在配对…";
-        try
-        {
-            var ip = CatClawVideo.Core.Services.LanInfo.PrimaryIPv4();
-            var token = Preferences.Default.Get("node_token", "");
-            var payload = System.Text.Json.JsonSerializer.Serialize(new
-            {
-                node = $"http://{ip}:8899",
-                token,
-                name = Services.PairQr.DeviceName(),
-            });
-
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-            using var content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");
-            var body = await (await http.PostAsync(url, content)).Content.ReadAsStringAsync();
-
-            PairStatusLabel.Text = body.Contains("\"ok\":true")
-                ? $"✅ 配对成功，电脑已记住本机节点（{ip}:8899）"
-                : $"❌ 电脑返回：{Trim(body)}";
-        }
-        catch (Exception ex)
-        {
-            PairStatusLabel.Text = $"❌ 连不上电脑：{ex.GetType().Name}: {ex.Message}";
-        }
-        finally
-        {
-            PairButton.IsEnabled = true;
-        }
-    }
-
-    // ═══════════ 手机解析节点 ═══════════
-
-    /// <summary>回填当前节点配置（扫码配对后也会走到这里刷新）</summary>
-    private void LoadNodeSettings()
-    {
-        try
-        {
-            NodeEntry.Text = CatClawVideo.Core.Providers.RemoteSpiderNode.BaseUrl ?? "";
-            NodeTokenEntry.Text = CatClawVideo.Core.Providers.RemoteSpiderNode.Token ?? "";
-            var url = CatClawVideo.Core.Providers.RemoteSpiderNode.BaseUrl;
-            NodeStatusLabel.Text = string.IsNullOrEmpty(url)
-                ? "未配置 —— Guard 加固源在本机不可用（其余源不受影响）"
-                : $"已配置：{url}";
-        }
-        catch { }
-    }
-
-    /// <summary>测试节点连通性：GET /ping</summary>
-    private async void OnTestNodeClicked(object? sender, EventArgs e)
-    {
-        var url = NodeEntry.Text?.Trim() ?? "";
-        if (string.IsNullOrEmpty(url))
-        {
-            NodeStatusLabel.Text = "请先填写手机端显示的地址";
-            return;
-        }
-
-        NodeTestButton.IsEnabled = false;
-        NodeStatusLabel.Text = "正在测试…";
-        try
-        {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
-            var baseUrl = url.TrimEnd('/');
-            var token = NodeTokenEntry.Text?.Trim();
-            var probe = string.IsNullOrEmpty(token) ? "/ping" : $"/ping?token={Uri.EscapeDataString(token)}";
-            var body = await http.GetStringAsync(baseUrl + probe);
-
-            using var doc = System.Text.Json.JsonDocument.Parse(body);
-            var ok = doc.RootElement.TryGetProperty("ok", out var o) && o.ValueKind == System.Text.Json.JsonValueKind.True;
-            NodeStatusLabel.Text = ok
-                ? "✅ 连接成功。点「保存」生效（Guard 站点将走该节点解析）"
-                : $"❌ 节点返回异常：{Trim(body)}";
-        }
-        catch (Exception ex)
-        {
-            NodeStatusLabel.Text = $"❌ 连不上：{ex.GetType().Name}: {ex.Message}";
-        }
-        finally
-        {
-            NodeTestButton.IsEnabled = true;
-        }
-    }
-
-    private void OnSaveNodeClicked(object? sender, EventArgs e)
-    {
-        var url = NodeEntry.Text?.Trim();
-        if (string.IsNullOrEmpty(url))
-        {
-            NodeStatusLabel.Text = "地址为空，如需关闭请点「清除」";
-            return;
-        }
-        CatClawVideo.Core.Providers.RemoteSpiderNode.Set(url, NodeTokenEntry.Text);
-        LoadNodeSettings();
-        NodeStatusLabel.Text = $"✅ 已保存：{CatClawVideo.Core.Providers.RemoteSpiderNode.BaseUrl}";
-    }
-
-    private void OnClearNodeClicked(object? sender, EventArgs e)
-    {
-        CatClawVideo.Core.Providers.RemoteSpiderNode.Clear();
-        LoadNodeSettings();
-        NodeStatusLabel.Text = "已清除，全部源改回本机解析";
-    }
-
-    private static string Trim(string s) => s.Length <= 200 ? s : s[..200] + "…";
-
     /// <summary>跳转关于页（品牌信息 / 免责声明 / 开源协议 / 检查更新）</summary>
     private async void OnAboutClicked(object? sender, TappedEventArgs e)
     {
@@ -282,9 +124,6 @@ public partial class SettingsPage : ContentView, ITabView
     {
         try { await Shell.Current.GoToAsync("sourceconfig"); } catch { }
     }
-
-    /// <summary>切到顶部「下载」tab（下载管理已从独立 Shell 页面改为 tab，索引见 MainViewModel.Tabs）</summary>
-    private void OnOpenDownloads(object? sender, EventArgs e) => _mainVm.SelectTab(3);
 
     /// <summary>添加订阅：拉取解析 TVBox 配置 → 写库 → 站点仓库立即生效</summary>
     private async void OnAddSubClicked(object? sender, EventArgs e)

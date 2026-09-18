@@ -13,8 +13,6 @@ public class SpiderVodProvider : IVodSourceProvider
 {
     private readonly ISpiderRuntime? _jsRuntime;
     private readonly ISpiderRuntime? _jarRuntime;
-    /// <summary>手机解析节点（Guard 站点借它解析；未配置时为 null）</summary>
-    private readonly RemoteSpiderRuntime? _remote;
     private readonly Action<string>? _log;
     private readonly IWebSniffer? _sniffer;
 
@@ -24,7 +22,6 @@ public class SpiderVodProvider : IVodSourceProvider
     {
         _jsRuntime = jsRuntime;
         _jarRuntime = jarRuntime;
-        _remote = new RemoteSpiderRuntime(log);
         _log = log;
         _sniffer = sniffer;
     }
@@ -40,15 +37,6 @@ public class SpiderVodProvider : IVodSourceProvider
             VodSpiderKind.Jar => _jarRuntime,
             _ => null,
         };
-
-        // Guard 加固站点：jar 的解密器是 ARM Android native，PC 的 x64 JVM 没有执行路径
-        // ⇒ 借手机解析（手机原生就能跑 Guard）。手机不在/超时 → 自动回退本地
-        // （本地还有「非 Guard 同族 jar 替代」这条兜底）。
-        if (local is not null && _remote is not null && RemoteSpiderNode.NeedsRemote(site))
-        {
-            _log?.Invoke($"[路由] {site.Name} 是 Guard 站点 → 走手机解析节点（{RemoteSpiderNode.BaseUrl}）");
-            return new FallbackSpiderRuntime(_remote, local, _log);
-        }
 
         return local;
     }
