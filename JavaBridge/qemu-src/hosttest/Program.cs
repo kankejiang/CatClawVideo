@@ -14,13 +14,17 @@
 //
 //   dotnet run --project hosttest -- proxy-bench <upstreamUrl> <totalSize>
 //     独立代理基准：对任意活着的媒体口 URL 起缓存代理并只跑代理侧基准。
+//
+//   dotnet run --project hosttest -- playtest <runtimeDir> <magnet> [preferName] [durationSec]
+//     真实观看模拟（2026-09-17 用户要求）：开播首字节耗时 → 播放 2 分钟 → seek 15 分钟
+//     → 再播 2 分钟 → seek 片尾取样，逐段输出耗时/吞吐/最差首字节，用于定位起播与 seek 优化点。
 using System.Diagnostics;
 using System.Net.Sockets;
 using System.Text;
 using CatClawVideo.Core.Services.QemuThunder;
 
 var argList = args.ToList();
-var mode = argList.Count > 0 && (argList[0] == "bench" || argList[0] == "proxy-bench" || argList[0] == "download" || argList[0] == "seektest" || argList[0] == "rangetest") ? argList[0] : "";
+var mode = argList.Count > 0 && (argList[0] == "bench" || argList[0] == "proxy-bench" || argList[0] == "download" || argList[0] == "seektest" || argList[0] == "rangetest" || argList[0] == "playtest") ? argList[0] : "";
 if (mode.Length > 0) argList.RemoveAt(0);
 
 var sw = Stopwatch.StartNew();
@@ -155,6 +159,10 @@ if (mode == "rangetest")
     return 0;
 }
 
+// playtest 必须**在默认全链路之前**分派：下面那段「阶段一/阶段二」对非 bench 模式会直接
+// return，放在它之后的分支永远不可达（2026-09-17 踩过）。
+if (mode == "playtest") return await RunPlaytestAsync();
+
 Log("══ 阶段一：磁力 → 文件列表 ══");
 var files = await engine.ListFilesAsync(magnet, prefer);
 if (files is null) { Log("✗ 列文件失败"); return 2; }
@@ -173,6 +181,82 @@ if (mode != "bench")
     Log($"字节≈{bytes}（含响应头） 首字节={fb:F0}ms 总耗时={tt:F0}ms");
     Log(bytes > 1024 ? "🎉 全链路通过" : "⚠ 字节不足，验证未通过");
     return bytes > 1024 ? 0 : 4;
+}
+
+// ═══ playtest：真实观看模拟（开播 / 播放 / seek / 片尾）═══
+async Task<int> RunPlaytestAsync()
+{
+    var durSec = argList.Count > 3 && double.TryParse(argList[3], out var d0) ? d0 : 2100.0;   // 默认 35 分钟片长
+    Log($"══ playtest：模拟真实观看（片长按 {durSec / 60:F0} 分钟估算码率）══");
+
+    var tReady = sw.Elapsed.TotalSeconds;
+    var ready = await engine.EnsureReadyAsync();
+    Log($"[1/6] 引擎就绪={ready}（{sw.Elapsed.TotalSeconds - tReady:F1}s）");
+    if (!ready) return 10;
+
+    var tOpen = sw.Elapsed.TotalSeconds;
+    var opened = await engine.TryOpenAsync(magnet, prefer);
+    var openCost = sw.Elapsed.TotalSeconds - tOpen;
+    if (opened is null) { Log("✗ TryOpenAsync 失败"); return 11; }
+    Log($"[2/6] TryOpenAsync 耗时 {openCost:F1}s → {opened.FileName}"
+        + $"（{opened.FileLength / 1048576.0:F0}MB，索引 {opened.FileIndex}）");
+
+    // 与 App 一致：播放经「读前缓存代理」
+    using var proxy = new QemuStreamProxy(new Uri(opened.Url).Port, new Uri(opened.Url).PathAndQuery,
+        opened.FileLength, QemuStreamProxy.ContentTypeFor(opened.FileName), Log);
+    proxy.Start();
+
+    var bytesPerSec = opened.FileLength / durSec;
+
+    // 顺序读「sec 秒内容」的字节量，按 4MB 分块（与播放器/缓存分块一致）
+    async Task<double> PlayAsync(long startOffset, double sec, string tag)
+    {
+        var need = (long)(bytesPerSec * sec);
+        var off = startOffset;
+        long got = 0;
+        double worst = 0;
+        var t0 = sw.Elapsed.TotalSeconds;
+        while (got < need)
+        {
+            var chunk = Math.Min(4L * 1024 * 1024, need - got);
+            var (f, _, b) = await RawGetAsync(proxy.Url, off, chunk);
+            if (b < 1024) break;
+            worst = Math.Max(worst, f);
+            got += b;
+            off += b;
+        }
+        var el = Math.Max(sw.Elapsed.TotalSeconds - t0, 0.001);
+        Log($"      [{tag}] 读 {got / 1048576.0:F1}MB（≈{sec:F0}s 内容）耗时 {el:F1}s"
+            + $" | 最差首字节 {worst:F0}ms | 均值 {got * 8 / 1e6 / el:F1} Mbps");
+        return got;
+    }
+
+    var tFirst = sw.Elapsed.TotalSeconds;
+    var (fb, _, nFirst) = await RawGetAsync(proxy.Url, 0, 262144);
+    Log($"[3/6] ★开播首字节 {fb:F0}ms（含代理起流；256B 校验 bytes={nFirst}）"
+        + $" —— 点击到出画的主体耗时 = TryOpen {openCost:F1}s + 首字节 {fb / 1000:F2}s");
+    if (nFirst < 1024) { Log("✗ 首字节失败"); return 12; }
+
+    await PlayAsync(262144, 120, "开头播放 2 分钟");
+
+    var off15 = (long)(opened.FileLength * (15 * 60 / durSec));
+    var tSeek = sw.Elapsed.TotalSeconds;
+    var (f15, _, b15) = await RawGetAsync(proxy.Url, off15, 262144);
+    Log($"[4/6] seek 15 分钟 → 偏移 {off15 / 1048576.0:F0}MB | 首字节 {f15:F0}ms"
+        + $" | bytes={b15}（往返 {sw.Elapsed.TotalSeconds - tSeek:F1}s）");
+    if (b15 < 1024) { Log("✗ seek 后无数据"); return 13; }
+
+    await PlayAsync(off15 + b15, 120, "15 分钟后播放 2 分钟");
+
+    var offTail = Math.Max(0, opened.FileLength - 4L * 1024 * 1024) + 262144;
+    var tTail = sw.Elapsed.TotalSeconds;
+    var (ft, _, bt) = await RawGetAsync(proxy.Url, offTail, 262144);
+    Log($"[5/6] seek 片尾 → 偏移 {offTail / 1048576.0:F0}MB / {opened.FileLength / 1048576.0:F0}MB"
+        + $" | 首字节 {ft:F0}ms | bytes={bt}（往返 {sw.Elapsed.TotalSeconds - tTail:F1}s）");
+    Log(bt >= 1024
+        ? "[6/6] ✓ 片尾可读 → 尾部按需供数正常（不会出现播到结尾卡死）"
+        : "[6/6] ✗ 片尾读不到字节 → 播到结尾会卡住");
+    return bt >= 1024 ? 0 : 14;
 }
 
 // ═══════════ 基准模式：原始 vs 代理 ═══════════

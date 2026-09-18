@@ -40,6 +40,37 @@ internal sealed class ThunderP2P : CatClawVideo.Core.Interfaces.IPreferredMagnet
 
     public bool IsReady => _ready;
 
+    /// <summary>
+    /// 是否有活跃的播放/下载任务。
+    ///
+    /// <para>详情页的磁力展开（探测）必须让位：Android 侧的迅雷是**单会话**，探测会
+    /// stopTask 掉正在播放的任务（黑屏），且下载中建新任务会被拒（9111）——
+    /// 与 PC 侧 <c>IsBusy</c> 同一语义（见 d5a82fc）。</para>
+    ///
+    /// <para>判据 = bridge 里还挂着任务号：<c>taskProgress()</c> 无任务时恒返回 "0|0|0"，
+    /// 有任务时返回 "已下载|总大小|速度"，故取中段 &gt; 0 即视为活跃。
+    /// 取不到/异常一律按「不忙」处理 —— 让探测继续，功能优先。</para>
+    /// </summary>
+    public bool IsBusy
+    {
+        get
+        {
+            if (!_ready || _cls is null) return false;
+            try
+            {
+                string? s;
+                lock (_callLock)
+                {
+                    s = (FindStatic("taskProgress", 0)?.Invoke(null, []) as Java.Lang.String)?.ToString();
+                }
+                if (string.IsNullOrEmpty(s)) return false;
+                var parts = s.Split('|');
+                return parts.Length == 3 && long.TryParse(parts[1], out var total) && total > 0;
+            }
+            catch { return false; }
+        }
+    }
+
     // ═══════════ IPreferredMagnetEngine ═══════════
 
     public Task<List<CatClawVideo.Core.Interfaces.MagnetFile>?> ListFilesAsync(

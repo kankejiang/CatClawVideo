@@ -150,12 +150,35 @@ public class CompositeVodSourceProvider : IVodSourceProvider
         return "";
     }
 
-    /// <summary>从文件名提取集号（"01.1080p…"/"第07集"/"EP12…"）；解析不出返回 9999（排最后、保持原序）。</summary>
+    /// <summary>从文件名提取集号，按常见命名依次尝试：
+    /// <c>S01E07</c>（季集）→ <c>EP07</c>/<c>E07</c> → <c>第07集</c> → 开头数字 <c>07.1080p…</c>；
+    /// 全部解析不出返回 9999（排最后、保持原序）。
+    /// <para>⚠ 2026-09-17 压测实测 bug：此前只认「<b>开头</b>数字」，遇到
+    /// <c>杀手妈咪.A.Bona.Fide.Killer.S01E01.1080p…</c> 这类「字母在前、SxxExx 在中间」的命名，
+    /// 16 个文件全被判成 9999 → <see cref="SortExpandedEpisodes"/> 按 (集号,分辨率) 去重后
+    /// **只剩 1 集**（详情页选集栏只显示 1 条，其余 15 集全部丢失）。</para></summary>
     private static int EpisodeNumberOf(string name)
     {
+        // ① S01E07 / s1e7（取 E 后面的集号；季号不参与排序）
         var m = System.Text.RegularExpressions.Regex.Match(
+            name, @"[Ss]\d{1,2}\s*[Ee](\d{1,4})(?![0-9])", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (m.Success && int.TryParse(m.Groups[1].Value, out var n1)) return n1;
+
+        // ② EP07 / E07 / EP.07（前面是分隔符或串首，避免误吃 S01E07 里的 E07——那里已被 ① 截获）
+        m = System.Text.RegularExpressions.Regex.Match(
+            name, @"(?:^|[\s._\-\[\]])(?:[Ee][Pp]|[Ee])[\s._\-]?(\d{1,4})(?![0-9])",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (m.Success && int.TryParse(m.Groups[1].Value, out var n2)) return n2;
+
+        // ③ 第07集 / 第7话
+        m = System.Text.RegularExpressions.Regex.Match(
+            name, @"第\s*(\d{1,4})(?![0-9])", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (m.Success && int.TryParse(m.Groups[1].Value, out var n3)) return n3;
+
+        // ④ 开头数字（原有行为）：01.1080p… / 23-24-2160p…
+        m = System.Text.RegularExpressions.Regex.Match(
             name, @"^(?:\s*第\s*)?(\d{1,4})(?![0-9])", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-        return m.Success && int.TryParse(m.Groups[1].Value, out var n) ? n : 9999;
+        return m.Success && int.TryParse(m.Groups[1].Value, out var n4) ? n4 : 9999;
     }
 
     /// <summary>单次详情页最多展开的磁力条数（超出则放弃展开，避免串行解析拖慢）</summary>

@@ -61,6 +61,9 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     /// <summary>播放代次：快速切集/切线路时废弃过期解析结果，防止旧响应覆盖新播放</summary>
     private int _playGeneration;
 
+    /// <summary>最近一次 MediaOpened 的时刻（过滤"起播瞬间的伪 ended"，见 MediaEnded 守卫）</summary>
+    private DateTime _mediaOpenedUtc;
+
     /// <summary>线路芯片（SelectSource 高亮用；LinesHost 首位可能是"线路"前缀标签）</summary>
     private readonly List<Border> _lineChips = [];
 
@@ -125,6 +128,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         };
         Player.MediaOpened += (_, _) => MainThread.BeginInvokeOnMainThread(() =>
         {
+            _mediaOpenedUtc = DateTime.UtcNow;
             UpdateProgress();
 
             // 播放历史续看：媒体就绪（时长已知）后 seek 到上次位置。
@@ -145,13 +149,24 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         //   播放位置离片尾超过 15s 的 "ended" 一律忽略。
         // ⚠ Duration 未知（≤0）也忽略：MP4 的 moov / MKV 的 Cues 在文件尾，起播探测拿不到时
         //   FFmpeg frames:0 → 播放器报时长 0 → 刚挂上就 "ended"（进度条满格 + 秒跳下一集，实测）。
+        // ⚠ 起播后 10s 内的 ended 一律忽略（2026-09-17 实测真凶）：Cues 探测失败被代理回 416 时
+        //   FFmpeg 把 MKV 解封装视作 EOF（"File ended prematurely"）→ MediaEnded 立刻到达，
+        //   而 Position/Duration 都是小值、守卫 `Position >= Duration-15s` 天然成立 → 每 30s 跳一集连环换集。
+        //   自然播完绝不可能发生在起播 10s 内，故以此为准入门槛。
         Player.MediaEnded += (_, _) => MainThread.BeginInvokeOnMainThread(async () =>
         {
-            _playing = false;
-            UpdatePlayIcon();
+            // ⚠ 先判守卫再改状态：此前无条件 `_playing = false; UpdatePlayIcon();` 写在守卫之前，
+            //   导致被忽略的伪 MediaEnded 仍把 UI 钉在暂停态、进度条停在假片尾（2026-09-17 压测实测）。
             if (Player.Duration <= TimeSpan.Zero) return;          // 时长未知：起播失败态，绝非自然播完
+            if (_mediaOpenedUtc != default && (DateTime.UtcNow - _mediaOpenedUtc).TotalSeconds < 10)
+            {
+                BtFileLog.Write($"[player] 忽略起播 {(DateTime.UtcNow - _mediaOpenedUtc).TotalSeconds:F1}s 的伪 MediaEnded（Position={Player.Position.TotalSeconds:F1}s Duration={Player.Duration.TotalSeconds:F1}s）");
+                return;
+            }
             if (Player.Position < Player.Duration - TimeSpan.FromSeconds(15))
                 return;   // 残留事件：位置远未到片尾
+            _playing = false;
+            UpdatePlayIcon();
             if (_currentSourceIndex < 0 || _currentSourceIndex >= _sources.Count) return;
             var endedIndex = _currentEpisodeIndex;
             var next = endedIndex + 1;
@@ -516,6 +531,16 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         // 播放历史落库（观看页会话收尾）
         try { _playback.EndSession(Player.Position.TotalSeconds, Player.Duration.TotalSeconds); }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[Watch] 历史记录失败: {ex.Message}"); }
+
+        // 退出播放页 = 本次播放结束：通知磁力引擎收尾。
+        // 迅雷 P2SP 任务交完播放地址后仍会自己下个不停，宿主只能靠「页面退出」这个信号叫停；
+        // QEMU 引擎收到后冻结 VM（下载立刻停，任务与已下载数据保留，回来点同一剧可续）。
+        // 地址不匹配（非磁力播放 / 已被别的页面接管）时引擎内部会自行忽略。
+        try
+        {
+            (MagnetEngines.Thunder as IPlaybackSessionLease)?.ReleasePlaybackSession(_resolvedPlay?.Url);
+        }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[Watch] 磁力会话收尾失败: {ex.Message}"); }
     }
 
     /// <summary>拉播放线路与选集（真数据），默认播第一线路第一集</summary>

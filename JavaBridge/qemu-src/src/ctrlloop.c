@@ -520,7 +520,31 @@ static void main_loop(void) {
                     ctrl_report("kick", g_task_id, 0, 0, 0, 0, "no-task");
                 }
             } else if (!strncmp(cmd, "STOP", 4)) {
-                if (g_task_id > 0 && g_eng.startTask) { g_task_id = 0; ctrl_report("stopped", 0, 0, 0, 0, 0, ""); }
+                // ★ 2026-09-18 修复：原实现只是 `g_task_id = 0`（且条件里的 g_eng.startTask 是函数
+                //   指针，恒真），**从未调用 stopTask** —— 任务号被清掉后 poll_task 不再跑，宿主看
+                //   日志以为"停了"，但迅雷引擎里的任务照旧下载，流量/CPU 一路涨（用户实测：
+                //   退出播放页后视频还在下载）。必须真正 stopTask，引擎才会停下载并释放任务句柄。
+                if (g_task_id > 0) {
+                    long tid = g_task_id;
+                    if (g_eng.sdk && g_eng.env) {
+                        typedef jint (*fn_stop)(JNIEnv *, jobject, jlong);
+                        fn_stop stopTask = (fn_stop)dlsym((void *)g_eng.sdk,
+                                                          "Java_com_xunlei_downloadlib_XLLoader_stopTask");
+                        int sr = stopTask
+                            ? (int)stopTask((JNIEnv *)g_eng.env, (jobject)g_eng.thiz, (jlong)tid)
+                            : -1;
+                        printf("[ctrl] STOP → stopTask(%ld) 返回 %d（9000=成功；9104/9119=任务不存在/未运行；fn=%p）\n",
+                               tid, sr, (void *)stopTask);
+                    } else {
+                        printf("[ctrl] STOP → 引擎句柄不可用（sdk=%p env=%p），只清任务号\n",
+                               (void *)g_eng.sdk, (void *)g_eng.env);
+                    }
+                    g_task_id = 0;
+                    g_mag_stage = 0; g_dl_index = -1;
+                    g_last_st = 0; g_last_err = 0; g_last_done = 0; g_last_total = 0;
+                    g_torrent_reported = 0; g_play_reported = 0;
+                    ctrl_report("stopped", 0, 0, 0, 0, 0, "");
+                }
             } else if (!strncmp(cmd, "PING", 4)) {
                 ctrl_report("pong", g_task_id, g_last_st, g_last_err, g_last_done, g_last_total, "");
             }

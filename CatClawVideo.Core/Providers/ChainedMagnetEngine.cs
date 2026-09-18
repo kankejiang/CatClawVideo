@@ -8,7 +8,7 @@ namespace CatClawVideo.Core.Providers;
 /// <para>PC 上的组合 = [QEMU 本地迅雷引擎, 迅雷网盘引擎]：
 /// 本地 P2SP 优先（无需账号、公共磁力即可、确定性强）；网盘（需登录，云添加 → 取直链）兜底。</para>
 /// </summary>
-public sealed class ChainedMagnetEngine : IPreferredMagnetEngine
+public sealed class ChainedMagnetEngine : IPreferredMagnetEngine, IPlaybackSessionLease
 {
     private readonly IPreferredMagnetEngine[] _engines;
 
@@ -67,6 +67,17 @@ public sealed class ChainedMagnetEngine : IPreferredMagnetEngine
         foreach (var e in _engines)
         {
             try { e.Stop(); } catch { }
+        }
+    }
+
+    /// <summary>播放页退出：转给链上实现了「可冻结」的引擎（PC 侧是 QEMU 迅雷引擎）。
+    /// 未实现该接口的引擎（如网盘 API 兜底）本就无长驻下载，忽略即可。</summary>
+    public void ReleasePlaybackSession(string? playedUrl)
+    {
+        foreach (var e in _engines)
+        {
+            if (e is not IPlaybackSessionLease lease) continue;
+            try { lease.ReleasePlaybackSession(playedUrl); } catch { }
         }
     }
 }

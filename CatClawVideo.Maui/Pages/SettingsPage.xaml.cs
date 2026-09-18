@@ -35,7 +35,44 @@ public partial class SettingsPage : ContentView, ITabView
         try { AboutVersionLabel.Text = $"猫爪影视 {AppInfo.Current?.VersionString ?? "0.0.0"}"; } catch { }
         LoadNodeSettings();
         LoadNodeHostSettings();
+        LoadCacheCapSetting();
         return Task.CompletedTask;
+    }
+
+    // ═══════════ 磁力缓存上限（2026-09-17 用户要求：5~15GB 偏小，默认提到 20GB 且可调）═══════════
+
+    private bool _cacheCapLoading;
+
+    private void LoadCacheCapSetting()
+    {
+        _cacheCapLoading = true;
+        try
+        {
+            var opts = CatClawVideo.Core.Services.QemuThunder.StreamCachePrefs.OptionsGb;
+            CacheCapPicker.ItemsSource = opts.Select(g => $"{g} GB").ToList();
+            var cur = (long)Preferences.Default.Get("stream_cache_gb",
+                (int)CatClawVideo.Core.Services.QemuThunder.StreamCachePrefs.DefaultGb);
+            var idx = Array.IndexOf(opts, cur);
+            CacheCapPicker.SelectedIndex = idx >= 0
+                ? idx
+                : Array.IndexOf(opts, CatClawVideo.Core.Services.QemuThunder.StreamCachePrefs.DefaultGb);
+        }
+        catch { }
+        finally { _cacheCapLoading = false; }
+    }
+
+    private void OnCacheCapChanged(object? sender, EventArgs e)
+    {
+        if (_cacheCapLoading || CacheCapPicker.SelectedIndex < 0) return;
+        try
+        {
+            var gb = CatClawVideo.Core.Services.QemuThunder.StreamCachePrefs.OptionsGb[CacheCapPicker.SelectedIndex];
+            Preferences.Default.Set("stream_cache_gb", (int)gb);
+            // 实时生效：引擎下一次超限清理即按新值判，无需重启
+            CatClawVideo.Core.Services.QemuThunder.StreamCachePrefs.SetGb(gb);
+            DiagLog.Write($"[缓存] 上限改为 {gb}GB");
+        }
+        catch { }
     }
 
     // ═══════════ 本机作为解析节点（手机端）═══════════

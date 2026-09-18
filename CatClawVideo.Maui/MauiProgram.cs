@@ -80,9 +80,13 @@ public static class MauiProgram
         // 所以 ① 用 QEMU 承载原生跑；② 走官方网盘 API。
         var qemuThunder = new CatClawVideo.Core.Services.QemuThunder.QemuThunderEngine(
             Path.Combine(AppContext.BaseDirectory, "ThunderRuntime"), BtFileLog.Write);
-        // 磁力点播磁盘缓存（2026-09-17 用户要求）：播放数据 4MB 分块落盘、10GB LRU（5~15GB 可调），
-        // 重进/换集已看区间直接磁盘秒供，不再从头下载
+        // 磁力点播磁盘缓存：播放数据 4MB 分块落盘 + LRU 超限清理，已看区间重进/换集直接磁盘秒供。
+        // 上限由设置页控制（默认 20GB，档位 5/10/20/30/50），持久化在 Preferences；
+        // 启动时灌进 Core 的 StreamCachePrefs，引擎在超限清理时实时读取（改完即时生效，无需重启）。
+        var cacheGbPref = Preferences.Default.Get("stream_cache_gb", (int)CatClawVideo.Core.Services.QemuThunder.StreamCachePrefs.DefaultGb);
+        CatClawVideo.Core.Services.QemuThunder.StreamCachePrefs.CapGb = cacheGbPref;
         qemuThunder.StreamCacheRoot = CatClawVideo.Core.AppPaths.Sub("btcache");
+        BtFileLog.Write($"[缓存] 上限 {CatClawVideo.Core.Services.QemuThunder.StreamCachePrefs.CapGb}GB（设置页可调）");
         CatClawVideo.Core.Interfaces.MagnetEngines.Thunder = new CatClawVideo.Core.Providers.ChainedMagnetEngine(
             qemuThunder, new CatClawVideo.Core.Providers.ThunderPanEngine());
         // 磁力下载也走同一个迅雷引擎（下载管理页的磁力任务：引擎独占下载 → 媒体口导出本机）

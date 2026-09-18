@@ -1,7 +1,49 @@
 namespace CatClawVideo.Core.Services.QemuThunder;
 
 /// <summary>
-/// 磁力点播的宿主侧磁盘缓存（2026-09-17 用户要求：5~15GB，超限自动删最旧）。
+/// 磁力点播磁盘缓存上限的**全局偏好**（设置页可调）。
+///
+/// <para><b>为什么单独抽一个类</b>：上限要在「播放中实时生效」——用户在设置页改成 20GB，
+/// 引擎下一次超限清理就要按 20GB 判，不必重启 App。用一个进程级静态量最简单；
+/// 放 Core 而不是直接读 MAUI 的 Preferences，是为了不让 Core 依赖平台层
+/// （持久化仍由 MAUI 层做，启动时灌进来）。</para>
+///
+/// <para>默认 20GB（2026-09-17 用户反馈 5~15GB 偏小）。已看区间重进秒开靠它，
+/// 太小会导致「刚看过的片段又被 LRU 清掉」。</para>
+/// </summary>
+public static class StreamCachePrefs
+{
+    /// <summary>默认上限（GB）</summary>
+    public const long DefaultGb = 20;
+
+    /// <summary>设置页下拉的档位（GB）</summary>
+    public static readonly long[] OptionsGb = [5, 10, 20, 30, 50];
+
+    private static long _gb = DefaultGb;
+
+    /// <summary>上限（GB）；非法值回落默认</summary>
+    public static long CapGb
+    {
+        get => _gb;
+        set => _gb = value is >= 2 and <= 500 ? value : DefaultGb;
+    }
+
+    /// <summary>上限（字节）——引擎超限清理直接用这个</summary>
+    public static long CapBytes => CapGb * 1024L * 1024 * 1024;
+
+    /// <summary>变化通知（需要立刻重算时用）</summary>
+    public static event Action? Changed;
+
+    /// <summary>设置页写入口：改值并通知</summary>
+    public static void SetGb(long gb)
+    {
+        CapGb = gb;
+        Changed?.Invoke();
+    }
+}
+
+/// <summary>
+/// 磁力点播的宿主侧磁盘缓存（2026-09-17 用户要求：超限自动删最旧；上限见 <see cref="StreamCachePrefs"/>）。
 ///
 /// <para><b>为什么每次重进都要从头下</b>：此前播放数据只存在于引擎 tmpfs 与代理内存窗，
 /// 换集/重开/重启后全部丢失，播放器重新 Range 拉取时引擎要么重新下载、要么供不出数。</para>
@@ -16,8 +58,8 @@ public static class StreamCache
     /// <summary>分块大小（4MB）：与播放器典型读窗口匹配，单块 SSD 写入 ~10ms 量级。</summary>
     public const int ChunkSize = 4 * 1024 * 1024;
 
-    /// <summary>默认容量上限 10GB（用户要求 5~15GB 区间的中值）。</summary>
-    public const long DefaultCapBytes = 10L * 1024 * 1024 * 1024;
+    /// <summary>默认容量上限（兼容保留；实际取 <see cref="StreamCachePrefs.CapBytes"/>）。</summary>
+    public const long DefaultCapBytes = StreamCachePrefs.DefaultGb * 1024 * 1024 * 1024;
 
     /// <summary>某文件某分块的完整落盘目录：<c>{root}/{btih}/{fileIndex}</c>。</summary>
     public static string DirFor(string cacheRoot, string btihHex, int fileIndex)

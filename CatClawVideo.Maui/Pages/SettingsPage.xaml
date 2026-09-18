@@ -172,6 +172,20 @@
                         <Label Grid.Column="0" Text="电视遥控焦点样式" FontSize="13" TextColor="{DynamicResource TextPrimaryColor}" />
                         <Label Grid.Column="1" Text="白色描边 + 放大" FontSize="12" TextColor="{DynamicResource TextSecondaryColor}" />
                     </Grid>
+
+                    <!-- 磁力缓存上限（2026-09-17 用户要求）：控边下边播的落盘数据量，
+                         太小会把刚看过的片段 LRU 掉导致重进又从头下。改完即时生效。 -->
+                    <Grid ColumnDefinitions="*,Auto" Padding="0,4" ColumnSpacing="10">
+                        <VerticalStackLayout Grid.Column="0" Spacing="1">
+                            <Label Text="磁力缓存上限" FontSize="13" TextColor="{DynamicResource TextPrimaryColor}" />
+                            <Label Text="边下边播的落盘数据，已看区间重进秒开；超限自动清最旧"
+                                   FontSize="11.5" TextColor="{DynamicResource TextSecondaryColor}" />
+                        </VerticalStackLayout>
+                        <Picker x:Name="CacheCapPicker" Grid.Column="1" WidthRequest="96"
+                                FontSize="12.5" TextColor="{DynamicResource TextSecondaryColor}"
+                                HorizontalTextAlignment="End"
+                                SelectedIndexChanged="OnCacheCapChanged" />
+                    </Grid>
                 </VerticalStackLayout>
             </Border>
 

@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -19,6 +21,10 @@ public sealed class QemuHostRuntime : IDisposable
 {
     public string RuntimeDir { get; }
     public int MediaPort { get; }
+
+    /// <summary>QEMU monitor 端口（0 = 未启用）。宿主用它 <c>stop</c>/<c>cont</c> 冻结/唤醒 guest。</summary>
+    public int MonitorPort { get; }
+
     /// <summary>本实例使用的 initrd 文件名（多实例场景：下载引擎用独立控制口的 pkg_initrd_dl.gz）</summary>
     public string InitrdName { get; }
     public string ExePath => Path.Combine(RuntimeDir, "qemu-system-aarch64.exe");
@@ -32,11 +38,13 @@ public sealed class QemuHostRuntime : IDisposable
 
     /// <param name="initrdName">initrd 文件名；多实例（如下载专用引擎）传独立控制口的第二份 initrd。</param>
     /// <param name="consoleLogTag">控制台日志文件名后缀（多实例避免互相覆盖）。</param>
+    /// <param name="monitorPort">monitor 监听端口（0 = 不开）。仅绑 127.0.0.1，不对外。</param>
     public QemuHostRuntime(string runtimeDir, int mediaPort, Action<string>? log = null,
-        string initrdName = "pkg_initrd.gz", string consoleLogTag = "")
+        string initrdName = "pkg_initrd.gz", string consoleLogTag = "", int monitorPort = 0)
     {
         RuntimeDir = runtimeDir;
         MediaPort = mediaPort;
+        MonitorPort = monitorPort;
         InitrdName = initrdName;
         _log = log;
         // Debug/Release 隔离（见 AppPaths）
@@ -79,7 +87,7 @@ public sealed class QemuHostRuntime : IDisposable
                 StandardOutputEncoding = Encoding.UTF8,
                 StandardErrorEncoding = Encoding.UTF8,
             };
-            foreach (var a in new[]
+            var args = new List<string>
             {
                 // -m 5120：guest RAM 需容得下 /thunder-data 的 tmpfs（3500m，见 initrd 的 /init）+ 引擎开销；
                 //  旧的 4096 + tmpfs 1500m 会在下载 ~1.57GB 时写满 tmpfs，任务以 err=114010 死亡
@@ -90,7 +98,12 @@ public sealed class QemuHostRuntime : IDisposable
                 "-append", "console=ttyAMA0 rdinit=/init loglevel=4",
                 "-netdev", $"user,id=n0,hostfwd=tcp:127.0.0.1:{MediaPort}-:20080",
                 "-device", "virtio-net-pci,netdev=n0",
-            })
+            };
+            // monitor 通道（仅回环）：宿主靠 stop/cont 冻结/唤醒 VM —— 退出播放页时冻住，
+            // 迅雷侧下载立刻停又不必丢任务与已下数据（见 SetPaused）。缺失也只是退化成杀 VM。
+            if (MonitorPort > 0)
+                args.AddRange(["-monitor", $"tcp:127.0.0.1:{MonitorPort},server,nowait"]);
+            foreach (var a in args)
                 psi.ArgumentList.Add(a);
 
             var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
@@ -149,6 +162,51 @@ public sealed class QemuHostRuntime : IDisposable
         }
         try { _fileLog?.Flush(); _fileLog?.Dispose(); } catch { }
         _fileLog = null;
+    }
+
+    /// <summary>
+    /// 冻结 / 唤醒 guest（QEMU monitor 的 <c>stop</c> / <c>cont</c>），成功返回 true。
+    ///
+    /// <para><b>为什么要冻结而不是杀进程</b>：迅雷 P2SP 任务一旦下发就会自己下个不停，宿主没有
+    /// 「只停下载、别丢任务」的开关（guest 侧 harness 的 STOP 原先也没真调 stopTask）。
+    /// <c>stop</c> 只冻 vCPU：网络侧对端收不到 ACK 立刻掉速，流量与 CPU 当场归零，
+    /// 而任务句柄、/thunder-data 里已下载的数据原样保留 —— 用户回来 <c>cont</c> 即续，
+    /// 不必重建任务、不必等 VM 冷启动。</para>
+    ///
+    /// <para>⚠ 冻久了（分钟级）迅雷的对端连接会被 peer 判死，<c>cont</c> 后需要重新建连才拉得起速度；
+    /// 这是「停下来」必须付的代价，且远轻于重建任务。</para>
+    ///
+    /// <para>端口不可达 / 未启用 monitor 时返回 false，调用方据此退化为杀 VM（保证「不再下载」）。</para>
+    /// </summary>
+    public bool SetPaused(bool paused)
+    {
+        if (MonitorPort <= 0 || !IsRunning) return false;
+        try
+        {
+            using var c = new TcpClient();
+            c.Connect(IPAddress.Loopback, MonitorPort);
+            using var ns = c.GetStream();
+            var cmd = Encoding.ASCII.GetBytes(paused ? "stop\n" : "cont\n");
+            ns.Write(cmd, 0, cmd.Length);
+            ns.Flush();
+            // 读回显只用来确认送达；超时不代表失败（命令已发出），故不据此判 false
+            try
+            {
+                c.ReceiveTimeout = 1000;
+                var buf = new byte[512];
+                _ = ns.Read(buf, 0, buf.Length);
+            }
+            catch { }
+            _log?.Invoke(paused
+                ? "[qemu] monitor stop → 冻结 VM（下载立即停，任务与已下数据保留）"
+                : "[qemu] monitor cont → 唤醒 VM（继续下载/供数）");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _log?.Invoke($"[qemu] monitor {(paused ? "stop" : "cont")} 失败：{ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
     }
 
     // ── Job Object（KillOnClose）：宿主挂了 VM 不孤儿 ──

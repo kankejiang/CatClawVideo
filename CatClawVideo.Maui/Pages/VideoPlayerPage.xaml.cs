@@ -94,6 +94,18 @@ public partial class VideoPlayerPage : ContentPage, IQueryAttributable
         {
             System.Diagnostics.Debug.WriteLine($"[Player] 退出清理失败: {ex.Message}");
         }
+
+        // 退出播放页 = 本次播放结束：通知磁力引擎收尾（QEMU 引擎会冻结 VM，
+        // 让迅雷侧下载立刻停下；任务与已下数据保留，回来续播不必冷启动）。
+        try
+        {
+            (CatClawVideo.Core.Interfaces.MagnetEngines.Thunder
+                as CatClawVideo.Core.Interfaces.IPlaybackSessionLease)?.ReleasePlaybackSession(_vm.Url);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[Player] 磁力会话收尾失败: {ex.Message}");
+        }
     }
 
     /// <summary>加载并开始播放</summary>

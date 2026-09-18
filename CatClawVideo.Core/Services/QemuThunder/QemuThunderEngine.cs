@@ -21,7 +21,7 @@ namespace CatClawVideo.Core.Services.QemuThunder;
 ///
 /// <para>⚠ 单 VM 单会话：新任务会把 guest 代理重新武装到新引擎端口，正在播放的旧流会断——与 Android 迅雷一致。</para>
 /// </summary>
-public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
+public sealed class QemuThunderEngine : IPreferredMagnetEngine, IPlaybackSessionLease, IDisposable
 {
     /// <summary>控制口：烧死在 initrd 里（guest 每秒回连宿主 10.0.2.2:18080），改不了。</summary>
     /// <summary>默认控制口（多实例时各用各的，见构造参数）</summary>
@@ -29,6 +29,9 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
 
     /// <summary>媒体口首选值（实际会在被占时向后探测空闲端口）。</summary>
     public const int PreferredMediaPort = 20092;
+
+    /// <summary>monitor 口首选值（实际会在被占时向后探测空闲端口；仅回环）。</summary>
+    public const int PreferredMonitorPort = 18090;
 
     private static readonly HashSet<string> VideoExt = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -52,9 +55,15 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
     private QemuHostRuntime? _runtime;
     private QemuControlServer? _server;
     private int _mediaPort;
+    private int _monitorPort;
     private Session? _session;
     private QemuStreamProxy? _streamProxy;
     private DateTime _lastActiveUtc = DateTime.UtcNow;
+    /// <summary>VM 是否处于「退出播放页冻结」状态（true 时任何新会话前必须先唤醒）</summary>
+    private volatile bool _vmPaused;
+    /// <summary>播放会话「代理无读者」的起始时刻（null = 有读者/无播放会话）；
+    /// 连续无读者够久即判定播放已结束（页面退出钩子没走到时的兜底）</summary>
+    private DateTime? _playbackIdleSinceUtc;
     private long _watchLastUpstream = -1;   // 看门狗上次采样的上游字节数
     private int _watchFrozenTicks;          // 连续冻结采样次数（×15s）
     private bool _watchKicked;              // 本轮断粮已 KICK 过（数据推进时复位）
@@ -69,12 +78,14 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
     /// 各实例的 VM 懒启动互不干扰 → 「边下边播」天然成立（下载 VM 与播放 VM 并行）。</summary>
     public QemuThunderEngine(string runtimeDir, Action<string>? log = null,
         int ctrlPort = 18080, int mediaPortBase = PreferredMediaPort,
-        string initrdName = "pkg_initrd.gz", string consoleTag = "")
+        string initrdName = "pkg_initrd.gz", string consoleTag = "",
+        int monitorPortBase = PreferredMonitorPort)
     {
         _runtimeDir = runtimeDir;
         _log = log;
         _ctrlPort = ctrlPort;
         _mediaPort = mediaPortBase;
+        _monitorPort = monitorPortBase;
         _initrdName = initrdName;
         _consoleTag = consoleTag;
         _idleTimer = new Timer(_ => IdleCheck(), null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
@@ -100,8 +111,19 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
     /// 播放数据 4MB 分块落盘，重看/换集回看直接磁盘秒供，不再依赖引擎 tmpfs（VM 重启即空）。</summary>
     public string? StreamCacheRoot { get; set; }
 
-    /// <summary>磁盘缓存容量上限（LRU 超限自动删最旧分块），默认 10GB（用户要求 5~15GB 区间中值）。</summary>
-    public long StreamCacheCapBytes { get; set; } = StreamCache.DefaultCapBytes;
+    private long? _streamCacheCapOverride;
+
+    /// <summary>
+    /// 磁盘缓存容量上限（LRU 超限自动删最旧分块）。
+    /// <para>默认取用户设置 <see cref="StreamCachePrefs.CapBytes"/>（默认 20GB，设置页可调 5/10/20/30/50），
+    /// **实时生效**：设置页改完，下一次超限清理即按新值判，无需重启。
+    /// 显式赋值可覆盖（测试/单次用途）。</para>
+    /// </summary>
+    public long StreamCacheCapBytes
+    {
+        get => _streamCacheCapOverride ?? StreamCachePrefs.CapBytes;
+        set => _streamCacheCapOverride = value > 0 ? value : null;
+    }
 
     // ═══════════ IPreferredMagnetEngine ═══════════
 
@@ -266,7 +288,7 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
     {
         if (!IsReady) { Log("磁力下载不可用：迅雷引擎运行时缺失"); return false; }
 
-        Session? s;
+        Session? s = null;
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
@@ -314,7 +336,14 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
             var encoded = SynthesizeUrlPath(s.Dir + "/" + pick.Name);
             return await PullToFileAsync(encoded, pick.Size, destPath, progress, ct).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) { return false; }
+        catch (OperationCanceledException)
+        {
+            // 用户在下载页点了取消：**必须主动收掉任务** —— guest 侧迅雷不会因为宿主不再轮询
+            // 就停下载（宿主也看不到它的状态），不主动收就是「点了取消，流量继续跑」。
+            // 仅在当前会话仍是本任务时收（同引擎单会话，取消 A 不该把正在播的 B 一起收掉）。
+            if (ReferenceEquals(_session, s)) Teardown("磁力下载被取消");
+            return false;
+        }
         catch (Exception ex) { Log($"磁力下载异常：{ex.GetType().Name}: {ex.Message}"); return false; }
         finally { _gate.Release(); }
     }
@@ -379,15 +408,93 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
         return false;
     }
 
-    /// <summary>停止当前任务（保留 VM；空闲计时器过会儿会收掉它）。</summary>
-    public void Stop()
+    /// <summary>显式停止当前任务：结束会话并释放 VM（5GB 内存归还）。</summary>
+    public void Stop() => Teardown("外部显式停止");
+
+    // ═══════════ 退出播放页：冻结而非丢弃 ═══════════
+
+    /// <summary>
+    /// 播放器已退出（播放页离开）：**冻结 VM** 让迅雷侧下载立刻停下。
+    ///
+    /// <para>只对**播放会话**生效（<see cref="Session.Played"/>）—— 磁力下载任务（下载管理页）
+    /// 与详情页磁力展开都不受影响；<paramref name="playedUrl"/> 与当前播放会话地址不符时也不动
+    /// （防止把别的页面正在使用的会话停掉）。</para>
+    ///
+    /// <para>冻结不杀进程：任务句柄与 /thunder-data 里已下载的数据都留着，用户回来点同一磁力时
+    /// <see cref="EnsureStartedLockedAsync"/> 会先唤醒 VM，直接续播（无需重建任务、无需冷启动）。
+    /// 冻结不可用（monitor 未启用/端口被占）时退化为杀 VM —— 「不再下载」优先于「回来快」。</para>
+    /// </summary>
+    public void ReleasePlaybackSession(string? playedUrl)
     {
         var s = _session;
-        _session = null;
-        if (s is not null) s.Cancelled = true;   // 打断进行中的等待（否则会挂满超时）
+        if (s is null || !s.Played) return;
+
+        // 地址不符有两种可能：① 用户中途切到了直链/别的线路，磁力会话被晾着（该冻）；
+        // ② 本页的会话已被别的页面接管（不该冻）。用「代理还有没有读者」区分：
+        //  ② 有人在读；① 磁力代理上早就没人读了（播放器读的是新线路的流）。
+        // ⚠ 不能用「无读者」当作冻的唯一条件：正常退出时播放器刚被 Pause，HTTP 连接可能还挂着，
+        //   那样就永远冻不上，等于没修。
+        if (playedUrl is not null && !OwnsUrl(playedUrl) && _streamProxy?.HasReaders == true)
+        {
+            Log("退出播放页：引擎会话地址与本页不符且仍有读者 —— 判为其他页面在用，让位不冻");
+            return;
+        }
+
+        ReleaseProxy();
+        if (_runtime is { IsRunning: true } && _runtime.SetPaused(true))
+        {
+            _vmPaused = true;
+            _playbackIdleSinceUtc = null;
+            Log("退出播放页：已冻结 QEMU 下载（任务与已下载数据保留，回来可续）");
+        }
+        else
+        {
+            Log("退出播放页：冻结不可用，直接收掉 VM（保证不再下载）");
+            Teardown("冻结不可用");
+        }
+    }
+
+    /// <summary>该地址是否属于本引擎当前的播放会话（缓存代理地址或媒体口直连地址）。</summary>
+    private bool OwnsUrl(string url) =>
+        url.Length > 0 && (url == _streamProxy?.Url || url == LastDirectMediaUrl);
+
+    /// <summary>关掉读前缓存代理（播放器手里的地址随之失效）。</summary>
+    private void ReleaseProxy()
+    {
         var p = _streamProxy;
         _streamProxy = null;
-        p?.Dispose();                            // 停止播放即关闭缓存代理（播放器地址随之失效）
+        p?.Dispose();
+    }
+
+    /// <summary>
+    /// 真正结束会话并杀掉 VM：冻结态空闲超时 / 冻结不可用 / 显式 Stop 走这条路。
+    /// 与冻结不同，这里会剔除历史缓存 —— VM 一死 tmpfs 就空了，下次必须重新走 TASK MAGNET。
+    /// </summary>
+    private void Teardown(string reason)
+    {
+        var s = _session;
+        Log($"结束磁力会话（{reason}）");
+        // 先请 guest 自己停任务（harness 已修真调 stopTask；旧 harness 只是让它停轮询），
+        // 再杀 VM 兜底 —— 顺序反过来就没机会发了。
+        try { _server?.SetCommand("STOP"); } catch { }
+        _session = null;
+        if (s is not null)
+        {
+            s.Cancelled = true;                 // 打断进行中的等待（否则会挂满超时）
+            _history.TryRemove(s.Magnet, out _);
+        }
+        ReleaseProxy();
+        _vmPaused = false;
+        _playbackIdleSinceUtc = null;
+        try { _runtime?.Stop(); } catch { }
+    }
+
+    /// <summary>唤醒被冻结的 VM（新会话前的必要动作：冻着的机器媒体口不会应答）。</summary>
+    private void ResumeVmLocked()
+    {
+        if (!_vmPaused) return;
+        _vmPaused = false;
+        _runtime?.SetPaused(false);
     }
 
     /// <summary>为当前会话（重新）建立读前缓存代理；播放器地址从媒体口换成代理口。
@@ -461,7 +568,8 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
         {
             _runtime?.Dispose();
             _mediaPort = PickFreePort(_mediaPort);
-            _runtime = new QemuHostRuntime(_runtimeDir, _mediaPort, Log, _initrdName, _consoleTag);
+            _monitorPort = PickFreePort(_monitorPort);
+            _runtime = new QemuHostRuntime(_runtimeDir, _mediaPort, Log, _initrdName, _consoleTag, _monitorPort);
             _server.ResetFirstPoll();
             if (!await _runtime.StartAsync(ct).ConfigureAwait(false)) return false;
 
@@ -471,10 +579,16 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
                 Log("VM 已启动但 90s 内 guest 未连上控制端");
                 return false;
             }
-            Log($"VM 就绪（媒体口 {_mediaPort}）");
+            Log($"VM 就绪（媒体口 {_mediaPort}，monitor {_monitorPort}）");
+        }
+        else
+        {
+            // 上次退出播放页把 VM 冻住了：必须先唤醒，否则媒体口/控制口都不会应答
+            ResumeVmLocked();
         }
 
         _lastActiveUtc = DateTime.UtcNow;
+        _playbackIdleSinceUtc = null;
         return true;
     }
 
@@ -503,49 +617,53 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
         Log($"下发磁力任务：{s.Name}");
         _server!.SetCommand($"TASK MAGNET {magnet} {s.Name}");
 
-        // ① 等种子落盘：ev=torrent（原路径）与阶段一 ev=play（引擎 URL 路径）先到哪个算哪个
-        await PollUntilAsync(
-            () => s.Cancelled || s.TorrentRawPath.Length > 0 || s.TorrentUrlPath.Length > 0 || s.LastError is not null,
-            TimeSpan.FromSeconds(120), ct).ConfigureAwait(false);
-        if (s.Cancelled) return null;
-        if (s.LastError is not null) { Log(s.LastError); _session = null; return null; }
-        if (s.TorrentRawPath.Length == 0 && s.TorrentUrlPath.Length == 0)
+        // ① 等种子落盘：ev=torrent（原路径）与阶段一 ev=play（引擎 URL 路径）先到哪个算哪个。
+        //   ⚠ 2026-09-17 压测实测真凶：guest 只在 poll_task() 里 stat 种子并上报，而 poll_task 是
+        //   **5 秒节拍**（ctrlloop.c 的 `now - last_poll >= 5`）→ 每条磁力白等最多 5s，9 条磁力 =
+        //   40s，占「海报→起播」65s 的 69%（第 1 条因 last_poll=0 立即命中，只花 0.3s —— 这正说明
+        //   瓶颈不是引擎解析而是上报节拍）。种子落盘路径是**确定**的（guest 侧
+        //   `snprintf(g_mag_torrent, "%s/%s", EMU_SAVE_PATH, name)`，即 /thunder-data/<任务名>），
+        //   故宿主直接向媒体口探取，命中即走（~0.25s/轮）；探不到仍回落 guest 上报，行为不回退。
+        //   ⚠ 直取可能拿到**正在写**的种子（bencode 半截）→ 解析失败必须继续等，不能当终局失败，
+        //   否则比原逻辑更糟，故把 ParseTorrent 放进等待循环里，只有解析成功才结束等待。
+        var directTorrentPath = SynthesizeUrlPath("/thunder-data/" + s.Name);
+        (List<TorrentEntry> Files, string Name)? parsed = null;
+        var waitDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(120);
+        while (DateTime.UtcNow < waitDeadline)
+        {
+            if (s.Cancelled) return null;
+            if (s.LastError is not null) { Log(s.LastError); _session = null; return null; }
+
+            var data = await TryFetchTorrentQuietAsync(directTorrentPath, ct).ConfigureAwait(false);
+            if (data is null && (s.TorrentRawPath.Length > 0 || s.TorrentUrlPath.Length > 0))
+            {
+                // 回落：guest 上报的官方路径（原逻辑）
+                var reportPath = s.TorrentUrlPath.Length > 0
+                    ? s.TorrentUrlPath
+                    : SynthesizeUrlPath(s.TorrentRawPath);
+                data = await FetchTorrentAsync(reportPath, ct).ConfigureAwait(false);
+            }
+            if (data is not null)
+            {
+                try
+                {
+                    var (entries, tname) = Bencode.ParseTorrent(data);
+                    if (entries.Count > 0) { parsed = (entries, tname); break; }   // 半截种子会抛/空 → 继续等
+                }
+                catch { /* 种子仍在写：解析失败不算失败，继续等 */ }
+            }
+            try { await Task.Delay(250, ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { return null; }
+        }
+        if (parsed is null)
         {
             Log("等种子落盘超时（120s）");
             _session = null;
             return null;
         }
 
-        // ② 取 .torrent：优先用阶段一 play 的 URL 路径（mag26/mag28 验证过的格式），
-        //    拿不到时用 torrent 原路径合成「双重 URL 编码」（引擎的编码格式："/" + 两次 escape 的绝对路径）
-        var fetchPath = s.TorrentUrlPath.Length > 0
-            ? s.TorrentUrlPath
-            : SynthesizeUrlPath(s.TorrentRawPath);
-
-        var data = await FetchTorrentAsync(fetchPath, ct).ConfigureAwait(false);
-        if (data is null && s.TorrentUrlPath.Length == 0)
         {
-            // 合成路径失败 → 再等 30s 让 play 事件到，用官方路径重试
-            await PollUntilAsync(() => s.TorrentUrlPath.Length > 0, TimeSpan.FromSeconds(30), ct).ConfigureAwait(false);
-            if (s.TorrentUrlPath.Length > 0)
-                data = await FetchTorrentAsync(s.TorrentUrlPath, ct).ConfigureAwait(false);
-        }
-        if (data is null)
-        {
-            Log("展开种子失败（两种路径都取不到 bencode）");
-            _session = null;
-            return null;
-        }
-
-        try
-        {
-            var (entries, tname) = Bencode.ParseTorrent(data);
-            if (entries.Count == 0)
-            {
-                Log("种子文件列表为空");
-                _session = null;
-                return null;
-            }
+            var (entries, tname) = parsed.Value;
             s.Files = entries.Select(e => new MagnetFile(e.Index, e.Size, e.Rel)).ToList();
             s.AtUtc = DateTime.UtcNow;
             _history[magnet] = s;   // 进程级历史：重复点播/换集不再重复建任务（9128）
@@ -553,12 +671,6 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
             foreach (var f in s.Files.Take(12)) Log($"  #{f.Index,3}  {f.Size / 1048576.0,8:F1}MB  {f.Name}");
             if (s.Files.Count > 12) Log($"  … 共 {s.Files.Count} 项");
             return s;
-        }
-        catch (Exception ex)
-        {
-            Log($"种子解析失败：{ex.Message}");
-            _session = null;
-            return null;
         }
     }
 
@@ -568,6 +680,30 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
         if (body.Length >= 100 && body[0] == (byte)'d') return body;
         Log($"种子内容异常（HTTP={code} len={body.Length} path={path}）");
         return null;
+    }
+
+    /// <summary>静默探测种子是否已落盘（不写日志）：成功返回 bencode 字节，未就绪/不是种子返回 null。
+    /// <para>用于绕开 guest 的 5s 上报节拍 —— 媒体口对不存在的文件**快速 404**（实测 215ms），
+    /// 可安全高频轮询；失败不打日志，避免每 250ms 刷屏。</para></summary>
+    private async Task<byte[]?> TryFetchTorrentQuietAsync(string path, CancellationToken ct)
+    {
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, MediaUrl(path));
+            using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+            if ((int)resp.StatusCode is not (200 or 206)) return null;
+            using var stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+            var buf = new byte[4 * 1024 * 1024];
+            var off = 0;
+            int n;
+            while (off < buf.Length && (n = await stream.ReadAsync(buf.AsMemory(off, buf.Length - off), ct).ConfigureAwait(false)) > 0)
+                off += n;
+            if (off < 100 || buf[0] != (byte)'d') return null;   // 不是 bencode（种子还没写完/已是媒体文件）
+            var body = new byte[off];
+            Buffer.BlockCopy(buf, 0, body, 0, off);
+            return body;
+        }
+        catch { return null; }
     }
 
     // ═══════════ 事件与工具 ═══════════
@@ -601,7 +737,11 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
                 s.LastSt = r.St;
                 s.LastDone = r.Done;
                 s.LastTotal = r.Total;
-                if (r.St == 3 && r.Err != 0 && s.DlSent && !s.Cancelled && s.Played)
+                // ⚠ 2026-09-17 压测实测：死亡不一定报 st=3。tmpfs 写满（err=114011）报 st=3、有恢复；
+                //   而任务创建期失败（err=114009）报的是 **st=4** 且 err≠0，此前不满足 `== 3` →
+                //   完全不进恢复循环，日志里 st=4 err=114009 一直刷到测试结束（引擎永久死锁）。
+                //   st=4 与 st=3 同属「带错误码的死亡」，都必须触发重建。
+                if (r.St is 3 or 4 && r.Err != 0 && s.DlSent && !s.Cancelled && s.Played)
                 {
                     s.FailedErr = r.Err;
                     _ = RecoverTaskAsync(s);
@@ -650,7 +790,7 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
                     break;
                 }
             }
-            if (!s.Cancelled && s.RetryCount >= MaxTaskRetries && s.LastSt == 3)
+            if (!s.Cancelled && s.RetryCount >= MaxTaskRetries && s.LastSt is 3 or 4)
                 Log("任务自动恢复次数用尽，放弃（请换源或重新点播）");
         }
         finally { Interlocked.Exchange(ref s.Recovering, 0); }
@@ -705,11 +845,18 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
         return got;
     }
 
-    /// <summary>单次取字节（会话复用前的活性探测）。</summary>
+    /// <summary>单次取字节（会话复用前的活性探测）。⚠ 上限 3s：这里的结论只影响日志文案，
+    /// 不该让换集流程干等媒体口 30s（未下载到的新集会让请求一直挂着 → 实测每次换集卡 30s）。</summary>
     private async Task<long> VerifyOnceAsync(string path, CancellationToken ct)
     {
-        var (code, data) = await FetchAsync(path, 64 * 1024, ct).ConfigureAwait(false);
-        return code is 200 or 206 ? data.Length : 0;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(3));
+        try
+        {
+            var (code, data) = await FetchAsync(path, 64 * 1024, cts.Token).ConfigureAwait(false);
+            return code is 200 or 206 ? data.Length : 0;
+        }
+        catch (OperationCanceledException) { return 0; }
     }
 
     private static async Task PollUntilAsync(Func<bool> condition, TimeSpan timeout, CancellationToken ct)
@@ -856,13 +1003,47 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IDisposable
         try
         {
             if (_disposed || _runtime is not { IsRunning: true }) return;
+
+            // ① 冻结态（用户已退出播放页）：下载已停，但 5GB 内存还占着 → 15 分钟后收机器。
+            //   冻结期间 guest 不再上报，_lastActiveUtc 自然停止刷新，窗口能真正走完。
+            if (_vmPaused)
+            {
+                if (DateTime.UtcNow - _lastActiveUtc < TimeSpan.FromMinutes(15)) return;
+                Teardown("冻结已满 15 分钟（回收 5GB 内存）");
+                return;
+            }
+
+            // ② 播放会话：以「缓存代理还有没有读者」为准 —— 宿主看不到播放器本身，有没有人在读
+            //   是最接近的事实（暂停时读者仍挂着，只有页面退出/播放器断开才会清零）。
+            //   ⚠ 旧代码这里是 `if (_session is { Played: true }) return;`，等于给 VM 发了永久免死金牌：
+            //   而 OnReport **每 5 秒**刷新一次 _lastActiveUtc（guest 只要任务还在就报 status，
+            //   下载中每次都有进度变化）→ 15 分钟空闲窗口永远走不完 → VM 永不回收、
+            //   迅雷一路下载。这是「退出播放页后视频还在下载」的直接原因之一（2026-09-18 用户实测）。
+            if (_session is { Played: true })
+            {
+                if (_streamProxy?.HasReaders == true)
+                {
+                    _lastActiveUtc = DateTime.UtcNow;
+                    _playbackIdleSinceUtc = null;
+                    return;
+                }
+                // 无读者：给 5 分钟余量（播放器缓冲/短时重连），超时即认定播放已结束
+                _playbackIdleSinceUtc ??= DateTime.UtcNow;
+                if (DateTime.UtcNow - _playbackIdleSinceUtc.Value < TimeSpan.FromMinutes(5)) return;
+                Log("播放会话已连续 5 分钟无读者（页面退出钩子没走到？）→ 冻结下载");
+                ReleaseProxy();
+                if (_runtime.SetPaused(true)) { _vmPaused = true; _playbackIdleSinceUtc = null; }
+                else Teardown("无读者且冻结不可用");
+                return;
+            }
+
+            // ③ 其余情形（下载会话 / 只展开过文件列表）：沿用原 15 分钟规则。
+            //   下载会话在下载中每 5 秒有 status 上报 → 会自然续命，行为不变。
+            _playbackIdleSinceUtc = null;
             if (DateTime.UtcNow - _lastActiveUtc < TimeSpan.FromMinutes(15)) return;
-            // 有「已交播放地址」的会话时不停（播放器可能随时来取流，宿主侧不可见）
-            if (_session is { Played: true }) return;
 
             Log("空闲 15 分钟，停掉 QEMU 释放内存");
-            _session = null;
-            _runtime.Stop();
+            Teardown("空闲 15 分钟");
         }
         catch { }
     }

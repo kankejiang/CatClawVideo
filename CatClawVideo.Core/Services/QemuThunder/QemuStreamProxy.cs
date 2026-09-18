@@ -22,6 +22,7 @@ public sealed class QemuStreamProxy : IDisposable
     private const long KeepBackBytes = 8 * 1024 * 1024;   // 已读数据保留余量（供回退小 seek）
     private const long SliceBytes = 32 * 1024 * 1024;     // 上游单次 Range 切片
     private const int BufSize = 256 * 1024;
+    private const int BodyStallMs = 8_000;                // 上游响应体停滞上限（超时断开重连换新请求）
 
     private readonly int _mediaPort;
     private readonly string _path;
@@ -39,8 +40,6 @@ public sealed class QemuStreamProxy : IDisposable
     private Socket? _upstream;     // 当前上游 socket（重定位时 close 以打断）
     private long _bytesServed;     // 已向播放器供出的总字节数（首开探测期判定用）
     private long _upstreamTotal;   // 上游累计收到的字节数（看门狗判断「断粮」用）
-    private bool _preflightActive; // 预等待进行中（同窗口的其他请求排队等它，禁止 Recenter 乒乓）
-    private long _preflightTarget;
     private readonly string? _cacheDir;   // 磁盘缓存目录（null = 关闭）：{btcache}/{btih}/{fileIndex}/
     // 磁盘缓存攒写：分块**整块落盘**（StreamCache 以「长度=期望」判完整，半块不落盘防稀疏洞）。
     // pending 是当前未满 4MB 块的攒写缓冲；只有上游线程 Feed，Recenter/KickUpstream 弃置（均持 _sync）。
@@ -716,58 +715,23 @@ public sealed class QemuStreamProxy : IDisposable
             StreamCache.ChunkComplete(_cacheDir, _totalSize, first / StreamCache.ChunkSize);
         _log?.Invoke($"[proxy-req] {method} bytes={first}-{last}（窗口 [{_base / 1048576.0:F1}|{(_base + _len) / 1048576.0:F1}MB] 已供出 {_bytesServed / 1048576.0:F1}MB）{(diskHit ? "【磁盘命中】" : "")}");
 
-        // ── 预等待：请求落在缓存前沿之外时（首开读 Cues / 拖进度条），先给引擎「按需下载该区间」
-        //    的时间。引擎收到未下载区间的读请求会优先拉取对应分片（=「seek 到哪下到哪」的物理
-        //    基础，KICK PREFETCH 进一步强化）。数据到位才回 206；超时回 416 干净拒绝。
-        //    ⚠ 绝不能 206 后再掐断：那会让 avio 记住「流坏了」，此后一切 seek 退化成
-        //    Soft-seeking drain（顺序丢读整个未下载区间 = 卡死黑屏，实测 15:36 会话）。
-        //    ⚠ 同一时刻只允许一个预等待窗口：并发请求（主打开 + Cues 探测）若各自 Recenter
-        //    会乒乓清掉对方缓存 → 主流被截断（"File ended prematurely at pos 5812" 实测）。
-        //    ★ 磁盘已覆盖请求块（重看/换集回看）时完全绕过预等待：数据本地秒供，不打扰引擎。
+        // ── Cues 探测的有限预等待：**仅**首开阶段读文件尾（FFmpeg 查 mfra/Cues 这类可选索引）时用。
+        //    可选索引拿不到也能正常播，故这里「等一小会儿再空应答」是安全的。
+        //    ⚠ 真 seek（拖进度条）**绝不走这条路**：空体会被 FFmpeg 当成 EOF → 播放器跳片尾 →
+        //    触发 MediaEnded → 单集影片误弹「已经是最后一集了」（2026-09-18 用户实测）。
+        //    真 seek 直接落下面的正常供数路径（注册读者 + Recenter 触发 KICK PREFETCH + 60s 停滞预算），
+        //    数据边到边供，响应体绝不空。
+        //    ★ 磁盘已覆盖请求块（重看/换集回看）时连预等待都省掉：数据本地秒供。
         {
             long frontier;
             lock (_sync) frontier = _base + _len;
-            var needWait = false;
-            if (first > frontier && !diskHit)
+            // Cues 探测 = 首开阶段读文件尾（FFmpeg 查 mfra/Cues 这类**可选**索引）。
+            var isCuesProbe = _bytesServed < 32 * 1024 * 1024 && first > _totalSize / 4;
+            if (isCuesProbe && first > frontier && !diskHit)
             {
-                KickOnDemandPrefetch(first);   // ★ 预等待必须主动触发引擎按需供数（上游循环此时尚无读者，不会拉）
-                lock (_sync)
-                {
-                    if (_preflightActive && _preflightTarget != first)
-                    {
-                        needWait = true;   // 别人在等另一个区间：等它的结果，不要抢窗口
-                    }
-                    else
-                    {
-                        _preflightActive = true;
-                        _preflightTarget = first;
-                    }
-                }
-            }
-            if (needWait)
-            {
-                var sw2 = System.Diagnostics.Stopwatch.StartNew();
-                while (sw2.ElapsedMilliseconds < 30_000 && !_stopped)
-                {
-                    lock (_sync) frontier = _base + _len;
-                    if (first < frontier + 256 * 1024 || DiskCovers(first)) break;
-                    if (!_preflightActive) break;
-                    await Task.Delay(200).ConfigureAwait(false);
-                }
-                lock (_sync) frontier = _base + _len;
-                if (first > frontier && !DiskCovers(first))
-                {
-                    _log?.Invoke($"[proxy] 等待他人预等待超时仍无数据 → 416：{first}-{last}");
-                    var err416b = Encoding.ASCII.GetBytes(
-                        $"HTTP/1.1 416 Requested Range Not Satisfiable\r\nContent-Range: bytes */{_totalSize}\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n");
-                    await stream.WriteAsync(err416b).ConfigureAwait(false);
-                    return;
-                }
-            }
-            else if (first > frontier && !diskHit)
-            {
-                var isCuesProbe = _bytesServed < 32 * 1024 * 1024 && first > _totalSize / 4;
-                var budgetMs = isCuesProbe ? 20_000 : 45_000;   // Cues 在文件尾（几 MB），健康 swarm 1-3s 可达
+                // Cues（文件尾几 MB）只影响精确 seek；FFmpeg 已配 FastSeek + 关闭 ReadAhead，缺 Cues 也能播。
+                // 2026-09-17 实测：死等 18.6s 拿不到也救不回来，纯浪费起播时间 → 预算 6s。
+                const int budgetMs = 6_000;
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 var lastUp = UpstreamTotal;
                 var frozenMs = 0;
@@ -775,19 +739,27 @@ public sealed class QemuStreamProxy : IDisposable
                 while (sw.ElapsedMilliseconds < budgetMs && !_stopped)
                 {
                     lock (_sync) frontier = _base + _len;
-                    if (first < frontier + 256 * 1024 || DiskCovers(first)) { delivered = true; break; }   // 预取块落盘也算就绪
+                    if (first < frontier + 256 * 1024 || DiskCovers(first)) { delivered = true; break; }
                     await Task.Delay(200).ConfigureAwait(false);
                     var up = UpstreamTotal;
                     if (up != lastUp) { frozenMs = 0; lastUp = up; }   // 引擎在按需拉取：等待有效
-                    else if ((frozenMs += 200) > 8000) break;          // 上游冻结 8s：引擎供不了数，早失败
+                    else if ((frozenMs += 200) > 2500) break;          // 上游冻结 2.5s：引擎供不了这个可选索引，别耗
                 }
-                lock (_sync) _preflightActive = false;
                 if (!delivered)
                 {
-                    _log?.Invoke($"[proxy] 远端区间引擎未按需供数（{(isCuesProbe ? "Cues 探测" : "拖动 seek")}，等了 {sw.ElapsedMilliseconds}ms）→ 416 干净拒绝：{first}-{last}");
-                    var err416 = Encoding.ASCII.GetBytes(
-                        $"HTTP/1.1 416 Requested Range Not Satisfiable\r\nContent-Range: bytes */{_totalSize}\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n");
-                    await stream.WriteAsync(err416).ConfigureAwait(false);
+                    // ⚠ 这里回 206 空应答而非 416：416 是**协议级错误**，FFmpeg 的 http 层收到后会判定
+                    //   该 AVIO 不可用并放弃整个流（随后零 Range 请求、播放器关连接、上游循环转「无读者」
+                    //   永久停车）。2026-09-17 A/B 实测（同一部片、同一台机，唯一变量就是尾探测结果）：
+                    //     暖缓存 → 尾探测 206（磁盘命中）→ 持续请求 mdat → 1798~2900 帧/分 正常
+                    //     冷缓存 → 尾探测 416 → 之后 0 个 Range 请求 → 6~12 帧 卡死
+                    //   mfra/Cues 是**可选**索引（本片 moov 就在文件头，实测 box：ftyp@0 / moov@24 /
+                    //   mdat 紧随），拿不到对播放毫无影响 → 206 + Content-Length: 0 让 FFmpeg 当一次
+                    //   失败短读跳过即可。**注意此策略只对 Cues 探测成立**（真 seek 用空体 = 跳片尾）。
+                    _log?.Invoke($"[proxy] Cues 探测等了 {sw.ElapsedMilliseconds}ms 拿不到 → 206 空应答（不回 416，避免 FFmpeg 弃流）：{first}-{last}");
+                    var empty206 = Encoding.ASCII.GetBytes(
+                        $"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {first}-{last}/{_totalSize}\r\n" +
+                        $"Content-Type: {_contentType}\r\nContent-Length: 0\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n");
+                    await stream.WriteAsync(empty206).ConfigureAwait(false);
                     return;
                 }
                 _log?.Invoke($"[proxy] 远端区间已按需就绪（{sw.ElapsedMilliseconds}ms）：{first}");
@@ -799,8 +771,10 @@ public sealed class QemuStreamProxy : IDisposable
         {
             long baseOff, frontier;
             lock (_sync) { baseOff = _base; frontier = _base + _len; }
-            if ((first < baseOff || first > frontier) && !_preflightActive)
-                Recenter(first, "播放器请求窗口外");   // 预等待进行中时不抢窗口（防乒乓）
+            // 请求落在窗口外（真 seek / 首开）：重定位到该偏移，触发 OnRelocate → KICK PREFETCH
+            // 让引擎优先下载该区间。响应体随后照常流式供数（边到边给），绝不空体返回。
+            if (first < baseOff || first > frontier)
+                Recenter(first, "播放器请求窗口外");
 
             var length = last - first + 1;
             var sb = new StringBuilder(256);
