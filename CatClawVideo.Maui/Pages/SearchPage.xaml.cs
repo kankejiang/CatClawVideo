@@ -38,6 +38,10 @@ public partial class SearchPage : ContentPage
     public SearchPage(IVodSourceProvider provider, CoverImageService covers)
     {
         InitializeComponent();
+#if ANDROID
+        // Edge-to-Edge：推入式页面必须自己补顶部安全区，否则顶栏压状态栏（原因见 SafeAreaHelper.ApplyPageTopInset）
+        SafeAreaHelper.ApplyPageTopInset(this);
+#endif
 #if WINDOWS
         ResultGrid.SizeChanged += (_, _) => PosterLayoutHelper.Apply(ResultGrid, ResultGrid.Width, ResultGrid.Height, cap: 252);   // 桌面固定 168×252
 #else

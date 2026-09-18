@@ -48,6 +48,10 @@ public partial class SourceConfigPage : ContentPage
     public SourceConfigPage(ISubscriptionManager subscriptionManager, VideoDatabase db)
     {
         InitializeComponent();
+#if ANDROID
+        // Edge-to-Edge：推入式页面必须自己补顶部安全区，否则顶栏压状态栏（原因见 SafeAreaHelper.ApplyPageTopInset）
+        SafeAreaHelper.ApplyPageTopInset(this);
+#endif
         _subscriptionManager = subscriptionManager;
         _db = db;
         RebuildSites();

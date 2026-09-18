@@ -21,6 +21,10 @@ public partial class DownloadDetailPage : ContentPage
     public DownloadDetailPage(DownloadManager manager)
     {
         InitializeComponent();
+#if ANDROID
+        // Edge-to-Edge：推入式页面必须自己补顶部安全区，否则顶栏压状态栏（原因见 SafeAreaHelper.ApplyPageTopInset）
+        SafeAreaHelper.ApplyPageTopInset(this);
+#endif
         _manager = manager;
 #if WINDOWS
         Padding = new Thickness(0, 48, 0, 0);
