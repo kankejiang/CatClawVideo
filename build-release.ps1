@@ -1,4 +1,4 @@
-# 猫爪影视 Release APK 构建脚本（真机 arm64 版）
+﻿# 猫爪影视 Release APK 构建脚本（真机 arm64 版）
 # 用法: .\build-release.ps1
 # 输出: CatClawVideo.Maui\bin\Release\net11.0-android\publish\com.catclaw.video-Signed.apk
 #

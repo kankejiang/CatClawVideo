@@ -1,4 +1,4 @@
-# 猫爪影视 Windows Release 一键打包脚本
+﻿# 猫爪影视 Windows Release 一键打包脚本
 # 用法: 双击运行（打包完会暂停等待按键，方便看结果），或 .\build-win-release.ps1
 # 输出: release\windows\catclaw.video-<版本>-Setup.exe
 # 流程: ① dotnet publish 绿色目录(self-contained, 去pdb, 多语言保留) -> ② ISCC 编译 Inno Setup 安装程序
@@ -98,7 +98,12 @@ $IsccPath = ""
 $candidates = @(
     "$env:USERPROFILE\InnoSetup\ISCC.exe",
     "C:\Program Files (x86)\Inno Setup 7\ISCC.exe",
-    "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+    "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+    # Inno Setup 默认「仅为我安装」时会落在用户目录，上面的常见位置探测不到（2026-09-18 实测本机就是这种）
+    "$env:LOCALAPPDATA\Programs\Inno Setup 7\ISCC.exe",
+    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
+    "C:\Program Files\Inno Setup 7\ISCC.exe",
+    "C:\Program Files\Inno Setup 6\ISCC.exe"
 )
 foreach ($c in $candidates) { if (Test-Path $c) { $IsccPath = $c; break } }
 
