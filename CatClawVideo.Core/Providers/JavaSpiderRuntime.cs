@@ -31,7 +31,28 @@ public class JavaSpiderRuntime : ISpiderRuntime
 {
     public string Id => "jvm-dex";
 
+    /// <summary>
+    /// **只读**程序目录：<c>bridge.jar</c> 与 <c>vendor/*</c> 的所在地（安装版是
+    /// <c>C:\Program Files\CatClawVideo\JavaBridge</c>，普通用户无写权限）。
+    /// </summary>
     private readonly string _bridgeDir;
+
+    /// <summary>
+    /// **可写**工作目录 —— 必须与 <see cref="_bridgeDir"/> 分开：jar 转换产物与桥进程的
+    /// <c>data</c> 目录都要落盘，写程序目录会抛 <c>UnauthorizedAccessException</c>。
+    ///
+    /// <para>2026-09-19 用户实测（安装版）：磁力/自带源拉取失败，报
+    /// 「Access to the path 'C:\Program Files\CatClawVideo\JavaBridge\converted' is denied.」
+    /// —— 开发机跑仓库目录（可写）从不触发，只有安装包才暴露。</para>
+    ///
+    /// <para>落在 <c>%APPDATA%\CatClawVideo\javabridge\</c>，与其余可写数据同一处
+    /// （见 <see cref="AppPaths"/>）。</para>
+    /// </summary>
+    private readonly string _workDir;
+
+    /// <summary>jar 转换产物目录（原始 jar、Guard 解壳产物、dex2jar 输出）。</summary>
+    private readonly string _convertedDir;
+
     private readonly string _javaExe;
     private readonly Action<string>? _log;
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(30) };
@@ -78,11 +99,16 @@ public class JavaSpiderRuntime : ISpiderRuntime
     /// </summary>
     public bool GuardUnpackAvailable { get; }
 
-    public JavaSpiderRuntime(string bridgeDir, string javaExe, Action<string>? log = null)
+    public JavaSpiderRuntime(string bridgeDir, string javaExe, Action<string>? log = null,
+        string? workDir = null)
     {
         _bridgeDir = bridgeDir;
         _javaExe = javaExe;
         _log = log;
+        // 可写目录默认落用户数据区；显式传入只是为了测试/特殊部署。
+        // ⚠ 绝不回落到 bridgeDir：安装版那是 Program Files，写它就是本次故障。
+        _workDir = workDir ?? AppPaths.Sub("javabridge");
+        _convertedDir = Path.Combine(_workDir, "converted");
         // 桥可用 = bridge.jar + deps（能跑非 Guard 的 jar 爬虫）；Guard 解壳能力单独判定
         // （2026-09-16 拆分：此前把 dex2jar 也算进来，缺它就把全部 jar 源判死 —— 用户实测 46 个源整体消失）
         IsSupported = File.Exists(Path.Combine(bridgeDir, "bridge.jar"))
@@ -209,7 +235,10 @@ public class JavaSpiderRuntime : ISpiderRuntime
         var psi = new ProcessStartInfo
         {
             FileName = _javaExe,
-            WorkingDirectory = _bridgeDir,
+            // 工作目录必须是**可写**的 _workDir：桥进程启动时会把 data 目录建在相对路径
+            // 「data」下（见 bridge.Server 的 data.dir）。原先是 _bridgeDir → 安装版
+            // 直接写 Program Files 被拒。（classpath 因此改用绝对路径，见下。）
+            WorkingDirectory = _workDir,
             UseShellExecute = false,
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
@@ -227,7 +256,8 @@ public class JavaSpiderRuntime : ISpiderRuntime
         // 只能在 JVM 级关掉；关掉后这类畸形类可以正常加载运行。
         psi.ArgumentList.Add("-Xverify:none");
         psi.ArgumentList.Add("-cp");
-        psi.ArgumentList.Add("bridge.jar;vendor\\deps\\*");
+        // 绝对路径：工作目录已改为 _workDir（可写区），相对路径会解析不到 bridge.jar
+        psi.ArgumentList.Add($"{Path.Combine(_bridgeDir, "bridge.jar")};{Path.Combine(_bridgeDir, "vendor", "deps", "*")}");
         psi.ArgumentList.Add("bridge.Server");
         var proc = Process.Start(psi) ?? throw new InvalidOperationException("Java 桥进程启动失败");
         Log($"桥进程已启动 pid={proc.Id}");
@@ -418,9 +448,12 @@ public class JavaSpiderRuntime : ISpiderRuntime
     private async Task<JarConversion?> ConvertJarAsync(string jarUrl, string? expectMd5, CancellationToken ct, string? requireClass)
     {
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(jarUrl)))[..24].ToLowerInvariant();
-        var rawPath = Path.Combine(_bridgeDir, "converted", "raw-" + hash + ".jar");
-        var outPath = Path.Combine(_bridgeDir, "converted", hash + "-java.jar");
-        Directory.CreateDirectory(Path.GetDirectoryName(rawPath)!);
+        var rawPath = Path.Combine(_convertedDir, "raw-" + hash + ".jar");
+        var outPath = Path.Combine(_convertedDir, hash + "-java.jar");
+        // 转换产物必须落**可写目录**（_convertedDir = %APPDATA%\...\javabridge\converted）。
+        // 原先写 _bridgeDir/converted：安装版是 Program Files，创建即被拒
+        // （2026-09-19 用户实测报错原文：Access to the path '...\JavaBridge\converted' is denied.）
+        Directory.CreateDirectory(_convertedDir);
 
         // 已转换过：但**仍要按需校验类是否存在** —— 同一个 jar 对不同站点可能「有的类在、有的不在」
         // （实测：非 Guard fty.jar 有 SixV 却没有 JPJ）。直接用缓存会让缺失的类漏到 load 阶段，
@@ -430,7 +463,7 @@ public class JavaSpiderRuntime : ISpiderRuntime
             // 查类名要查**含 classes.dex 的那份**：Guard 包的 raw 只有外壳 stub，
             // 真实类在解壳产物里（复用缓存时同样适用）
             var src = File.Exists(rawPath) && IsGuarded(rawPath)
-                ? Path.Combine(_bridgeDir, "converted", "raw-" + hash + "-unpacked.jar")
+                ? Path.Combine(_convertedDir, "raw-" + hash + "-unpacked.jar")
                 : rawPath;
             if (!File.Exists(src)) src = File.Exists(rawPath) ? rawPath : null;
             if (requireClass is not null && src is not null && !JarHasClass(src, requireClass))
@@ -471,7 +504,7 @@ public class JavaSpiderRuntime : ISpiderRuntime
                 Log($"跳过 Guard 加固 jar（未部署 unidbg 解壳器 vendor/unidbg/）: {Path.GetFileName(rawPath)}");
                 return null;
             }
-            var unpacked = Path.Combine(_bridgeDir, "converted", "raw-" + hash + "-unpacked.jar");
+            var unpacked = Path.Combine(_convertedDir, "raw-" + hash + "-unpacked.jar");
             if (!File.Exists(unpacked) && !await UnpackGuardAsync(rawPath, unpacked, ct))
                 return null;
             dexSource = unpacked;
@@ -487,8 +520,9 @@ public class JavaSpiderRuntime : ISpiderRuntime
         var psi = new ProcessStartInfo
         {
             FileName = _javaExe,
-            Arguments = $"-cp \"vendor\\dex2jar\\*\" com.googlecode.dex2jar.tools.Dex2jarCmd \"{dexSource}\" -o \"{outPath}\" --force",
-            WorkingDirectory = _bridgeDir,
+            // classpath 与工作目录都走绝对路径：工具在只读程序目录里，工作目录却在可写区
+            Arguments = $"-cp \"{Path.Combine(_bridgeDir, "vendor", "dex2jar", "*")}\" com.googlecode.dex2jar.tools.Dex2jarCmd \"{dexSource}\" -o \"{outPath}\" --force",
+            WorkingDirectory = _workDir,
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardOutput = true,
@@ -525,8 +559,9 @@ public class JavaSpiderRuntime : ISpiderRuntime
                 "--add-opens java.base/sun.nio.ch=ALL-UNNAMED " +
                 "-Dfile.encoding=UTF-8 " +
                 "-Dorg.slf4j.simpleLogger.defaultLogLevel=error " +
-                $"-cp \"vendor\\unidbg\\*\" bridge.GuardUnpacker \"{rawPath}\" \"{outPath}\"",
-            WorkingDirectory = _bridgeDir,
+                // classpath 用绝对路径（工作目录已改为可写区，相对路径解析不到解壳器）
+                $"-cp \"{Path.Combine(_bridgeDir, "vendor", "unidbg", "*")}\" bridge.GuardUnpacker \"{rawPath}\" \"{outPath}\"",
+            WorkingDirectory = _workDir,
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardOutput = true,

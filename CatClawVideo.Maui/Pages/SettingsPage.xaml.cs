@@ -48,6 +48,7 @@ public partial class SettingsPage : ContentView, ITabView, IRemoteKeyHandler
     private Label? _crumb;
     private Label? _pageTitle;
     private Border? _groupHost;
+    private ScrollView? _contentScroll;
     private VerticalStackLayout? _contentStack;
     private StepControl? _cacheStep;
     private TogglePill? _swLog;
@@ -134,37 +135,111 @@ public partial class SettingsPage : ContentView, ITabView, IRemoteKeyHandler
             Content = _contentStack,
         };
 
+        // 内容区必须是 Auto,Auto,* 三行：中间那行放 ScrollView，只有 Grid 的 * 行
+        // 才会把 ScrollView 约束到「剩余高度」—— 放进 VerticalStackLayout 的话，
+        // 栈布局按无限高度测量子元素，ScrollView 会报告内容的完整高度、永远不滚动。
+        _contentScroll = new ScrollView
+        {
+            Content = _groupHost,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Never,
+        };
+
         _main = new Grid
         {
             Padding = new Thickness(30, 22, 30, 22),
-            Children =
+            RowDefinitions =
             {
-                new VerticalStackLayout
-                {
-                    Children = { _crumb, _pageTitle, _groupHost },
-                },
+                new RowDefinition(GridLength.Auto),   // 面包屑
+                new RowDefinition(GridLength.Auto),   // 页标题
+                new RowDefinition(GridLength.Star),   // 设置行（可滚动）
             },
         };
+        _main.Add(_crumb, 0, 0);
+        _main.Add(_pageTitle, 0, 1);
+        _main.Add(_contentScroll, 0, 2);
+
         grid.Add(_main, 1, 0);   // 第 1 列 = 内容区（第 0 列是左导航）
 
         Root.Add(grid);
     }
 
-    /// <summary>窄横屏收紧（侧栏更窄、字号更小、内边距更少）。只做横屏，无竖屏分支。</summary>
+    /// <summary>
+    /// 自适应：按**宽高两个维度**收紧（原先只看宽度，高度不足时底部设置行被切掉且无法滚动）。
+    ///
+    /// <para>手机横屏（1440×3200 @ 560dpi → 逻辑 914×411dp）就是典型：宽度 914dp 判为
+    /// compact，但 411dp 的高度减去顶栏（约 56dp）与标题区后，只剩不到 300dp，
+    /// 放不下「缓存 / 小窗 / 比例 / 倍速 / 焦点样式」五行 —— 之前没有滚动容器，
+    /// 底部的行就直接被裁掉了（2026-09-19 用户反馈「没有自适应手机布局」）。</para>
+    ///
+    /// <para>竖屏手机（411×914dp）走同一套：宽度窄 → 侧栏收窄，高度够就不额外收紧。</para>
+    /// </summary>
     private void UpdateResponsive()
     {
         try
         {
             var w = Width > 0 ? Width : (Window?.Width ?? 0);
-            bool compact = w > 0 && w < 960;
+            var h = Height > 0 ? Height : (Window?.Height ?? 0);
 
-            if (_rail is not null) _rail.WidthRequest = compact ? 158 : 216;
-            if (_main is not null) _main.Padding = compact ? new Thickness(18, 14, 18, 14) : new Thickness(30, 22, 30, 22);
-            if (_pageTitle is not null) _pageTitle.FontSize = compact ? 16 : 20;
-            if (_crumb is not null) _crumb.FontSize = compact ? 10.5 : 11.5;
+            bool narrow = w > 0 && w < 960;          // 横向空间紧张
+            bool shortH = h > 0 && h < 560;          // 纵向空间紧张（手机横屏）
 
-            foreach (var n in _nav) n.ApplyDensity(compact ? 0.92 : 1.0);
-            foreach (var r in _content) r.ApplyDensity(compact ? 0.92 : 1.0);
+            if (_rail is not null) _rail.WidthRequest = narrow ? 158 : 216;
+
+            if (_main is not null)
+            {
+                _main.Padding = narrow || shortH
+                    ? new Thickness(16, 10, 16, 10)
+                    : new Thickness(30, 22, 30, 22);
+            }
+
+            if (_pageTitle is not null)
+            {
+                _pageTitle.FontSize = shortH ? 15 : narrow ? 16 : 20;
+                _pageTitle.Margin = shortH ? new Thickness(0, 2, 0, 8) : new Thickness(0, 3, 0, 16);
+            }
+            if (_crumb is not null)
+            {
+                _crumb.FontSize = narrow ? 10.5 : 11.5;
+                // 矮屏（手机横屏）藏掉面包屑：侧栏已经高亮当前分类了，这里的分类名是冗余的，
+                // 而它占掉的那一行高度在 411dp 屏上很宝贵（每行设置约 60dp）
+                _crumb.IsVisible = !shortH;
+            }
+
+            double density = shortH ? 0.86 : narrow ? 0.92 : 1.0;
+
+            foreach (var n in _nav) n.ApplyDensity(density);
+            foreach (var r in _content) r.ApplyDensity(density);
+
+            // 尺寸变了，焦点行可能已被挤出可视区：重新滚一次
+            EnsureFocusVisible();
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// 把当前焦点行滚进可视区（矮屏下焦点会走到屏幕外）。
+    ///
+    /// <para>必须**延后一帧**再滚：内容刚重建 / 尺寸刚变化时，焦点行的边界还没测量出来
+    /// （宽高为 0），此时 <c>ScrollToAsync</c> 会算出一个错误的偏移，把内容整体推上去 ——
+    /// 表现为首行被页标题压住一半（2026-09-19 实测）。</para>
+    /// </summary>
+    private void EnsureFocusVisible()
+    {
+        try
+        {
+            if (_contentScroll is null || _focused is null) return;
+            if (_layer != LayerContent) return;   // 侧栏行不在这个 ScrollView 里
+
+            var target = _focused;
+            Dispatcher.Dispatch(() =>
+            {
+                try
+                {
+                    if (target.Width <= 0) return;   // 还没测量完，等下一次
+                    _ = _contentScroll.ScrollToAsync(target, ScrollToPosition.MakeVisible, animated: false);
+                }
+                catch { }
+            });
         }
         catch { }
     }
@@ -194,6 +269,10 @@ public partial class SettingsPage : ContentView, ITabView, IRemoteKeyHandler
         BuildContent(Sections[index].Key);
         _crumb!.Text = Sections[index].Title;
         _pageTitle!.Text = Sections[index].Title;
+
+        // 重建出来的行是默认密度：矮屏 / 窄屏要立刻按当前尺寸再收紧一次，
+        // 否则切分类后字号会跳回原大小（2026-09-19 加滚动时一并补上）
+        UpdateResponsive();
     }
 
     private void BuildContent(string key)
@@ -365,6 +444,9 @@ public partial class SettingsPage : ContentView, ITabView, IRemoteKeyHandler
         _focused?.SetHighlighted(false);
         _focused = row;
         row?.SetHighlighted(true);
+
+        // 焦点可能落在屏幕外（矮屏横屏，如手机），必须跟着滚 —— 否则用户看不见焦点在哪
+        EnsureFocusVisible();
     }
 
     private int RailIndex() => _focused is null ? -1 : _nav.IndexOf(_focused);
