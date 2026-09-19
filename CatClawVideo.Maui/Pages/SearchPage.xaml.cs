@@ -278,16 +278,20 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
             RecalcResultColumns();
         };
 
-        // 继续观看海报墙：列数同样用于焦点导航（上下移动 = ±列数）
+        // 继续观看海报墙：卡片高按**本区块可视高度**反推，列数同步给焦点导航（上下移动 = ±列数）。
+        //
+        // 不能沿用首页那套固定 cap：手机上右栏只有约 224dp 高，「热门搜索」折掉几行后
+        // 继续观看只剩 120dp 左右，而卡片固定 182 高 → 海报被裁得只剩顶边一条
+        // （2026-09-19 实机反馈「只显示一点点」）。44 = 片名/年份两行文字的高度。
         ContinueGrid.SizeChanged += (_, _) =>
         {
-#if WINDOWS
-            PosterLayoutHelper.Apply(ContinueGrid, ContinueGrid.Width, ContinueGrid.Height, cap: 190);
-#else
-            PosterLayoutHelper.Apply(ContinueGrid, ContinueGrid.Width, ContinueGrid.Height);
-#endif
+            var cap = Math.Clamp(ContinueGrid.Height - 44, 84, 190);
+            PosterLayoutHelper.Apply(ContinueGrid, ContinueGrid.Width, ContinueGrid.Height, cap);
             RecalcContinueColumns();
         };
+
+        // 热门搜索折行数超标时裁掉尾部（见 TrimHotRows）
+        HotWords.SizeChanged += (_, _) => TrimHotRows();
 
         // 键盘高度随左栏可用高度自适应（见 SyncKeyboardHeight）
         KeyboardPane.SizeChanged += (_, _) => SyncKeyboardHeight();
@@ -932,6 +936,43 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
 
     /// <summary>左栏键盘与「最近搜索」之间的间距（XAML 里 KeyboardPane 的 RowSpacing）。</summary>
     private const double PaneGap = 13;
+
+    /// <summary>
+    /// 「热门搜索」允许折的最大行数，按右栏可用高度定。
+    ///
+    /// <para><b>为什么必须限制</b>（2026-09-19 手机实机反馈「继续观看只显示一点点」）：
+    /// 手机横屏右栏只有约 224dp 高，10 个热词在窄栏里会折成 4 行（约 160dp），
+    /// 把下面的「继续观看」压到只剩 40dp —— 海报连一行都放不下。</para>
+    /// </summary>
+    private int MaxHotRows() => HotSection.Height switch
+    {
+        >= 380 => 3,   // 桌面：10 个词本来就 2 行，留 3 行余量
+        >= 280 => 2,
+        _ => 1,        // 手机横屏：热词只留 1 行，其余高度让给继续观看
+    };
+
+    /// <summary>
+    /// 裁掉折行超标的尾部热词。
+    ///
+    /// <para>不能「按宽度预算少加几个」：chip 宽度随文案长短变化，只有布局完成后才知道实际占几行。
+    /// 这里用各 chip 的**实际 Y 坐标**判断行数（行距由 chip 自身 Margin 决定，按 chip 高度估算会偏），
+    /// 每次裁掉一个；布局变化会再次触发本方法，直到行数达标（靠 <c>Count &gt; 1</c> 终止）。</para>
+    /// </summary>
+    private void TrimHotRows()
+    {
+        try
+        {
+            if (_hotChips.Count <= 1) return;
+            if (_hotChips.Any(c => c.Height <= 0)) return;   // 尚未完成布局
+
+            var rows = _hotChips.Select(c => Math.Round(c.Y)).Distinct().Count();
+            if (rows <= MaxHotRows()) return;
+
+            HotWords.Children.Remove(_hotChips[^1]);
+            _hotChips.RemoveAt(_hotChips.Count - 1);
+        }
+        catch { }
+    }
 
     /// <summary>
     /// 结果态是否铺满整宽。
