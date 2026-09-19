@@ -12,23 +12,6 @@ public partial class App : Application
     public static Microsoft.UI.Xaml.Window? CurrentNativeWindow { get; private set; }
     public static Microsoft.UI.Windowing.AppWindow? CurrentAppWindow { get; private set; }
 
-    /// <summary>把指定元素的平台视图声明为窗口标题栏拖拽区（WinUI 官方 SetTitleBar）。
-    /// 只影响该元素区域，页面其余控件照常可点、顶栏保持沉浸式；传 null 恢复系统默认。</summary>
-    public static void SetTitleBarDragElement(Microsoft.UI.Xaml.UIElement? dragElement)
-    {
-        try
-        {
-            var win = CurrentNativeWindow;
-            if (win == null) return;
-            win.ExtendsContentIntoTitleBar = true;
-            win.SetTitleBar(dragElement);
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"[App] SetTitleBar 失败: {ex.Message}");
-        }
-    }
-
     /// <summary>主窗口句柄（原生对话框 owner 用；窗口创建前为 Zero）</summary>
     public static IntPtr MainWindowHwnd => _appHwnd;
 
@@ -155,8 +138,14 @@ public partial class App : Application
                 UpdateWindowsTheme(MauiProgram.Services.GetService<IThemeService>()?.IsEffectivelyDark()
                     ?? RequestedTheme == Microsoft.Maui.ApplicationModel.AppTheme.Dark);
 
-                // ③ 标题栏拖拽区穿透：顶栏处于非客户区语义，导航 tabs/搜索框必须标为 Passthrough
-                nativeWindow.SizeChanged += (_, _) => SchedulePassthroughRefresh();
+                // ③ 窗口拖拽区：照抄猫爪音乐用 Window.SetTitleBar(元素)，由框架托管元素位置 ——
+                //   **不需要**挂 SizeChanged 重算（这是替代 SetDragRectangles 的关键好处）。
+
+                // ③b 每次导航后按当前页面重设拖拽元素：
+                //   主页/观看页各自有拖拽元素，其它页面（搜索/设置/源配置…）没有 → 传 null，
+                //   避免元素不可用时留下一个无效拖拽区。
+                if (Microsoft.Maui.Controls.Shell.Current is { } sh)
+                    sh.Navigated += (_, _) => SyncTitleBarDrag();
 
                 // ④ 窗口激活后（布局完成）：反射折叠 MAUI 内部 32px 标题栏宿主（官方 workaround dotnet/maui#36040）
                 global::Windows.Foundation.TypedEventHandler<object, Microsoft.UI.Xaml.WindowActivatedEventArgs>? firstActivated = null;
@@ -171,7 +160,7 @@ public partial class App : Application
                             try
                             {
                                 InvokeMauiSetTitleBarVisibility(window);
-                                SchedulePassthroughRefresh();
+                                SyncTitleBarDrag();
                                 UpdateWindowsTheme(MauiProgram.Services.GetService<IThemeService>()?.IsEffectivelyDark()
                                     ?? RequestedTheme == Microsoft.Maui.ApplicationModel.AppTheme.Dark);
                             }
@@ -273,99 +262,31 @@ public partial class App : Application
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern uint GetDpiForWindow(IntPtr hwnd);
 
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool ClientToScreen(IntPtr hWnd, ref NativePoint p);
-
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool GetClientRect(IntPtr hWnd, out NativeRect r);
-
-    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
-    private struct NativePoint { public int X; public int Y; }
-
-    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
-    private struct NativeRect { public int Left; public int Top; public int Right; public int Bottom; }
-
-    private Microsoft.UI.Input.InputNonClientPointerSource? _nonClientInput;
-
     /// <summary>
-    /// 布局稳定后多次刷新 Passthrough 矩形：标题栏宿主折叠（SetTitleBarVisibility）
-    /// 会让顶栏布局在启动后数秒内持续变化，单次计算会拿到旧位置。
+    /// 按**当前页面**设置窗口拖拽元素（照抄猫爪音乐：<c>Window.SetTitleBar(element)</c>）。
+    ///
+    /// <para>取代原先的 <c>AppWindow.TitleBar.SetDragRectangles</c> 方案 —— 那套要自己算矩形
+    /// （坐标系换算 + DPI + 窗口按钮留白），且**算一次就定死**：布局未就绪、页面切换、
+    /// 窗口缩放时不重算就会错位或归零，表现为「窗口突然拖不动、缩放一下才恢复」。
+    /// <c>SetTitleBar</c> 由框架托管元素位置，**任何尺寸变化都自动跟随，无需重算**。</para>
+    ///
+    /// <para>页面自带拖拽元素的用页面的（观看页），其余页面用主页顶栏的空白段（MainPage），
+    /// 都没有则不设，避免元素不可用时留下无效拖拽区。</para>
     /// </summary>
-    /// <summary>页面切换后重算拖拽矩形（按当前页面计算，需在导航完成后刷新）</summary>
-    public void RefreshTitleBarDragRegion() => SchedulePassthroughRefresh();
-
-    private void SchedulePassthroughRefresh()
-    {        _ = Task.Run(async () =>
-        {
-            foreach (var delay in new[] { 200, 400, 800, 1500, 3000 })
-            {
-                try { await Task.Delay(delay); } catch { return; }
-                MainThread.BeginInvokeOnMainThread(UpdateTitleBarPassthrough);
-            }
-        });
-    }
-
-    /// <summary>
-    /// 标题栏拖拽区（用户方案·反向白名单）：**显式声明拖拽区 = 搜索框右侧空白段**
-    /// （搜索框右缘 → 窗口控制按钮区），其余顶栏（品牌/tabs/搜索框）自动归客户区、点击直达控件。
-    /// 注：InputNonClientPointerSource Passthrough 对物理鼠标输入不可靠（SendInput 有效、真实点击仍被吞），
-    /// SetDragRectangles 是根治方案。
-    /// </summary>
-    private void UpdateTitleBarPassthrough()
+    public void SyncTitleBarDrag()
     {
         try
         {
-            if (_appWindow == null || _appHwnd == IntPtr.Zero) return;
-            // 非主页面（如观看页）：拖拽交给页面自己的 SetTitleBar 指定元素，
-            // 这里清空 AppWindow 拖拽矩形，避免主页面的区域定义在别的页面上误吞点击
-            if (Microsoft.Maui.Controls.Shell.Current?.CurrentPage is not Pages.MainPage)
+            var el = Microsoft.Maui.Controls.Shell.Current?.CurrentPage switch
             {
-                try { _appWindow.TitleBar.SetDragRectangles(Array.Empty<Windows.Graphics.RectInt32>()); } catch { }
-                return;
-            }
-            var mainPage = MauiProgram.Services.GetService<Pages.MainPage>();
-            var rects = mainPage?.GetTitleBarPassthroughRects();
-            if (rects is not { Length: > 0 }) return;
-
-            // 客户区尺寸 + 坐标系校正（TransformToVisual 是客户区坐标，SetDragRectangles 是窗口坐标）
-            if (!GetClientRect(_appHwnd, out var rc)) return;
-            var origin = new NativePoint { X = 0, Y = 0 };
-            ClientToScreen(_appHwnd, ref origin);
-            var offX = origin.X - _appWindow.Position.X;
-            var offY = origin.Y - _appWindow.Position.Y;
-            var clientW = rc.Right - rc.Left;
-
-            var scale = GetDpiForWindow(_appHwnd) / 96.0;
-            var searchRight = rects.Max(r => r.X + r.Width);
-            var buttonZone = (int)(150 * scale); // 右端 min/max/close 按钮区（~138 逻辑px，留余量）
-            var dragX = offX + searchRight;
-            var dragW = offX + clientW - buttonZone - dragX;
-            if (dragW <= 0) return;
-
-            var dragRect = new Windows.Graphics.RectInt32
-            {
-                X = dragX,
-                Y = offY,
-                Width = dragW,
-                Height = (int)Math.Ceiling(56 * scale),
+                Pages.MainPage mp => mp.TitleBarDragElement,
+                _ => null,
             };
-            _appWindow.TitleBar.SetDragRectangles(new[] { dragRect });
-
-            // 调试日志（自测点击用）
-            try
-            {
-                var dir = CatClawVideo.Core.AppPaths.DataRoot;
-                Directory.CreateDirectory(dir);
-                var winPos = _appWindow.Position;
-                var winSize = _appWindow.Size;
-                File.AppendAllText(Path.Combine(dir, "passthrough.log"),
-                    $"{DateTime.Now:HH:mm:ss.fff} win={winPos.X},{winPos.Y},{winSize.Width},{winSize.Height} drag=[{dragRect.X},{dragRect.Y},{dragRect.Width},{dragRect.Height}]{Environment.NewLine}");
-            }
-            catch { }
+            Services.WindowDragHelper.Attach(el);
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"[App] UpdateTitleBarPassthrough failed: {ex.Message}");
+            System.Diagnostics.Debug.WriteLine($"[App] SyncTitleBarDrag failed: {ex.Message}");
         }
     }
 

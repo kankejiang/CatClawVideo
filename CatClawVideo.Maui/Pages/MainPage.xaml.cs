@@ -322,37 +322,16 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
     }
 
     /// <summary>
-    /// 顶部交互元素（导航 tabs + 搜索框）相对窗口客户区的物理像素矩形。
-    /// 无边框窗口下顶栏处于系统标题栏语义区，App 宿主把这些区域标记为
-    /// InputNonClientPointerSource.Passthrough，否则点击被拖拽吞掉。
+    /// Windows 窗口拖拽元素 = 顶栏「搜索框 → 窗口按钮」之间的空白段（XAML 里的 TitleBarDragArea）。
+    ///
+    /// <para>由 <see cref="App.SyncTitleBarDrag"/> 取用并交给 <c>Window.SetTitleBar</c>：
+    /// 只有这一段参与拖拽，品牌 / tabs / 搜索框都在别的列，照常可点。</para>
+    ///
+    /// <para>2026-09-19 改：取代原先的 <c>SetDragRectangles</c> 坐标计算方案
+    /// （那套在布局未就绪/页面切换时会算错或归零，导致窗口拖不动）。</para>
     /// </summary>
-    public Windows.Graphics.RectInt32[] GetTitleBarPassthroughRects()
-    {
-        var rects = new List<Windows.Graphics.RectInt32>();
-        void Add(Microsoft.Maui.Controls.VisualElement el)
-        {
-            if (el?.Handler?.PlatformView is Microsoft.UI.Xaml.FrameworkElement fe && fe.XamlRoot != null)
-            {
-                try
-                {
-                    var p = fe.TransformToVisual(null).TransformPoint(new Windows.Foundation.Point(0, 0));
-                    var scale = fe.XamlRoot.RasterizationScale;
-                    if (fe.ActualWidth <= 0 || fe.ActualHeight <= 0) return;
-                    rects.Add(new Windows.Graphics.RectInt32
-                    {
-                        X = (int)Math.Round(p.X * scale),
-                        Y = (int)Math.Round(p.Y * scale),
-                        Width = (int)Math.Ceiling(fe.ActualWidth * scale),
-                        Height = (int)Math.Ceiling(fe.ActualHeight * scale),
-                    });
-                }
-                catch { }
-            }
-        }
-        Add(NavTabs);
-        Add(TopSearchBox);
-        return rects.ToArray();
-    }
+    public Microsoft.UI.Xaml.UIElement? TitleBarDragElement =>
+        TitleBarDragArea?.Handler?.PlatformView as Microsoft.UI.Xaml.UIElement;
 #endif
 
     private int TabIndexOf(object? sender) =>

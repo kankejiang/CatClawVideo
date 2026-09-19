@@ -93,6 +93,13 @@
                     </Border.GestureRecognizers>
                 </Border>
 
+                <!-- Windows 窗口拖拽区（照抄猫爪音乐 TitleBar：Window.SetTitleBar 指定元素为拖拽区）：
+                     第 3 列（*）是搜索框与窗口按钮之间的空白段，正好拿来做拖拽区；
+                     品牌/tabs/搜索框都在别的列，照常可点。第 4 列 140 是给系统按钮留的位。
+                     注：只对 Windows 生效，其余平台该元素透明无影响。 -->
+                <BoxView x:Name="TitleBarDragArea" Grid.Column="3" Color="Transparent"
+                         HorizontalOptions="Fill" VerticalOptions="Fill" />
+
 
 
             </Grid>
