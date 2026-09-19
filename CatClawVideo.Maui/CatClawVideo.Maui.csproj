@@ -14,8 +14,8 @@
 
 		<ApplicationTitle>猫爪影视</ApplicationTitle>
 		<ApplicationId>com.catclaw.video</ApplicationId>
-		<ApplicationDisplayVersion>0.1.1</ApplicationDisplayVersion>
-		<ApplicationVersion>2</ApplicationVersion>
+		<ApplicationDisplayVersion>0.1.2</ApplicationDisplayVersion>
+		<ApplicationVersion>3</ApplicationVersion>
 
 		<!-- Android 打包：禁用快速部署，避免 FastDev 状态冲突（同 CatClawMusic 实测结论） -->
 		<AndroidUseFastDeployment>false</AndroidUseFastDeployment>
