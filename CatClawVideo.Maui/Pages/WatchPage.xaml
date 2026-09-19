@@ -187,6 +187,14 @@
                             VerticalOptions="Center">
                         <Label x:Name="CategoryBadgeLabel" FontSize="11" TextColor="{DynamicResource TextSecondaryColor}" />
                     </Border>
+                    <!-- 换源：跨站点搜同名片，选中即切到该站点播放 -->
+                    <Button Grid.Column="4" x:Name="SwitchSourceButton" Text="换源" FontSize="12.5"
+                            ImageSource="ic_refresh_white.png" ContentLayout="Left,5"
+                            HorizontalOptions="End" VerticalOptions="Center"
+                            TextColor="{DynamicResource TextPrimaryColor}"
+                            BackgroundColor="{DynamicResource ChipInactiveColor}"
+                            CornerRadius="8" Padding="14,7" Clicked="OnSwitchSourceClicked" />
+
                     <Button Grid.Column="5" x:Name="FavoriteButton" Text="收藏" FontSize="12.5"
                             ContentLayout="Left,5"
                             ImageSource="ic_favorite_border_white.png"

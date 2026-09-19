@@ -162,6 +162,12 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
     /// <summary>把顶部 tab 的焦点态与选中态合并渲染。</summary>
     private void RenderTopNav()
     {
+        // 搜索入口：焦点下标 = _navShells.Length（排在 6 个 tab 之后）
+        bool searchFocused = _topNavFocused && _focusedTab == _navShells.Length;
+        TopSearchBox.Stroke = searchFocused ? ThemeColor("PrimaryColor") : Colors.Transparent;
+        TopSearchBox.StrokeThickness = searchFocused ? 2 : 0;
+        TopSearchBox.Scale = searchFocused ? 1.05 : 1.0;
+
         for (int i = 0; i < _navShells.Length; i++)
         {
             if (_navShells[i] is not { } shell) continue;
@@ -192,9 +198,13 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
     private static bool Frontmost =>
         Microsoft.Maui.Controls.Shell.Current?.CurrentPage is Pages.MainPage;
 
+    /// <summary>
+    /// 顶栏横向移动。范围是「6 个 tab + 搜索入口」（搜索入口排在最右，所以 +1 的位置）。
+    /// </summary>
     private void MoveTopFocus(int dir)
     {
-        _focusedTab = (_focusedTab + dir + _navShells.Length) % _navShells.Length;   // 循环
+        int count = _navShells.Length + 1;                     // +1 = 搜索入口
+        _focusedTab = (_focusedTab + dir + count) % count;     // 循环
         RenderTopNav();
     }
 
@@ -247,6 +257,7 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
                 }
                 return true;
 
+
             case RemoteKey.Left:
                 if (_topNavFocused) { MoveTopFocus(-1); return true; }
                 if (!Frontmost) return false;
@@ -263,6 +274,14 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
 
             case RemoteKey.Enter:
                 if (!_topNavFocused) return false;
+
+                // 搜索入口（排在 tab 之后）：OK = 进搜索页
+                if (_focusedTab == _navShells.Length)
+                {
+                    OnSearchTapped(this, new TappedEventArgs(null));
+                    return true;
+                }
+
                 if (_focusedTab != _vm.SelectedTabIndex)
                     _vm.SelectTab(_focusedTab);
                 else if (CurrentTab is IRemoteKeyHandler enterTarget)
@@ -307,9 +326,16 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
 
             if (native?.Content is Microsoft.UI.Xaml.UIElement root && !_keyHandlerAttached)
             {
-                // handledEventsToo: true —— 关键。方向键已被上游标记 Handled，必须显式接收
+                // handledEventsToo: true —— 关键。方向键已被上游标记 Handled，必须显式接收。
+                //
+                // ⚠ 再看这里：冒泡（KeyDownEvent）阶段设置 e.Handled 已经**太晚** ——
+                // WinUI 的元素级处理（含「焦点移到带手势的 Border → 回车被当成点击」）
+                // 在事件到达根元素之前就跑完了。实测（2026-09-19 用户日志）：
+                // 焦点在内容区时按 → 回车，回车被顶栏 tab 的 tap 吃掉 → 又切回首页。
+                // 因此必须挂 **隧道路由（PreviewKeyDownEvent）**：从根向下传递，
+                // 我们在最上层先拿到按键，处理完置 Handled，原生焦点与元素处理都收不到。
                 root.AddHandler(
-                    Microsoft.UI.Xaml.UIElement.KeyDownEvent,
+                    Microsoft.UI.Xaml.UIElement.PreviewKeyDownEvent,
                     new Microsoft.UI.Xaml.Input.KeyEventHandler(OnPlatformKeyDown),
                     handledEventsToo: true);
 

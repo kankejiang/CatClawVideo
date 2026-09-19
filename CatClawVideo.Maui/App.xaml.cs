@@ -281,7 +281,15 @@ public partial class App : Application
     {
         try
         {
-            var el = Microsoft.Maui.Controls.Shell.Current?.CurrentPage switch
+            var current = Microsoft.Maui.Controls.Shell.Current?.CurrentPage;
+
+            // ① 页面自管优先：播放页这类「空白分散在控件四周」的顶栏，由页面自己按
+            //    「整条顶栏的横向补集」声明（AttachStrip）。必须在这里处理 —— 页面在
+            //    OnAppearing 里自己设会被下面 ② 的清零覆盖掉。
+            if (current is Services.IWindowDragArea selfManaged && selfManaged.ApplyWindowDragArea())
+                return;
+
+            var el = current switch
             {
                 Pages.MainPage mp => mp.TitleBarDragElement,
                 _ => null,

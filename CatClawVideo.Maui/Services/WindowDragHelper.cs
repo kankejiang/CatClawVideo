@@ -98,6 +98,116 @@ public static class WindowDragHelper
     // 拖拽矩形正确时由系统接管（鼠标按下在非客户区，事件根本到不了应用），这几段不会触发；
     // 万一系统没接管（矩形算错/系统差异），仍能按住拖拽，不至于完全拖不动。
 
+    /// <summary>
+    /// 把「一整条顶栏」的**空白段**声明为拖拽区：按阻塞控件的横向范围把整条切成若干段，
+    /// 每段高度取整条高度。
+    ///
+    /// <para><b>为什么需要</b>：只声明中间那一段的话，条带里还有控件上下方的留白
+    /// （返回按钮上方、线路芯片上下）—— 那些地方既不属于任何控件、也不在中间段里，
+    /// 用户按下去毫无反应（2026-09-19 用户截图）。
+    /// 用「整条高度 + 横向补集」就同时覆盖了这些留白，而控件本身仍归客户区（照常可点）。</para>
+    /// </summary>
+    public static void AttachStrip(Microsoft.UI.Xaml.FrameworkElement? strip,
+        Microsoft.UI.Xaml.FrameworkElement? fallbackHost,
+        params Microsoft.UI.Xaml.FrameworkElement?[] blockers)
+    {
+        try
+        {
+            if (!EnsureWindow(out var aw, out _)) return;
+
+            AttachPointerFallback(fallbackHost);
+
+            if (ToWindowRect(strip) is not { } strip0 || strip0.Width <= 0) return;
+            // 顶栏随页面滚出视口时高度会变负（top 恒为 0，高度 = 顶栏底边）→ 此时不设
+            if (strip0.Y + strip0.Height <= 0) return;
+
+            // 上边界取**客户区顶端**（y=0），而不是顶栏自己的顶边：
+            // 播放页顶部有 44px 内边距，顶栏上方的这一条同样是「不属于任何控件的空白」，
+            // 用户第一反应就是拖它（2026-09-19 用户截图点名的正是这一条）。
+            double left = strip0.X, right = strip0.X + strip0.Width, top = 0;
+            double height = strip0.Y + strip0.Height;
+
+            // 阻塞控件按左边界排序，随后取横向补集
+            var cuts = blockers
+                .Select(b => ToWindowRect(b))
+                .Where(r => r is not null)
+                .Select(r => (L: (double)r!.Value.X, R: (double)(r.Value.X + r.Value.Width)))
+                .OrderBy(c => c.L)
+                .ToList();
+
+            var rects = new List<Windows.Graphics.RectInt32>();
+            double cursor = left;
+            foreach (var (l, r) in cuts)
+            {
+                if (l - cursor > MinDragWidth)
+                    rects.Add(new Windows.Graphics.RectInt32
+                    {
+                        X = (int)Math.Round(cursor),
+                        Y = (int)Math.Round(top),
+                        Width = (int)Math.Round(l - cursor),
+                        Height = (int)Math.Round(height),
+                    });
+                cursor = Math.Max(cursor, r);
+            }
+            if (right - cursor > MinDragWidth)
+                rects.Add(new Windows.Graphics.RectInt32
+                {
+                    X = (int)Math.Round(cursor),
+                    Y = (int)Math.Round(top),
+                    Width = (int)Math.Round(right - cursor),
+                    Height = (int)Math.Round(height),
+                });
+
+            if (rects.Count == 0) return;
+            aw.TitleBar.SetDragRectangles(rects.ToArray());
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[WindowDrag] AttachStrip 失败: {ex.Message}");
+        }
+    }
+
+    /// <summary>太窄的缝不值得当拖拽区（点了也拖不动，反而容易误触）。</summary>
+    private const double MinDragWidth = 10;
+
+    /// <summary>元素矩形（客户区坐标）→ 窗口坐标；未布局或尺寸为 0 返回 null。</summary>
+    private static Windows.Graphics.RectInt32? ToWindowRect(Microsoft.UI.Xaml.FrameworkElement? el)
+    {
+        if (el is null || el.ActualWidth <= 0 || el.ActualHeight <= 0) return null;
+        if (!EnsureWindow(out var aw, out var hwnd)) return null;
+
+        var scale = GetDpiForWindow(hwnd) / 96.0;
+        var b = el.TransformToVisual(null).TransformBounds(
+            new Windows.Foundation.Rect(0, 0, el.ActualWidth, el.ActualHeight));
+
+        if (!GetClientRect(hwnd, out _)) return null;
+        var origin = new POINT { X = 0, Y = 0 };
+        ClientToScreen(hwnd, ref origin);
+        var offX = origin.X - aw.Position.X;
+        var offY = origin.Y - aw.Position.Y;
+
+        var rect = new Windows.Graphics.RectInt32
+        {
+            X = offX + (int)Math.Round(b.X * scale),
+            Y = offY + (int)Math.Round(b.Y * scale),
+            Width = (int)Math.Round(b.Width * scale),
+            Height = (int)Math.Round(b.Height * scale),
+        };
+        return rect.Width > 0 && rect.Height > 0 ? rect : null;
+    }
+
+    /// <summary>取当前窗口与句柄（未就绪返回 false）。</summary>
+    private static bool EnsureWindow(out Microsoft.UI.Windowing.AppWindow aw, out IntPtr hwnd)
+    {
+        aw = null!;
+        hwnd = App.MainWindowHwnd;
+        if (App.CurrentAppWindow is not { } w || hwnd == IntPtr.Zero) return false;
+
+        if (App.CurrentNativeWindow is { } native) native.ExtendsContentIntoTitleBar = true;
+        aw = w;
+        return true;
+    }
+
     private static bool _dragging;
     private static int _startMouseX, _startMouseY;
     private static int _startWinX, _startWinY;

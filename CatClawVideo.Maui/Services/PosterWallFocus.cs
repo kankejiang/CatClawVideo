@@ -53,23 +53,38 @@ public sealed class PosterWallFocus
     }
 
     /// <summary>
-    /// 外层把焦点送进来（顶栏按 ↓ / OK）：点亮**记住的那一项**（首次进入为第 0 项），
+    /// 外层把焦点送进来（选完 tab / 顶栏按 ↓ / OK）：点亮**记住的那一项**（首次进入为第 0 项），
     /// 并把它滚进可视区。
+    ///
+    /// <para><b>数据还没到也要接住</b>：切 tab 时列表是异步加载的，此时
+    /// <c>FocusContent()</c> 已经调过来了，但卡片一张都没有。直接 return 的话焦点根本没建立，
+    /// 用户接着按方向键会全部落空、按键冒泡到顶栏（观感：<b>焦点跑到顶栏 tab 上去了</b>，
+    /// 2026-09-19 用户截图）。所以这里先记一笔「待点亮」，列表到齐后由
+    /// <see cref="Refresh"/> 自动补上。</para>
     /// </summary>
     public void Focus()
     {
         var cards = Cards;
-        if (cards.Count == 0) return;
+        if (cards.Count == 0)
+        {
+            _focusPending = true;
+            return;
+        }
 
+        _focusPending = false;
         Engaged = true;
         Index = Math.Clamp(Index < 0 ? 0 : Index, 0, cards.Count - 1);
         Render(cards);
         Scroll();
     }
 
+    /// <summary>焦点已请求、但列表当时还空着（数据未到）——到齐后补点亮。</summary>
+    private bool _focusPending;
+
     /// <summary>外层把焦点收走（顶栏按 ↑ / ← / →）：熄掉高亮，并停止消费按键。</summary>
     public void Blur()
     {
+        _focusPending = false;   // 用户已经走开：数据到齐也不该再把焦点抢回来
         Engaged = false;
         foreach (var c in Cards) c.IsFocused = false;
     }
@@ -110,6 +125,15 @@ public sealed class PosterWallFocus
     public void Refresh()
     {
         var cards = Cards;
+
+        // 进页时列表还没加载完（Focus 落空）→ 现在到齐了，把焦点补上。
+        // 没有这一步就会出现「先按回车无反应、第二次才有焦点」。
+        if (cards.Count > 0 && _focusPending)
+        {
+            Focus();
+            return;
+        }
+
         if (cards.Count == 0)
         {
             Index = -1;

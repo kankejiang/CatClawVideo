@@ -71,6 +71,8 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
     /// </summary>
     private enum Zone
     {
+        /// <summary>顶栏：返回按钮（唯一一项，按 ↑ 到顶进入）。</summary>
+        TopBar,
         /// <summary>虚拟键盘（左栏上）。</summary>
         Keyboard,
         /// <summary>左栏下：最近搜索 chip。</summary>
@@ -698,7 +700,12 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
         if (!isInitialQuery)
         {
             ClearCandidates();
-            ShowInputPanels(showCandidates: false);
+
+            // ⚠ 结果态优先：ShowInputPanels 会把 ResultSection 藏起来、_resultMode 置回 false。
+            // 而「输入变化」并不只发生在用户打字时 —— 带 q 进页面（收藏跨源找回 / 播放页换源）
+            // 也会先填框再自动搜索，此时若再切回输入态，结果就被盖掉了：
+            // 界面停在键盘页，看着就是「点了搜索没反应」（2026-09-19 实测就是这个）。
+            if (!_resultMode && !_searching) ShowInputPanels(showCandidates: false);
             return;
         }
 
@@ -1177,15 +1184,38 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
                 catch { }
                 finally
                 {
-                    Interlocked.Increment(ref doneCount);
+                    var n = Interlocked.Increment(ref doneCount);
+                    // 进度上屏：「正在搜索…」停着不动，用户根本判断不了是死站还是卡死
+                    // （2026-09-19 用户反馈「搜索半天没反应」）。报出「几个站已回」，心里有数。
+                    MainThread.BeginInvokeOnMainThread(() =>
+                    {
+                        if (!_searching) return;
+                        StatusLabel.Text = _sourceResults.Count > 0
+                            ? $"「{kw}」已找到 {_sourceResults.Count} 个结果 · 已完成 {n}/{sites.Count} 个站点"
+                            : $"正在搜索「{kw}」… {n}/{sites.Count} 个站点已响应";
+                    });
                 }
             }).ToArray();
 
             // 两段式等待：12s 内到达的先上屏（不等慢站）；慢站再给 20s，迟到的结果照样补进列表。
             // 总上限 ≈32s，避免个别死站把整页拖到桥那边的 90s 调用超时。
+            //
+            // ⚠ 这里**不能**用 Task.Delay(20000) 的固定第二段：那会让「结果早就到齐」的情况
+            //   也白等满 20s —— 用户看到的就是「搜了半天不出结果」（2026-09-19 实测）。
+            //   拆成两段：第一段等首批 12s；只要还有站点没回再给第二段，
+            //   第二段用「500ms 轮询 + 全部回来就提前结束」替代固定等待。
             var all = Task.WhenAll(tasks);
             await Task.WhenAny(all, Task.Delay(12000));
-            await Task.WhenAny(all, Task.Delay(20000));
+
+            if (!all.IsCompleted && doneCount < sites.Count)
+            {
+                var waited = 0;
+                while (!all.IsCompleted && doneCount < sites.Count && waited < 20000)
+                {
+                    await Task.Delay(500);
+                    waited += 500;
+                }
+            }
 
             MainThread.BeginInvokeOnMainThread(() =>
             {
@@ -1412,6 +1442,14 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
         }
         if (_zone != Zone.Grid) ClearPosterFocus(_results);
 
+        // 离开顶栏 → 熄掉返回按钮的焦点环（与其他区的「先清旧」一致）
+        if (_zone != Zone.TopBar)
+        {
+            BackButtonHost.Stroke = Colors.Transparent;
+            BackButtonHost.StrokeThickness = 0;
+            BackButtonHost.Scale = 1.0;
+        }
+
         // 键盘持焦：键盘自己画焦点，其余区不需要高亮
         Keyboard.IsEngaged = _zone == Zone.Keyboard;
         if (_zone == Zone.Keyboard)
@@ -1425,6 +1463,14 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
 
         switch (_zone)
         {
+            case Zone.TopBar:
+                // 返回按钮：与全应用同一套焦点语言（亮紫描边 + 微放大）
+                BackButtonHost.Stroke = (Color)Application.Current!.Resources["PrimaryColor"];
+                BackButtonHost.StrokeThickness = 2.5;
+                BackButtonHost.Scale = 1.08;
+                HintFocus.Text = "焦点：返回";
+                return;
+
             case Zone.Shortcuts:
                 if (_historyChips.Count > 0)
                 {
@@ -1564,8 +1610,11 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
     /// <summary>外层（主壳层）把焦点送进来：落到键盘（本页的主输入区）。</summary>
     public void FocusContent()
     {
-        _zone = Zone.Keyboard;
-        Keyboard.IsEngaged = true;
+        // 结果态把焦点给结果墙：用户此刻要看的是结果。
+        // 原来写死给键盘 —— 结果已经出来了却把焦点送回键盘，要再按一次方向键才到海报，
+        // 观感就是「搜索两次焦点才落到海报上」（2026-09-19 用户反馈）。
+        _zone = _resultMode && _results.Count > 0 ? Zone.Grid : Zone.Keyboard;
+        Keyboard.IsEngaged = _zone == Zone.Keyboard;
         RefreshFocusVisual();
     }
 
@@ -1636,7 +1685,17 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
                 return true;
 
             case RemoteKey.Up:
-                if (_zone == Zone.Keyboard) return Keyboard.MoveUp();   // 到顶行（数字行）返回 false → 交外层
+                // 键盘顶行再往上 → 进顶栏（返回按钮）。
+                // 只从键盘进：键盘顶行（数字行）就在顶栏正下方，几何上对得上；
+                // 其余区原有的 ↑ 走向（如 Grid→站点列→键盘）保持不变，别一次改乱。
+                if (_zone == Zone.Keyboard && !Keyboard.MoveUp())
+                {
+                    _zone = Zone.TopBar;
+                    Keyboard.IsEngaged = false;
+                    RefreshFocusVisual();
+                    return true;
+                }
+                if (_zone == Zone.Keyboard) return true;
                 // 站点纵列：↑↓ 在站点间移动（它在最左，纵向移动才自然）
                 if (_zone == Zone.Right && _resultMode && FilterBar.IsVisible)
                 {
@@ -1660,9 +1719,11 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
                 }
                 // 最近搜索：chip 会按宽度换行，逐行上移的落点难以预测，直接回键盘更符合直觉
                 if (_zone == Zone.Shortcuts) { _zone = Zone.Keyboard; RefreshFocusVisual(); return true; }
+                if (_zone == Zone.TopBar) return true;   // 已在最顶，吃掉
                 return true;
 
             case RemoteKey.Down:
+                if (_zone == Zone.TopBar) { _zone = Zone.Keyboard; Keyboard.IsEngaged = true; RefreshFocusVisual(); return true; }
                 if (_zone == Zone.Keyboard) return Keyboard.MoveDown();   // 末行返回 false → 交外层（左栏「最近搜索」）
                 if (_zone == Zone.Right && _resultMode && FilterBar.IsVisible)
                 {
@@ -1713,6 +1774,10 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
     {
         switch (_zone)
         {
+            case Zone.TopBar:
+                OnBackTapped(this, new TappedEventArgs(null));   // 走返回按钮自己那条路径
+                return true;
+
             case Zone.Keyboard:
                 Keyboard.Activate();
                 return true;
@@ -1789,6 +1854,13 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
         if (text.Length > 0)
         {
             Backspace();
+            return true;
+        }
+
+        // 顶栏：Back = 直接退出搜索页（与返回按钮同一动作）
+        if (_zone == Zone.TopBar)
+        {
+            Shell.Current.GoToAsync("..");
             return true;
         }
 

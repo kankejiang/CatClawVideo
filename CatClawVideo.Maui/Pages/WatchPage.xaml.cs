@@ -15,7 +15,7 @@ namespace CatClawVideo.Maui.Pages;
 /// 路由携带 sourceKey/type/api/itemId，进入后拉播放线路与选集；
 /// 播放统一走 ResolvePlayUrlAsync（web 源实时解析直链、磁力拦截、防盗链参数）。
 /// </summary>
-public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHandler
+public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHandler, Services.IWindowDragArea
 {
     private readonly IVodSourceProvider _provider;
     private readonly VideoDatabase _db;
@@ -287,16 +287,43 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
         new(24, 14, 24, 28);
 #endif
 
+    /// <summary>
+    /// 本页自管窗口拖拽区（<c>App.SyncTitleBarDrag</c> 在每次导航后调用）。
+    ///
+    /// <para>返回 <c>true</c> = 已接管。不接管的话 App 会把拖拽区**清零** ——
+    /// 播放页不在它的默认分支里（那里只认主页），所以在 OnAppearing 里设是白设。</para>
+    ///
+    /// <para>⚠ 本方法**不能**放进 <c>#if WINDOWS</c>：接口是全平台编译的，
+    /// Android 下缺实现会直接编译失败（2026-09-19 实测）。平台判定放在方法体里。</para>
+    /// </summary>
+    public bool ApplyWindowDragArea()
+    {
 #if WINDOWS
-    /// <summary>把顶栏中间的空白元素声明为窗口拖拽区（照抄猫爪音乐 Window.SetTitleBar 方案）：
-    /// 只有该元素区域参与拖拽，返回键/标题/线路芯片照常可点，顶栏保持沉浸式。
-    /// 走 <see cref="Services.WindowDragHelper"/> 以便同时获得指针手动拖拽兜底。</summary>
+        // 全屏选集模式下顶栏被隐藏：此时不声明拖拽区，交回 App 默认规则
+        if (!TopBarVisible) return false;
+
+        AttachTitleBarDragArea();
+        return true;
+#else
+        return false;
+#endif
+    }
+
+#if WINDOWS
+    /// <summary>把顶栏的空白段声明为窗口拖拽区（整条顶栏按横向补集切段）：
+    /// 只有空白参与拖拽，返回键/标题/线路芯片照常可点，顶栏保持沉浸式。</summary>
     private void AttachTitleBarDragArea()
     {
         try
         {
-            if (TitleBarDragArea?.Handler?.PlatformView is Microsoft.UI.Xaml.FrameworkElement el)
-                Services.WindowDragHelper.Attach(el);
+            // 整条顶栏的空白段都可拖（含返回按钮上方、线路芯片上下的留白），
+            // 控件本身（返回 / 标题 / 线路芯片）仍归客户区、照常可点。
+            Services.WindowDragHelper.AttachStrip(
+                TopBarGrid?.Handler?.PlatformView as Microsoft.UI.Xaml.FrameworkElement,
+                TitleBarDragArea?.Handler?.PlatformView as Microsoft.UI.Xaml.FrameworkElement,
+                BackButtonHost?.Handler?.PlatformView as Microsoft.UI.Xaml.FrameworkElement,
+                TopBarTitle?.Handler?.PlatformView as Microsoft.UI.Xaml.FrameworkElement,
+                LinesHost?.Handler?.PlatformView as Microsoft.UI.Xaml.FrameworkElement);
         }
         catch { }
     }
@@ -1109,13 +1136,13 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
                 break;
 
             case WatchZone.Actions:
-                _actionIndex = Math.Clamp(_actionIndex, 0, 1);
+                _actionIndex = Math.Clamp(_actionIndex, 0, 2);
                 RenderActionFocus();
                 break;
         }
     }
 
-    /// <summary>收藏 / 分享 的焦点环（Button 用描边 + 微放大，与全应用同一套焦点语言）。</summary>
+    /// <summary>操作按钮的焦点环：换源 / 收藏 / 分享（Button 用描边 + 微放大）。</summary>
     private void RenderActionFocus()
     {
         var primary = Application.Current!.Resources["PrimaryColor"] as Color ?? Colors.Purple;
@@ -1128,8 +1155,9 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
             b.Scale = focused ? 1.06 : 1.0;
         }
 
-        Apply(FavoriteButton, on && _actionIndex == 0);
-        Apply(ShareButton, on && _actionIndex == 1);
+        Apply(SwitchSourceButton, on && _actionIndex == 0);
+        Apply(FavoriteButton, on && _actionIndex == 1);
+        Apply(ShareButton, on && _actionIndex == 2);
     }
 
     /// <summary>把焦点送进选集栏（本方法只做定位，「换区」由 <see cref="SetZone"/> 负责）。</summary>
@@ -1267,7 +1295,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
             case WatchZone.Actions:
                 if (dir is RemoteKey.Left or RemoteKey.Right)
                 {
-                    _actionIndex = Math.Clamp(_actionIndex + (dir == RemoteKey.Right ? 1 : -1), 0, 1);
+                    _actionIndex = Math.Clamp(_actionIndex + (dir == RemoteKey.Right ? 1 : -1), 0, 2);
                     RenderActionFocus();
                     return true;
                 }
@@ -1301,7 +1329,8 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
                 return true;
 
             case WatchZone.Actions:
-                if (_actionIndex == 0) OnFavoriteClicked(this, EventArgs.Empty);
+                if (_actionIndex == 0) OnSwitchSourceClicked(this, EventArgs.Empty);
+                else if (_actionIndex == 1) OnFavoriteClicked(this, EventArgs.Empty);
                 else OnShareClicked(this, EventArgs.Empty);
                 return true;
 
@@ -1742,7 +1771,48 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
         finally { _autoSwitching = false; }
     }
 
-    /// <summary>标题清洗：去括号备注/年份/更新集数等，只留正题名</summary>
+    // ═══════════════════════ 换源（跨站点搜索同名片） ═══════════════════════
+
+    private bool _switchingSource;
+
+    /// <summary>
+    /// 「换源」：拿当前片名去**其它站点**搜一遍，列出搜到的站点供选择；
+    /// 选中后跳一个新的 watch 路由（新实例）用那个站点的资源播放。
+    ///
+    /// <para>为什么用 GoToAsync 而不是在本页就地替换 <c>_site</c>/<c>_item</c>：
+    /// 本页的状态全绑在「当前影片 + 当前线路 + 当前集」上（<c>_sources</c> / <c>_episodeRows</c> /
+    /// <c>_argsReady</c> 一次性信号 / <c>_loaded</c> 标志 / 播放器实例），
+    /// 就地换片要手工重置这些，漏一个就是诡异状态。新开一个实例最干净 ——
+    /// 项目里既有的自动换源（<see cref="MaybeAutoSwitchSourceAsync"/>）走的也是这条路。</para>
+    /// </summary>
+    private async void OnSwitchSourceClicked(object? sender, EventArgs e)
+    {
+        if (_switchingSource) return;
+
+        var title = (TitleLabel.Text ?? string.Empty).Trim();
+        if (title.Length == 0) { await ShowTipAsync("还没有片名，无法换源"); return; }
+
+        _switchingSource = true;
+        try
+        {
+            // 直接跳搜索页做跨站搜索（URL 里带 q，页面会自动开搜）。
+            //
+            // 为什么不自建搜索 + 选站点弹窗：搜索页本来就有跨站并行搜索、站点筛选条、
+            // 结果分站显示、点结果即进观看页 —— 一套能力重写一遍只会更差，
+            // 而且用户对那个界面已经熟（2026-09-19 用户明确要求「还不如直接跳转搜索页」）。
+            await Shell.Current.GoToAsync($"search?q={Uri.EscapeDataString(title)}");
+        }
+        catch (Exception ex)
+        {
+            await ShowTipAsync($"打开搜索失败：{ex.Message}");
+        }
+        finally
+        {
+            _switchingSource = false;
+        }
+    }
+
+    /// <summary>标题清洗：去括号备注/年份/更新集数等，只留正题名（自动换源的标题匹配用）</summary>
     private static string CleanTitleForMatch(string raw)
     {
         if (string.IsNullOrWhiteSpace(raw)) return "";
