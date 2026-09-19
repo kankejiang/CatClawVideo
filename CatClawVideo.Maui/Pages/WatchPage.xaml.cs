@@ -102,6 +102,11 @@ public partial class WatchPage : ContentPage, IQueryAttributable
         _playback = playback;
         _downloads = downloads;
 
+        // 控件条随播放框尺寸自适应：手机端内嵌小窗里，桌面尺寸的按钮会占掉大半个画面。
+        // 用控件条自身宽度（= 播放框宽度）推算，缩放不会反向影响宽度，故不会触发循环。
+        ControlBar.SizeChanged += (_, _) =>
+            ControlBar.UiScale = Controls.PlaybackControlBar.ScaleFor(ControlBar.Width);
+
 #if ANDROID
         // 顶栏避开状态栏：Edge-to-Edge 下页面从 y=0 起绘，返回按钮会顶进状态栏
         // （2026-09-11 真机实测）。状态栏高度动态取自 SafeAreaHelper；

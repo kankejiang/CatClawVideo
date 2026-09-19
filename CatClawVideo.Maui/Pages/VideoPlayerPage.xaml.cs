@@ -43,6 +43,10 @@ public partial class VideoPlayerPage : ContentPage, IQueryAttributable
         _playback = playback;
         BindingContext = _vm;
 
+        // 控件条随播放区尺寸自适应（手机端再压一档，见 PlaybackControlBar.ScaleFor）
+        ControlBar.SizeChanged += (_, _) =>
+            ControlBar.UiScale = Controls.PlaybackControlBar.ScaleFor(ControlBar.Width);
+
         // Android 显示横竖屏切换按钮
 #if ANDROID
         RotateButton.IsVisible = true;

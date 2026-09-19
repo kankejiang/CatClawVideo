@@ -49,6 +49,36 @@ public sealed class PlaybackControlBar : ContentView
     private bool _isMuted;
     private double _speedValue = 1.0;
 
+    // 缩放时需要回改的容器/面板引用（在 BuildPanel 里赋值）
+    private Border? _panel;
+    private VerticalStackLayout? _stack;
+    private Grid? _upper;
+    private Grid? _lower;
+    private HorizontalStackLayout? _mainCtrls;
+    private HorizontalStackLayout? _seekTools;
+    private HorizontalStackLayout? _tools;
+
+    private double _uiScale = 1.0;
+
+    /// <summary>
+    /// 控件条整体缩放（1.0 = 桌面默认）。
+    ///
+    /// <para><b>为什么需要</b>：按钮与字号原本是写死的桌面尺寸（按钮 38~42、字号 13~14）。
+    /// 手机端观看页里播放框本身只有半屏宽，这套尺寸就「吃掉」大半个画面（2026-09-19 实机反馈）。
+    /// 由宿主按**播放框尺寸**设置缩放，控件条整体等比缩小。</para>
+    /// </summary>
+    public double UiScale
+    {
+        get => _uiScale;
+        set
+        {
+            var v = Math.Clamp(value, 0.55, 1.0);
+            if (Math.Abs(v - _uiScale) < 0.02) return;
+            _uiScale = v;
+            ApplyScale();
+        }
+    }
+
     public PlaybackControlBar()
     {
         _title = new Label { Text = "未命名", FontSize = 14, FontFamily = "OpenSansSemibold", TextColor = Colors.White, LineBreakMode = LineBreakMode.TailTruncation, MaxLines = 1 };
@@ -82,6 +112,7 @@ public sealed class PlaybackControlBar : ContentView
         _seek.SeekCompleted += (_, _) => SeekCompleted?.Invoke(this, EventArgs.Empty);
 
         Content = BuildPanel();
+        ApplyScale();   // 用初始 UiScale 校准一遍（宿主随后可改）
     }
 
     // ─────────── 可配置项 ───────────
@@ -208,28 +239,28 @@ public sealed class PlaybackControlBar : ContentView
             Children = { _title, _subtitle },
         };
 
-        var mainCtrls = new HorizontalStackLayout
+        _mainCtrls = new HorizontalStackLayout
         {
             Spacing = 6,
             VerticalOptions = LayoutOptions.Center,
             Children = { _prev, _play, _next },
         };
 
-        var seekTools = new HorizontalStackLayout
+        _seekTools = new HorizontalStackLayout
         {
             Spacing = 6,
             VerticalOptions = LayoutOptions.Center,
             Children = { _rewind, _forward },
         };
 
-        var tools = new HorizontalStackLayout
+        _tools = new HorizontalStackLayout
         {
             Spacing = 6,
             VerticalOptions = LayoutOptions.Center,
             Children = { _speed, _mute, _episodes },
         };
 
-        var upper = new Grid
+        _upper = new Grid
         {
             ColumnSpacing = 16,
             ColumnDefinitions =
@@ -246,12 +277,12 @@ public sealed class PlaybackControlBar : ContentView
         var infoHolder = new Grid { MinimumWidthRequest = 90 };
         infoHolder.Add(info);
 
-        upper.Add(infoHolder, 0, 0);
-        upper.Add(mainCtrls, 1, 0);
-        upper.Add(seekTools, 2, 0);
-        upper.Add(tools, 3, 0);
+        _upper.Add(infoHolder, 0, 0);
+        _upper.Add(_mainCtrls, 1, 0);
+        _upper.Add(_seekTools, 2, 0);
+        _upper.Add(_tools, 3, 0);
 
-        var lower = new Grid
+        _lower = new Grid
         {
             ColumnSpacing = 12,
             ColumnDefinitions =
@@ -262,14 +293,14 @@ public sealed class PlaybackControlBar : ContentView
                 new ColumnDefinition(GridLength.Auto),
             },
         };
-        lower.Add(_posLabel, 0, 0);
-        lower.Add(_seek, 1, 0);
-        lower.Add(_durLabel, 2, 0);
-        lower.Add(_fullscreen, 3, 0);
+        _lower.Add(_posLabel, 0, 0);
+        _lower.Add(_seek, 1, 0);
+        _lower.Add(_durLabel, 2, 0);
+        _lower.Add(_fullscreen, 3, 0);
 
-        var stack = new VerticalStackLayout { Spacing = 10, Children = { upper, lower } };
+        _stack = new VerticalStackLayout { Spacing = 10, Children = { _upper, _lower } };
 
-        return new Border
+        _panel = new Border
         {
             StrokeThickness = 1,
             StrokeShape = new RoundRectangle { CornerRadius = 18 },
@@ -278,8 +309,64 @@ public sealed class PlaybackControlBar : ContentView
             Padding = new Thickness(18, 14, 18, 12),
             Margin = new Thickness(24, 0, 24, 20),
             VerticalOptions = LayoutOptions.End,
-            Content = stack,
+            Content = _stack,
         };
+        return _panel;
+    }
+
+    /// <summary>
+    /// 由播放区尺寸推算控件条缩放（宿主在 SizeChanged 里调用）。
+    ///
+    /// <list type="bullet">
+    /// <item>以**宽度**为基准：900dp 及以上不缩放（桌面窗口就是这个量级，体感正常）；</item>
+    /// <item>手机端再压一档（上限 0.85）—— 同一 dp 尺寸在手机的物理屏上体感更大，
+    ///   观看页的内嵌小窗尤其明显（2026-09-19 实机反馈「控件太大」）；</item>
+    /// <item>下限 0.6 兜住可用性（再小就点不准了）。</item>
+    /// </list>
+    /// </summary>
+    public static double ScaleFor(double width)
+    {
+        var s = width / 900.0;
+#if ANDROID
+        s = Math.Min(s, 0.85);
+#endif
+        return Math.Clamp(s, 0.6, 1.0);
+    }
+
+    /// <summary>
+    /// 按 <see cref="UiScale"/> 重算所有写死的桌面尺寸（字号 / 按钮 / 间距 / 内边距 / 圆角）。
+    /// 基准值保持原样写在上面，缩放只在这里统一施加，改基准时不必到处乘以系数。
+    /// </summary>
+    private void ApplyScale()
+    {
+        var s = _uiScale;
+
+        _title.FontSize = 14 * s;
+        _subtitle.FontSize = 11 * s;
+        _posLabel.FontSize = 13 * s;
+        _durLabel.FontSize = 13 * s;
+        _posLabel.MinimumWidthRequest = 56 * s;
+        _durLabel.MinimumWidthRequest = 56 * s;
+
+        foreach (var b in new[] { _prev, _play, _next, _rewind, _forward, _speed, _episodes, _mute, _fullscreen })
+        {
+            b.UiScale = s;
+            b.ApplyScale();
+        }
+
+        if (_mainCtrls is not null) _mainCtrls.Spacing = 6 * s;
+        if (_seekTools is not null) _seekTools.Spacing = 6 * s;
+        if (_tools is not null) _tools.Spacing = 6 * s;
+        if (_stack is not null) _stack.Spacing = 10 * s;
+        if (_upper is not null) _upper.ColumnSpacing = 16 * s;
+        if (_lower is not null) _lower.ColumnSpacing = 12 * s;
+
+        if (_panel is not null)
+        {
+            _panel.Padding = new Thickness(18 * s, 14 * s, 18 * s, 12 * s);
+            _panel.Margin = new Thickness(24 * s, 0, 24 * s, 20 * s);
+            _panel.StrokeShape = new RoundRectangle { CornerRadius = 18 * s };
+        }
     }
 
     internal static string FormatTime(double seconds)

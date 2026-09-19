@@ -41,6 +41,13 @@ public sealed class IconButton : ContentView
     /// <summary>文字按钮的最小宽度 —— 避免文案长短切换（如「静音」↔「取消静音」）时整排按钮跳动。</summary>
     public double MinWidth { get; set; }
 
+    /// <summary>
+    /// 整体缩放（1.0 = 桌面默认）。手机等小屏的播放框本身就小，
+    /// 固定的 38~42 按钮 + 13 号字会「吃掉」大半个画面（2026-09-19 实机反馈），
+    /// 由宿主按播放框尺寸整体等比缩小。所有基准值保持不变，缩放只在这里统一施加。
+    /// </summary>
+    public double UiScale { get; set; } = 1.0;
+
     /// <summary>角标文字（如「10」）；空则不显示。</summary>
     public string? Badge
     {
@@ -110,7 +117,8 @@ public sealed class IconButton : ContentView
 
     private void Render()
     {
-        HeightRequest = Size;
+        var s = UiScale;
+        HeightRequest = Size * s;
         if (AutoWidth)
         {
             var text = _glyph.Text ?? string.Empty;
@@ -119,12 +127,12 @@ public sealed class IconButton : ContentView
             double textWidth = 0;
             foreach (var c in text) textWidth += c > 0x2E80 ? 13.0 : 7.6;
             WidthRequest = Math.Max(
-                MinWidth,
-                Math.Max(Size, textWidth + HorizontalPadding * 2));
+                MinWidth * s,
+                Math.Max(Size * s, (textWidth + HorizontalPadding * 2) * s));
         }
         else
         {
-            WidthRequest = Size;
+            WidthRequest = Size * s;
         }
 
         var primary = Res("PrimaryColor", Color.FromArgb("#9B7ED8"));
@@ -140,9 +148,15 @@ public sealed class IconButton : ContentView
             _box.StrokeThickness = 0;
         }
 
-        _glyph.FontSize = IsText ? 12.5 : (AutoWidth ? 13 : Size >= 46 ? 19 : 16);
+        _glyph.FontSize = (IsText ? 12.5 : (AutoWidth ? 13 : Size >= 46 ? 19 : 16)) * s;
         _glyph.FontFamily = IsText || AutoWidth ? "OpenSansSemibold" : "OpenSansRegular";
+        _badge.FontSize = 8.5 * s;
+        _badge.Margin = new Thickness(0, 0, 0, 4 * s);
+        _box.StrokeShape = new RoundRectangle { CornerRadius = 13 * s };
     }
+
+    /// <summary>设置缩放后重算尺寸与字号（宿主改 <see cref="UiScale"/> 后调用）。</summary>
+    public void ApplyScale() => Render();
 
     /// <summary>主题切换后刷新配色。</summary>
     public void RefreshThemeColors() => Render();
