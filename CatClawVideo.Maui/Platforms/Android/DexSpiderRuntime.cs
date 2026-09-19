@@ -50,6 +50,18 @@ public class DexSpiderRuntime : ISpiderRuntime
     }
 
     private readonly ConcurrentDictionary<string, SpiderHolder> _spiders = new();
+
+    /// <summary>站点 → 初始化单飞信号量（见 <see cref="EnsureSpiderAsync"/> 的说明）。</summary>
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _initGates = new();
+
+    /// <summary>
+    /// jar 路径 → 保护壳绑定信号量。**比站点锁更粗一层**：
+    /// 多个站点可共用同一个 jar，而它们会在 <c>BindProtectedJar</c> 里向**同一个**
+    /// <c>Init</c> 静态单例写字段。只用站点锁挡不住「不同站点、同一 jar」的并发，
+    /// 仍可能让 Guard 壳在构造期读到 null loader 而 abort。
+    /// </summary>
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _jarGates = new();
+
     /// <summary>最近一次使用的 spider —— /proxy 请求常常不带 siteKey，用它兜底（对齐 TVBox getCurrentProxySource）</summary>
     private volatile SpiderHolder? _lastUsed;
     private readonly HttpClient _http = new();
@@ -68,30 +80,30 @@ public class DexSpiderRuntime : ISpiderRuntime
     // ═══════════ ISpiderRuntime ═══════════
 
     public Task<string> HomeContentAsync(VodSiteInfo site, CancellationToken ct = default) =>
-        InvokeAsync(site, h => CallSafe(h, h.Home, new Java.Lang.Boolean(true)));
+        InvokeAsync(site, h => CallSafe(h, h.Home, new Java.Lang.Boolean(true)), ct);
 
     public Task<string> CategoryContentAsync(VodSiteInfo site, string tid, string pg, CancellationToken ct = default) =>
         InvokeAsync(site, h => CallSafe(h, h.Category,
             new Java.Lang.String(tid), new Java.Lang.String(pg),
-            new Java.Lang.Boolean(false), new HashMap()));
+            new Java.Lang.Boolean(false), new HashMap()), ct);
 
     public Task<string> DetailContentAsync(VodSiteInfo site, string id, CancellationToken ct = default)
     {
         var list = new ArrayList();
         list.Add(new Java.Lang.String(id));
-        return InvokeAsync(site, h => CallSafe(h, h.Detail, list));
+        return InvokeAsync(site, h => CallSafe(h, h.Detail, list), ct);
     }
 
     public Task<string> SearchContentAsync(VodSiteInfo site, string keyword, string pg, CancellationToken ct = default) =>
         InvokeAsync(site, h => h.Search3 != null
             ? CallSafe(h, h.Search3, new Java.Lang.String(keyword), new Java.Lang.Boolean(false), new Java.Lang.Integer(pg))
-            : CallSafe(h, h.Search2, new Java.Lang.String(keyword), new Java.Lang.Boolean(false)));
+            : CallSafe(h, h.Search2, new Java.Lang.String(keyword), new Java.Lang.Boolean(false)), ct);
 
     public Task<string> PlayerContentAsync(VodSiteInfo site, string flag, string id, CancellationToken ct = default)
     {
         var flags = new ArrayList();
         return InvokeAsync(site, h => CallSafe(h, h.Player,
-            new Java.Lang.String(flag), new Java.Lang.String(id), flags));
+            new Java.Lang.String(flag), new Java.Lang.String(id), flags), ct);
     }
 
     // ═══════════ 装配 ═══════════
@@ -121,9 +133,21 @@ public class DexSpiderRuntime : ISpiderRuntime
             SHA256.HashData(Encoding.UTF8.GetBytes(jarUrl)))[..24].ToLowerInvariant();
         var jarPath = Path.Combine(_cacheDir, fileName + ".jar");
 
-        if (!File.Exists(jarPath))
+        // ⚠ 缓存必须**校验后再用**，不能只看 File.Exists。
+        //
+        // 实测（2026-09-19 用户手机）：缓存里留下过一个 **0 字节**的 jar —— 并发下载同一 jar 时
+        // 多个线程写同一个路径、互相截断；而这里原先只判 File.Exists，于是这个坏文件被当成
+        // 有效缓存、**永不重下**。DexClassLoader 加载它时 ART 直接 abort
+        // （JNI DETECTED ERROR，C# 侧 try/catch 拦不住）→ 该站点以后**每次搜索都闪退**。
+        if (!IsUsableJar(jarPath))
         {
-            Log($"下载 spider jar: {jarUrl[..System.Math.Min(80, jarUrl.Length)]}");
+            if (File.Exists(jarPath))
+                Log($"jar 缓存损坏（{new FileInfo(jarPath).Length} 字节，非 ZIP），删除重下: {fileName}.jar");
+            else
+                Log($"下载 spider jar: {jarUrl[..System.Math.Min(80, jarUrl.Length)]}");
+
+            TryDelete(jarPath);
+
             using var resp = await _http.GetAsync(jarUrl, ct);
             resp.EnsureSuccessStatusCode();
             var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
@@ -131,6 +155,11 @@ public class DexSpiderRuntime : ISpiderRuntime
             // 伪装 jpg 头（FF D8）时剥掉前导字节定位 PK
             var pk = IndexOfPk(bytes);
             if (pk > 0) bytes = bytes[pk..];
+
+            // 非 ZIP 一律拒收：HTML 错误页 / 半截响应若落盘，下次会被当成有效缓存
+            if (bytes.Length < 4 || bytes[0] != 0x50 || bytes[1] != 0x4B)
+                throw new InvalidOperationException(
+                    $"spider jar 不是有效的 ZIP（{bytes.Length} 字节）: {jarUrl[..System.Math.Min(80, jarUrl.Length)]}");
 
             var expect = JarMd5(site);
             if (!string.IsNullOrEmpty(expect))
@@ -140,7 +169,10 @@ public class DexSpiderRuntime : ISpiderRuntime
                     Log($"jar md5 不匹配（期望 {expect} 实际 {actual}），继续尝试加载");
             }
 
-            await File.WriteAllBytesAsync(jarPath, bytes, ct);
+            // 原子落盘（先写临时文件再改名）：直接写 jarPath 的话，并发下载会写坏同一个文件
+            // —— 那个 0 字节缓存就是这么来的。
+            await WriteJarAtomicallyAsync(jarPath, bytes, ct);
+
             // Android 10+ W^X：可写的 dex 文件会被 DexClassLoader 拒绝执行（Writable dex file 错误）
             File.SetAttributes(jarPath, FileAttributes.ReadOnly);
             Log($"jar 缓存完成 len={bytes.Length}");
@@ -170,6 +202,54 @@ public class DexSpiderRuntime : ISpiderRuntime
             if (bytes[i] == 0x50 && bytes[i + 1] == 0x4B)
                 return i;
         return 0;
+    }
+
+    /// <summary>
+    /// 缓存 jar 是否可用：存在、非空、且以 ZIP 头（<c>PK</c>）开头。
+    ///
+    /// <para>只判 <c>File.Exists</c> 是不够的 —— 空文件 / 半截下载 / HTML 错误页都会通过，
+    /// 而 <c>DexClassLoader</c> 加载它们时 ART 会直接 abort（不可捕获）。</para>
+    /// </summary>
+    private static bool IsUsableJar(string path)
+    {
+        try
+        {
+            var fi = new FileInfo(path);
+            if (!fi.Exists || fi.Length < 4) return false;
+            using var fs = File.OpenRead(path);
+            return fs.ReadByte() == 0x50 && fs.ReadByte() == 0x4B;   // "PK"
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>原子写文件：先写同目录临时文件再改名（避免并发写坏目标文件）。</summary>
+    private static async Task WriteJarAtomicallyAsync(string path, byte[] bytes, CancellationToken ct)
+    {
+        var tmp = path + ".tmp-" + Environment.CurrentManagedThreadId;
+        try
+        {
+            await File.WriteAllBytesAsync(tmp, bytes, ct);
+            File.Move(tmp, path, overwrite: true);
+        }
+        catch
+        {
+            TryDelete(tmp);
+            throw;
+        }
+    }
+
+    /// <summary>删除文件（只读属性先摘掉）；失败静默 —— 调用方随后会重新下载/重新校验。</summary>
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            if (File.Exists(path)) File.SetAttributes(path, FileAttributes.Normal);
+        }
+        catch { }
+        try { File.Delete(path); } catch { }
     }
 
     private static Class? TryLoad(ClassLoader loader, string className) =>
@@ -204,6 +284,45 @@ public class DexSpiderRuntime : ISpiderRuntime
         if (_spiders.TryGetValue(site.Key, out var ready) && ready.Initialized)
             return ready;
 
+        // ── 单飞（single-flight）：同一站点同时只允许一个初始化在跑 ──
+        //
+        // ⚠️ 这是 2026-09-19 手机搜索闪退的**根因**。原实现从上面的 TryGetValue 到下面
+        // 发布 _spiders[site.Key] 之间没有任何同步（中间还夹着 await 与 Task.Run），
+        // 而搜索会**并发遍历全部站点**（SearchPage 里 sites.Select(...) 无并发上限）。
+        //
+        // 后果有两层：
+        // ① 同一站点被并行初始化多次 —— 重复下载/加载 jar、重复建 DexClassLoader；
+        // ② 更致命：多个**共用同一 jar** 的站点会同时执行 BindProtectedJar，各自向
+        //    同一个 jar 内的 Init 静态单例**写字段**（Context / DexClassLoader）。
+        //    而 Guard 壳的构造函数要在构造期间读这个单例取真实实现 →
+        //    读到 null 时 ART 直接 abort（JNI DETECTED ERROR: obj == null /
+        //    can't call ClassLoader.loadClass on null object），C# 侧 try/catch 拦不住，
+        //    表现就是「搜着搜着毫无征兆闪退」。
+        //
+        // 对照实现都是加锁的：桌面桥 JavaBridge/Server.java 用 synchronized(LOCK)、
+        // JS 运行时 DrpyJsSpiderRuntime 用 GetOrAdd + 双重检查。这里此前是唯一漏网的。
+        //
+        // 用「等待信号量」而不是直接 lock：初始化内部有 await，持锁跨 await 会长时间
+        // 阻塞其它线程；信号量方案下后来者只需等前一个跑完再取缓存，语义相同但不死锁。
+        var gate = _initGates.GetOrAdd(site.Key, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            // 双重检查：等锁期间前一个可能已经把该站点初始化好了
+            if (_spiders.TryGetValue(site.Key, out var done) && done.Initialized)
+                return done;
+
+            return await InitSpiderAsync(site, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    /// <summary>真正执行站点初始化（调用方已持该站点的单飞锁，见 <see cref="EnsureSpiderAsync"/>）。</summary>
+    private async Task<SpiderHolder> InitSpiderAsync(VodSiteInfo site, CancellationToken ct)
+    {
         var loader = await GetLoaderAsync(site, ct).ConfigureAwait(false);
 
         // ⚠️ DexClassLoader 加载 jar + 反射查找/实例化爬虫类 + 调 init()（爬虫内部通常还要建网络、
@@ -219,25 +338,52 @@ public class DexSpiderRuntime : ISpiderRuntime
             var cls = TryLoad(loader, className, out var loadError)
                 ?? throw new InvalidOperationException($"jar 中找不到爬虫类: {className}（{loadError ?? "无异常信息"}）");
 
-            // 保护壳 jar 引导（对照 jun 分支 ProtectedInitJar，纯反射绑定）：
-            // Guard 系 jar 的 Init 单例需要外部注入 Context 与 DexClassLoader 才能工作。
-            // 必须在实例化爬虫类之前完成：Guard 壳类的构造函数会通过 Init.getSpider() 取真实实现。
-            BindProtectedJar(loader, site);
-
-            // ⚠️ 实例化与 init() 是 Guard 壳最容易失败的两步（真实实现由 native 解密后反射调用），
-            // 失败时抛的是 InvocationTargetException，其 Message 是 .NET 兜底的英文文案、毫无信息量，
-            // 真实异常在 Cause 链里。必须显式展开，否则调用方只能看到
-            // 「Exception of type 'Java.Lang.Reflect.InvocationTargetException' was thrown.」
+            // ⚠⚠ 关键区：BindProtectedJar + 实例化必须**按 jar 串行**。
+            //
+            // 这两步共同操作 jar 内**共享的** Init 静态单例：
+            //   BindProtectedJar 往里写 Context / DexClassLoader 字段；
+            //   NewInstance 触发 Guard 壳构造函数，它在构造期读同一单例取真实实现。
+            // 订阅里多个站点共用同一个 jar（很常见），站点级锁挡不住它们 —— 一旦交错执行，
+            // 壳就可能读到「另一个线程刚覆盖/还没写完」的字段（null）→ ART 直接 abort
+            // （2026-09-19 手机搜索闪退）。这里再按 jar 串起来，窗口才真正关闭。
+            //
+            // 锁粒度：只在绑定与实例化期间持有，init() 等后续步骤在锁外（它们不再碰共享字段，
+            // 且 init 可能较慢，持锁会拖长其它站点等待）。同步等锁即可 —— 本段本就跑在线程池。
+            var jarKey = JarUrl(site);
+            var jarGate = _jarGates.GetOrAdd(jarKey, _ => new SemaphoreSlim(1, 1));
+            jarGate.Wait();
             Java.Lang.Object instance;
             try
             {
-                instance = (Java.Lang.Object)cls.GetConstructor().NewInstance();
+                // 保护壳 jar 引导（对照 jun 分支 ProtectedInitJar，纯反射绑定）：
+                // Guard 系 jar 的 Init 单例需要外部注入 Context 与 DexClassLoader 才能工作。
+                // 必须在实例化爬虫类之前完成：Guard 壳类的构造函数会通过 Init.getSpider() 取真实实现。
+                //
+                // 返回 false = 是 Guard 壳但壳没绑好 —— 此时**绝不能再 NewInstance**：
+                // 构造函数会以 null 接收者发 JNI 调用，ART 直接 abort 整个进程
+                // （JNI DETECTED ERROR，C# 拦不住）。改抛托管异常，只废掉这一个站点。
+                if (!BindProtectedJar(loader, site))
+                    throw new InvalidOperationException(
+                        $"Guard 保护壳初始化失败（Init 未能绑定 DexClassLoader），已跳过站点 {site.Key} 以避免进程崩溃");
+
+                // ⚠️ 实例化与 init() 是 Guard 壳最容易失败的两步（真实实现由 native 解密后反射调用），
+                // 失败时抛的是 InvocationTargetException，其 Message 是 .NET 兜底的英文文案、毫无信息量，
+                // 真实异常在 Cause 链里。必须显式展开，否则调用方只能看到
+                // 「Exception of type 'Java.Lang.Reflect.InvocationTargetException' was thrown.」
+                try
+                {
+                    instance = (Java.Lang.Object)cls.GetConstructor().NewInstance();
+                }
+                catch (Java.Lang.Throwable t)
+                {
+                    var d = $"爬虫类实例化失败: {className} → {Describe(t)}";
+                    Log(d);
+                    throw new InvalidOperationException(d, t);
+                }
             }
-            catch (Java.Lang.Throwable t)
+            finally
             {
-                var d = $"爬虫类实例化失败: {className} → {Describe(t)}";
-                Log(d);
-                throw new InvalidOperationException(d, t);
+                jarGate.Release();
             }
 
             // 与 TVBox JarLoader.getSpider 的调用序列严格一致：siteKey -> initApi -> init。
@@ -426,12 +572,25 @@ public class DexSpiderRuntime : ISpiderRuntime
     /// ③ best-effort 调 replaceCloudDiskNames / startGoProxy
     /// 普通 jar 没有这些字段/类时全部静默跳过，无副作用。
     /// </summary>
-    private void BindProtectedJar(ClassLoader loader, VodSiteInfo site)
+    /// <returns>
+    /// 是否可以安全实例化爬虫类。
+    ///
+    /// <para><b>为什么需要这个返回值</b>：Guard 壳的构造函数会在构造期读 <c>Init</c> 单例取真实实现，
+    /// 而该单例的 <c>DexClassLoader</c> 字段若没绑上（我们注入失败 / 取不到），壳里的 native
+    /// 回调就会以 null 接收者发 JNI 调用 —— <b>ART 直接 abort 进程</b>，
+    /// <c>Java.Lang.Throwable</c> 与 <c>System.Exception</c> 都拦不住，用户看到的是
+    /// 「搜着搜着毫无征兆闪退」（2026-09-19 用户实测）。</para>
+    ///
+    /// <para>所以在调用 <c>NewInstance()</c> 之前就把「壳存在但没绑好」这一状态识别出来，
+    /// 改抛**托管异常**（可捕获）→ 该站点标记失败、其余站点照常出结果，
+    /// 而不是让整个应用陪葬。</para>
+    /// </returns>
+    private bool BindProtectedJar(ClassLoader loader, VodSiteInfo site)
     {
         try
         {
             var initCls = TryLoad(loader, "Init");
-            if (initCls == null) return;
+            if (initCls == null) return true;
 
             Java.Lang.Object? init = null;
             try
@@ -483,9 +642,19 @@ public class DexSpiderRuntime : ISpiderRuntime
 
             // ② bindDexLoader：DexNative.getLoader(context) → DexClassLoader，绑入 Init 的实例字段。
             // 同样按类型可赋值性匹配并向上遍历继承链（对照 jun ProtectedInitJar.bindDexLoader）。
+            //
+            // ⚠️ 这一段的失败**必须留痕**：原实现外层是裸 catch{}，loader 没绑上时一行日志都没有，
+            // 而下一个阶段（Guard 构造函数读单例）会直接 ART abort —— 事后完全无法定位。
+            // 实测（2026-09-19 手机搜索闪退）崩溃栈正是
+            // 「DexNative.getSpider ... can't call ClassLoader.loadClass on null object」。
+            bool hasGuardNative = false;   // jar 里有没有 DexNative（有 = Guard 壳，构造函数会读 Init 单例）
+            var loaderBound = false;
+
             try
             {
                 var nativeCls = TryLoad(loader, "DexNative");
+                hasGuardNative = nativeCls != null;
+
                 var getLoader = nativeCls?.GetMethod("getLoader",
                     Java.Lang.Class.FromType(typeof(Java.Lang.Object)));
                 var cl = getLoader?.Invoke(null, appCtx);
@@ -495,7 +664,6 @@ public class DexSpiderRuntime : ISpiderRuntime
                     ExportDecryptedDex(dexCl, site);
 
                     var dexLoaderType = Java.Lang.Class.FromType(typeof(global::Dalvik.SystemInterop.DexClassLoader));
-                    var loaderBound = false;
                     for (var type = initCls; type != null && !loaderBound; type = type.Superclass)
                     {
                         foreach (var f in type.GetDeclaredFields())
@@ -512,9 +680,23 @@ public class DexSpiderRuntime : ISpiderRuntime
                             catch { }
                         }
                     }
+                    if (!loaderBound)
+                        Log($"⚠ 保护壳 DexLoader 未绑定（Init 里没有 DexClassLoader 类型的实例字段）: {site.Key}");
+                }
+                else if (init != null)
+                {
+                    // init 拿到了、但 getLoader 没给出 DexClassLoader —— 这正是会 abort 的前置状态
+                    Log($"⚠ 保护壳 DexLoader 取不到（DexNative.getLoader 返回 {(cl is null ? "null" : cl.GetType().Name)}）: {site.Key}");
                 }
             }
-            catch { }
+            catch (Java.Lang.Throwable t)
+            {
+                Log($"⚠ 保护壳 DexLoader 绑定异常: {site.Key} → {Describe(t)}");
+            }
+            catch (System.Exception ex)
+            {
+                Log($"⚠ 保护壳 DexLoader 绑定异常: {site.Key} → {ex.GetType().Name}: {ex.Message}");
+            }
 
             // ③ 可选引导
             try { initCls.GetMethod("replaceCloudDiskNames").Invoke(null); } catch { }
@@ -526,10 +708,21 @@ public class DexSpiderRuntime : ISpiderRuntime
             catch { }
 
             Log("保护壳引导完成（Init/Context/DexLoader 绑定）");
+
+            // Guard 壳（有 DexNative）但 DexLoader 没绑上 → 构造函数必定以 null 调用 native → ART abort。
+            // 返回 false 让调用方改抛**可捕获的托管异常**，牺牲这一个站点、保住整个应用。
+            if (hasGuardNative && !loaderBound)
+            {
+                Log($"⛔ {site.Key} 是 Guard 加固包但保护壳未绑定成功，跳过实例化以避免进程 abort");
+                return false;
+            }
+
+            return true;
         }
         catch (System.Exception ex)
         {
             Log($"保护壳引导跳过: {ex.Message}");
+            return true;
         }
     }
 
@@ -690,10 +883,14 @@ public class DexSpiderRuntime : ISpiderRuntime
         }
     }
 
-    private async Task<string> InvokeAsync(VodSiteInfo site, Func<SpiderHolder, Java.Lang.Object?> call)
+    private async Task<string> InvokeAsync(VodSiteInfo site, Func<SpiderHolder, Java.Lang.Object?> call,
+        CancellationToken ct = default)
     {
+        // ⚠ 原先这里写死 CancellationToken.None，把调用方（搜索页退出/重新搜索）的取消
+        //   完全吞掉：用户离开页面后几十个站点的 JNI 调用仍在后台跑，白白扩大并发窗口。
+        //   现在透传 —— 传 default 时行为与从前一致。
         // ConfigureAwait(false)：避免续体被拉回 UI 线程（爬虫 JNI 调用是重活，且要求与 UI 无关的上下文）
-        var h = await EnsureSpiderAsync(site, CancellationToken.None).ConfigureAwait(false);
+        var h = await EnsureSpiderAsync(site, ct).ConfigureAwait(false);
         return await Task.Run(() =>
         {
             lock (h.Lock)

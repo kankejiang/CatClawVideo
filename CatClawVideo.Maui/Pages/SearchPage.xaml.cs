@@ -1156,14 +1156,38 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
             var gate = new object();
             var doneCount = 0;
 
+            // ── 并发上限 ──
+            //
+            // 原实现是 sites.Select(...) 一次性把**全部站点**（订阅里常见几十个 csp_* jar 站）
+            // 同时打出去，没有任何节流。后果不只是慢：
+            // ① 每个站都要跑「下载 jar → DexClassLoader → 反射实例化 → init」这套重活，
+            //    几十个并发会让手机瞬间吃满内存与 JNI 线程；
+            // ② 并发初始化窗口被放到最大，是 2026-09-19 那次 Guard 壳 abort 的触发条件。
+            //
+            // 6 是实测折中：足够让快站先出结果（边搜边出仍然成立），又不会把设备压垮。
+            //
+            // ⚠ 不用 using：本方法的 await 结束后仍有站点任务在排队，提前 Dispose 会让
+            //   它们抛 ObjectDisposedException（被 catch 吞掉，表现为「结果莫名少了几个」）。
+            var searchGate = new SemaphoreSlim(6);
+
+            // ⚠ 必须用**本次搜索**的令牌（_searchCts）：用户退出页面 / 重新搜索时应当立即停止
+            //   后续站点的请求。原实现连令牌都没传，退出后几十个 JNI 调用仍在后台跑。
+            var ct = _searchCts?.Token ?? CancellationToken.None;
+
             var tasks = sites.Select(async site =>
             {
+                bool entered = false;   // 是否已从 searchGate 拿到名额（决定 finally 要不要 Release）
                 try
                 {
+                    // 排队（并发上限）+ 已取消 / 已离开本页就提前退出
+                    await searchGate.WaitAsync(ct);
+                    entered = true;
+                    if (!_searching) return;
+
                     // ⚠ 不要用 Task.WhenAny(search, Delay(12s)) 把「迟到的结果」丢掉：
                     //   实测某盘搜站点 14.2s 才返回几十条，被整批丢弃会让用户看到的条数远少于实际。
                     //   改成「先到先上屏，迟到照样收」，总时长由外层两段式等待控制。
-                    var items = await _provider.SearchAsync(site, kw);
+                    var items = await _provider.SearchAsync(site, kw, ct);
                     if (items.Count == 0) return;
 
                     // 跨站聚合：每条结果标出来源站（卡片左下角站点角标，方便同片多站时挑源）
@@ -1184,6 +1208,9 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
                 catch { }
                 finally
                 {
+                    // 只有真正拿到过名额才释放（排队前就取消的话释放会超发）
+                    if (entered) searchGate.Release();
+
                     var n = Interlocked.Increment(ref doneCount);
                     // 进度上屏：「正在搜索…」停着不动，用户根本判断不了是死站还是卡死
                     // （2026-09-19 用户反馈「搜索半天没反应」）。报出「几个站已回」，心里有数。
