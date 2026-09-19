@@ -24,12 +24,6 @@ public static class PosterLayoutHelper
             var cardH = Math.Clamp(cap, 64, 600);
             var cardW = cardH * 2.0 / 3.0;
 
-            if (Application.Current is not null)
-            {
-                Application.Current.Resources["PosterCardHeight"] = cardH;
-                Application.Current.Resources["PosterCardWidth"] = cardW;
-            }
-
             // 间距取**模板实际值**：各页模板的 HorizontalItemSpacing 不同
             // （首页/历史/收藏 14、搜索页 10），原先按 12 硬写会让列数算偏。
             var layout = (GridItemsLayout)grid.ItemsLayout;
@@ -41,8 +35,27 @@ public static class PosterLayoutHelper
             // 卡片宽是固定的（模板里 WidthRequest 写死），超出格子的部分会被 CollectionView
             // 的 item 容器**在右侧裁掉** —— 海报图看不出来，但焦点环画在卡片边界，
             // 右半边一被裁就是「焦点缺一边」，右列还容易串到下一格（2026-09-19 用户截图）。
-            while (columns > 3 && cardW > CellWidth(width, columns, spacing))
+            while (columns > 3 && cardW > CellWidth(width, columns, spacing) - RingSlack)
                 columns--;
+
+            // 关键：卡片必须比格子窄，给焦点环留出余量。
+            // 环画在卡片边界（还外扩 3px），而 item 容器会在**格子边界**裁切 ——
+            // 卡片只要顶满格子，右侧的环就整条被切掉（2026-09-19 用户反馈「还是缺右边」）。
+            var cellW = CellWidth(width, columns, spacing);
+            var maxCardW = cellW - RingSlack;
+            if (cardW > maxCardW)
+            {
+                cardW = Math.Max(48, maxCardW);
+                cardH = cardW * 3.0 / 2.0;   // 比例保持 2:3
+            }
+
+            // 写回资源要放在**收窄之后**：模板里的 WidthRequest/HeightRequest 读的就是这两个值
+            if (Application.Current is not null)
+            {
+                Application.Current.Resources["PosterCardHeight"] = cardH;
+                Application.Current.Resources["PosterCardWidth"] = cardW;
+            }
+
 
             if (layout.Span != columns)
                 layout.Span = columns;
@@ -52,6 +65,12 @@ public static class PosterLayoutHelper
             System.Diagnostics.Debug.WriteLine($"[PosterLayout] 自适应失败: {ex.Message}");
         }
     }
+
+    /// <summary>
+    /// 卡片两侧给焦点环预留的余量（像素）。焦点环画在卡片边界并外扩 3px，
+    /// 而 item 容器在**格子边界**裁切 —— 不留余量时右侧的环会被整条切掉。
+    /// </summary>
+    private const double RingSlack = 8;
 
     /// <summary>按列数回推每格可用宽度：格宽 = (总宽 − 间隔和) ÷ 列数。</summary>
     private static double CellWidth(double width, int columns, double spacing) =>
