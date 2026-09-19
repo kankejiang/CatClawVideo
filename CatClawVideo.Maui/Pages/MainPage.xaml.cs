@@ -376,9 +376,16 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
         }
 
         // ② 焦点导航（方向键 / Enter / Esc）
-        if (inText) return;
-        if (TryMapRemoteKey(e.Key, out var remote) && RemoteKeyRouter.Handle(remote))
-            e.Handled = true;
+        if (inText) return;   // 文本框内放行，否则会破坏光标移动
+        if (!TryMapRemoteKey(e.Key, out var remote)) return;
+
+        // ⚠ 无论栈里有没有人消费，都要吃掉这个键。
+        // 焦点由应用自己管（RemoteKeyRouter）：一旦放行给 WinUI，它的焦点引擎会自己
+        // 找下一个可聚焦元素（**带手势的 Border 也算**），并在它身上画系统默认焦点框
+        // —— 白线 + 蓝色外圈，会与我们的焦点环叠在一起（2026-09-19 用户截图：
+        // 播放页「返回」上出现白框）。
+        RemoteKeyRouter.Handle(remote);
+        e.Handled = true;
     }
 
     /// <summary>Windows 虚拟键 → 统一远程按键。</summary>
