@@ -53,8 +53,7 @@
         <Setter Property="StrokeShape" Value="RoundRectangle 10" />
         <Setter Property="BackgroundColor" Value="{DynamicResource CardBackgroundColor}" />
         <Setter Property="HeightRequest" Value="{DynamicResource PosterCardHeight}" />
-        <Setter Property="WidthRequest" Value="{DynamicResource PosterCardWidth}" />
-        <Setter Property="HorizontalOptions" Value="Center" />
+        <!-- 宽度不写死：铺满格子。写死宽度会与环各算一套，窗口一变就对不齐（右边多一条错位线） -->
     </Style>
 
     <!--
@@ -76,16 +75,15 @@
         <Setter Property="StrokeThickness" Value="5" />
         <Setter Property="Stroke" Value="{DynamicResource PrimaryColor}" />
         <Setter Property="StrokeShape" Value="RoundRectangle 10" />
-        <!-- 环是卡片的**兄弟**（不在卡片内），尺寸要自己声明并与海报对齐 -->
-        <Setter Property="WidthRequest" Value="{DynamicResource PosterCardWidth}" />
+        <!-- 与海报同一格：同样铺满，再内缩 3px（半个描边宽）保证四边都不被格子边界切掉 -->
         <Setter Property="HeightRequest" Value="{DynamicResource PosterCardHeight}" />
-        <Setter Property="HorizontalOptions" Value="Center" />
         <Setter Property="VerticalOptions" Value="Start" />
+        <Setter Property="Margin" Value="3" />
         <!-- 外发光：电视离得远，纯描边仍显单薄 -->
         <Setter Property="Shadow">
             <Setter.Value>
                 <Shadow Brush="{DynamicResource PrimaryColor}"
-                        Radius="14" Offset="0,0" Opacity="0.9" />
+                        Radius="8" Offset="0,0" Opacity="0.85" />
             </Setter.Value>
         </Setter>
     </Style>
