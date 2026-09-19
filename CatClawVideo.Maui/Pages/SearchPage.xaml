@@ -96,82 +96,33 @@
                     </ScrollView>
                 </Grid>
 
-                <!-- ② 热门搜索 + 继续观看（初始态）。
-                     ⚠ 必须是 Grid（Auto / *）而不是 StackLayout：下面的 CollectionView
-                     需要有界高度，StackLayout 会给子元素无界高度 → 它撑开全部内容再被父级裁掉，
-                     表现就是「看不到后面的内容」（与结果区同一个坑）。 -->
-                <Grid x:Name="HotSection" RowDefinitions="Auto,*" RowSpacing="13" IsVisible="True">
-                    <VerticalStackLayout Grid.Row="0" Spacing="9">
-                        <Label Text="🔥 热门搜索" FontSize="11.5" FontAttributes="Bold"
-                               TextColor="{DynamicResource TextHintColor}" />
-                        <Label x:Name="HotStatus" Text="正在加载热搜…" FontSize="11.5"
-                               TextColor="{DynamicResource TextHintColor}" />
-                        <FlexLayout x:Name="HotWords" Wrap="Wrap" JustifyContent="Start" />
-                    </VerticalStackLayout>
+                <!-- ② 热门搜索 + 继续观看 —— **同一个滚动容器**。
+                     原先两块各自 Auto/* 抢高度：热门搜索词多时折行吃掉大半，
+                     继续观看只剩几十 dp，海报被裁成一条边（2026-09-19 手机反馈）。
+                     合成一个整体滚动区后内容全保留，放不下就滚动，
+                     也不再需要「裁热词」「按高度缩卡片」这类补丁。
 
-                    <!-- 继续观看：海报墙吃掉右栏剩余高度 → 行数随窗口高度自动增减 -->
-                    <Grid Grid.Row="1" x:Name="ContinueSection" RowDefinitions="Auto,*" RowSpacing="9"
-                          IsVisible="False">
-                        <Label Grid.Row="0" x:Name="ContinueStatus" Text="▶ 继续观看"
-                               FontSize="11.5" FontAttributes="Bold"
-                               TextColor="{DynamicResource TextHintColor}" />
-                        <CollectionView Grid.Row="1" x:Name="ContinueGrid" SelectionMode="Single"
-                                        SelectionChanged="OnContinueSelected">
-                            <CollectionView.ItemsLayout>
-                                <GridItemsLayout Orientation="Vertical" Span="4"
-                                                 VerticalItemSpacing="12" HorizontalItemSpacing="10" />
-                            </CollectionView.ItemsLayout>
-                            <CollectionView.ItemTemplate>
-                                <DataTemplate>
-                                    <VerticalStackLayout Spacing="0">
-                                        <Border StrokeThickness="0" StrokeShape="RoundRectangle 10"
-                                                BackgroundColor="{DynamicResource CardBackgroundColor}"
-                                                HeightRequest="{DynamicResource PosterCardHeight}"
-                                                WidthRequest="{DynamicResource PosterCardWidth}"
-                                                HorizontalOptions="Center">
-                                            <Border.Triggers>
-                                                <DataTrigger TargetType="Border" Binding="{Binding IsFocused}" Value="True">
-                                                    <Setter Property="Stroke" Value="{DynamicResource PrimaryColor}" />
-                                                    <Setter Property="StrokeThickness" Value="3" />
-                                                    <Setter Property="Scale" Value="1.04" />
-                                                </DataTrigger>
-                                            </Border.Triggers>
-                                            <Grid>
-                                                <Image Source="{Binding CoverDisplay}" Aspect="AspectFill" />
-                                                <Border StrokeThickness="0" IsVisible="False" Padding="10"
-                                                        Background="{DynamicResource PosterPlaceholderBrush}">
-                                                    <Border.Triggers>
-                                                        <DataTrigger TargetType="Border" Binding="{Binding CoverDisplay}" Value="{x:Null}">
-                                                            <Setter Property="IsVisible" Value="True" />
-                                                        </DataTrigger>
-                                                    </Border.Triggers>
-                                                    <Label Text="{Binding Title}" FontSize="12" FontAttributes="Bold"
-                                                           TextColor="#D8DDF5" HorizontalTextAlignment="Center"
-                                                           VerticalOptions="Center" MaxLines="4"
-                                                           LineBreakMode="TailTruncation" />
-                                                </Border>
-                                                <!-- 集数角标：接着看哪一集 -->
-                                                <Border HorizontalOptions="End" VerticalOptions="Start" Margin="0,7,7,0"
-                                                        StrokeThickness="0" BackgroundColor="#80000000"
-                                                        StrokeShape="RoundRectangle 8" Padding="6,1"
-                                                        IsVisible="{Binding HasRemark}">
-                                                    <Label Text="{Binding Remarks}" FontSize="10" TextColor="#FFD76E"
-                                                           MaxLines="1" />
-                                                </Border>
-                                            </Grid>
-                                        </Border>
-                                        <Label Text="{Binding Title}" FontSize="11.5" Margin="0,5,0,0"
-                                               LineBreakMode="TailTruncation" MaxLines="1"
-                                               TextColor="{DynamicResource TextPrimaryColor}" />
-                                        <Label Text="{Binding Year}" FontSize="10" Margin="0,2,0,0"
-                                               LineBreakMode="TailTruncation" MaxLines="1"
-                                               TextColor="{DynamicResource TextHintColor}" />
-                                    </VerticalStackLayout>
-                                </DataTemplate>
-                            </CollectionView.ItemTemplate>
-                        </CollectionView>
-                    </Grid>
-                </Grid>
+                     ⚠ 海报**不能**用 CollectionView 装：ScrollView 会给子元素无界高度，
+                     CollectionView 会撑开全部内容再被裁掉（与结果区同一个坑）。
+                     故海报由代码构建成 FlexLayout 换行。 -->
+                <ScrollView x:Name="RightScroll" IsVisible="True" VerticalScrollBarVisibility="Never">
+                    <VerticalStackLayout Spacing="16" Padding="0,0,4,0">
+                        <VerticalStackLayout Spacing="9">
+                            <Label Text="🔥 热门搜索" FontSize="11.5" FontAttributes="Bold"
+                                   TextColor="{DynamicResource TextHintColor}" />
+                            <Label x:Name="HotStatus" Text="正在加载热搜…" FontSize="11.5"
+                                   TextColor="{DynamicResource TextHintColor}" />
+                            <FlexLayout x:Name="HotWords" Wrap="Wrap" JustifyContent="Start" />
+                        </VerticalStackLayout>
+
+                        <VerticalStackLayout x:Name="ContinueSection" Spacing="9" IsVisible="False">
+                            <Label x:Name="ContinueStatus" Text="▶ 继续观看"
+                                   FontSize="11.5" FontAttributes="Bold"
+                                   TextColor="{DynamicResource TextHintColor}" />
+                            <FlexLayout x:Name="ContinueHost" Wrap="Wrap" JustifyContent="Start" />
+                        </VerticalStackLayout>
+                    </VerticalStackLayout>
+                </ScrollView>
 
                 <!-- ③ 跨源搜索结果（结果态）
                      ⚠ 必须是 Grid（表头 Auto / 网格 *），**不能**用 VerticalStackLayout：

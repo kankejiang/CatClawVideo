@@ -104,6 +104,9 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
     /// 且点击路径上没有 await，遥控器连按不会错乱。
     /// </summary>
     private readonly List<(PlayHistoryEntry Entry, VodItem Item, string Query)> _continueItems = [];
+
+    /// <summary>继续观看的海报 Border（与 <see cref="_continueItems"/> 同序）：焦点环与滚动定位要用。</summary>
+    private readonly List<Border> _continueCards = [];
     private readonly List<Border> _candidateRows = [];
 
     /// <summary>
@@ -278,20 +281,9 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
             RecalcResultColumns();
         };
 
-        // 继续观看海报墙：卡片高按**本区块可视高度**反推，列数同步给焦点导航（上下移动 = ±列数）。
-        //
-        // 不能沿用首页那套固定 cap：手机上右栏只有约 224dp 高，「热门搜索」折掉几行后
-        // 继续观看只剩 120dp 左右，而卡片固定 182 高 → 海报被裁得只剩顶边一条
-        // （2026-09-19 实机反馈「只显示一点点」）。44 = 片名/年份两行文字的高度。
-        ContinueGrid.SizeChanged += (_, _) =>
-        {
-            var cap = Math.Clamp(ContinueGrid.Height - 44, 84, 190);
-            PosterLayoutHelper.Apply(ContinueGrid, ContinueGrid.Width, ContinueGrid.Height, cap);
-            RecalcContinueColumns();
-        };
-
-        // 热门搜索折行数超标时裁掉尾部（见 TrimHotRows）
-        HotWords.SizeChanged += (_, _) => TrimHotRows();
+        // 继续观看海报墙：卡片宽按容器宽度分列（手机横屏 3 列、桌面 5 列），
+        // 列数同步给焦点导航（上下移动 = ±列数）；宽度变化导致列数变化时才重建卡片。
+        ContinueHost.SizeChanged += (_, _) => BuildContinueCards();
 
         // 键盘高度随左栏可用高度自适应（见 SyncKeyboardHeight）
         KeyboardPane.SizeChanged += (_, _) => SyncKeyboardHeight();
@@ -359,7 +351,7 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
         {
             HotStatus.IsVisible = false;
             foreach (var w in words) HotWords.Add(BuildWordChip(w, _hotChips));
-            HotSection.IsVisible = !ResultSection.IsVisible;
+            RightScroll.IsVisible = !ResultSection.IsVisible;
             RefreshFocusVisual();
         });
     }
@@ -421,9 +413,9 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
 
             MainThread.BeginInvokeOnMainThread(() =>
             {
-                ContinueGrid.ItemsSource = items;
                 ContinueStatus.Text = $"▶ 继续观看 · {_continueItems.Count}";
                 ContinueSection.IsVisible = !ResultSection.IsVisible && !CandidateSection.IsVisible;
+                BuildContinueCards(force: true);
             });
 
             CoverResolver.Attach(_covers, items);   // 封面异步补齐（顺带喂首字母索引）
@@ -483,25 +475,139 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
                $"&category={Uri.EscapeDataString(e.Category)}" + pos + cover;
     }
 
-    /// <summary>继续观看卡被点选（触摸 / 鼠标）。</summary>
-    private void OnContinueSelected(object? sender, SelectionChangedEventArgs e)
-    {
-        ContinueGrid.SelectedItem = null;   // 允许重复选同一项
-        if (e.CurrentSelection.FirstOrDefault() is not VodItem item) return;
+    /// <summary>继续观看卡片的最小宽度（决定列数）与卡片间距。</summary>
+    private const double MinCardWidth = 110;
+    private const double CardGap = 10;
 
-        var hit = _continueItems.FirstOrDefault(x => ReferenceEquals(x.Item, item));
-        if (hit.Query is { Length: > 0 } q) Shell.Current.GoToAsync(q);
-    }
-
-    /// <summary>从实际 span 同步「继续观看」列数（焦点「上下移动 = ±列数」必须与显示一致）。</summary>
-    private void RecalcContinueColumns()
+    /// <summary>
+    /// 构建「继续观看」海报墙（代码构建的换行布局，**不是** CollectionView）。
+    ///
+    /// <para><b>为什么不用 CollectionView</b>：它现在位于 ScrollView 内，而 ScrollView 会给子元素
+    /// 无界高度 → CollectionView 撑开全部内容再被父级裁掉（结果区踩过的同一个坑）。
+    /// 换行 FlexLayout 的高度天然由内容决定，交给外层 ScrollView 滚动即可。</para>
+    ///
+    /// <para>列数按容器宽度算（不写死）：手机横屏 3 列、桌面 5~6 列。
+    /// 列数与卡片数都没变就不重建 —— 否则每次尺寸变化都会闪一下。</para>
+    /// </summary>
+    private void BuildContinueCards(bool force = false)
     {
         try
         {
-            if (ContinueGrid.ItemsLayout is GridItemsLayout g && g.Span > 0)
-                _continueColumns = g.Span;
+            if (_continueItems.Count == 0) return;
+            var avail = ContinueHost.Width;
+            if (avail <= 0) return;
+
+            var cols = Math.Clamp((int)Math.Floor((avail + CardGap) / (MinCardWidth + CardGap)), 3, 6);
+            if (!force && cols == _continueColumns && _continueCards.Count == _continueItems.Count) return;
+
+            _continueColumns = cols;
+            var cardW = Math.Floor((avail - (cols - 1) * CardGap) / cols);
+            var cardH = Math.Round(cardW * 1.5);
+
+            ContinueHost.Children.Clear();
+            _continueCards.Clear();
+            foreach (var (_, item, query) in _continueItems)
+            {
+                var (card, poster) = BuildContinueCard(item, cardW, cardH, query);
+                ContinueHost.Children.Add(card);
+                _continueCards.Add(poster);
+            }
+
+            if (_continueIndex >= _continueCards.Count)
+                _continueIndex = Math.Max(0, _continueCards.Count - 1);
         }
         catch { }
+    }
+
+    /// <summary>单张继续观看卡：海报（占位 + 集数角标）+ 片名 + 进度文案。</summary>
+    private (View Card, Border Poster) BuildContinueCard(VodItem item, double cardW, double cardH, string query)
+    {
+        var img = new Image { Source = item.CoverDisplay, Aspect = Aspect.AspectFill };
+
+        var placeholder = new Border
+        {
+            StrokeThickness = 0,
+            Padding = 8,
+            Background = ResBrush("PosterPlaceholderBrush"),
+            IsVisible = item.CoverDisplay is null,
+            Content = new Label
+            {
+                Text = item.Title,
+                FontSize = 11.5,
+                FontAttributes = FontAttributes.Bold,
+                TextColor = Color.FromArgb("#D8DDF5"),
+                HorizontalTextAlignment = TextAlignment.Center,
+                VerticalOptions = LayoutOptions.Center,
+                MaxLines = 3,
+                LineBreakMode = LineBreakMode.TailTruncation,
+            },
+        };
+
+        // 封面异步补齐后回填（占位随之隐藏）
+        item.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName != nameof(VodItem.CoverDisplay)) return;
+            img.Source = item.CoverDisplay;
+            placeholder.IsVisible = item.CoverDisplay is null;
+        };
+
+        var badge = new Border
+        {
+            StrokeThickness = 0,
+            BackgroundColor = Color.FromArgb("#80000000"),
+            StrokeShape = new RoundRectangle { CornerRadius = 8 },
+            Padding = new Thickness(6, 1),
+            HorizontalOptions = LayoutOptions.End,
+            VerticalOptions = LayoutOptions.Start,
+            Margin = new Thickness(0, 6, 6, 0),
+            IsVisible = !string.IsNullOrEmpty(item.Remarks),
+            Content = new Label
+            {
+                Text = item.Remarks ?? string.Empty,
+                FontSize = 9.5,
+                TextColor = Color.FromArgb("#FFD76E"),
+                MaxLines = 1,
+            },
+        };
+
+        var poster = new Border
+        {
+            StrokeThickness = 0,
+            StrokeShape = new RoundRectangle { CornerRadius = 10 },
+            BackgroundColor = Res("CardBackgroundColor", Color.FromArgb("#332F5A")),
+            WidthRequest = cardW,
+            HeightRequest = cardH,
+            Content = new Grid { Children = { img, placeholder, badge } },
+        };
+
+        var card = new VerticalStackLayout
+        {
+            Spacing = 0,
+            WidthRequest = cardW,
+            Margin = new Thickness(0, 0, CardGap, 12),
+            Children =
+            {
+                poster,
+                new Label
+                {
+                    Text = item.Title, FontSize = 11, Margin = new Thickness(0, 5, 0, 0),
+                    LineBreakMode = LineBreakMode.TailTruncation, MaxLines = 1,
+                    TextColor = Res("TextPrimaryColor", Colors.White),
+                },
+                new Label
+                {
+                    Text = item.Year ?? string.Empty, FontSize = 10, Margin = new Thickness(0, 1, 0, 0),
+                    LineBreakMode = LineBreakMode.TailTruncation, MaxLines = 1,
+                    TextColor = Res("TextHintColor", Color.FromArgb("#868CAE")),
+                },
+            },
+        };
+
+        var tap = new TapGestureRecognizer();
+        tap.Tapped += (_, _) => { if (query.Length > 0) Shell.Current.GoToAsync(query); };
+        card.GestureRecognizers.Add(tap);
+
+        return (card, poster);
     }
 
     private const string HistoryPrefKey = "search_history";
@@ -894,9 +1000,9 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
     private void ShowInputPanels(bool showCandidates)
     {
         CandidateSection.IsVisible = showCandidates;
-        HotSection.IsVisible = !showCandidates;
+        RightScroll.IsVisible = !showCandidates;
         // 「继续观看」属于「没在输入」时的展示：一旦有候选就收起，把右栏让给联想列表
-        ContinueSection.IsVisible = !showCandidates && _continueItems.Count > 0;
+        ContinueSection.IsVisible = !showCandidates && _continueCards.Count > 0;
         ResultSection.IsVisible = false;
         _resultMode = false;
         SetResultFullWidth(false);
@@ -937,42 +1043,9 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
     /// <summary>左栏键盘与「最近搜索」之间的间距（XAML 里 KeyboardPane 的 RowSpacing）。</summary>
     private const double PaneGap = 13;
 
-    /// <summary>
-    /// 「热门搜索」允许折的最大行数，按右栏可用高度定。
-    ///
-    /// <para><b>为什么必须限制</b>（2026-09-19 手机实机反馈「继续观看只显示一点点」）：
-    /// 手机横屏右栏只有约 224dp 高，10 个热词在窄栏里会折成 4 行（约 160dp），
-    /// 把下面的「继续观看」压到只剩 40dp —— 海报连一行都放不下。</para>
-    /// </summary>
-    private int MaxHotRows() => HotSection.Height switch
-    {
-        >= 380 => 3,   // 桌面：10 个词本来就 2 行，留 3 行余量
-        >= 280 => 2,
-        _ => 1,        // 手机横屏：热词只留 1 行，其余高度让给继续观看
-    };
-
-    /// <summary>
-    /// 裁掉折行超标的尾部热词。
-    ///
-    /// <para>不能「按宽度预算少加几个」：chip 宽度随文案长短变化，只有布局完成后才知道实际占几行。
-    /// 这里用各 chip 的**实际 Y 坐标**判断行数（行距由 chip 自身 Margin 决定，按 chip 高度估算会偏），
-    /// 每次裁掉一个；布局变化会再次触发本方法，直到行数达标（靠 <c>Count &gt; 1</c> 终止）。</para>
-    /// </summary>
-    private void TrimHotRows()
-    {
-        try
-        {
-            if (_hotChips.Count <= 1) return;
-            if (_hotChips.Any(c => c.Height <= 0)) return;   // 尚未完成布局
-
-            var rows = _hotChips.Select(c => Math.Round(c.Y)).Distinct().Count();
-            if (rows <= MaxHotRows()) return;
-
-            HotWords.Children.Remove(_hotChips[^1]);
-            _hotChips.RemoveAt(_hotChips.Count - 1);
-        }
-        catch { }
-    }
+    // 说明：右栏「热门搜索 + 继续观看」合成一个滚动容器后，
+    // 不再需要「按右栏高度裁剪热词行数」「按区块高度缩海报卡片」这两处补丁 ——
+    // 内容放不下就滚动，不会再有某一方被挤没。
 
     /// <summary>
     /// 结果态是否铺满整宽。
@@ -1045,7 +1118,7 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
         // 切到结果态（结果铺满整宽：键盘列宽归零）
         _resultMode = true;
         CandidateSection.IsVisible = false;
-        HotSection.IsVisible = false;
+        RightScroll.IsVisible = false;
         ResultSection.IsVisible = true;
         SetResultFullWidth(true);
         FilterBar.IsVisible = false;
@@ -1332,7 +1405,11 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
 
         // 离开海报区时清掉焦点环 —— 两处海报墙的焦点都由数据项自己的 IsFocused 驱动，
         // 不复位就会留着上一处的亮框，看起来像「两个地方同时有焦点」。
-        if (_zone != Zone.Continue) ClearPosterFocus(_continueItems.Select(x => x.Item));
+        if (_continueHighlighted is not null)
+        {
+            ApplyPosterCardFocus(_continueHighlighted, false);
+            _continueHighlighted = null;
+        }
         if (_zone != Zone.Grid) ClearPosterFocus(_results);
 
         // 键盘持焦：键盘自己画焦点，其余区不需要高亮
@@ -1380,13 +1457,15 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
                 break;
 
             case Zone.Continue:
-                if (_continueItems.Count > 0)
+                if (_continueCards.Count > 0)
                 {
-                    _continueIndex = Math.Clamp(_continueIndex, 0, _continueItems.Count - 1);
-                    for (int i = 0; i < _continueItems.Count; i++)
-                        _continueItems[i].Item.IsFocused = i == _continueIndex;
-                    ScrollContinueIntoView(_continueIndex);
-                    desc = $"继续观看 {_continueIndex + 1}/{_continueItems.Count}";
+                    _continueIndex = Math.Clamp(_continueIndex, 0, _continueCards.Count - 1);
+                    var card = _continueCards[_continueIndex];
+                    ApplyPosterCardFocus(card, true);
+                    _continueHighlighted = card;
+                    // 右栏是整体滚动区：焦点下移后要把卡片滚进视野，否则用户看不到自己在选什么
+                    _ = RightScroll.ScrollToAsync(card, ScrollToPosition.MakeVisible, false);
+                    desc = $"继续观看 {_continueIndex + 1}/{_continueCards.Count}";
                 }
                 break;
 
@@ -1418,14 +1497,16 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
         foreach (var it in items) it.IsFocused = false;
     }
 
-    private void ScrollContinueIntoView(int index)
+    /// <summary>当前高亮的继续观看卡（与 chip 高亮分开：海报卡与 chip 的焦点样式不同）。</summary>
+    private Border? _continueHighlighted;
+
+    /// <summary>继续观看卡的焦点环。不能走 chip 那套：海报底色被封面盖住、文字又在卡片外。</summary>
+    private void ApplyPosterCardFocus(Border box, bool focused)
     {
-        try
-        {
-            if (index >= 0 && index < _continueItems.Count)
-                ContinueGrid.ScrollTo(index, position: ScrollToPosition.MakeVisible, animate: false);
-        }
-        catch { }
+        var primary = Res("PrimaryColor", Color.FromArgb("#9B7ED8"));
+        box.Stroke = new SolidColorBrush(primary);
+        box.StrokeThickness = focused ? 3 : 0;
+        box.Scale = focused ? 1.04 : 1;
     }
 
     /// <summary>chip 焦点样式（与 FocusableRow 同一套：紫底 + 描边 + 柔光）。</summary>
@@ -1536,7 +1617,7 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
                 if (_zone == Zone.Continue)
                 {
                     var cols = Math.Max(1, _continueColumns);
-                    if (_continueIndex % cols < cols - 1 && _continueIndex + 1 < _continueItems.Count)
+                    if (_continueIndex % cols < cols - 1 && _continueIndex + 1 < _continueCards.Count)
                     { _continueIndex++; RefreshFocusVisual(); }
                     return true;
                 }
@@ -1591,7 +1672,7 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
                         return true;
                     }
                     // 热门搜索 → 继续观看（落到首行）
-                    if (_continueItems.Count > 0)
+                    if (_continueCards.Count > 0)
                     {
                         _continueIndex = Math.Clamp(_continueIndex, 0, Math.Max(0, _continueColumns - 1));
                         _zone = Zone.Continue;
@@ -1601,7 +1682,7 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
                 }
                 if (_zone == Zone.Continue)
                 {
-                    if (_continueIndex + _continueColumns < _continueItems.Count)
+                    if (_continueIndex + _continueColumns < _continueCards.Count)
                     { _continueIndex += _continueColumns; RefreshFocusVisual(); }
                     return true;
                 }
@@ -1662,9 +1743,9 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
                 return true;
 
             case Zone.Continue:
-                if (_continueItems.Count > 0)
+                if (_continueCards.Count > 0)
                 {
-                    _continueIndex = Math.Clamp(_continueIndex, 0, _continueItems.Count - 1);
+                    _continueIndex = Math.Clamp(_continueIndex, 0, _continueCards.Count - 1);
                     var q = _continueItems[_continueIndex].Query;
                     if (q.Length > 0) Shell.Current.GoToAsync(q);
                 }
