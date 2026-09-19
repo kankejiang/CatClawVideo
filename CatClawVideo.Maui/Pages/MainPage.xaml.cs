@@ -465,8 +465,25 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
     /// <summary>tab 切换入口（MainViewModel 事件）</summary>
     private void OnTabChanged(int index)
     {
-        // 切页后焦点留在顶栏（落在新 tab 上）—— 由 ShowTab 统一决定，见那里的说明。
         ShowTab(index);
+        HandFocusToContent();
+    }
+
+    /// <summary>
+    /// 用户**明确选了**某个 tab 之后，把焦点直接送进内容区。
+    ///
+    /// <para>不这么做的话，焦点还留在顶栏上：用户接着按 ←/→ 是在顶栏换 tab，
+    /// 再按 OK 又切到别的 tab —— 观感就是「我明明选了历史、按方向键进了海报、
+    /// 一回车却回到了首页」（2026-09-19 用户反馈）。</para>
+    ///
+    /// <para>启动时不走这里（首个 tab 是直接显示的，不触发 TabChanged），
+    /// 所以「启动停在顶栏首页」这条仍然成立。</para>
+    /// </summary>
+    private void HandFocusToContent()
+    {
+        _topNavFocused = false;
+        RenderTopNav();
+        (CurrentTab as IRemoteKeyHandler)?.FocusContent();
     }
 
     /// <summary>显示指定 tab：可见性切换 + 淡入 + 数据刷新</summary>
