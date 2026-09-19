@@ -91,7 +91,8 @@ public partial class SettingsPage : ContentView, ITabView, IRemoteKeyHandler
         for (int i = 0; i < Sections.Length; i++)
         {
             var s = Sections[i];
-            var row = new FocusableRow { Glyph = s.Glyph, Title = s.Title };
+            // RailOnly：侧栏只用「图标 + 标题」，用完整 6 列会把标题宽度挤没（中文竖排）
+            var row = new FocusableRow { Glyph = s.Glyph, Title = s.Title, RailOnly = true };
             int idx = i;
             row.Activated += (_, _) => { SelectSection(idx); FocusRows(); };
             _nav.Add(row);

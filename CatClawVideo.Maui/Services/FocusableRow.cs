@@ -28,6 +28,9 @@ public sealed class FocusableRow : ContentView
     private readonly ContentView _trailingHost;
     private readonly Label _value;
     private readonly Label _arrow;
+    private readonly Grid _grid;
+    private readonly VerticalStackLayout _text;
+    private bool _railOnly;
 
     private bool _hovered;
     private bool _highlighted;
@@ -110,7 +113,7 @@ public sealed class FocusableRow : ContentView
             IsVisible = false,
             TextColor = Res("TextHintColor", Colors.Gray),
         };
-        var text = new VerticalStackLayout
+        _text = new VerticalStackLayout
         {
             Spacing = 0,
             VerticalOptions = LayoutOptions.Center,
@@ -135,25 +138,8 @@ public sealed class FocusableRow : ContentView
             TextColor = Res("TextHintColor", Colors.Gray),
         };
 
-        var grid = new Grid
-        {
-            ColumnSpacing = 14,
-            ColumnDefinitions =
-            {
-                new ColumnDefinition(GridLength.Auto),   // 0 焦点竖条
-                new ColumnDefinition(GridLength.Auto),   // 1 图标
-                new ColumnDefinition(GridLength.Star),   // 2 标题 / 副标题
-                new ColumnDefinition(GridLength.Auto),   // 3 尾部（开关 / 步进器）
-                new ColumnDefinition(GridLength.Auto),   // 4 值文本
-                new ColumnDefinition(GridLength.Auto),   // 5 箭头
-            },
-        };
-        grid.Add(_bar, 0, 0);
-        grid.Add(_iconHost, 1, 0);
-        grid.Add(text, 2, 0);
-        grid.Add(_trailingHost, 3, 0);
-        grid.Add(_value, 4, 0);
-        grid.Add(_arrow, 5, 0);
+        _grid = new Grid { ColumnSpacing = 14 };
+        RebuildGrid();
 
         _root = new Border
         {
@@ -161,7 +147,7 @@ public sealed class FocusableRow : ContentView
             StrokeShape = new RoundRectangle { CornerRadius = 11 },
             BackgroundColor = Colors.Transparent,
             Padding = new Thickness(6, 13, 18, 13),
-            Content = grid,
+            Content = _grid,
         };
         Content = _root;
 
@@ -173,6 +159,67 @@ public sealed class FocusableRow : ContentView
         pointer.PointerEntered += (_, _) => { _hovered = true; UpdateVisual(); };
         pointer.PointerExited += (_, _) => { _hovered = false; UpdateVisual(); };
         GestureRecognizers.Add(pointer);
+    }
+
+    /// <summary>
+    /// 侧栏精简模式：只保留「焦点竖条 + 图标 + 标题」三列。
+    ///
+    /// <para>为什么需要它：完整模式的 6 列 + <c>ColumnSpacing=14</c> 固定吃掉 70dp，
+    /// 这是给**内容行**（副标题 / 开关 / 值 / 箭头）设计的。侧栏项只用得到图标与标题，
+    /// 在窄屏（手机横屏逻辑宽约 411dp，侧栏经 <c>ApplyDensity</c> 收到 158dp）下，
+    /// 标题列被挤到只剩几 dp —— 中文就一字一行地竖排了
+    /// （2026-09-19 用户手机截图：侧栏「内容源」显示成竖着的三个字）。</para>
+    ///
+    /// <para>必须在加入可视树前设置（会重建列定义）。</para>
+    /// </summary>
+    public bool RailOnly
+    {
+        get => _railOnly;
+        set
+        {
+            if (_railOnly == value) return;
+            _railOnly = value;
+            RebuildGrid();
+        }
+    }
+
+    /// <summary>按当前模式重建列定义与子元素布局（侧栏 3 列 / 完整 6 列）。</summary>
+    private void RebuildGrid()
+    {
+        _grid.Children.Clear();
+        _grid.ColumnDefinitions.Clear();
+
+        _grid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto));   // 0 焦点竖条
+        _grid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto));   // 1 图标
+        _grid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Star));   // 2 标题（占满剩余）
+
+        _grid.Add(_bar, 0, 0);
+        _grid.Add(_iconHost, 1, 0);
+        _grid.Add(_text, 2, 0);
+
+        if (_railOnly)
+        {
+            // 侧栏列少：间距也收窄，把宽度还给标题
+            _grid.ColumnSpacing = 10;
+
+            // 标题绝不换行：中文一旦被挤就一字一行，比截断难看得多
+            _title.LineBreakMode = LineBreakMode.TailTruncation;
+            _title.MaxLines = 1;
+            return;
+        }
+
+        // 完整模式：恢复默认（长标题可换行，内容行不该被截断）
+        _title.LineBreakMode = LineBreakMode.WordWrap;
+        _title.MaxLines = -1;
+
+        _grid.ColumnSpacing = 14;
+        _grid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto));   // 3 尾部（开关 / 步进器）
+        _grid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto));   // 4 值文本
+        _grid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto));   // 5 箭头
+
+        _grid.Add(_trailingHost, 3, 0);
+        _grid.Add(_value, 4, 0);
+        _grid.Add(_arrow, 5, 0);
     }
 
     // ─────────── 外观属性 ───────────
