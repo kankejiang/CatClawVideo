@@ -56,6 +56,21 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
 
         // 安全区 padding（Android 透明状态栏/手势条下内容避开系统栏）
         ApplySafeAreaPadding();
+
+#if WINDOWS
+        // 顶栏必须整体避开窗口**标题栏那一条非客户区**（约 32 逻辑像素）——
+        // 那一段归系统管，点它等于点标题栏，会被吃掉。
+        //
+        // 2026-09-19 实测根因（「点顶栏要按好几次才有反应」）：
+        // 顶栏原本从客户区 y=0 起、高 56，tab 文字居中在 y≈28 —— 正好压在边界上：
+        // 点文字上半截落到标题栏区没反应，下半截才生效，手感就是「要试几次」。
+        // 只调 Window.SetTitleBar(拖拽元素) 解决不了：那只是指定拖拽区，
+        // 并不把同一横条里其它元素的命中透传回来（要透传得用
+        // InputNonClientPointerSource.SetRegionRects，需要自己算矩形并在缩放时重算，易失效）。
+        // 这里改用最确定的做法：内容整体下移一个标题栏高度，顶栏全部落进客户区。
+        Padding = new Thickness(Padding.Left, Math.Max(Padding.Top, WindowCaptionHeight),
+                                Padding.Right, Padding.Bottom);
+#endif
 #if ANDROID
         LogLayoutChain();
 #endif
@@ -341,6 +356,15 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
         : (sender == NavBg4) ? 4
         : (sender == NavBg5) ? 5
         : 0;
+
+#if WINDOWS
+    /// <summary>
+    /// 窗口标题栏（非客户区）高度，逻辑单位。
+    /// Windows 标准标题栏为 32 逻辑像素（DPI 缩放后仍是 32 逻辑像素），
+    /// 顶栏内容必须整体落在它下方 —— 否则那一条的点击会被系统当标题栏吃掉。
+    /// </summary>
+    private const double WindowCaptionHeight = 32;
+#endif
 
     /// <summary>hover 空壳胶囊：未选中 tab 悬停时显示主题色描边 + 文字提亮；选中态样式不覆盖。</summary>
     private void OnTabPointerEntered(object? sender, PointerEventArgs e)
