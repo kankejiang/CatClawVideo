@@ -121,6 +121,10 @@ public partial class App : Application
                 {
                     // ① 内容延伸到标题栏区域（隐藏系统标题栏绘制，顶导航即标题栏）
                     appWindow.TitleBar.ExtendsContentIntoTitleBar = true;
+
+                    // ①b 拖拽矩形随窗口尺寸重算：顶栏那段空白是 * 列，宽度跟着窗口变，
+                    //    不重算就会错位（旧版「窗口拖不动」的另一半原因）。
+                    nativeWindow.SizeChanged += (_, _) => SyncTitleBarDrag();
                     // ② 保留标题栏实体（原生拖拽与窗口能力的前提），能力全保留
                     if (appWindow.Presenter is Microsoft.UI.Windowing.OverlappedPresenter overlappedPresenter)
                     {
@@ -282,7 +286,11 @@ public partial class App : Application
                 Pages.MainPage mp => mp.TitleBarDragElement,
                 _ => null,
             };
-            Services.WindowDragHelper.Attach(el);
+
+            // 有拖拽元素的页面 → 声明矩形；没有的页面 → 清空。
+            // 清空是必须的：否则上一页留下的拖拽区会在这个页面上把顶栏当标题栏、误吞点击。
+            if (el is null) Services.WindowDragHelper.Detach();
+            else Services.WindowDragHelper.Attach(el);
         }
         catch (Exception ex)
         {

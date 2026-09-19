@@ -58,18 +58,13 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
         ApplySafeAreaPadding();
 
 #if WINDOWS
-        // 顶栏必须整体避开窗口**标题栏那一条非客户区**（约 32 逻辑像素）——
-        // 那一段归系统管，点它等于点标题栏，会被吃掉。
-        //
-        // 2026-09-19 实测根因（「点顶栏要按好几次才有反应」）：
-        // 顶栏原本从客户区 y=0 起、高 56，tab 文字居中在 y≈28 —— 正好压在边界上：
-        // 点文字上半截落到标题栏区没反应，下半截才生效，手感就是「要试几次」。
-        // 只调 Window.SetTitleBar(拖拽元素) 解决不了：那只是指定拖拽区，
-        // 并不把同一横条里其它元素的命中透传回来（要透传得用
-        // InputNonClientPointerSource.SetRegionRects，需要自己算矩形并在缩放时重算，易失效）。
-        // 这里改用最确定的做法：内容整体下移一个标题栏高度，顶栏全部落进客户区。
-        Padding = new Thickness(Padding.Left, Math.Max(Padding.Top, WindowCaptionHeight),
-                                Padding.Right, Padding.Bottom);
+        // 顶栏拖拽区：布局/尺寸变化后重算（矩形由拖拽元素的实时位置推出，见 WindowDragHelper）。
+        // 拖拽区是「反向白名单」—— 只有这一段归系统管，顶栏其余部分自动是客户区、点击直达控件，
+        // 所以顶栏压在窗口标题栏那条非客户区上也照样能点（沉浸式与可点兼得）。
+        SizeChanged += (_, _) => (Application.Current as App)?.SyncTitleBarDrag();
+        // 构造期元素尚无尺寸，等首帧布局完成再补一次
+        Dispatcher.StartTimer(TimeSpan.FromMilliseconds(300),
+            () => { (Application.Current as App)?.SyncTitleBarDrag(); return false; });
 #endif
 #if ANDROID
         LogLayoutChain();
@@ -106,9 +101,23 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
     private void SyncRemoteKeyStack()
     {
         RemoteKeyRouter.Push(this);
-        if (CurrentTab is IRemoteKeyHandler inner)
-            RemoteKeyRouter.Push(inner);
+
+        // 关键：把**上一个** tab 的处理者移出栈。
+        //
+        // 只 Push 不 Pop 的话，切过的 tab 会一直留在路由栈里，而且它们都**不可见** ——
+        // 一旦当前页与主壳层都拒绝某个按键，就会落到这些看不见的页面上被执行。
+        // 实测（2026-09-19）：焦点在顶栏「设置」上按回车，弹出了首页的「请选择首页数据源」
+        // 对话框 —— 因为首页 HomePage 还在栈底，它的默认落点正是「切换源」按钮。
+        var current = CurrentTab as IRemoteKeyHandler;
+        if (!ReferenceEquals(_stackedTab, current) && _stackedTab is not null)
+            RemoteKeyRouter.Pop(_stackedTab);
+
+        _stackedTab = current;
+        if (current is not null) RemoteKeyRouter.Push(current);
     }
+
+    /// <summary>当前已入栈的 tab 处理者（切 tab 时要把旧的移出，见 <see cref="SyncRemoteKeyStack"/>）。</summary>
+    private IRemoteKeyHandler? _stackedTab;
 
     // ═══════════════════════ 顶部 tab 焦点 ═══════════════════════
 
@@ -158,6 +167,16 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
         return Colors.Transparent;
     }
 
+    /// <summary>
+    /// 本页是否在最前（没有推送页盖在上面）。
+    ///
+    /// <para>推送页（搜索页、观看页）是整窗覆盖，连顶栏一起盖住 —— 此时绝不能把焦点交给顶栏，
+    /// 否则焦点落到**看不见的地方**，表现就是「按方向键没反应，得按 Back 才出来」。
+    /// 所以下面「走到边界 → 交给顶栏」都必须先过这道判断。</para>
+    /// </summary>
+    private static bool Frontmost =>
+        Microsoft.Maui.Controls.Shell.Current?.CurrentPage is Pages.MainPage;
+
     private void MoveTopFocus(int dir)
     {
         _focusedTab = (_focusedTab + dir + _navShells.Length) % _navShells.Length;   // 循环
@@ -169,8 +188,15 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
     /// <summary>被上层（如设置页）要求接管焦点：落到顶部 tab。</summary>
     public void FocusContent() => FocusTopNav();
 
+    /// <summary>顶栏的持有者就是本页，无需清理自己的高亮。</summary>
+    public void BlurContent() { }
+
     public void FocusTopNav()
     {
+        // 先让内容区交还焦点：不清它的高亮，顶栏与内容区会「两处同时亮」两个焦点
+        // （2026-09-19 用户截图：焦点上移到顶栏后，设置页侧栏还亮着）。
+        (CurrentTab as IRemoteKeyHandler)?.BlurContent();
+
         _topNavFocused = true;
         _focusedTab = Math.Clamp(_vm.SelectedTabIndex, 0, _navShells.Length - 1);
         RenderTopNav();
@@ -182,6 +208,7 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
         {
             case RemoteKey.Up:
                 if (_topNavFocused) return true;                 // 已在最顶，吃掉
+                if (!Frontmost) return false;                    // 有推送页盖着顶栏 → 不能把焦点给它
                 FocusTopNav();
                 return true;
 
@@ -197,13 +224,17 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
                 return true;
 
             case RemoteKey.Left:
-                if (!_topNavFocused) return false;
-                MoveTopFocus(-1);
+                if (_topNavFocused) { MoveTopFocus(-1); return true; }
+                if (!Frontmost) return false;
+                // 内容区在本方向已到头（设置页侧栏那句「← 交回顶栏」走的就是这条）：
+                // 与 ↑ 一致，把焦点交给顶栏 —— 否则按键被丢弃，用户只能按 Back 才出得来。
+                FocusTopNav();
                 return true;
 
             case RemoteKey.Right:
-                if (!_topNavFocused) return false;
-                MoveTopFocus(+1);
+                if (_topNavFocused) { MoveTopFocus(+1); return true; }
+                if (!Frontmost) return false;
+                FocusTopNav();
                 return true;
 
             case RemoteKey.Enter:
@@ -339,14 +370,15 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
     /// <summary>
     /// Windows 窗口拖拽元素 = 顶栏「搜索框 → 窗口按钮」之间的空白段（XAML 里的 TitleBarDragArea）。
     ///
-    /// <para>由 <see cref="App.SyncTitleBarDrag"/> 取用并交给 <c>Window.SetTitleBar</c>：
-    /// 只有这一段参与拖拽，品牌 / tabs / 搜索框都在别的列，照常可点。</para>
+    /// <para>由 <see cref="App.SyncTitleBarDrag"/> 取用，交给 <see cref="Services.WindowDragHelper"/>
+    /// 换算成 <c>AppWindow.TitleBar.SetDragRectangles</c>：只有这一段归系统当标题栏，
+    /// 品牌 / tabs / 搜索框都在别的列 —— 自动是客户区、点击直达控件。</para>
     ///
-    /// <para>2026-09-19 改：取代原先的 <c>SetDragRectangles</c> 坐标计算方案
-    /// （那套在布局未就绪/页面切换时会算错或归零，导致窗口拖不动）。</para>
+    /// <para>2026-09-19 定案：中途试过 <c>Window.SetTitleBar(元素)</c>（沉浸式更省事），
+    /// 但它会让顶栏 tab「点好几次才有反应」—— 原因与对比见 WindowDragHelper 类注释。</para>
     /// </summary>
-    public Microsoft.UI.Xaml.UIElement? TitleBarDragElement =>
-        TitleBarDragArea?.Handler?.PlatformView as Microsoft.UI.Xaml.UIElement;
+    public Microsoft.UI.Xaml.FrameworkElement? TitleBarDragElement =>
+        TitleBarDragArea?.Handler?.PlatformView as Microsoft.UI.Xaml.FrameworkElement;
 #endif
 
     private int TabIndexOf(object? sender) =>
@@ -356,15 +388,6 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
         : (sender == NavBg4) ? 4
         : (sender == NavBg5) ? 5
         : 0;
-
-#if WINDOWS
-    /// <summary>
-    /// 窗口标题栏（非客户区）高度，逻辑单位。
-    /// Windows 标准标题栏为 32 逻辑像素（DPI 缩放后仍是 32 逻辑像素），
-    /// 顶栏内容必须整体落在它下方 —— 否则那一条的点击会被系统当标题栏吃掉。
-    /// </summary>
-    private const double WindowCaptionHeight = 32;
-#endif
 
     /// <summary>hover 空壳胶囊：未选中 tab 悬停时显示主题色描边 + 文字提亮；选中态样式不覆盖。</summary>
     private void OnTabPointerEntered(object? sender, PointerEventArgs e)

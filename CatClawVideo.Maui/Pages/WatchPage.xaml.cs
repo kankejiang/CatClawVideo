@@ -295,7 +295,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     {
         try
         {
-            if (TitleBarDragArea?.Handler?.PlatformView is Microsoft.UI.Xaml.UIElement el)
+            if (TitleBarDragArea?.Handler?.PlatformView is Microsoft.UI.Xaml.FrameworkElement el)
                 Services.WindowDragHelper.Attach(el);
         }
         catch { }

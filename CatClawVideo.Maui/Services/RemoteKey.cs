@@ -30,6 +30,12 @@ public interface IRemoteKeyHandler
 
     /// <summary>外层把焦点送进本区域（主壳层顶栏按下 ↓ / OK 时调用）。</summary>
     void FocusContent();
+
+    /// <summary>
+    /// 外层把焦点**收走**（主壳层顶栏按下 ↑ / ← / → 抢走焦点）时调用：
+    /// 本区域必须清掉自己的高亮 —— 否则会出现「顶栏和内容区同时亮两个焦点」。
+    /// </summary>
+    void BlurContent();
 }
 
 /// <summary>

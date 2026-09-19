@@ -1569,6 +1569,12 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
         RefreshFocusVisual();
     }
 
+    /// <summary>
+    /// 本页是推送页、整窗覆盖（连顶栏一起盖住），顶栏不可能抢走它的焦点
+    /// （见 <c>MainPage.Frontmost</c> 的守卫），故无需清理。
+    /// </summary>
+    public void BlurContent() { }
+
     public bool Handle(RemoteKey key)
     {
         switch (key)

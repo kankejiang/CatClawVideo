@@ -406,6 +406,19 @@ public partial class SettingsPage : ContentView, ITabView, IRemoteKeyHandler
 
     public void FocusContent() => FocusRail();
 
+    /// <summary>
+    /// 顶栏抢走焦点：清掉侧栏/内容区的高亮，并把当前层标记为「顶栏」。
+    ///
+    /// <para>不清理就会出现「顶栏 tab 与侧栏项同时亮」两个焦点
+    /// （2026-09-19 用户截图）；标记层为顶栏后，本页的方向键会直接交还外层，
+    /// 由顶栏接管，不会出现两边抢键。</para>
+    /// </summary>
+    public void BlurContent()
+    {
+        _layer = LayerTopNav;
+        SetFocus(null);
+    }
+
     public bool Handle(RemoteKey key)
     {
         switch (key)

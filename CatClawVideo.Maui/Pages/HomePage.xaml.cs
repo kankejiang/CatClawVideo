@@ -229,8 +229,19 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
 
     // ═══════════════════════ IRemoteKeyHandler ═══════════════════════
 
-    /// <summary>被主壳层要求接管焦点：从「切换源」开始。</summary>
-    public void FocusContent() => FocusSwitchSite();
+    /// <summary>
+    /// 被主壳层要求接管焦点（顶栏按 ↓）：**直接落在分类 chips**，不再先经「切换源」。
+    ///
+    /// <para>2026-09-19 用户建议：首页最常用的是挑分类，而「切换源」是低频操作 ——
+    /// 让 ↓ 一步就到分类，省掉一次多余的按键。切换源改为从 chip 行两端进：
+    /// 最左 chip <c>←</c>、最右 chip <c>→</c>（见 <see cref="TryMove"/>）。</para>
+    ///
+    /// <para>落点用记忆的 <c>_chipIndex</c>：用户上次逛到哪个分类，回来就还在那儿。</para>
+    /// </summary>
+    public void FocusContent() => FocusChips(Math.Max(0, _chipIndex));
+
+    /// <summary>顶栏抢走焦点：清掉海报墙高亮，避免「顶栏与海报同时亮」两个焦点。</summary>
+    public void BlurContent() => ClearPosterFocus();
 
     public bool Handle(RemoteKey key)
     {
@@ -277,6 +288,12 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
                         {
                             _chipIndex++;
                             RenderFocus();
+                        }
+                        else
+                        {
+                            // 最右侧 chip 再往右 → 上到「切换源」（2026-09-19 用户建议）。
+                            // 与 FocusContent 的「↓ 进分类」正好成对：切换源 ↓ 会回到刚才这个 chip。
+                            FocusSwitchSite();
                         }
                         return true;
 
