@@ -31,7 +31,7 @@
                 <!-- 页面 tabs -->
                 <HorizontalStackLayout Grid.Column="1" Spacing="6" VerticalOptions="Center" x:Name="NavTabs">
 
-                    <Border x:Name="NavBg0" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="22,10">
+                    <Border x:Name="NavBg0" BackgroundColor="Transparent" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="22,10">
                         <Label x:Name="NavLabel0" Text="首页" FontSize="13.5" FontFamily="OpenSansSemibold" />
                         <Border.GestureRecognizers>
                             <TapGestureRecognizer Tapped="OnTabTapped" />
@@ -39,7 +39,7 @@
                         </Border.GestureRecognizers>
                     </Border>
 
-                    <Border x:Name="NavBg1" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="22,10">
+                    <Border x:Name="NavBg1" BackgroundColor="Transparent" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="22,10">
                         <Label x:Name="NavLabel1" Text="历史" FontSize="13.5" FontFamily="OpenSansSemibold" />
                         <Border.GestureRecognizers>
                             <TapGestureRecognizer Tapped="OnTabTapped" />
@@ -47,7 +47,7 @@
                         </Border.GestureRecognizers>
                     </Border>
 
-                    <Border x:Name="NavBg2" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="22,10">
+                    <Border x:Name="NavBg2" BackgroundColor="Transparent" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="22,10">
                         <Label x:Name="NavLabel2" Text="收藏" FontSize="13.5" FontFamily="OpenSansSemibold" />
                         <Border.GestureRecognizers>
                             <TapGestureRecognizer Tapped="OnTabTapped" />
@@ -55,7 +55,7 @@
                         </Border.GestureRecognizers>
                     </Border>
 
-                    <Border x:Name="NavBg3" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="22,10">
+                    <Border x:Name="NavBg3" BackgroundColor="Transparent" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="22,10">
                         <Label x:Name="NavLabel3" Text="下载" FontSize="13.5" FontFamily="OpenSansSemibold" />
                         <Border.GestureRecognizers>
                             <TapGestureRecognizer Tapped="OnTabTapped" />
@@ -63,7 +63,7 @@
                         </Border.GestureRecognizers>
                     </Border>
 
-                    <Border x:Name="NavBg4" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="22,10">
+                    <Border x:Name="NavBg4" BackgroundColor="Transparent" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="22,10">
                         <Label x:Name="NavLabel4" Text="本地" FontSize="13.5" FontFamily="OpenSansSemibold" />
                         <Border.GestureRecognizers>
                             <TapGestureRecognizer Tapped="OnTabTapped" />
@@ -71,7 +71,7 @@
                         </Border.GestureRecognizers>
                     </Border>
 
-                    <Border x:Name="NavBg5" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="22,10">
+                    <Border x:Name="NavBg5" BackgroundColor="Transparent" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="22,10">
                         <Label x:Name="NavLabel5" Text="设置" FontSize="13.5" FontFamily="OpenSansSemibold" />
                         <Border.GestureRecognizers>
                             <TapGestureRecognizer Tapped="OnTabTapped" />
