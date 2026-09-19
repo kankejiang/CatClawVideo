@@ -117,7 +117,82 @@ public class FavoriteEntry
 }
 
 /// <summary>
-/// 影视数据库（SQLite）：订阅源、播放历史、收藏。
+/// 片名首字母索引（首字母搜索用）。
+///
+/// <para><b>为什么需要落库</b>：遥控器没法打字，首字母搜索是电视端最实用的入口。
+/// 要做「输入 <c>lr</c> → 列出流人」，就得有一份「片名 → 首字母」的本地索引——
+/// 而这个索引只能在用户**浏览过**某些影片之后才存在（我们不做全站预抓取）。
+/// 落库后跨启动复用，用户看过一次首页/搜索过一次，之后就一直能首字母直达。</para>
+/// </summary>
+[Table("search_index")]
+public class SearchIndexEntry
+{
+    [PrimaryKey, AutoIncrement]
+    public int Id { get; set; }
+
+    /// <summary>来源站点 Key（回跳观看页必需）</summary>
+    public string SourceKey { get; set; } = string.Empty;
+
+    /// <summary>站点内影片 ID</summary>
+    public string ItemId { get; set; } = string.Empty;
+
+    /// <summary>片名（完整，含季标识；用于定位与展示）</summary>
+    public string Title { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 系列基名（去季标识；用于**按系列聚合**）。
+    ///
+    /// <para>「凡人修仙传第六季」的基名是「凡人修仙传」。用户输字母找的是**系列**，
+    /// 而不是某一季 —— 若按完整片名聚合，`frx` 只会捞到「凡人修仙传第六季」这一条，
+    /// 前几季全被挡在门外（2026-09-19 用户实测反馈）。</para>
+    ///
+    /// <para>旧数据此列为空：读取时用 <c>TitleNormalizer.StripSeason(Title)</c> 回退补齐，
+    /// 不强制迁移存量。</para>
+    /// </summary>
+    public string BaseTitle { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 片名**基名**的拼音首字母串（「凡人修仙传第六季」→ <c>FRXXC</c>，不含季的字母）。
+    /// 用户输 <c>FRX</c> 即可命中该系列。
+    /// </summary>
+    public string Initials { get; set; } = string.Empty;
+
+    public string? Cover { get; set; }
+    public string? Year { get; set; }
+    public string? Remarks { get; set; }
+    public string? Category { get; set; }
+    public string? Description { get; set; }
+
+    /// <summary>最近一次写入时间（超量时按它淘汰最旧）</summary>
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>去重键：同站同片只留一条</summary>
+    public string DedupeKey => SourceKey + "|" + ItemId;
+}
+
+/// <summary>
+/// 一个**片名系列**（同一部剧的不同季聚合在一起）。
+///
+/// <para>用户输字母找的是系列，例如输 <c>frx</c> 想看「凡人修仙传」——
+/// 而不是「凡人修仙传第六季」。聚合成系列后，点进去能看到各季全在。</para>
+/// </summary>
+public class SearchSeries
+{
+    /// <summary>系列基名（如「凡人修仙传」）</summary>
+    public string BaseTitle { get; set; } = string.Empty;
+
+    /// <summary>该系列下各季条目（按季号升序；单集片只有一个成员）</summary>
+    public List<SearchIndexEntry> Seasons { get; set; } = [];
+
+    /// <summary>最近更新时间（排序用）</summary>
+    public DateTime UpdatedAt { get; set; }
+
+    /// <summary>季数（1 = 单片，不显示「N 季」标签）</summary>
+    public int SeasonCount => Seasons.Count;
+}
+
+/// <summary>
+/// 影视数据库（SQLite）：订阅源、播放历史、收藏、片名首字母索引。
 /// 单连接单例，与宿主音乐库的 MusicDatabase 同模式。
 /// </summary>
 public class VideoDatabase
@@ -137,7 +212,8 @@ public class VideoDatabase
         await Task.WhenAll(
             _db.CreateTableAsync<VodSubscription>(),
             _db.CreateTableAsync<FavoriteEntry>(),
-            _db.CreateTableAsync<PlayHistoryEntry>());
+            _db.CreateTableAsync<PlayHistoryEntry>(),
+            _db.CreateTableAsync<SearchIndexEntry>());
 
         // 播放历史 v2：来源定位列（2026-09-10，历史卡跳回观看页续看）
         await EnsureColumnAsync(_db, "play_history", "SourceKey", "text");
@@ -155,6 +231,10 @@ public class VideoDatabase
 
         // 同影片多集只保留一条历史（清理按「影片 · 集名」分条时期的存量重复）
         await DedupeHistoryAsync();
+
+        // 片名索引 v2：系列基名（按系列聚合用）。老库缺列 → 补空列，
+        // 读取时用 TitleNormalizer.StripSeason(Title) 兜底，不强制回填存量。
+        await EnsureColumnAsync(_db, "search_index", "BaseTitle", "text");
     }
 
     /// <summary>缺列则补（sqlite-net 的 MigrateTable 是 internal，只能自己 ALTER）</summary>
@@ -320,4 +400,154 @@ public class VideoDatabase
         Description = fav.Description,
         Remarks = fav.Remarks,
     };
+
+    // ══════════════════════ 片名首字母索引 ══════════════════════
+    //
+    // 被动积累：用户浏览首页/分类/搜索结果时把片名写进来（见 SearchIndexService）。
+    // 不做全站预抓取 —— 遥控器场景下，用户要找的多是「刚看过的片」，
+    // 浏览过的片名已足够覆盖。
+
+    /// <summary>索引总量上限。超出按更新时间淘汰最旧一批（避免无限增长）。</summary>
+    private const int MaxSearchIndex = 5000;
+
+    /// <summary>
+    /// 批量写入索引（幂等）。同 SourceKey+ItemId 已存在则只刷新元数据与时间，不重复插入。
+    /// 失败静默（索引是加速项，不该影响浏览主流程）。
+    /// </summary>
+    public async Task UpsertSearchIndexAsync(IReadOnlyCollection<SearchIndexEntry> entries)
+    {
+        if (entries.Count == 0) return;
+        try
+        {
+            // 一次性把已有键读进内存比对：一次浏览可能来几十条，逐条查库太慢
+            var existing = await _db.Table<SearchIndexEntry>().ToListAsync();
+            var byKey = new Dictionary<string, SearchIndexEntry>(StringComparer.Ordinal);
+            foreach (var e in existing) byKey[e.DedupeKey] = e;
+
+            var toInsert = new List<SearchIndexEntry>();
+            var toUpdate = new List<SearchIndexEntry>();
+            foreach (var e in entries)
+            {
+                if (string.IsNullOrWhiteSpace(e.ItemId) || string.IsNullOrWhiteSpace(e.Initials)) continue;
+                if (byKey.TryGetValue(e.DedupeKey, out var old))
+                {
+                    // 已有：只更新可变字段（片名/角标可能变，如「更新至12集」）
+                    if (old.Title == e.Title && old.Initials == e.Initials
+                        && old.Remarks == e.Remarks && old.Cover == e.Cover
+                        && old.BaseTitle == e.BaseTitle) continue;
+                    old.Title = e.Title;
+                    old.BaseTitle = e.BaseTitle;
+                    old.Initials = e.Initials;
+                    old.Remarks = e.Remarks;
+                    old.Cover = e.Cover ?? old.Cover;
+                    old.Year = e.Year ?? old.Year;
+                    old.UpdatedAt = DateTime.Now;
+                    toUpdate.Add(old);
+                }
+                else
+                {
+                    toInsert.Add(e);
+                    byKey[e.DedupeKey] = e;   // 同批次内去重
+                }
+            }
+
+            if (toInsert.Count > 0) await _db.InsertAllAsync(toInsert);
+            if (toUpdate.Count > 0) await _db.UpdateAllAsync(toUpdate);
+
+            await TrimSearchIndexAsync(existing.Count + toInsert.Count);
+        }
+        catch { }
+    }
+
+    /// <summary>超量时按更新时间淘汰最旧的一批（保留最近一半）。</summary>
+    private async Task TrimSearchIndexAsync(int projectedTotal)
+    {
+        if (projectedTotal <= MaxSearchIndex) return;
+        var total = await _db.Table<SearchIndexEntry>().CountAsync();
+        if (total <= MaxSearchIndex) return;
+        var drop = await _db.Table<SearchIndexEntry>()
+            .OrderBy(e => e.UpdatedAt)
+            .Take(total - MaxSearchIndex / 2)
+            .ToListAsync();
+        foreach (var d in drop) await _db.DeleteAsync(d);
+    }
+
+    /// <summary>
+    /// 按首字母前缀查候选。
+    /// <para>在内存里过滤而非 SQL LIKE：索引总量数千条、单次匹配微秒级，
+    /// 而 SQL 无法表达「多音字变体」这层逻辑（见 <c>PinyinInitial.Matches</c>）。</para>
+    /// </summary>
+    public async Task<List<SearchIndexEntry>> SearchByInitialsAsync(string input, int limit = 30)
+    {
+        var q = input?.Trim();
+        if (string.IsNullOrEmpty(q)) return [];
+        try
+        {
+            var all = await _db.Table<SearchIndexEntry>().ToListAsync();
+            var hit = new List<SearchIndexEntry>();
+            foreach (var e in all)
+            {
+                if (Core.Services.PinyinInitial.Matches(e.Initials, q))
+                {
+                    hit.Add(e);
+                }
+            }
+            // 短前缀（1~2 个字母）命中可能很多：优先给较新的
+            return hit.OrderByDescending(e => e.UpdatedAt).Take(limit).ToList();
+        }
+        catch { return []; }
+    }
+
+    /// <summary>
+    /// 按**系列**聚合查候选。
+    ///
+    /// <para>返回「系列基名 → 该系列的全部条目（按季号升序）」。这样用户输 <c>frx</c>
+    /// 得到的是**一个系列**，点进去能看到第一季到最新季全都在 ——
+    /// 而不是像按完整片名聚合那样只冒出一季（2026-09-19 用户实测反馈）。</para>
+    ///
+    /// <para>单集片（无季）自然形成只有一个成员的组，行为与逐条列出等价。</para>
+    /// </summary>
+    public async Task<List<SearchSeries>> SearchSeriesByInitialsAsync(string input, int limit = 40)
+    {
+        var q = input?.Trim();
+        if (string.IsNullOrEmpty(q)) return [];
+        try
+        {
+            var all = await _db.Table<SearchIndexEntry>().ToListAsync();
+
+            return all
+                // 基名为空的老数据：用 Title 现算（不依赖迁移是否跑过）
+                .Where(e => Core.Services.PinyinInitial.Matches(BaseOf(e), q))
+                .GroupBy(BaseOf, StringComparer.OrdinalIgnoreCase)
+                .Select(g => new SearchSeries
+                {
+                    BaseTitle = g.Key,
+                    // 季号升序：第一季在前（用户最可能从头看）；不带季的排最后
+                    Seasons = [.. g.OrderBy(e => Core.Services.TitleNormalizer.SeasonNumber(e.Title))
+                                   .ThenBy(e => e.Title, StringComparer.OrdinalIgnoreCase)],
+                    UpdatedAt = g.Max(e => e.UpdatedAt),
+                })
+                .OrderByDescending(s => s.Seasons.Any(e => !string.IsNullOrEmpty(e.Cover)))  // 有封面的在前
+                .ThenByDescending(s => s.UpdatedAt)
+                .Take(limit)
+                .ToList();
+        }
+        catch { return []; }
+    }
+
+    /// <summary>取条目的系列基名（老数据 BaseTitle 为空时按 Title 现算）。</summary>
+    private static string BaseOf(SearchIndexEntry e) =>
+        !string.IsNullOrEmpty(e.BaseTitle)
+            ? e.BaseTitle
+            : Core.Services.TitleNormalizer.StripSeason(e.Title);
+
+    /// <summary>索引条数（设置页展示/诊断用）。</summary>
+    public async Task<int> GetSearchIndexCountAsync()
+    {
+        try { return await _db.Table<SearchIndexEntry>().CountAsync(); }
+        catch { return 0; }
+    }
+
+    /// <summary>清空索引（供设置页「重建索引」用）。</summary>
+    public Task ClearSearchIndexAsync() => _db.DeleteAllAsync<SearchIndexEntry>();
 }

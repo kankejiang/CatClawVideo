@@ -110,17 +110,36 @@ public partial class CredentialsDialogPage : ContentPage
             TextColor = (Color)res["TextHintColor"],
             CornerRadius = 10,
         };
-        cancelBtn.Clicked += async (_, _) => await Navigation.PopModalAsync();
+        cancelBtn.Clicked += async (_, _) => await CloseAsync();
         btnRow.Add(saveBtn, 0);
         btnRow.Add(cancelBtn, 1);
         stack.Add(btnRow);
 
         card.Content = stack;
-        Content = new Grid
+
+        // 根容器铺满整页：点遮罩空白处 = 取消（卡片自身范围内的点击不会冒泡到这一层）
+        var root = new Grid { Children = { card } };
+        var backdrop = new TapGestureRecognizer();
+        backdrop.Tapped += async (_, _) => await CloseAsync();
+        root.GestureRecognizers.Add(backdrop);
+
+        Content = root;
+    }
+
+    /// <summary>取消关闭（不保存；Saved 保持 false，调用方据此判断）。</summary>
+    private async Task CloseAsync()
+    {
+        try
         {
-            HorizontalOptions = LayoutOptions.Center,
-            VerticalOptions = LayoutOptions.Center,
-            Children = { card },
-        };
+            if (Navigation.ModalStack.Count > 0) await Navigation.PopModalAsync();
+        }
+        catch { }
+    }
+
+    /// <summary>Android 物理返回键 / Windows Esc → 取消关闭（同遮罩点击）。</summary>
+    protected override bool OnBackButtonPressed()
+    {
+        _ = CloseAsync();
+        return true;
     }
 }

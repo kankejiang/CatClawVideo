@@ -42,6 +42,9 @@ public static class MauiProgram
         CatClawVideo.Core.AppPaths.SeedFile("catclawvideo.db", FileSystem.AppDataDirectory);
         var dbPath = CatClawVideo.Core.AppPaths.Of("catclawvideo.db");
         var db = new VideoDatabase(dbPath);
+        // 片名首字母索引：注入数据库，之后每次列表上屏（CoverResolver.Attach）都会被动积累。
+        // 用完全限定名：本方法参数名 services 会遮蔽 Services 命名空间。
+        CatClawVideo.Maui.Services.SearchIndex.Initialize(db);
         _ = Task.Run(async () =>
         {
             try { await db.EnsureInitializedAsync(); }

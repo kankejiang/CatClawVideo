@@ -22,6 +22,11 @@ public static class CoverResolver
     /// <summary>首页 / 搜索页（VodItem 列表）</summary>
     public static void Attach(CoverImageService service, IEnumerable<VodItem> items)
     {
+        // 顺带把片名记进首字母索引（不阻塞、失败静默）。
+        // 挂这里而不是逐页埋点：首页/分类/搜索/搜索增量上屏**全都经过本方法**，
+        // 一处接入即可全覆盖，避免「某页忘了记 → 首字母搜不到那页的片」。
+        SearchIndex.Remember(items);
+
         foreach (var item in items)
             _ = ResolveAsync(service, item.Cover, item.Title, path => item.CoverDisplay = path);
     }

@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:controls="clr-namespace:CatClawVideo.Maui.Controls"
              x:Class="CatClawVideo.Maui.Pages.SearchPage"
              BackgroundColor="{DynamicResource WindowBackgroundColor}"
              NavigationPage.HasNavigationBar="False">
@@ -10,97 +11,188 @@
         <BackButtonBehavior IsVisible="False" />
     </Shell.BackButtonBehavior>
 
-    <ScrollView>
-        <VerticalStackLayout Padding="24,14,24,28" Spacing="12">
+    <!-- 三段式：顶栏（搜索框） / 主体（键盘 + 右栏） / 底部按键提示 -->
+    <Grid RowDefinitions="Auto,*,Auto">
 
-            <!-- 顶栏：返回 + 搜索框 -->
-            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
-                <Border Grid.Column="0" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
-                        StrokeShape="RoundRectangle 12" WidthRequest="38" HeightRequest="38">
-                    <Image Source="ic_back.png" WidthRequest="18" HeightRequest="18"
-                           HorizontalOptions="Center" VerticalOptions="Center" />
-                    <Border.GestureRecognizers>
-                        <TapGestureRecognizer Tapped="OnBackTapped" />
-                    </Border.GestureRecognizers>
-                </Border>
-                <Entry Grid.Column="1" x:Name="SearchEntry"
-                       Placeholder="搜索影片 / 演员…"
-                       PlaceholderColor="{DynamicResource TextHintColor}"
-                       TextColor="{DynamicResource TextPrimaryColor}"
-                       ReturnType="Search" ReturnCommand="{Binding SearchCommand}"
-                       VerticalOptions="Center" />
-                <Button Grid.Column="2" Text="搜索" FontSize="12.5" TextColor="White"
-                        BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
-                        CornerRadius="8" Padding="16,6"
-                        Command="{Binding SearchCommand}" VerticalOptions="Center" />
+        <!-- ═══ 顶栏：返回 + 搜索框 + 修改/搜索 ═══ -->
+        <Grid Grid.Row="0" x:Name="TopBar" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12"
+              Padding="24,14,24,10">
+            <Border Grid.Column="0" x:Name="BackButtonHost" StrokeThickness="0"
+                    BackgroundColor="{DynamicResource ChipInactiveColor}"
+                    StrokeShape="RoundRectangle 12" WidthRequest="38" HeightRequest="38">
+                <Image Source="ic_back.png" WidthRequest="18" HeightRequest="18"
+                       HorizontalOptions="Center" VerticalOptions="Center" />
+                <Border.GestureRecognizers>
+                    <TapGestureRecognizer Tapped="OnBackTapped" />
+                </Border.GestureRecognizers>
+            </Border>
+
+            <!-- 查询框：Entry 保留物理键盘/手机输入法输入；虚拟键盘通过代码写入它的 Text。
+                 不自动聚焦（避免 Android 弹出系统输入法遮挡虚拟键盘），由方向键驱动虚拟键盘。 -->
+            <Border Grid.Column="1" x:Name="QueryBox" StrokeThickness="1"
+                    Stroke="{DynamicResource InputBorderColor}"
+                    BackgroundColor="{DynamicResource InputBackgroundColor}"
+                    StrokeShape="RoundRectangle 11" Padding="14,0" HeightRequest="44">
+                <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
+                    <Label Grid.Column="0" Text="🔍" FontSize="14"
+                           TextColor="{DynamicResource TextHintColor}" VerticalOptions="Center" />
+                    <Entry Grid.Column="1" x:Name="SearchEntry"
+                           Placeholder="片名首字母 / 全拼 / 中文"
+                           PlaceholderColor="{DynamicResource TextHintColor}"
+                           TextColor="{DynamicResource TextPrimaryColor}"
+                           BackgroundColor="Transparent"
+                           FontSize="15" ReturnType="Search" ReturnCommand="{Binding SearchCommand}"
+                           VerticalOptions="Center" />
+                    <Label Grid.Column="2" x:Name="ModeChip" Text="首字母" IsVisible="False"
+                           FontSize="10.5" FontAttributes="Bold" TextColor="#9FE4FF"
+                           VerticalOptions="Center" />
+                </Grid>
+            </Border>
+
+            <Button Grid.Column="2" x:Name="SearchButton" Text="搜索" FontSize="12.5" TextColor="White"
+                    BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
+                    CornerRadius="8" Padding="16,6"
+                    Command="{Binding SearchCommand}" VerticalOptions="Center" />
+        </Grid>
+
+        <!-- ═══ 主体：左键盘 / 右内容 ═══
+             结果态时第 0 列（键盘）宽度压到 0（见 SetResultFullWidth），
+             右列自然铺满整宽 —— 搜索结果需要全页面显示。 -->
+        <Grid Grid.Row="1" x:Name="BodyArea" ColumnDefinitions="*,*" ColumnSpacing="16"
+              Padding="24,0,24,0">
+
+            <!-- ── 左：虚拟键盘（结果态隐藏） ── -->
+            <VerticalStackLayout Grid.Column="0" x:Name="KeyboardPane" Spacing="10">
+                <controls:VirtualKeyboard x:Name="Keyboard" />
+            </VerticalStackLayout>
+
+            <!-- ── 右：候选 / 热搜 / 历史 / 结果，按状态切换 ── -->
+            <Grid Grid.Column="1" x:Name="RightPane">
+
+                <!-- ① 首字母候选（输入中）。
+                     用 ScrollView + 代码构建条目（而非 CollectionView + 模板）：候选项需要
+                     「遥控器逐项移动焦点 + 自动滚动到可见」，代码持有每个 Border 才能精确控制。 -->
+                <Grid x:Name="CandidateSection" RowDefinitions="Auto,Auto,*" RowSpacing="9" IsVisible="False">
+                    <Label Grid.Row="0" Text="🎯 匹配影片" FontSize="11.5" FontAttributes="Bold"
+                           TextColor="{DynamicResource TextHintColor}" />
+                    <Label Grid.Row="1" x:Name="CandidateStatus" FontSize="11.5"
+                           TextColor="{DynamicResource TextHintColor}" />
+                    <ScrollView Grid.Row="2" x:Name="CandidateScroll"
+                                VerticalScrollBarVisibility="Never">
+                        <VerticalStackLayout x:Name="CandidateHost" Spacing="8" />
+                    </ScrollView>
+                </Grid>
+
+                <!-- ② 热搜 + 历史（初始态） -->
+                <VerticalStackLayout x:Name="HotSection" Spacing="14" IsVisible="True">
+                    <VerticalStackLayout Spacing="9">
+                        <Label Text="🔥 热门搜索" FontSize="11.5" FontAttributes="Bold"
+                               TextColor="{DynamicResource TextHintColor}" />
+                        <Label x:Name="HotStatus" Text="正在加载热搜…" FontSize="11.5"
+                               TextColor="{DynamicResource TextHintColor}" />
+                        <FlexLayout x:Name="HotWords" Wrap="Wrap" JustifyContent="Start" />
+                    </VerticalStackLayout>
+
+                    <VerticalStackLayout x:Name="HistorySection" Spacing="9" IsVisible="False">
+                        <Label Text="🕐 最近搜索" FontSize="11.5" FontAttributes="Bold"
+                               TextColor="{DynamicResource TextHintColor}" />
+                        <FlexLayout x:Name="HistoryWords" Wrap="Wrap" JustifyContent="Start" />
+                    </VerticalStackLayout>
+                </VerticalStackLayout>
+
+                <!-- ③ 跨源搜索结果（结果态）
+                     ⚠ 必须是 Grid（表头 Auto / 网格 *），**不能**用 VerticalStackLayout：
+                     StackLayout 给子元素无界高度，CollectionView 会撑开显示全部再被父级裁掉 ——
+                     表现就是「结果不能上下滚动、看不到后面的内容」（2026-09-19 用户反馈）。
+                     站点筛选放**左侧纵列**：站点数量多时横排要一直左右翻，纵列一屏能看全。 -->
+                <Grid x:Name="ResultSection" RowDefinitions="Auto,*" RowSpacing="8" IsVisible="False">
+                    <Label Grid.Row="0" x:Name="StatusLabel" FontSize="11.5"
+                           TextColor="{DynamicResource TextHintColor}" />
+
+                    <Grid Grid.Row="1" ColumnDefinitions="Auto,*" ColumnSpacing="12">
+
+                        <!-- 站点筛选（纵列）：只列「本次真有结果」的站点，带条数 -->
+                        <ScrollView Grid.Column="0" x:Name="FilterBar" WidthRequest="132"
+                                    VerticalScrollBarVisibility="Never"
+                                    VerticalOptions="Fill"
+                                    IsVisible="False">
+                            <VerticalStackLayout x:Name="FilterChips" Spacing="7" />
+                        </ScrollView>
+
+                        <CollectionView Grid.Column="1" x:Name="ResultGrid" SelectionMode="Single"
+                                        SelectionChanged="OnResultSelected">
+                        <CollectionView.ItemsLayout>
+                            <GridItemsLayout Orientation="Vertical" Span="5"
+                                             VerticalItemSpacing="14" HorizontalItemSpacing="10" />
+                        </CollectionView.ItemsLayout>
+                        <CollectionView.ItemTemplate>
+                            <DataTemplate>
+                                <VerticalStackLayout Spacing="0">
+                                    <Border StrokeThickness="0" StrokeShape="RoundRectangle 10"
+                                            BackgroundColor="{DynamicResource CardBackgroundColor}"
+                                            HeightRequest="{DynamicResource PosterCardHeight}"
+                                            WidthRequest="{DynamicResource PosterCardWidth}"
+                                            HorizontalOptions="Center">
+                                        <!-- 遥控器焦点环：由 VodItem.IsFocused 驱动（与首页海报墙同一套） -->
+                                        <Border.Triggers>
+                                            <DataTrigger TargetType="Border" Binding="{Binding IsFocused}" Value="True">
+                                                <Setter Property="Stroke" Value="{DynamicResource PrimaryColor}" />
+                                                <Setter Property="StrokeThickness" Value="3" />
+                                                <Setter Property="Scale" Value="1.04" />
+                                            </DataTrigger>
+                                        </Border.Triggers>
+                                        <Grid>
+                                            <Image Source="{Binding CoverDisplay}" Aspect="AspectFill" />
+                                            <Border StrokeThickness="0" IsVisible="False" Padding="10"
+                                                    Background="{DynamicResource PosterPlaceholderBrush}">
+                                                <Border.Triggers>
+                                                    <DataTrigger TargetType="Border" Binding="{Binding CoverDisplay}" Value="{x:Null}">
+                                                        <Setter Property="IsVisible" Value="True" />
+                                                    </DataTrigger>
+                                                </Border.Triggers>
+                                                <Label Text="{Binding Title}" FontSize="12.5" FontAttributes="Bold"
+                                                       TextColor="#D8DDF5" HorizontalTextAlignment="Center"
+                                                       VerticalOptions="Center" MaxLines="4" LineBreakMode="TailTruncation" />
+                                            </Border>
+                                            <Border HorizontalOptions="End" VerticalOptions="Start" Margin="0,7,7,0"
+                                                    StrokeThickness="0" BackgroundColor="#80000000"
+                                                    StrokeShape="RoundRectangle 8" Padding="6,1"
+                                                    IsVisible="{Binding HasRemark}">
+                                                <Label Text="{Binding Remarks}" FontSize="10" TextColor="#FFD76E" MaxLines="1" />
+                                            </Border>
+                                            <!-- 站点角标：同片多站时标明出处，方便挑源 -->
+                                            <Border HorizontalOptions="Start" VerticalOptions="End" Margin="7,0,0,7"
+                                                    StrokeThickness="0" BackgroundColor="#8A000000"
+                                                    StrokeShape="RoundRectangle 8" Padding="6,1"
+                                                    IsVisible="{Binding HasSiteName}">
+                                                <Label Text="{Binding SiteName}" FontSize="10" TextColor="#D8DDF5"
+                                                       MaxLines="1" LineBreakMode="TailTruncation" />
+                                            </Border>
+                                        </Grid>
+                                    </Border>
+                                    <Label Text="{Binding Title}" FontSize="12" Margin="0,6,0,0"
+                                           LineBreakMode="TailTruncation" MaxLines="2"
+                                           TextColor="{DynamicResource TextPrimaryColor}" />
+                                    <Label Text="{Binding Year}" FontSize="10" Margin="0,2,0,0"
+                                           LineBreakMode="TailTruncation" MaxLines="1"
+                                           TextColor="{DynamicResource TextHintColor}" />
+                                </VerticalStackLayout>
+                            </DataTemplate>
+                        </CollectionView.ItemTemplate>
+                        </CollectionView>
+                    </Grid>
+                </Grid>
             </Grid>
+        </Grid>
 
-            <!-- 热门搜索（豆瓣热门片单标题，结果为空时显示） -->
-            <VerticalStackLayout x:Name="HotSection" Spacing="10" Margin="0,10,0,0">
-                <Label Text="热门搜索" FontSize="13.5" FontFamily="OpenSansSemibold"
-                       TextColor="{DynamicResource TextPrimaryColor}" />
-                <Label x:Name="HotStatus" Text="正在加载热搜…" FontSize="12"
-                       TextColor="{DynamicResource TextHintColor}" />
-                <FlexLayout x:Name="HotWords" Wrap="Wrap" JustifyContent="Start" />
-            </VerticalStackLayout>
-
-            <!-- 搜索结果 -->
-            <VerticalStackLayout x:Name="ResultSection" Spacing="10" IsVisible="False">
-                <Label Text="搜索结果" FontSize="13.5" FontFamily="OpenSansSemibold"
-                       TextColor="{DynamicResource TextPrimaryColor}" />
-                <Label x:Name="StatusLabel" FontSize="12"
-                       TextColor="{DynamicResource TextHintColor}" IsVisible="True" />
-                <CollectionView x:Name="ResultGrid" SelectionMode="Single"
-                                SelectionChanged="OnResultSelected">
-                    <CollectionView.ItemsLayout>
-                        <GridItemsLayout Orientation="Vertical" Span="6" VerticalItemSpacing="16" HorizontalItemSpacing="12" />
-                    </CollectionView.ItemsLayout>
-                    <CollectionView.ItemTemplate>
-                        <DataTemplate>
-                            <VerticalStackLayout Spacing="0">
-                                <Border StrokeThickness="0" StrokeShape="RoundRectangle 10"
-                                        BackgroundColor="{DynamicResource CardBackgroundColor}"
-                                HeightRequest="{DynamicResource PosterCardHeight}"
-                                WidthRequest="{DynamicResource PosterCardWidth}" HorizontalOptions="Center">
-                                    <Grid>
-                                        <Image Source="{Binding CoverDisplay}" Aspect="AspectFill" />
-                                        <!-- 占位海报（本地渲染，零网络）：封面解析不到时显示，保证绝不留白 -->
-                                        <Border StrokeThickness="0" IsVisible="False" Padding="10"
-                                                Background="{DynamicResource PosterPlaceholderBrush}">
-                                            <Border.Triggers>
-                                                <DataTrigger TargetType="Border" Binding="{Binding CoverDisplay}" Value="{x:Null}">
-                                                    <Setter Property="IsVisible" Value="True" />
-                                                </DataTrigger>
-                                            </Border.Triggers>
-                                            <Label Text="{Binding Title}" FontSize="12.5" FontAttributes="Bold"
-                                                   TextColor="#D8DDF5" HorizontalTextAlignment="Center"
-                                                   VerticalOptions="Center" MaxLines="4" LineBreakMode="TailTruncation" />
-                                        </Border>
-                                        <Border HorizontalOptions="End" VerticalOptions="Start" Margin="0,7,7,0"
-                                                StrokeThickness="0" BackgroundColor="#80000000" StrokeShape="RoundRectangle 8" Padding="6,1">
-                                            <Label Text="{Binding Remarks}" FontSize="10" TextColor="#FFD76E" MaxLines="1" />
-                                        </Border>
-                                        <!-- 来源站角标（跨站搜索聚合，标明这条结果出自哪个站） -->
-                                        <Border HorizontalOptions="Start" VerticalOptions="End" Margin="7,0,0,7"
-                                                StrokeThickness="0" BackgroundColor="#8A000000" StrokeShape="RoundRectangle 8" Padding="6,1"
-                                                IsVisible="{Binding HasSiteName}">
-                                            <Label Text="{Binding SiteName}" FontSize="10" TextColor="#D8DDF5"
-                                                   MaxLines="1" LineBreakMode="TailTruncation" />
-                                        </Border>
-                                    </Grid>
-                                </Border>
-                                <Label Text="{Binding Title}" FontSize="12.5" Margin="0,7,0,0"
-                                       LineBreakMode="TailTruncation" MaxLines="1"
-                                       TextColor="{DynamicResource TextPrimaryColor}" />
-                                <Label Text="{Binding Year}" FontSize="10.5" Margin="0,2,0,0"
-                                       TextColor="{DynamicResource TextHintColor}" />
-                            </VerticalStackLayout>
-                        </DataTemplate>
-                    </CollectionView.ItemTemplate>
-                </CollectionView>
-            </VerticalStackLayout>
-
-        </VerticalStackLayout>
-    </ScrollView>
+        <!-- ═══ 底部按键提示（TV 必备：让用户知道当前能按什么） ═══ -->
+        <Grid Grid.Row="2" x:Name="HintBar" ColumnDefinitions="Auto,*,Auto"
+              Padding="24,8,24,10" ColumnSpacing="18"
+              BackgroundColor="{DynamicResource TabBarBackgroundColor}">
+            <HorizontalStackLayout Grid.Column="0" x:Name="HintLeft" Spacing="18" />
+            <Label Grid.Column="2" x:Name="HintFocus" FontSize="11.5" FontAttributes="Bold"
+                   TextColor="{DynamicResource PrimaryColor}" VerticalOptions="Center" />
+        </Grid>
+    </Grid>
 
 </ContentPage>
