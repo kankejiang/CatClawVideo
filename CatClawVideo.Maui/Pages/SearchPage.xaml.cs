@@ -289,6 +289,10 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
             RecalcContinueColumns();
         };
 
+        // 键盘高度随左栏可用高度自适应（见 SyncKeyboardHeight）
+        KeyboardPane.SizeChanged += (_, _) => SyncKeyboardHeight();
+        HistorySection.SizeChanged += (_, _) => SyncKeyboardHeight();   // 历史 chip 上屏/换行后也要重算
+
         // 虚拟键盘接线
         Keyboard.CharacterPressed += (_, ch) => AppendChar(ch);
         Keyboard.BackspacePressed += (_, _) => Backspace();
@@ -900,6 +904,34 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
         if (chip.GestureRecognizers.FirstOrDefault() is TapGestureRecognizer tap)
             tap.SendTapped(chip);
     }
+
+    /// <summary>
+    /// 按左栏可用高度重算键盘高度。
+    ///
+    /// <para><b>为什么必须自适应</b>（2026-09-19 手机实机截图确认）：键盘原本写死 300，
+    /// 而手机横屏的逻辑高度只有约 360dp —— 顶栏 + 键盘 + 底部提示条加起来超过屏高，
+    /// 第 4 行（<c>ZXCVBNM 删除 搜索</c>）直接溢到提示条下面看不见，
+    /// 等于「退格」和「搜索」两个键按不到。</para>
+    ///
+    /// <para>桌面可用高度约 540dp，会顶到上限 300（保持设计尺寸）；手机压到刚好放下四行。
+    /// 下限 150 兜住可用性（再小键帽就按不准了）。</para>
+    /// </summary>
+    private void SyncKeyboardHeight()
+    {
+        try
+        {
+            var avail = KeyboardPane.Height
+                        - (HistorySection.IsVisible ? HistorySection.Height + PaneGap : 0);
+            if (avail <= 0) return;   // 结果态整列隐藏时高度为 0：不动
+
+            var h = Math.Clamp(avail, 150, 300);
+            if (Math.Abs(Keyboard.HeightRequest - h) > 1) Keyboard.HeightRequest = h;
+        }
+        catch { }
+    }
+
+    /// <summary>左栏键盘与「最近搜索」之间的间距（XAML 里 KeyboardPane 的 RowSpacing）。</summary>
+    private const double PaneGap = 13;
 
     /// <summary>
     /// 结果态是否铺满整宽。
