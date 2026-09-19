@@ -102,22 +102,37 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
     {
         RemoteKeyRouter.Push(this);
 
-        // 关键：把**上一个** tab 的处理者移出栈。
+        // 关键：把**上一个** tab 的处理者移出栈，并让它交出焦点。
         //
         // 只 Push 不 Pop 的话，切过的 tab 会一直留在路由栈里，而且它们都**不可见** ——
         // 一旦当前页与主壳层都拒绝某个按键，就会落到这些看不见的页面上被执行。
         // 实测（2026-09-19）：焦点在顶栏「设置」上按回车，弹出了首页的「请选择首页数据源」
         // 对话框 —— 因为首页 HomePage 还在栈底，它的默认落点正是「切换源」按钮。
         var current = CurrentTab as IRemoteKeyHandler;
-        if (!ReferenceEquals(_stackedTab, current) && _stackedTab is not null)
-            RemoteKeyRouter.Pop(_stackedTab);
-
-        _stackedTab = current;
+        SwapShownTab(current);
         if (current is not null) RemoteKeyRouter.Push(current);
     }
 
-    /// <summary>当前已入栈的 tab 处理者（切 tab 时要把旧的移出，见 <see cref="SyncRemoteKeyStack"/>）。</summary>
-    private IRemoteKeyHandler? _stackedTab;
+    /// <summary>当前显示中的 tab 处理者（切走时要先让它交出焦点再出栈）。</summary>
+    private IRemoteKeyHandler? _shownTab;
+
+    /// <summary>
+    /// 换掉「当前生效的 tab 处理者」：旧的**先交出焦点、再出栈**。
+    ///
+    /// <para>只出栈是不够的 —— 页面只是被隐藏，对象还活着。若它还停在内容层焦点上
+    /// （首页停在分类 chip、历史停在某张海报），按键会先被它吃掉：用户看到的是
+    /// 「按了没反应」，而动作其实发生在看不见的页面上。</para>
+    /// </summary>
+    private void SwapShownTab(IRemoteKeyHandler? next)
+    {
+        if (_shownTab is not null && !ReferenceEquals(_shownTab, next))
+        {
+            _shownTab.BlurContent();
+            RemoteKeyRouter.Pop(_shownTab);
+        }
+
+        _shownTab = next;
+    }
 
     // ═══════════════════════ 顶部 tab 焦点 ═══════════════════════
 
@@ -458,6 +473,10 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
         var tab = _tabs[index];
         tab.Opacity = 0;
         _ = tab.FadeToAsync(1, 180, Easing.CubicOut);
+
+        // 上一个 tab 交出焦点并出栈 —— 它只是被隐藏，仍留在按键栈里，
+        // 若还停在内容层焦点上就会继续吃按键（用户看不到任何反应）。
+        SwapShownTab(tab as IRemoteKeyHandler);
 
         // 先让主壳层入栈（靠下），再由页面把自己推到栈顶
         RemoteKeyRouter.Push(this);

@@ -7,12 +7,15 @@ using CatClawVideo.Maui.ViewModels;
 namespace CatClawVideo.Maui.Pages;
 
 /// <summary>历史页：播放历史海报墙（断点续看入口，真数据 VideoDatabase，点击续看，支持勾选删除）。</summary>
-public partial class HistoryPage : ContentView, ITabView
+public partial class HistoryPage : ContentView, ITabView, IRemoteKeyHandler
 {
     private readonly VideoDatabase _db;
 
     /// <summary>封面解析（源封面失效 → 豆瓣 → 占位海报）</summary>
     private readonly CoverImageService _covers;
+
+    /// <summary>海报墙遥控器焦点（与收藏页共用同一套网格移动逻辑）。</summary>
+    private readonly PosterWallFocus _focus;
 
     private bool _selectMode;
 
@@ -22,10 +25,14 @@ public partial class HistoryPage : ContentView, ITabView
         Wall.SizeChanged += (_, _) => PosterLayoutHelper.Apply(Wall, Wall.Width, Wall.Height);
         _db = db;
         _covers = covers;
+        _focus = new PosterWallFocus(Wall);
     }
 
     public async Task OnTabShownAsync()
     {
+        // 本页接管方向键（Push 幂等；若本页之上还压着二级页，那些页会先拿到按键）
+        RemoteKeyRouter.Push(this);
+
 #if WINDOWS
         PosterLayoutHelper.Apply(Wall, Wall.Width, Wall.Height, cap: 260);   // 固定尺寸 173×260
 #else
@@ -90,11 +97,13 @@ public partial class HistoryPage : ContentView, ITabView
 
             Wall.ItemsSource = cards;
             CoverResolver.Attach(_covers, cards);   // 卡片先出，封面异步补齐（失败 → 占位海报）
+            _focus.Refresh();                       // 数据换了：焦点索引夹回有效范围
         }
         catch
         {
             HistoryEmpty.IsVisible = true;
             Wall.ItemsSource = null;
+            _focus.Refresh();
         }
     }
 
@@ -164,6 +173,49 @@ public partial class HistoryPage : ContentView, ITabView
         var n = (Wall.ItemsSource as IEnumerable<WallCard>)?.Count(c => c.IsSelected) ?? 0;
         SelectCountLabel.Text = $"已选 {n} 项";
         ConfirmDeleteButton.Text = n > 0 ? $"确定删除({n})" : "确定删除";
+    }
+
+    // ════════════════ IRemoteKeyHandler（遥控器焦点）════════════════
+
+    public void FocusContent() => _focus.Focus();
+
+    public void BlurContent() => _focus.Blur();
+
+    public bool Handle(RemoteKey key)
+    {
+        switch (key)
+        {
+            case RemoteKey.Left:
+            case RemoteKey.Right:
+            case RemoteKey.Up:
+            case RemoteKey.Down:
+                return _focus.Move(key);   // 越界 → false，按键继续冒泡到顶栏
+
+            case RemoteKey.Enter:
+                return ActivateFocused();
+
+            case RemoteKey.Back:
+                // 删除模式先退模式，否则用户被卡在删除态里出不来
+                if (_selectMode) { SetSelectMode(false); return true; }
+                return false;              // 交还顶栏
+        }
+        return false;
+    }
+
+    /// <summary>OK：删除模式 = 反选该项；否则 = 续看（与点击卡片同一套语义）。</summary>
+    private bool ActivateFocused()
+    {
+        if (!_focus.Engaged || _focus.Current is not WallCard card) return false;
+
+        if (_selectMode)
+        {
+            card.IsSelected = !card.IsSelected;
+            UpdateSelectCount();
+            return true;
+        }
+
+        card.OnOpen();
+        return true;
     }
 
     /// <summary>ContentView 没有 DisplayAlert，借 Shell 页面弹确认框</summary>

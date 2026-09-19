@@ -29,6 +29,15 @@
                                 BackgroundColor="{DynamicResource CardBackgroundColor}"
                                 HeightRequest="{DynamicResource PosterCardHeight}"
                                 WidthRequest="{DynamicResource PosterCardWidth}" HorizontalOptions="Center">
+                            <!-- 遥控器焦点环（WallCard.IsFocused 驱动；列表项非原生可聚焦控件，
+                                 焦点由本页的 IRemoteKeyHandler + PosterWallFocus 显式管理） -->
+                            <Border.Triggers>
+                                <DataTrigger TargetType="Border" Binding="{Binding IsFocused}" Value="True">
+                                    <Setter Property="Stroke" Value="{DynamicResource PrimaryColor}" />
+                                    <Setter Property="StrokeThickness" Value="3" />
+                                    <Setter Property="Scale" Value="1.04" />
+                                </DataTrigger>
+                            </Border.Triggers>
                             <Grid>
                                 <Image Source="{Binding CoverDisplay}" Aspect="AspectFill" />
                                 <!-- 占位海报（本地渲染，零网络）：封面解析不到时显示，保证绝不留白 -->

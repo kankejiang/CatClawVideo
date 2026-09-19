@@ -2,10 +2,12 @@ using System.ComponentModel;
 
 using System.Collections;
 
+using CatClawVideo.Maui.Services;
+
 namespace CatClawVideo.Maui.ViewModels;
 
 /// <summary>海报墙卡片：历史/收藏共用的展示模型（点击行为由 OnOpen 决定）</summary>
-public sealed class WallCard : INotifyPropertyChanged
+public sealed class WallCard : INotifyPropertyChanged, IFocusableCard
 {
     public required string Title { get; init; }
 
@@ -62,6 +64,18 @@ public sealed class WallCard : INotifyPropertyChanged
     {
         get => _isSelected;
         set { if (_isSelected == value) return; _isSelected = value; PropertyChanged?.Invoke(this, new(nameof(IsSelected))); }
+    }
+
+    private bool _isFocused;
+    /// <summary>
+    /// 遥控器焦点环（ItemTemplate 里的 DataTrigger 驱动描边）。
+    /// 列表项不是原生可聚焦控件，焦点由所属页面的 <c>IRemoteKeyHandler</c> 显式管理 ——
+    /// 见 <see cref="CatClawVideo.Maui.Services.PosterWallFocus"/>。
+    /// </summary>
+    public bool IsFocused
+    {
+        get => _isFocused;
+        set { if (_isFocused == value) return; _isFocused = value; PropertyChanged?.Invoke(this, new(nameof(IsFocused))); }
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

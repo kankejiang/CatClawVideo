@@ -7,13 +7,16 @@ using CatClawVideo.Maui.ViewModels;
 namespace CatClawVideo.Maui.Pages;
 
 /// <summary>收藏页：我的收藏海报墙（真数据 VideoDatabase；最近播放归「历史」页）。</summary>
-public partial class FavoritesPage : ContentView, ITabView
+public partial class FavoritesPage : ContentView, ITabView, IRemoteKeyHandler
 {
     private readonly FavoritesViewModel _vm;
     private readonly VideoDatabase _db;
 
     /// <summary>封面解析（源封面失效 → 豆瓣 → 占位海报）</summary>
     private readonly CoverImageService _covers;
+
+    /// <summary>海报墙遥控器焦点（与历史页共用同一套网格移动逻辑）。</summary>
+    private readonly PosterWallFocus _focus;
 
     public FavoritesPage(FavoritesViewModel vm, CoverImageService covers, VideoDatabase db)
     {
@@ -22,11 +25,15 @@ public partial class FavoritesPage : ContentView, ITabView
         _vm = vm;
         _covers = covers;
         _db = db;
+        _focus = new PosterWallFocus(Wall);
         BindingContext = _vm;
     }
 
     public async Task OnTabShownAsync()
     {
+        // 本页接管方向键（Push 幂等；若本页之上还压着二级页，那些页会先拿到按键）
+        RemoteKeyRouter.Push(this);
+
 #if WINDOWS
         PosterLayoutHelper.Apply(Wall, Wall.Width, Wall.Height, cap: 260);   // 固定尺寸 173×260
 #else
@@ -53,6 +60,7 @@ public partial class FavoritesPage : ContentView, ITabView
 
         Wall.ItemsSource = cards;
         CoverResolver.Attach(_covers, cards);   // 卡片先出，封面异步补齐（失败 → 占位海报）
+        _focus.Refresh();                       // 数据换了：焦点索引夹回有效范围
     }
 
     /// <summary>收藏卡点击 → 观看页（还原站点 type/api 路由，同搜索结果）。
@@ -112,6 +120,30 @@ public partial class FavoritesPage : ContentView, ITabView
         {
             await AlertAsync("提示", $"取消收藏失败：{ex.Message}");
         }
+    }
+
+    // ════════════════ IRemoteKeyHandler（遥控器焦点）════════════════
+
+    public void FocusContent() => _focus.Focus();
+
+    public void BlurContent() => _focus.Blur();
+
+    public bool Handle(RemoteKey key)
+    {
+        switch (key)
+        {
+            case RemoteKey.Left:
+            case RemoteKey.Right:
+            case RemoteKey.Up:
+            case RemoteKey.Down:
+                return _focus.Move(key);   // 越界 → false，按键继续冒泡到顶栏
+
+            case RemoteKey.Enter:
+                if (!_focus.Engaged || _focus.Current is not WallCard card) return false;
+                card.OnOpen();
+                return true;
+        }
+        return false;   // Back 等交还顶栏
     }
 
     // ════════════════ 弹层：ContentView 自己不能弹，借宿主页面 ════════════════
