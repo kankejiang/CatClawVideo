@@ -1020,31 +1020,82 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
 
     // ═══════════════════════ 遥控器焦点（选集栏） ═══════════════════════
 
-    /// <summary>焦点是否已进入选集栏（未进入时方向键交还外层）。</summary>
-    private bool _episodeFocusEngaged;
+    /// <summary>
+    /// 本页的焦点区。几何顺序与界面一致：控制条（画面下方）→ 收藏/分享（信息区）→ 选集栏（右侧）。
+    /// 方向键在区内移动，越界则按这个顺序换区，不会出现「怎么按都没反应」的死角。
+    /// </summary>
+    private enum WatchZone { None, Controls, Episodes, Actions }
+
+    private WatchZone _zone = WatchZone.None;
+
+    /// <summary>焦点是否在选集栏（<see cref="HighlightRow"/> 据此决定是否画焦点环）。</summary>
+    private bool _episodeFocusEngaged => _zone == WatchZone.Episodes;
+
+    /// <summary>收藏 / 分享 的焦点下标（0 = 收藏，1 = 分享）。</summary>
+    private int _actionIndex;
 
     /// <summary>焦点所在集（全局下标，对应 <c>_episodeRows</c>）。</summary>
     private int _episodeFocusIndex = -1;
 
-    /// <summary>外层把焦点送进来：优先落在正在播放的那一集上。</summary>
-    public void FocusContent() =>
-        FocusEpisodes(_episodeFocusIndex >= 0 ? _episodeFocusIndex : _currentEpisodeIndex);
+    /// <summary>外层把焦点送进来（顶栏 ↓ 等）：落在选集栏正在播放的那一集上。</summary>
+    public void FocusContent() => SetZone(WatchZone.Episodes);
 
-    /// <summary>外层把焦点收走：熄掉焦点环（当前集底色保留）。</summary>
-    public void BlurContent() => SetEpisodeFocus(false);
+    /// <summary>外层把焦点收走：全页熄灯（正在播放那一集的底色保留）。</summary>
+    public void BlurContent() => SetZone(WatchZone.None);
 
-    private void SetEpisodeFocus(bool on)
+    /// <summary>
+    /// 切换焦点区：先给旧区「熄灯」，再点亮新区。
+    /// 所有换区都走这里，保证任何时刻只有一个区亮着（顶栏与内容双高亮就是这个页面踩过的坑）。
+    /// </summary>
+    private void SetZone(WatchZone zone)
     {
-        _episodeFocusEngaged = on;
-        RefreshEpisodeVisuals();
+        var old = _zone;
+        _zone = zone;   // 先切换：下面重画时旧区自然不再点亮
+
+        if (old == WatchZone.Episodes) RefreshEpisodeVisuals();
+        if (old == WatchZone.Controls) ControlBar.Blur();
+        if (old == WatchZone.Actions) RenderActionFocus();
+
+        switch (zone)
+        {
+            case WatchZone.Controls:
+                ControlBar.FocusFirst();
+                break;
+
+            case WatchZone.Episodes:
+                if (_episodeRows.Count == 0) { SetZone(WatchZone.Controls); return; }
+                FocusEpisodes(_episodeFocusIndex >= 0 ? _episodeFocusIndex : _currentEpisodeIndex);
+                break;
+
+            case WatchZone.Actions:
+                _actionIndex = Math.Clamp(_actionIndex, 0, 1);
+                RenderActionFocus();
+                break;
+        }
     }
 
-    /// <summary>把焦点送进选集栏。</summary>
+    /// <summary>收藏 / 分享 的焦点环（Button 用描边 + 微放大，与全应用同一套焦点语言）。</summary>
+    private void RenderActionFocus()
+    {
+        var primary = Application.Current!.Resources["PrimaryColor"] as Color ?? Colors.Purple;
+        bool on = _zone == WatchZone.Actions;
+
+        void Apply(Button b, bool focused)
+        {
+            b.BorderColor = focused ? primary : Colors.Transparent;
+            b.BorderWidth = focused ? 2.5 : 0;
+            b.Scale = focused ? 1.06 : 1.0;
+        }
+
+        Apply(FavoriteButton, on && _actionIndex == 0);
+        Apply(ShareButton, on && _actionIndex == 1);
+    }
+
+    /// <summary>把焦点送进选集栏（本方法只做定位，「换区」由 <see cref="SetZone"/> 负责）。</summary>
     private void FocusEpisodes(int index)
     {
         if (_episodeRows.Count == 0) return;
 
-        _episodeFocusEngaged = true;
         _episodeFocusIndex = Math.Clamp(index < 0 ? 0 : index, 0, _episodeRows.Count - 1);
         EnsureEpisodePageOf(_episodeFocusIndex);
         RefreshEpisodeVisuals();
@@ -1121,26 +1172,88 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
             case RemoteKey.Right:
             case RemoteKey.Up:
             case RemoteKey.Down:
-                // 未持焦点：第一下 ↓ / → 就把焦点送进选集栏 —— 遥控器必须立刻有反应
-                if (!_episodeFocusEngaged)
-                {
-                    if (key is RemoteKey.Down or RemoteKey.Right) { FocusContent(); return true; }
-                    return false;
-                }
-                return MoveEpisodeFocus(key);
+                return MoveZone(key);
 
             case RemoteKey.Enter:
-                if (!_episodeFocusEngaged) { FocusContent(); return true; }
+                return ActivateZone();
+
+            case RemoteKey.Back:
+                // 先退焦点，再按一次才返回上一页（避免误触把播放页关掉）
+                if (_zone != WatchZone.None) { SetZone(WatchZone.None); return true; }
+                return false;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// 方向键：区内移动，越界按**界面几何顺序**换区
+    /// （控制条 → 收藏/分享 → 选集栏），所以任何一个方向都不会按了没反应。
+    /// </summary>
+    private bool MoveZone(RemoteKey dir)
+    {
+        switch (_zone)
+        {
+            case WatchZone.None:
+                // 第一下 ↓ / → 落到控制条 —— 遥控器必须立刻有反应
+                if (dir is RemoteKey.Down or RemoteKey.Right) { SetZone(WatchZone.Controls); return true; }
+                return false;
+
+            case WatchZone.Controls:
+                if (dir is RemoteKey.Left or RemoteKey.Right)
+                {
+                    if (ControlBar.MoveFocus(dir == RemoteKey.Right ? 1 : -1)) return true;
+                    // 右端出头 → 进右侧选集栏；左端到头 → 交还外层
+                    if (dir == RemoteKey.Right) { SetZone(WatchZone.Episodes); return true; }
+                    return false;
+                }
+                if (dir == RemoteKey.Down) { SetZone(WatchZone.Actions); return true; }
+                if (dir == RemoteKey.Up) { SetZone(WatchZone.None); return false; }   // 画面区无焦点，交还外层
+                return false;
+
+            case WatchZone.Actions:
+                if (dir is RemoteKey.Left or RemoteKey.Right)
+                {
+                    _actionIndex = Math.Clamp(_actionIndex + (dir == RemoteKey.Right ? 1 : -1), 0, 1);
+                    RenderActionFocus();
+                    return true;
+                }
+                if (dir == RemoteKey.Up) { SetZone(WatchZone.Controls); return true; }
+                if (dir == RemoteKey.Down) { SetZone(WatchZone.Episodes); return true; }
+                return false;
+
+            case WatchZone.Episodes:
+                if (MoveEpisodeFocus(dir)) return true;
+                // 到边界：左边出头 → 控制条；下边出头 → 收藏/分享
+                if (dir == RemoteKey.Left) { SetZone(WatchZone.Controls); return true; }
+                if (dir == RemoteKey.Down) { SetZone(WatchZone.Actions); return true; }
+                return false;
+        }
+        return false;
+    }
+
+    /// <summary>回车：按当前区触发（控制条按钮 / 收藏分享 / 播放该集）。</summary>
+    private bool ActivateZone()
+    {
+        switch (_zone)
+        {
+            case WatchZone.Controls:
+                ControlBar.ActivateFocus();
+                return true;
+
+            case WatchZone.Actions:
+                if (_actionIndex == 0) OnFavoriteClicked(this, EventArgs.Empty);
+                else OnShareClicked(this, EventArgs.Empty);
+                return true;
+
+            case WatchZone.Episodes:
                 if (_episodeFocusIndex >= 0 && _episodeFocusIndex < _episodeRows.Count)
                     PlayEpisodeByRow(_episodeRows[_episodeFocusIndex]);
                 return true;
 
-            case RemoteKey.Back:
-                // 先退焦点，再按一次才返回上一页（避免误触直接退出播放页）
-                if (_episodeFocusEngaged) { SetEpisodeFocus(false); return true; }
-                return false;
+            default:
+                SetZone(WatchZone.Controls);   // 无焦点时回车 = 从控制条开始
+                return true;
         }
-        return false;
     }
 
     /// <summary>渲染当前分页的选集格（列数按集数自适应：1-3 列 × 10 行）并刷新翻页条可见性</summary>

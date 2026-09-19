@@ -21,7 +21,32 @@ public sealed class IconButton : ContentView
 
     private bool _hovered;
 
+    private bool _focused;
+
+    /// <summary>
+    /// 遥控器焦点态（亮紫描边 + 微放大，与全应用同一套焦点语言）。
+    /// 由宿主在焦点移动时设置 —— 按钮本身不参与原生焦点系统（见 RemoteKeyRouter 的说明）。
+    /// </summary>
+    public bool IsFocused
+    {
+        get => _focused;
+        set
+        {
+            if (_focused == value) return;
+            _focused = value;
+            Render();
+        }
+    }
+
     public event EventHandler? Clicked;
+
+    private readonly Action _onClick;
+
+    /// <summary>
+    /// 主动触发点击（遥控器回车用）：走的就是点击那条委托，
+    /// 行为与鼠标点击完全一致 —— 不必为遥控器另写一套动作。
+    /// </summary>
+    public void Invoke() => _onClick();
 
     /// <summary>按钮边长（方块高度；文字按钮下即最小高度）。</summary>
     public double Size { get; set; } = 40;
@@ -103,6 +128,8 @@ public sealed class IconButton : ContentView
         };
         Content = _box;
 
+        _onClick = onClick;
+
         var tap = new TapGestureRecognizer();
         tap.Tapped += (_, _) => onClick();
         GestureRecognizers.Add(tap);
@@ -147,6 +174,11 @@ public sealed class IconButton : ContentView
             _box.BackgroundColor = _hovered ? Color.FromArgb("#2EFFFFFF") : Color.FromArgb("#1AFFFFFF");
             _box.StrokeThickness = 0;
         }
+
+        // 焦点环放在最后：上面的分支都会把描边清零，先设会被覆盖
+        _box.Stroke = _focused ? primary : Colors.Transparent;
+        _box.StrokeThickness = _focused ? 2.5 : 0;
+        Scale = _focused ? 1.08 : 1.0;
 
         _glyph.FontSize = (IsText ? 12.5 : (AutoWidth ? 13 : Size >= 46 ? 19 : 16)) * s;
         _glyph.FontFamily = IsText || AutoWidth ? "OpenSansSemibold" : "OpenSansRegular";

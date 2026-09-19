@@ -193,7 +193,7 @@
                             TextColor="{DynamicResource TextPrimaryColor}"
                             BackgroundColor="{DynamicResource ChipInactiveColor}"
                             CornerRadius="8" Padding="14,7" Clicked="OnFavoriteClicked" />
-                    <Button Grid.Column="6" Text="分享" FontSize="12.5"
+                    <Button Grid.Column="6" x:Name="ShareButton" Text="分享" FontSize="12.5"
                             ContentLayout="Left,5"
                             ImageSource="ic_share_white.png"
                             TextColor="{DynamicResource TextPrimaryColor}"

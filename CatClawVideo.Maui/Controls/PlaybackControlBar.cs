@@ -115,6 +115,73 @@ public sealed class PlaybackControlBar : ContentView
         ApplyScale();   // 用初始 UiScale 校准一遍（宿主随后可改）
     }
 
+    // ─────────── 遥控器焦点（按钮间移动） ───────────
+
+    /// <summary>上行按钮的视觉顺序（进度条不参与：它是拖动条，焦点语义与按钮不同）。</summary>
+    private IconButton[] AllButtons => [_prev, _play, _next, _rewind, _forward, _speed, _episodes, _mute, _fullscreen];
+
+    /// <summary>当前**可见**的按钮 —— 隐藏的按钮不能留在焦点序列里（否则焦点会落在看不见的键上）。</summary>
+    private List<IconButton> VisibleButtons => AllButtons.Where(b => b.IsVisible).ToList();
+
+    /// <summary>焦点所在按钮下标；<c>-1</c> = 未聚焦。</summary>
+    public int FocusIndex { get; private set; } = -1;
+
+    /// <summary>本控件是否持有遥控器焦点。</summary>
+    public bool FocusEngaged { get; private set; }
+
+    /// <summary>把焦点交给控制条（落在上次停留的按钮上，没有则第一个）。</summary>
+    public void FocusFirst()
+    {
+        var list = VisibleButtons;
+        if (list.Count == 0) return;
+
+        FocusEngaged = true;
+        SetIndex(FocusIndex < 0 ? 0 : Math.Min(FocusIndex, list.Count - 1));
+    }
+
+    /// <summary>收走焦点（熄掉所有按钮的焦点态）。</summary>
+    public void Blur()
+    {
+        FocusEngaged = false;
+        foreach (var b in AllButtons) b.IsFocused = false;
+    }
+
+    /// <summary>←/→ 移动焦点。返回 <c>false</c> = 已到两端（宿主播键换区）。</summary>
+    public bool MoveFocus(int dir)
+    {
+        if (!FocusEngaged) return false;
+
+        int next = FocusIndex + dir;
+        if (next < 0 || next >= VisibleButtons.Count) return false;
+        SetIndex(next);
+        return true;
+    }
+
+    /// <summary>回车：触发当前按钮（走它自己的点击委托，与鼠标点击同一条路径）。</summary>
+    public void ActivateFocus()
+    {
+        var list = VisibleButtons;
+        if (!FocusEngaged || FocusIndex < 0 || FocusIndex >= list.Count) return;
+        list[FocusIndex].Invoke();
+    }
+
+    private void SetIndex(int index)
+    {
+        var list = VisibleButtons;
+        FocusIndex = Math.Clamp(index, 0, Math.Max(0, list.Count - 1));
+        for (int i = 0; i < list.Count; i++) list[i].IsFocused = i == FocusIndex;
+    }
+
+    /// <summary>当前焦点按钮的说明（底部提示条用）。</summary>
+    public string FocusedTooltip
+    {
+        get
+        {
+            var list = VisibleButtons;
+            return FocusIndex >= 0 && FocusIndex < list.Count ? list[FocusIndex].Tooltip : string.Empty;
+        }
+    }
+
     // ─────────── 可配置项 ───────────
 
     /// <summary>是否显示「选集」按钮（全屏播放页没有选集栏，应关闭）。</summary>
