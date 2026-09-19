@@ -1024,7 +1024,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
     /// 本页的焦点区。几何顺序与界面一致：控制条（画面下方）→ 收藏/分享（信息区）→ 选集栏（右侧）。
     /// 方向键在区内移动，越界则按这个顺序换区，不会出现「怎么按都没反应」的死角。
     /// </summary>
-    private enum WatchZone { None, Controls, Episodes, Actions }
+    private enum WatchZone { None, TopBar, Controls, Episodes, Actions }
 
     private WatchZone _zone = WatchZone.None;
 
@@ -1033,6 +1033,41 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
 
     /// <summary>收藏 / 分享 的焦点下标（0 = 收藏，1 = 分享）。</summary>
     private int _actionIndex;
+
+    /// <summary>顶栏焦点下标：0 = 返回按钮，1..N = 线路芯片。</summary>
+    private int _topBarIndex;
+
+    /// <summary>顶栏是否可见（全屏选集模式下顶栏被隐藏，此时不能把焦点送过去）。</summary>
+    private bool TopBarVisible => TopBarGrid.IsVisible;
+
+    /// <summary>顶栏（返回 / 线路芯片）的焦点环。</summary>
+    private void RenderTopBarFocus()
+    {
+        var primary = Application.Current!.Resources["PrimaryColor"] as Color ?? Colors.Purple;
+        bool on = _zone == WatchZone.TopBar;
+
+        void Apply(Border b, bool focused)
+        {
+            b.Stroke = focused ? primary : Colors.Transparent;
+            b.StrokeThickness = focused ? 2.5 : 0;
+            b.Scale = focused ? 1.08 : 1.0;
+        }
+
+        Apply(BackButtonHost, on && _topBarIndex == 0);
+        for (int i = 0; i < _lineChips.Count; i++)
+            Apply(_lineChips[i], on && _topBarIndex == i + 1);
+    }
+
+    /// <summary>顶栏内左右移动（返回 ↔ 线路芯片）。返回 false = 到头。</summary>
+    private bool MoveTopBarFocus(int dir)
+    {
+        int next = _topBarIndex + dir;
+        if (next < 0 || next >= 1 + _lineChips.Count) return false;
+
+        _topBarIndex = next;
+        RenderTopBarFocus();
+        return true;
+    }
 
     /// <summary>焦点所在集（全局下标，对应 <c>_episodeRows</c>）。</summary>
     private int _episodeFocusIndex = -1;
@@ -1055,9 +1090,15 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
         if (old == WatchZone.Episodes) RefreshEpisodeVisuals();
         if (old == WatchZone.Controls) ControlBar.Blur();
         if (old == WatchZone.Actions) RenderActionFocus();
+        if (old == WatchZone.TopBar) RenderTopBarFocus();
 
         switch (zone)
         {
+            case WatchZone.TopBar:
+                _topBarIndex = Math.Clamp(_topBarIndex, 0, _lineChips.Count);
+                RenderTopBarFocus();
+                break;
+
             case WatchZone.Controls:
                 ControlBar.FocusFirst();
                 break;
@@ -1194,9 +1235,16 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
         switch (_zone)
         {
             case WatchZone.None:
-                // 第一下 ↓ / → 落到控制条 —— 遥控器必须立刻有反应
+                // 第一下就有反应：↓/→ 落控制条，↑ 落顶栏（返回 / 线路）
                 if (dir is RemoteKey.Down or RemoteKey.Right) { SetZone(WatchZone.Controls); return true; }
+                if (dir == RemoteKey.Up && TopBarVisible) { SetZone(WatchZone.TopBar); return true; }
                 return false;
+
+            case WatchZone.TopBar:
+                if (dir is RemoteKey.Left or RemoteKey.Right)
+                    return MoveTopBarFocus(dir == RemoteKey.Right ? 1 : -1);
+                if (dir == RemoteKey.Down) { SetZone(WatchZone.Controls); return true; }
+                return false;   // ↑ 已在最顶：交还外层
 
             case WatchZone.Controls:
                 if (dir is RemoteKey.Left or RemoteKey.Right)
@@ -1207,7 +1255,13 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
                     return false;
                 }
                 if (dir == RemoteKey.Down) { SetZone(WatchZone.Actions); return true; }
-                if (dir == RemoteKey.Up) { SetZone(WatchZone.None); return false; }   // 画面区无焦点，交还外层
+                // ↑ 回顶栏（返回 / 线路）；顶栏不可见（全屏选集）则退出焦点
+                if (dir == RemoteKey.Up)
+                {
+                    if (TopBarVisible) { SetZone(WatchZone.TopBar); return true; }
+                    SetZone(WatchZone.None);
+                    return false;
+                }
                 return false;
 
             case WatchZone.Actions:
@@ -1223,9 +1277,10 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
 
             case WatchZone.Episodes:
                 if (MoveEpisodeFocus(dir)) return true;
-                // 到边界：左边出头 → 控制条；下边出头 → 收藏/分享
+                // 到边界：左 → 控制条；下 → 收藏/分享；上 → 顶栏（返回 / 线路）
                 if (dir == RemoteKey.Left) { SetZone(WatchZone.Controls); return true; }
                 if (dir == RemoteKey.Down) { SetZone(WatchZone.Actions); return true; }
+                if (dir == RemoteKey.Up && TopBarVisible) { SetZone(WatchZone.TopBar); return true; }
                 return false;
         }
         return false;
@@ -1236,6 +1291,11 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
     {
         switch (_zone)
         {
+            case WatchZone.TopBar:
+                if (_topBarIndex == 0) OnBackTapped(this, new TappedEventArgs(null));
+                else if (_topBarIndex - 1 < _lineChips.Count) _ = SelectSourceAsync(_topBarIndex - 1);
+                return true;
+
             case WatchZone.Controls:
                 ControlBar.ActivateFocus();
                 return true;
