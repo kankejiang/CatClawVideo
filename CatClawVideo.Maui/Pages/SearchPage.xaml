@@ -58,13 +58,26 @@
         <!-- ═══ 主体：左键盘 / 右内容 ═══
              结果态时第 0 列（键盘）宽度压到 0（见 SetResultFullWidth），
              右列自然铺满整宽 —— 搜索结果需要全页面显示。 -->
-        <Grid Grid.Row="1" x:Name="BodyArea" ColumnDefinitions="*,*" ColumnSpacing="16"
-              Padding="24,0,24,0">
+        <Grid Grid.Row="1" x:Name="BodyArea" ColumnDefinitions="*,*" ColumnSpacing="18"
+              Padding="24,13,24,13">
 
-            <!-- ── 左：虚拟键盘（结果态隐藏） ── -->
-            <VerticalStackLayout Grid.Column="0" x:Name="KeyboardPane" Spacing="10">
-                <controls:VirtualKeyboard x:Name="Keyboard" />
-            </VerticalStackLayout>
+            <!-- ── 左栏：键盘（上）＋ 最近搜索（下）。结果态整列隐藏 ──
+                 键盘不写死高度：占 `*` 行随窗口拉伸，由自身 MaximumHeightRequest 封顶；
+                 窗口变矮时也会自动收缩，不会把下方的最近搜索挤出去。 -->
+            <Grid Grid.Column="0" x:Name="KeyboardPane" RowDefinitions="Auto,Auto,*" RowSpacing="13">
+                <!-- 键盘定高 300（4 行 × 约 70px，电视遥控器舒适尺寸）。
+                     不写 `*` 是因为要跟键帽高度确定性对应：`*` + MaximumHeightRequest
+                     在超宽窗口下的落点由框架决定（可能居中，空出上下两段），不如定高直观。
+                     第 3 行（*）是弹性留白：窗口拉高时余量落在这里，
+                     即整列最下方，而不是把键盘拉长或在中间撑出一段空隙。 -->
+                <controls:VirtualKeyboard Grid.Row="0" x:Name="Keyboard" HeightRequest="300" />
+
+                <VerticalStackLayout Grid.Row="1" x:Name="HistorySection" Spacing="9" IsVisible="False">
+                    <Label Text="🕐 最近搜索" FontSize="11.5" FontAttributes="Bold"
+                           TextColor="{DynamicResource TextHintColor}" />
+                    <FlexLayout x:Name="HistoryWords" Wrap="Wrap" JustifyContent="Start" />
+                </VerticalStackLayout>
+            </Grid>
 
             <!-- ── 右：候选 / 热搜 / 历史 / 结果，按状态切换 ── -->
             <Grid Grid.Column="1" x:Name="RightPane">
@@ -83,9 +96,12 @@
                     </ScrollView>
                 </Grid>
 
-                <!-- ② 热搜 + 历史（初始态） -->
-                <VerticalStackLayout x:Name="HotSection" Spacing="14" IsVisible="True">
-                    <VerticalStackLayout Spacing="9">
+                <!-- ② 热门搜索 + 继续观看（初始态）。
+                     ⚠ 必须是 Grid（Auto / *）而不是 StackLayout：下面的 CollectionView
+                     需要有界高度，StackLayout 会给子元素无界高度 → 它撑开全部内容再被父级裁掉，
+                     表现就是「看不到后面的内容」（与结果区同一个坑）。 -->
+                <Grid x:Name="HotSection" RowDefinitions="Auto,*" RowSpacing="13" IsVisible="True">
+                    <VerticalStackLayout Grid.Row="0" Spacing="9">
                         <Label Text="🔥 热门搜索" FontSize="11.5" FontAttributes="Bold"
                                TextColor="{DynamicResource TextHintColor}" />
                         <Label x:Name="HotStatus" Text="正在加载热搜…" FontSize="11.5"
@@ -93,12 +109,69 @@
                         <FlexLayout x:Name="HotWords" Wrap="Wrap" JustifyContent="Start" />
                     </VerticalStackLayout>
 
-                    <VerticalStackLayout x:Name="HistorySection" Spacing="9" IsVisible="False">
-                        <Label Text="🕐 最近搜索" FontSize="11.5" FontAttributes="Bold"
+                    <!-- 继续观看：海报墙吃掉右栏剩余高度 → 行数随窗口高度自动增减 -->
+                    <Grid Grid.Row="1" x:Name="ContinueSection" RowDefinitions="Auto,*" RowSpacing="9"
+                          IsVisible="False">
+                        <Label Grid.Row="0" x:Name="ContinueStatus" Text="▶ 继续观看"
+                               FontSize="11.5" FontAttributes="Bold"
                                TextColor="{DynamicResource TextHintColor}" />
-                        <FlexLayout x:Name="HistoryWords" Wrap="Wrap" JustifyContent="Start" />
-                    </VerticalStackLayout>
-                </VerticalStackLayout>
+                        <CollectionView Grid.Row="1" x:Name="ContinueGrid" SelectionMode="Single"
+                                        SelectionChanged="OnContinueSelected">
+                            <CollectionView.ItemsLayout>
+                                <GridItemsLayout Orientation="Vertical" Span="4"
+                                                 VerticalItemSpacing="12" HorizontalItemSpacing="10" />
+                            </CollectionView.ItemsLayout>
+                            <CollectionView.ItemTemplate>
+                                <DataTemplate>
+                                    <VerticalStackLayout Spacing="0">
+                                        <Border StrokeThickness="0" StrokeShape="RoundRectangle 10"
+                                                BackgroundColor="{DynamicResource CardBackgroundColor}"
+                                                HeightRequest="{DynamicResource PosterCardHeight}"
+                                                WidthRequest="{DynamicResource PosterCardWidth}"
+                                                HorizontalOptions="Center">
+                                            <Border.Triggers>
+                                                <DataTrigger TargetType="Border" Binding="{Binding IsFocused}" Value="True">
+                                                    <Setter Property="Stroke" Value="{DynamicResource PrimaryColor}" />
+                                                    <Setter Property="StrokeThickness" Value="3" />
+                                                    <Setter Property="Scale" Value="1.04" />
+                                                </DataTrigger>
+                                            </Border.Triggers>
+                                            <Grid>
+                                                <Image Source="{Binding CoverDisplay}" Aspect="AspectFill" />
+                                                <Border StrokeThickness="0" IsVisible="False" Padding="10"
+                                                        Background="{DynamicResource PosterPlaceholderBrush}">
+                                                    <Border.Triggers>
+                                                        <DataTrigger TargetType="Border" Binding="{Binding CoverDisplay}" Value="{x:Null}">
+                                                            <Setter Property="IsVisible" Value="True" />
+                                                        </DataTrigger>
+                                                    </Border.Triggers>
+                                                    <Label Text="{Binding Title}" FontSize="12" FontAttributes="Bold"
+                                                           TextColor="#D8DDF5" HorizontalTextAlignment="Center"
+                                                           VerticalOptions="Center" MaxLines="4"
+                                                           LineBreakMode="TailTruncation" />
+                                                </Border>
+                                                <!-- 集数角标：接着看哪一集 -->
+                                                <Border HorizontalOptions="End" VerticalOptions="Start" Margin="0,7,7,0"
+                                                        StrokeThickness="0" BackgroundColor="#80000000"
+                                                        StrokeShape="RoundRectangle 8" Padding="6,1"
+                                                        IsVisible="{Binding HasRemark}">
+                                                    <Label Text="{Binding Remarks}" FontSize="10" TextColor="#FFD76E"
+                                                           MaxLines="1" />
+                                                </Border>
+                                            </Grid>
+                                        </Border>
+                                        <Label Text="{Binding Title}" FontSize="11.5" Margin="0,5,0,0"
+                                               LineBreakMode="TailTruncation" MaxLines="1"
+                                               TextColor="{DynamicResource TextPrimaryColor}" />
+                                        <Label Text="{Binding Year}" FontSize="10" Margin="0,2,0,0"
+                                               LineBreakMode="TailTruncation" MaxLines="1"
+                                               TextColor="{DynamicResource TextHintColor}" />
+                                    </VerticalStackLayout>
+                                </DataTemplate>
+                            </CollectionView.ItemTemplate>
+                        </CollectionView>
+                    </Grid>
+                </Grid>
 
                 <!-- ③ 跨源搜索结果（结果态）
                      ⚠ 必须是 Grid（表头 Auto / 网格 *），**不能**用 VerticalStackLayout：

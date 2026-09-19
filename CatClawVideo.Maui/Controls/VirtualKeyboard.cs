@@ -10,9 +10,10 @@ namespace CatClawVideo.Maui.Controls;
 /// 所以键盘必须自己做。手机端同样启用这套键盘 —— 三端 UI 与操作保持一致
 /// （手机虽有系统输入法，但本项目约定三端同一套横屏界面）。</para>
 ///
-/// <para><b>布局</b>：左 QWERTY 字母区（3 行 10/9/7）＋ 右小键盘数字区（3 列 × 4 行
-/// <c>789/456/123/0⌫搜索</c>）。QWERTY 而非字母顺序：物理键盘与手机输入法的肌肉记忆
-/// 可直接复用（用户在电视上搜索时往往一边看手机回忆片名）。</para>
+/// <para><b>布局</b>：数字行 <c>1~0</c> 置顶，其下三行 QWERTY（10/9/7），
+/// <c>删除</c> / <c>搜索</c> 接在第 4 行右端 —— 四行统一按 10 个键宽排版。
+/// QWERTY 而非字母顺序：物理键盘与手机输入法的肌肉记忆可直接复用
+/// （用户在电视上搜索时往往一边看手机回忆片名）。</para>
 ///
 /// <para><b>焦点由本控件自己管理</b>（不依赖平台焦点系统，与 <see cref="FocusableRow"/>
 /// 同一思路）：这样 Android 遥控器与 Windows 键盘能得到完全一致的行为与视觉，
@@ -22,23 +23,45 @@ public sealed class VirtualKeyboard : ContentView
 {
     // ─────────── 键位定义 ───────────
 
-    /// <summary>字母区三行（QWERTY）。长度 10 / 9 / 7。</summary>
-    private static readonly string[] LetterRows = ["QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"];
+    /// <summary>一行键位：<c>Keys</c> 为该行键面文本，<c>Offset</c> 为行首缩进（单位＝1 个键宽，可为半键）。</summary>
+    private sealed record KeyRow(string[] Keys, double Offset);
 
-    /// <summary>数字区四行三列（小键盘）。末行是三功能键。</summary>
-    private static readonly string[][] DigitRows =
+    /// <summary>
+    /// 键盘共 4 行，**统一按 10 个键宽排版**（行 2 缩进半键、行 3 缩进一键 → 与物理键盘错位一致）：
+    /// <code>
+    ///  1 2 3 4 5 6 7 8 9 0      ← 数字行置顶，与字母等宽（不再单开一块小键盘）
+    ///  Q W E R T Y U I O P
+    ///   A S D F G H J K L       ← 左右各缩半键
+    ///    Z X C V B N M 删除 搜索   ← 缩进一键后 9 键正好占满剩余宽度，右端与数字行齐平
+    /// </code>
+    ///
+    /// <para><b>为什么数字行置顶</b>（2026-09-19 用户反馈）：原先数字区是字母**右侧**的一块
+    /// 3 列 × 4 行小键盘，吃掉约四分之一栏宽，字母只能挤在剩下的宽度里；且两区行数不同
+    /// （3 行 vs 4 行），右列下方还空一格。改成数字行置顶后四行共用同一套 10 键宽栅格，
+    /// <b>字母区拿到整栏宽度</b>，数字也符合物理键盘的肌肉记忆（打「庆余年 2」不用往下找）。</para>
+    ///
+    /// <para><c>删除</c> / <c>搜索</c> 放在第 4 行右端而不是数字行尾部：数字行放满 <c>1~0</c>
+    /// 十个键后接上它们会变成 12 键、比字母行宽，两边对不齐；而第 4 行原本只有 <c>ZXCVBNM</c>
+    /// 且右端留白，缩进收到一键后正好容下两格。</para>
+    /// </summary>
+    private static readonly KeyRow[] Rows =
     [
-        ["7", "8", "9"],
-        ["4", "5", "6"],
-        ["1", "2", "3"],
-        [KeyZero, KeyBackspace, KeySearch],
+        new(["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"], 0),
+        new(["Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"], 0),
+        new(["A", "S", "D", "F", "G", "H", "J", "K", "L"], 0.5),
+        new(["Z", "X", "C", "V", "B", "N", "M", KeyBackspace, KeySearch], 1.0),
     ];
 
-    private const string KeyZero = "0";
-    private const string KeyBackspace = "⌫";
+    /// <summary>
+    /// 退格键文案。**刻意不用 <c>⌫</c>（U+232B）**：实测本项目所用字体没有该字形，
+    /// 渲染成一个豆腐块方框（2026-09-19 实机截图确认），改用中文「删除」既无字形风险、
+    /// 也与同行的「搜索」风格一致。
+    /// </summary>
+    private const string KeyBackspace = "删除";
+
     private const string KeySearch = "搜索";
 
-    /// <summary>数字区中「功能键」集合（走不同的事件，不是「输入字符」）。</summary>
+    /// <summary>功能键集合（走不同的事件，不是「输入字符」）。</summary>
     private static bool IsFunctionKey(string k) => k is KeyBackspace or KeySearch;
 
     // ─────────── 事件 ───────────
@@ -60,11 +83,8 @@ public sealed class VirtualKeyboard : ContentView
 
     // ─────────── 焦点模型 ───────────
 
-    private enum Area { Letters, Digits }
-
-    private Area _area = Area.Letters;
-    private int _row;   // 所在区的行号
-    private int _col;   // 所在区的列号
+    private int _row;   // 行号（0 = 数字行）
+    private int _col;   // 行内列号
     private bool _engaged;   // 键盘是否持有焦点（false 时画「未聚焦」的淡样式）
 
     /// <summary>键盘是否持有焦点。外部在把焦点交给内容区时置 false。</summary>
@@ -79,38 +99,39 @@ public sealed class VirtualKeyboard : ContentView
         }
     }
 
-    /// <summary>需要避开区域内的空格键位（QWERTY 第 3 行只有 7 键，靠右留白）。</summary>
-    private string CurrentKey => _area == Area.Letters
-        ? LetterRows[_row][_col].ToString()
-        : DigitRows[_row][_col];
+    /// <summary>当前键面文本。</summary>
+    private string CurrentKey => Rows[_row].Keys[_col];
 
-    /// <summary>当前所在区当前行的列数。</summary>
-    private int CurrentRowLength => _area == Area.Letters ? LetterRows[_row].Length : DigitRows[_row].Length;
+    /// <summary>当前行列数（各行不同：10 / 10 / 9 / 9）。</summary>
+    private int CurrentRowLength => Rows[_row].Keys.Length;
 
     // ─────────── 视觉 ───────────
 
-    private readonly Grid _root = new()
-    {
-        ColumnSpacing = 14,
-        RowDefinitions = [new RowDefinition(GridLength.Star)],
-    };
+    /// <summary>四行垂直排布，行高均分（Star）→ 键盘整体高度由外部决定，键帽跟着拉伸。</summary>
+    private readonly Grid _root = new() { RowSpacing = KeyGap };
 
-    /// <summary>键帽视图（按 [区][行][列] 索引，供焦点重绘）。</summary>
-    private readonly List<List<List<Border>>> _keys = [[], []];
+    /// <summary>键帽视图（按 [行][列] 索引，供焦点重绘）。</summary>
+    private readonly List<List<Border>> _keys = [];
 
     /// <summary>每个键帽里的文本（改字号/颜色时要拿它）。</summary>
     private readonly Dictionary<Border, Label> _keyLabels = [];
 
-    private const double KeyHeight = 46;
+    /// <summary>整行的总宽度，以「键宽」为单位（四行都按它切分 → 键宽严格一致）。</summary>
+    private const int TotalKeyWidths = 10;
+
+    /// <summary>键帽之间的横向间隙。用键自身右边距实现 —— 键跨 2 列，
+    /// 若用 <c>ColumnSpacing</c> 会在键内部（两列之间）切出一道缝。</summary>
+    private const double KeyGap = 6;
+
     private const double KeyRadius = 9;
 
     public VirtualKeyboard()
     {
-        _root.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(10, GridUnitType.Star)));
-        _root.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(4, GridUnitType.Star)));
-
-        _root.Add(BuildLetterArea(), 0, 0);
-        _root.Add(BuildDigitArea(), 1, 0);
+        for (int r = 0; r < Rows.Length; r++)
+        {
+            _root.RowDefinitions.Add(new RowDefinition(GridLength.Star));
+            _root.Add(BuildRow(r), 0, r);
+        }
 
         Content = _root;
         Loaded += (_, _) => RenderFocus();
@@ -118,60 +139,45 @@ public sealed class VirtualKeyboard : ContentView
 
     // ─────────── 构建 ───────────
 
-    /// <summary>字母区：QWERTY 三行，行 2、3 缩进对齐物理键盘（视觉错位，导航仍是规整网格）。</summary>
-    private View BuildLetterArea()
+    /// <summary>
+    /// 构建一行：整行按 <b>10 个键宽</b>切分 —— 行首是若干「缩进列」（空列，只占位不放控件）、
+    /// 中间每个键各占 1 列、行尾按需补一个补齐列，使四行的键宽严格一致。
+    ///
+    /// <para>键的横向间隙用**键自身的右边距**实现：若改用 <c>ColumnSpacing</c>，
+    /// 「缩进列」与首键之间会多出一道，四行的间距就不一致了。</para>
+    ///
+    /// <para>（曾尝试用 <c>Grid.SetColumnSpan(key, 2)</c> 让键跨两个半键列，实测**不生效**：
+    /// 键仍只占一列，渲染出来只有 32px 宽、间距却和键一样宽 —— 故改为上面的显式列定义。）</para>
+    /// </summary>
+    private View BuildRow(int rowIndex)
     {
-        var stack = new VerticalStackLayout { Spacing = 6, VerticalOptions = LayoutOptions.Fill };
-        var indents = new[] { 0.0, 0.5, 1.5 };   // 半键 / 一键半的缩进
+        var row = Rows[rowIndex];
+        var grid = new Grid { ColumnSpacing = 0, VerticalOptions = LayoutOptions.Fill };
 
-        for (int r = 0; r < LetterRows.Length; r++)
-        {
-            var row = new Grid
-            {
-                ColumnSpacing = 6,
-                VerticalOptions = LayoutOptions.Fill,
-                Margin = new Thickness(indents[r] * 46, 0, 0, 0),   // 按半键宽换算缩进
-            };
-            var cells = new List<Border>();
-            for (int c = 0; c < LetterRows[r].Length; c++)
-            {
-                row.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Star));
-                var key = BuildKey(LetterRows[r][c].ToString(), primary: false);
-                row.Add(key, c, 0);
-                cells.Add(key);
-            }
-            _keys[(int)Area.Letters].Add(cells);
-            stack.Add(row);
-        }
-        return stack;
-    }
+        // 行首缩进列（空列，不需要子元素：Star 宽度按定义分配，空着也占位）
+        if (row.Offset > 0)
+            grid.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(row.Offset, GridUnitType.Star)));
 
-    /// <summary>数字区：小键盘 3 列 × 4 行，末行 <c>0 / ⌫ / 搜索</c>（0 贴左，同物理小键盘）。</summary>
-    private View BuildDigitArea()
-    {
-        var grid = new Grid
-        {
-            ColumnSpacing = 6,
-            RowSpacing = 6,
-            VerticalOptions = LayoutOptions.Fill,
-        };
-        for (int c = 0; c < 3; c++)
+        var firstKeyColumn = grid.ColumnDefinitions.Count;
+        for (int i = 0; i < row.Keys.Length; i++)
             grid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Star));
-        for (int r = 0; r < DigitRows.Length; r++)
-            grid.RowDefinitions.Add(new RowDefinition(GridLength.Star));
 
-        for (int r = 0; r < DigitRows.Length; r++)
+        // 行尾补齐到 10 键宽（第 3 行缩进一键 + 9 键正好 10，无需补）
+        var used = row.Offset + row.Keys.Length;
+        if (used < TotalKeyWidths)
+            grid.ColumnDefinitions.Add(new ColumnDefinition(
+                new GridLength(TotalKeyWidths - used, GridUnitType.Star)));
+
+        var cells = new List<Border>();
+        for (int i = 0; i < row.Keys.Length; i++)
         {
-            var cells = new List<Border>();
-            for (int c = 0; c < DigitRows[r].Length; c++)
-            {
-                var text = DigitRows[r][c];
-                var key = BuildKey(text, primary: text == KeySearch);
-                grid.Add(key, c, r);
-                cells.Add(key);
-            }
-            _keys[(int)Area.Digits].Add(cells);
+            var text = row.Keys[i];
+            var key = BuildKey(text, primary: text == KeySearch);
+            key.Margin = new Thickness(0, 0, KeyGap, 0);   // 横向间隙
+            grid.Add(key, firstKeyColumn + i, 0);
+            cells.Add(key);
         }
+        _keys.Add(cells);
         return grid;
     }
 
@@ -193,8 +199,7 @@ public sealed class VirtualKeyboard : ContentView
         {
             StrokeThickness = 0,
             StrokeShape = new RoundRectangle { CornerRadius = KeyRadius },
-            HeightRequest = KeyHeight,
-            Content = label,
+            Content = label,   // 高度不设：由行高（Star）拉伸到外部给的键盘高度
         };
         _keyLabels[box] = label;
 
@@ -211,8 +216,7 @@ public sealed class VirtualKeyboard : ContentView
     /// <summary>点某个键：先把焦点移过去，再触发按键（触屏也走同一套语义）。</summary>
     private void OnKeyTapped(Border box)
     {
-        if (!TryLocate(box, out var area, out var r, out var c)) return;
-        _area = area;
+        if (!TryLocate(box, out var r, out var c)) return;
         _row = r;
         _col = c;
         IsEngaged = true;
@@ -220,17 +224,16 @@ public sealed class VirtualKeyboard : ContentView
         Activate();
     }
 
-    private bool TryLocate(Border box, out Area area, out int row, out int col)
+    private bool TryLocate(Border box, out int row, out int col)
     {
-        for (int a = 0; a < 2; a++)
-            for (int r = 0; r < _keys[a].Count; r++)
-                for (int c = 0; c < _keys[a][r].Count; c++)
-                    if (ReferenceEquals(_keys[a][r][c], box))
-                    {
-                        area = (Area)a; row = r; col = c;
-                        return true;
-                    }
-        area = Area.Letters; row = 0; col = 0;
+        for (int r = 0; r < _keys.Count; r++)
+            for (int c = 0; c < _keys[r].Count; c++)
+                if (ReferenceEquals(_keys[r][c], box))
+                {
+                    row = r; col = c;
+                    return true;
+                }
+        row = 0; col = 0;
         return false;
     }
 
@@ -244,60 +247,48 @@ public sealed class VirtualKeyboard : ContentView
     public bool MoveLeft()
     {
         if (_col > 0) { _col--; RenderFocus(); return true; }
-
-        // 字母区最左 → 无路可走；数字区最左 → 回字母区同行
-        if (_area == Area.Digits)
-        {
-            _area = Area.Letters;
-            _row = Math.Min(_row, LetterRows.Length - 1);
-            _col = LetterRows[_row].Length - 1;
-            RenderFocus();
-            return true;
-        }
-        return false;
+        return false;   // 已在行首：交还外层
     }
 
     public bool MoveRight()
     {
         if (_col < CurrentRowLength - 1) { _col++; RenderFocus(); return true; }
 
-        // 字母区行尾 → 进数字区同序号行（字母 3 行 / 数字 4 行，故夹取）
-        if (_area == Area.Letters)
-        {
-            _area = Area.Digits;
-            _row = Math.Min(_row, DigitRows.Length - 1);
-            _col = 0;
-            RenderFocus();
-            return true;
-        }
-
-        // 数字区行尾 → 交还内容区
+        // 行尾再往右 → 交还内容区（右栏在键盘右侧）
         FocusExitRight?.Invoke(this, EventArgs.Empty);
         return false;
     }
 
     public bool MoveUp()
     {
-        if (_row > 0) { _row--; ClampColumn(); RenderFocus(); return true; }
-        return false;   // 已在顶行：交还外层（上方是输入框）
+        if (_row > 0) { MoveToRow(_row - 1); return true; }
+        return false;   // 已在顶行（数字行）：交还外层（上方是输入框）
     }
 
     public bool MoveDown()
     {
-        if (_row < RowCount - 1) { _row++; ClampColumn(); RenderFocus(); return true; }
+        if (_row < Rows.Length - 1) { MoveToRow(_row + 1); return true; }
 
-        // 末行再往下 → 交还内容区
+        // 末行再往下 → 交还内容区（左栏下方是「最近搜索」）
         FocusExitDown?.Invoke(this, EventArgs.Empty);
         return false;
     }
 
-    private int RowCount => _area == Area.Letters ? LetterRows.Length : DigitRows.Length;
+    /// <summary>当前键在「10 键宽」栅格里的位置（含行首缩进），跨行对齐靠它。</summary>
+    private static double GridPosition(in KeyRow row, int col) => row.Offset + col;
 
-    /// <summary>换行后列位可能越界（各行长度不同）：夹到该行最后一列。</summary>
-    private void ClampColumn()
+    /// <summary>
+    /// 换到目标行并尽量保持**横向位置**：按栅格坐标（含行首缩进）对齐，而不是按列号。
+    /// 例如从第 3 行的 <c>A</c>（栅格位 1.5）往下，落到第 4 行的 <c>Z</c>（栅格位 1.5 附近），
+    /// 而不是列号相同的 <c>X</c> —— 后者会让手指感觉「跳了一下」。
+    /// </summary>
+    private void MoveToRow(int target)
     {
-        var max = CurrentRowLength - 1;
-        if (_col > max) _col = max;
+        var pos = GridPosition(Rows[_row], _col);
+        var col = (int)Math.Round(pos - Rows[target].Offset);
+        _row = target;
+        _col = Math.Clamp(col, 0, Rows[target].Keys.Length - 1);
+        RenderFocus();
     }
 
     /// <summary>激活当前键（OK / 点击）。</summary>
@@ -321,47 +312,48 @@ public sealed class VirtualKeyboard : ContentView
     {
         var primary = Res("PrimaryColor", Color.FromArgb("#9B7ED8"));
 
-        for (int a = 0; a < 2; a++)
-            for (int r = 0; r < _keys[a].Count; r++)
-                for (int c = 0; c < _keys[a][r].Count; c++)
-                {
-                    var box = _keys[a][r][c];
-                    var label = _keyLabels[box];
-                    var isCurrent = _engaged && a == (int)_area && r == _row && c == _col;
-                    var isPrimary = box.ClassId == "primary";
-                    var isFn = box.ClassId == "fn";
+        for (int r = 0; r < _keys.Count; r++)
+        {
+            for (int c = 0; c < _keys[r].Count; c++)
+            {
+                var box = _keys[r][c];
+                var label = _keyLabels[box];
+                var isCurrent = _engaged && r == _row && c == _col;
+                var isPrimary = box.ClassId == "primary";
+                var isFn = box.ClassId == "fn";
 
-                    if (isCurrent)
+                if (isCurrent)
+                {
+                    // 焦点态：与 FocusableRow 同一套（亮紫描边 + 柔光 + 微放大）
+                    box.BackgroundColor = primary.WithAlpha(0.30f);
+                    box.Stroke = new SolidColorBrush(primary);
+                    box.StrokeThickness = 2.5;
+                    box.Scale = 1.03;
+                    box.Shadow = new Shadow
                     {
-                        // 焦点态：与 FocusableRow 同一套（亮紫描边 + 柔光 + 微放大）
-                        box.BackgroundColor = primary.WithAlpha(0.30f);
-                        box.Stroke = new SolidColorBrush(primary);
-                        box.StrokeThickness = 2.5;
-                        box.Scale = 1.03;
-                        box.Shadow = new Shadow
-                        {
-                            Brush = new SolidColorBrush(primary),
-                            Radius = 14,
-                            Offset = new Point(0, 4),
-                            Opacity = 0.5f,
-                        };
-                        label.TextColor = Colors.White;
-                    }
-                    else
-                    {
-                        box.StrokeThickness = 0;
-                        box.Scale = 1;
-                        box.Shadow = null!;
-                        box.BackgroundColor = isPrimary
-                            ? primary.WithAlpha(_engaged ? 0.92f : 0.45f)
-                            : isFn
-                                ? Res("CardBackgroundStrongColor", Color.FromArgb("#3A3668"))
-                                : Res("CardBackgroundColor", Color.FromArgb("#332F5A"));
-                        label.TextColor = isPrimary
-                            ? Colors.White
-                            : Res("TextSecondaryColor", Color.FromArgb("#BCC0DD"));
-                    }
+                        Brush = new SolidColorBrush(primary),
+                        Radius = 14,
+                        Offset = new Point(0, 4),
+                        Opacity = 0.5f,
+                    };
+                    label.TextColor = Colors.White;
                 }
+                else
+                {
+                    box.StrokeThickness = 0;
+                    box.Scale = 1;
+                    box.Shadow = null!;
+                    box.BackgroundColor = isPrimary
+                        ? primary.WithAlpha(_engaged ? 0.92f : 0.45f)
+                        : isFn
+                            ? Res("CardBackgroundStrongColor", Color.FromArgb("#3A3668"))
+                            : Res("CardBackgroundColor", Color.FromArgb("#332F5A"));
+                    label.TextColor = isPrimary
+                        ? Colors.White
+                        : Res("TextSecondaryColor", Color.FromArgb("#BCC0DD"));
+                }
+            }
+        }
     }
 
     private static Color Res(string key, Color fallback)

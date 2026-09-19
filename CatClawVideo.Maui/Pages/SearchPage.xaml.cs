@@ -21,8 +21,14 @@ namespace CatClawVideo.Maui.Pages;
 /// OK 直接进观看页（不走网络）。本地未命中时才退化为跨源搜索（保留原有并发聚合行为）。
 /// 索引由 <see cref="SearchIndex"/> 在浏览时被动积累。</para>
 ///
-/// <para><b>焦点分层</b>：键盘 / 右栏 两个区。<c>↑↓←→</c> 在区内移动，跨区靠
-/// 键盘边界（←→ 到行尾会进右栏）；<c>OK</c> 输入或激活；<c>Back</c> 逐层退出。</para>
+/// <para><b>版面</b>（2026-09-19 重构）：全高双栏 ——
+/// 左栏「键盘 + 最近搜索」，右栏「热门搜索 + 继续观看」，结果态键盘整列收起、结果铺满整宽。
+/// 此前键盘与热词都是自然高度，<c>*</c> 行里约 400px 无人认领（用户反馈「下方太空了」）；
+/// 现在余量由「继续观看」海报墙（<c>*</c> 行）吸收，行数随窗口高度自动增减。</para>
+///
+/// <para><b>焦点分层</b>：键盘 / 最近搜索 / 热门搜索（候选、筛选条）/ 继续观看 / 结果 五个区。
+/// <c>↑↓←→</c> 在区内移动，跨区按版面的上下左右关系走；
+/// <c>OK</c> 输入或激活；<c>Back</c> 逐层退出。</para>
 /// </summary>
 /// <summary>支持带关键词进入：<c>search?q=片名</c>（收藏所属源失效时直接跨源找回该片）。</summary>
 [QueryProperty(nameof(Keyword), "q")]
@@ -56,21 +62,34 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
 
     // ─────────── 焦点 ───────────
 
-    /// <summary>焦点所在区。</summary>
+    /// <summary>
+    /// 焦点所在区。
+    ///
+    /// <para>2026-09-19 版面重构（全高双栏）后由 3 区变 5 区：
+    /// 左栏下半多了「最近搜索」、右栏下半多了「继续观看」。分区必须与实际版面一一对应 ——
+    /// 否则 ←→↑↓ 的落点会与用户眼睛看到的相邻关系对不上。</para>
+    /// </summary>
     private enum Zone
     {
-        /// <summary>虚拟键盘。</summary>
+        /// <summary>虚拟键盘（左栏上）。</summary>
         Keyboard,
-        /// <summary>右栏：候选 / 热词 / 筛选条。</summary>
+        /// <summary>左栏下：最近搜索 chip。</summary>
+        Shortcuts,
+        /// <summary>右栏上：候选 / 热门搜索 / 站点筛选条。</summary>
         Right,
+        /// <summary>右栏下：继续观看海报墙。</summary>
+        Continue,
         /// <summary>结果海报网格。</summary>
         Grid,
     }
 
-    /// <summary>初始焦点放在**热词**上：不想打字的用户一步就能搜，这是遥控器最省事的路径。</summary>
+    /// <summary>初始焦点放在**热门搜索**上：不想打字的用户一步就能搜，这是遥控器最省事的路径。</summary>
     private Zone _zone = Zone.Right;
 
-    private int _rightIndex;        // 右栏（热词/历史/候选）当前项
+    private int _rightIndex;        // 右栏（候选 / 热门搜索）当前项
+    private int _shortcutIndex;     // 左栏下（最近搜索）当前项
+    private int _continueIndex;     // 继续观看当前项
+    private int _continueColumns = 4;
     private int _resultIndex;       // 结果网格当前项
     private int _resultColumns = 5;
 
@@ -78,6 +97,13 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
 
     private readonly List<Border> _hotChips = [];
     private readonly List<Border> _historyChips = [];
+
+    /// <summary>
+    /// 「继续观看」条目：历史记录 + 其展示模型 + 预先算好的跳转路由。
+    /// 路由在此算好（而不是点击时再算）是为了复用 HistoryPage 那套续播参数，
+    /// 且点击路径上没有 await，遥控器连按不会错乱。
+    /// </summary>
+    private readonly List<(PlayHistoryEntry Entry, VodItem Item, string Query)> _continueItems = [];
     private readonly List<Border> _candidateRows = [];
 
     /// <summary>
@@ -252,6 +278,17 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
             RecalcResultColumns();
         };
 
+        // 继续观看海报墙：列数同样用于焦点导航（上下移动 = ±列数）
+        ContinueGrid.SizeChanged += (_, _) =>
+        {
+#if WINDOWS
+            PosterLayoutHelper.Apply(ContinueGrid, ContinueGrid.Width, ContinueGrid.Height, cap: 190);
+#else
+            PosterLayoutHelper.Apply(ContinueGrid, ContinueGrid.Width, ContinueGrid.Height);
+#endif
+            RecalcContinueColumns();
+        };
+
         // 虚拟键盘接线
         Keyboard.CharacterPressed += (_, ch) => AppendChar(ch);
         Keyboard.BackspacePressed += (_, _) => Backspace();
@@ -284,6 +321,7 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
         RefreshFocusVisual();
         await LoadHotWordsAsync();
         LoadHistory();
+        await LoadContinueAsync();
         await RefreshCandidatesAsync();
     }
 
@@ -326,6 +364,136 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
 
         HistorySection.IsVisible = true;
         foreach (var w in list) HistoryWords.Add(BuildWordChip(w, _historyChips));
+    }
+
+    // ═══════════════════════ 继续观看 ═══════════════════════
+
+    /// <summary>
+    /// 装载「继续观看」（读 <c>play_history</c>，带封面与进度）。
+    ///
+    /// <para><b>为什么搜索页要有它</b>：全高双栏改造前，键盘与热词只占上半屏，
+    /// 下半屏是一整块空白（用户反馈「下方太空了」）。与其留白，不如把「上次看到哪」摆出来 ——
+    /// 电视端用户打开搜索页往往正是想接着看某部片，这比让他在键盘上重新打一遍片名省事得多。</para>
+    ///
+    /// <para>区块高度由 <c>flex</c>（XAML 的 <c>*</c> 行）吸收右栏余量，海报行数随窗口高度自动增减；
+    /// 空历史时整块隐藏，布局自动上移。</para>
+    /// </summary>
+    private async Task LoadContinueAsync()
+    {
+        if (_continueItems.Count > 0) return;   // 页面反复进出不重复装载
+        try
+        {
+            var list = await _db.GetRecentHistoryAsync(24);
+            if (list.Count == 0) return;
+
+            var items = new List<VodItem>();
+            foreach (var h in list)
+            {
+                var title = HistoryTitleOnly(h.Title);
+                if (title.Length == 0) continue;
+                // 退化标题（清洗后只剩「·」这类分隔符，实机见过一张这样的空占位海报）：
+                // 卡片上没有任何可读文字，看起来像坏图，不如直接跳过。
+                if (!title.Any(char.IsLetterOrDigit)) continue;
+
+                var site = SiteRegistry.Find(h.SourceKey);
+                var item = new VodItem
+                {
+                    SourceKey = h.SourceKey,
+                    Id = h.ItemId,
+                    Title = title,
+                    Cover = h.Cover,
+                    Remarks = h.EpisodeName,             // 集数角标：接着看哪一集
+                    Year = ProgressText(h),               // 「看过 62%」/「已看完」
+                };
+                items.Add(item);
+                _continueItems.Add((h, item, BuildHistoryQuery(h, site?.Type ?? h.ItemType,
+                    site?.Api ?? h.ItemApi)));
+            }
+            if (_continueItems.Count == 0) return;
+
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                ContinueGrid.ItemsSource = items;
+                ContinueStatus.Text = $"▶ 继续观看 · {_continueItems.Count}";
+                ContinueSection.IsVisible = !ResultSection.IsVisible && !CandidateSection.IsVisible;
+            });
+
+            CoverResolver.Attach(_covers, items);   // 封面异步补齐（顺带喂首字母索引）
+        }
+        catch { /* 历史读取失败不该影响搜索页 */ }
+    }
+
+    /// <summary>历史标题去掉集名后缀（「流人 第六季 · 第04集」→「流人 第六季」）。</summary>
+    private static string HistoryTitleOnly(string? title)
+    {
+        var t = (title ?? string.Empty).Trim();
+        var i = t.IndexOf(" · ", StringComparison.Ordinal);
+        if (i > 0) t = t[..i].Trim();
+        // 兼容「庆余年 第02集」这类不带分隔符的写法
+        t = System.Text.RegularExpressions.Regex.Replace(t, @"\s*第\s*\d+\s*[集话期]\s*$", string.Empty);
+        return t.Trim();
+    }
+
+    /// <summary>「看过 62%」这类进度文案（时长未知时给兜底，不留空）。</summary>
+    private static string ProgressText(PlayHistoryEntry h)
+    {
+        if (h.DurationSeconds > 1)
+        {
+            var p = (int)Math.Clamp(h.PositionSeconds / h.DurationSeconds * 100, 0, 100);
+            return p >= 98 ? "已看完" : $"看过 {p}%";
+        }
+        return h.PositionSeconds > 1 ? "有进度" : "已看过";
+    }
+
+    /// <summary>
+    /// 由历史记录构造跳转路由（与 <c>HistoryPage</c> 同一套规则）：
+    /// 有来源定位 → 观看页（带 <c>resumeEp</c>/<c>route</c>/<c>pos</c> 续播到那一集）；
+    /// 无定位（网页直链等）→ 播放器页直接播历史里的地址。
+    /// </summary>
+    private static string BuildHistoryQuery(PlayHistoryEntry e, int type, string api)
+    {
+        var pos = $"&pos={Math.Max(0, (int)e.PositionSeconds)}";
+        var cover = string.IsNullOrEmpty(e.Cover) ? "" : $"&cover={Uri.EscapeDataString(e.Cover)}";
+
+        var hasSource = !string.IsNullOrWhiteSpace(e.SourceKey) && !string.IsNullOrWhiteSpace(e.ItemId);
+        if (!hasSource)
+            return $"player?title={Uri.EscapeDataString(e.Title)}" +
+                   $"&url={Uri.EscapeDataString(e.Url)}" + pos + cover;
+
+        // 影片标题 = 「影片 · 集名」去掉集名部分（极端情况退化用集名，标题栏不能为空）
+        var itemTitle = e.Title.Contains(" · ") ? e.Title.Split(" · ")[0] : e.Title;
+        if (string.IsNullOrWhiteSpace(itemTitle)) itemTitle = e.EpisodeName;
+
+        return $"watch?title={Uri.EscapeDataString(itemTitle)}" +
+               $"&sourceKey={Uri.EscapeDataString(e.SourceKey)}&type={type}" +
+               $"&api={Uri.EscapeDataString(api)}&itemId={Uri.EscapeDataString(e.ItemId)}" +
+               (string.IsNullOrEmpty(e.EpisodeName) ? "" : $"&resumeEp={Uri.EscapeDataString(e.EpisodeName)}") +
+               (string.IsNullOrEmpty(e.RouteName) ? "" : $"&route={Uri.EscapeDataString(e.RouteName)}") +
+               $"&year={Uri.EscapeDataString(e.Year)}" +
+               $"&remarks={Uri.EscapeDataString(e.Remarks)}" +
+               $"&desc={Uri.EscapeDataString(e.Description)}" +
+               $"&category={Uri.EscapeDataString(e.Category)}" + pos + cover;
+    }
+
+    /// <summary>继续观看卡被点选（触摸 / 鼠标）。</summary>
+    private void OnContinueSelected(object? sender, SelectionChangedEventArgs e)
+    {
+        ContinueGrid.SelectedItem = null;   // 允许重复选同一项
+        if (e.CurrentSelection.FirstOrDefault() is not VodItem item) return;
+
+        var hit = _continueItems.FirstOrDefault(x => ReferenceEquals(x.Item, item));
+        if (hit.Query is { Length: > 0 } q) Shell.Current.GoToAsync(q);
+    }
+
+    /// <summary>从实际 span 同步「继续观看」列数（焦点「上下移动 = ±列数」必须与显示一致）。</summary>
+    private void RecalcContinueColumns()
+    {
+        try
+        {
+            if (ContinueGrid.ItemsLayout is GridItemsLayout g && g.Span > 0)
+                _continueColumns = g.Span;
+        }
+        catch { }
     }
 
     private const string HistoryPrefKey = "search_history";
@@ -719,9 +887,18 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
     {
         CandidateSection.IsVisible = showCandidates;
         HotSection.IsVisible = !showCandidates;
+        // 「继续观看」属于「没在输入」时的展示：一旦有候选就收起，把右栏让给联想列表
+        ContinueSection.IsVisible = !showCandidates && _continueItems.Count > 0;
         ResultSection.IsVisible = false;
         _resultMode = false;
         SetResultFullWidth(false);
+    }
+
+    /// <summary>触发 chip 的 Tap（复用同一套「填入并搜索」逻辑，避免两处实现漂移）。</summary>
+    private static void TapChip(Border chip)
+    {
+        if (chip.GestureRecognizers.FirstOrDefault() is TapGestureRecognizer tap)
+            tap.SendTapped(chip);
     }
 
     /// <summary>
@@ -1080,7 +1257,12 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
             if (wasFilter) RenderFilterSelection();
         }
 
-        // 键盘持焦：键盘自己画焦点，右栏不需要高亮
+        // 离开海报区时清掉焦点环 —— 两处海报墙的焦点都由数据项自己的 IsFocused 驱动，
+        // 不复位就会留着上一处的亮框，看起来像「两个地方同时有焦点」。
+        if (_zone != Zone.Continue) ClearPosterFocus(_continueItems.Select(x => x.Item));
+        if (_zone != Zone.Grid) ClearPosterFocus(_results);
+
+        // 键盘持焦：键盘自己画焦点，其余区不需要高亮
         Keyboard.IsEngaged = _zone == Zone.Keyboard;
         if (_zone == Zone.Keyboard)
         {
@@ -1093,8 +1275,17 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
 
         switch (_zone)
         {
+            case Zone.Shortcuts:
+                if (_historyChips.Count > 0)
+                {
+                    _shortcutIndex = Math.Clamp(_shortcutIndex, 0, _historyChips.Count - 1);
+                    target = _historyChips[_shortcutIndex];
+                    desc = $"最近搜索 {_shortcutIndex + 1}/{_historyChips.Count}";
+                }
+                break;
+
             case Zone.Right:
-                // 筛选条 > 候选 > 热词/历史（按当前显示的面板决定）
+                // 筛选条 > 候选 > 热门搜索（按当前显示的面板决定）
                 if (_resultMode && _filterChips.Count > 1)
                 {
                     _filterIndex = Math.Clamp(_filterIndex, 0, _filterChips.Count - 1);
@@ -1107,17 +1298,22 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
                     target = _candidateRows[_rightIndex];
                     desc = $"候选 {_rightIndex + 1}/{_candidateRows.Count}";
                 }
-                else
+                else if (_hotChips.Count > 0)
                 {
-                    var chips = AllWordChips();
-                    if (chips.Count > 0)
-                    {
-                        _rightIndex = Math.Clamp(_rightIndex, 0, chips.Count - 1);
-                        target = chips[_rightIndex];
-                        desc = _rightIndex < _hotChips.Count
-                            ? $"热门搜索 {_rightIndex + 1}/{_hotChips.Count}"
-                            : "最近搜索";
-                    }
+                    _rightIndex = Math.Clamp(_rightIndex, 0, _hotChips.Count - 1);
+                    target = _hotChips[_rightIndex];
+                    desc = $"热门搜索 {_rightIndex + 1}/{_hotChips.Count}";
+                }
+                break;
+
+            case Zone.Continue:
+                if (_continueItems.Count > 0)
+                {
+                    _continueIndex = Math.Clamp(_continueIndex, 0, _continueItems.Count - 1);
+                    for (int i = 0; i < _continueItems.Count; i++)
+                        _continueItems[i].Item.IsFocused = i == _continueIndex;
+                    ScrollContinueIntoView(_continueIndex);
+                    desc = $"继续观看 {_continueIndex + 1}/{_continueItems.Count}";
                 }
                 break;
 
@@ -1143,13 +1339,20 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
         HintFocus.Text = "焦点：" + (string.IsNullOrEmpty(desc) ? "—" : desc);
     }
 
-    /// <summary>热词 + 历史的全部 chip（右栏在这两块间连续移动）。</summary>
-    private List<Border> AllWordChips()
+    /// <summary>清掉一组海报卡上的焦点环（焦点环由数据项 IsFocused 驱动，离开该区必须复位）。</summary>
+    private static void ClearPosterFocus(IEnumerable<VodItem> items)
     {
-        var list = new List<Border>(_hotChips.Count + _historyChips.Count);
-        list.AddRange(_hotChips);
-        list.AddRange(_historyChips);
-        return list;
+        foreach (var it in items) it.IsFocused = false;
+    }
+
+    private void ScrollContinueIntoView(int index)
+    {
+        try
+        {
+            if (index >= 0 && index < _continueItems.Count)
+                ContinueGrid.ScrollTo(index, position: ScrollToPosition.MakeVisible, animate: false);
+        }
+        catch { }
     }
 
     /// <summary>chip 焦点样式（与 FocusableRow 同一套：紫底 + 描边 + 柔光）。</summary>
@@ -1225,9 +1428,15 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
                     else if (FilterBar.IsVisible) { _zone = Zone.Right; RefreshFocusVisual(); }
                     return true;
                 }
-                // 右栏（含站点纵列）：回键盘
-                _zone = Zone.Keyboard;
-                RefreshFocusVisual();
+                // 右栏 / 继续观看 → 左栏键盘（键盘在它们左边，视觉上对得上）
+                if (_zone is Zone.Right or Zone.Continue) { _zone = Zone.Keyboard; RefreshFocusVisual(); return true; }
+                // 左栏下半（最近搜索）：栏内左移，到头则回键盘
+                if (_zone == Zone.Shortcuts)
+                {
+                    if (_shortcutIndex > 0) { _shortcutIndex--; RefreshFocusVisual(); }
+                    else { _zone = Zone.Keyboard; RefreshFocusVisual(); }
+                    return true;
+                }
                 return true;
 
             case RemoteKey.Right:
@@ -1246,10 +1455,28 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
                     { _resultIndex++; RefreshFocusVisual(); }
                     return true;
                 }
+                if (_zone == Zone.Shortcuts)
+                {
+                    if (_shortcutIndex < _historyChips.Count - 1) { _shortcutIndex++; RefreshFocusVisual(); }
+                    return true;
+                }
+                if (_zone == Zone.Continue)
+                {
+                    var cols = Math.Max(1, _continueColumns);
+                    if (_continueIndex % cols < cols - 1 && _continueIndex + 1 < _continueItems.Count)
+                    { _continueIndex++; RefreshFocusVisual(); }
+                    return true;
+                }
+                if (_zone == Zone.Right)
+                {
+                    var chips = CandidateSection.IsVisible ? _candidateRows : _hotChips;
+                    if (_rightIndex < chips.Count - 1) { _rightIndex++; RefreshFocusVisual(); }
+                    return true;
+                }
                 return true;
 
             case RemoteKey.Up:
-                if (_zone == Zone.Keyboard) return Keyboard.MoveUp();   // 到顶行返回 false → 交外层
+                if (_zone == Zone.Keyboard) return Keyboard.MoveUp();   // 到顶行（数字行）返回 false → 交外层
                 // 站点纵列：↑↓ 在站点间移动（它在最左，纵向移动才自然）
                 if (_zone == Zone.Right && _resultMode && FilterBar.IsVisible)
                 {
@@ -1264,15 +1491,19 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
                     else { _zone = Zone.Keyboard; RefreshFocusVisual(); }
                     return true;
                 }
-                if (_zone == Zone.Right)
+                if (_zone == Zone.Continue)
                 {
-                    if (_rightIndex > 0) { _rightIndex--; RefreshFocusVisual(); }
+                    // 首行再往上 → 回「热门搜索」
+                    if (_continueIndex >= _continueColumns) { _continueIndex -= _continueColumns; RefreshFocusVisual(); }
+                    else { _zone = Zone.Right; RefreshFocusVisual(); }
                     return true;
                 }
-                return false;
+                // 最近搜索：chip 会按宽度换行，逐行上移的落点难以预测，直接回键盘更符合直觉
+                if (_zone == Zone.Shortcuts) { _zone = Zone.Keyboard; RefreshFocusVisual(); return true; }
+                return true;
 
             case RemoteKey.Down:
-                if (_zone == Zone.Keyboard) return Keyboard.MoveDown();   // 末行返回 false → 交外层
+                if (_zone == Zone.Keyboard) return Keyboard.MoveDown();   // 末行返回 false → 交外层（左栏「最近搜索」）
                 if (_zone == Zone.Right && _resultMode && FilterBar.IsVisible)
                 {
                     if (_filterIndex < _filterChips.Count - 1) { _filterIndex++; ApplySiteFilter(); }
@@ -1281,9 +1512,24 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
                 }
                 if (_zone == Zone.Right)
                 {
-                    var chips = CandidateSection.IsVisible ? _candidateRows : AllWordChips();
-                    if (_rightIndex < chips.Count - 1) { _rightIndex++; RefreshFocusVisual(); }
-                    else if (_resultMode) { _zone = Zone.Grid; RefreshFocusVisual(); }
+                    if (CandidateSection.IsVisible)
+                    {
+                        if (_rightIndex < _candidateRows.Count - 1) { _rightIndex++; RefreshFocusVisual(); }
+                        return true;
+                    }
+                    // 热门搜索 → 继续观看（落到首行）
+                    if (_continueItems.Count > 0)
+                    {
+                        _continueIndex = Math.Clamp(_continueIndex, 0, Math.Max(0, _continueColumns - 1));
+                        _zone = Zone.Continue;
+                        RefreshFocusVisual();
+                    }
+                    return true;
+                }
+                if (_zone == Zone.Continue)
+                {
+                    if (_continueIndex + _continueColumns < _continueItems.Count)
+                    { _continueIndex += _continueColumns; RefreshFocusVisual(); }
                     return true;
                 }
                 if (_zone == Zone.Grid)
@@ -1291,7 +1537,7 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
                     if (_resultIndex + _resultColumns < _results.Count) { _resultIndex += _resultColumns; RefreshFocusVisual(); }
                     return true;
                 }
-                return false;
+                return true;
 
             case RemoteKey.Enter:
                 return Activate();
@@ -1325,15 +1571,29 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
                     ActivateCandidate(_candidates[_rightIndex]);
                     return true;
                 }
-                var chips = AllWordChips();
+                var chips = _hotChips;
                 if (chips.Count > 0)
                 {
                     _rightIndex = Math.Clamp(_rightIndex, 0, chips.Count - 1);
-                    // 触发 chip 的 Tap（复用同一套「填入并搜索」逻辑）
-                    var chip = chips[_rightIndex];
-                    if (chip.GestureRecognizers.FirstOrDefault() is TapGestureRecognizer tap)
-                        tap.SendTapped(chip);
+                    TapChip(chips[_rightIndex]);
                     return true;
+                }
+                return true;
+
+            case Zone.Shortcuts:
+                if (_historyChips.Count > 0)
+                {
+                    _shortcutIndex = Math.Clamp(_shortcutIndex, 0, _historyChips.Count - 1);
+                    TapChip(_historyChips[_shortcutIndex]);
+                }
+                return true;
+
+            case Zone.Continue:
+                if (_continueItems.Count > 0)
+                {
+                    _continueIndex = Math.Clamp(_continueIndex, 0, _continueItems.Count - 1);
+                    var q = _continueItems[_continueIndex].Query;
+                    if (q.Length > 0) Shell.Current.GoToAsync(q);
                 }
                 return true;
 
