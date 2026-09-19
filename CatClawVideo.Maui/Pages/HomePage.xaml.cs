@@ -205,6 +205,21 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
         _layer = LayerChips;
         _chipIndex = Math.Clamp(index, 0, _chipShells.Count - 1);
         RenderFocus();
+        ScrollToChip(_chipIndex);
+    }
+
+    /// <summary>
+    /// 把焦点 chip 滚进可视区。分类行是横向 ScrollView，chip 数量随源变化（十几个很常见），
+    /// 不滚的话焦点会跑出屏幕 —— 尤其是「切换源 ← 回最右 chip」这种一次跳到末项的移动。
+    /// </summary>
+    private void ScrollToChip(int index)
+    {
+        try
+        {
+            if (index >= 0 && index < _chipShells.Count)
+                _ = CategoryScroll.ScrollToAsync(_chipShells[index], ScrollToPosition.MakeVisible, animated: false);
+        }
+        catch { }
     }
 
     private void FocusPosters(int index = 0)
@@ -272,7 +287,14 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
             case LayerSwitchSite:
                 if (dir == RemoteKey.Down) { FocusChips(Math.Max(0, _chipIndex)); return true; }
                 if (dir == RemoteKey.Up) { _layer = LayerTopNav; RenderFocus(); return false; }  // 交还顶栏
-                return true;   // 左侧无内容，吃掉
+                // ← 退回分类行最右 chip（2026-09-19 用户反馈：从「切换源」按 ← 出不去）。
+                // 与「最右 chip → 上到切换源」成对 —— 两边互为对方的出口。
+                if (dir == RemoteKey.Left && _chipShells.Count > 0)
+                {
+                    FocusChips(_chipShells.Count - 1);
+                    return true;
+                }
+                return true;   // → 右侧无内容，吃掉
 
             case LayerChips:
                 switch (dir)

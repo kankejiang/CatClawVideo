@@ -316,8 +316,13 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
         var srcName = e.OriginalSource?.GetType().Name ?? "";
         bool inText = srcName.Contains("TextBox") || srcName.Contains("AutoSuggestBox") || srcName.Contains("RichEdit");
 
+        // ⓪ 模态弹窗（如「请选择首页数据源」）盖在最上层时，数字键 / F6 不该在背后切页 ——
+        //    弹窗期间只允许弹窗自己（经 RemoteKeyRouter）消费按键。
+        //    （2026-09-19：加弹窗遥控支持时一并堵掉这个洞）
+        bool modalUp = Shell.Current is { } shell && shell.Navigation.ModalStack.Count > 0;
+
         // ① 数字键 / F1-F5 直达 tab（文本框内不拦截）
-        int index = inText ? -1 : e.Key switch
+        int index = inText || modalUp ? -1 : e.Key switch
         {
             Windows.System.VirtualKey.Number1 or Windows.System.VirtualKey.NumberPad1 or Windows.System.VirtualKey.F1 => 0,
             Windows.System.VirtualKey.Number2 or Windows.System.VirtualKey.NumberPad2 or Windows.System.VirtualKey.F2 => 1,
@@ -336,7 +341,7 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
             return;
         }
 
-        if (!inText && e.Key == Windows.System.VirtualKey.F6)
+        if (!inText && !modalUp && e.Key == Windows.System.VirtualKey.F6)
         {
             e.Handled = true;
             MainThread.BeginInvokeOnMainThread(async () =>
