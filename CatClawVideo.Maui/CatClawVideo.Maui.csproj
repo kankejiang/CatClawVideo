@@ -255,8 +255,16 @@
 
 	<!-- JavaBridge（jar 爬虫桥）：随应用分发到 JavaBridge/，让**安装版**也能找到桥
 	     （JavaSpiderRuntime.FindBridgeDir 从 AppContext.BaseDirectory 逐级向上找 JavaBridge/bridge.jar）。
-	     只带 bridge.jar + vendor/deps（约 3.4MB）；vendor/dex2jar + vendor/unidbg 是 Guard 解壳用的 53MB，
-	     暂不随包（缺省时 Guard 站点自动退回非 Guard 同族 jar）。 -->
+
+	     三块内容缺一不可：
+	       · bridge.jar + vendor/deps —— 跑普通 jar 爬虫；
+	       · vendor/dex2jar          —— 把 dex 转成 JVM 能加载的 jar（所有 csp_* 站点都要）；
+	       · vendor/unidbg           —— Guard 加固包的解壳器（模拟 ARM64 跑原生解密 .so），
+	                                    外加 unpacker.jar。缺它时 Guard 站点只能退回非 Guard 同族 jar，
+	                                    而「荐片|多线」这类没有替代品的站点会直接不可用
+	                                    （2026-09-19 用户实测安装版报「不可用 · unidbg 解壳失败且未找到
+	                                     替代的非 Guard 同族 jar」）。
+	     ⚠ 后两块共约 52MB（jar 已压缩，安装包难以再压），这是为「安装版片源与开发版一致」付的代价。 -->
 	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">
 		<Content Include="..\JavaBridge\bridge.jar">
 			<Link>JavaBridge\bridge.jar</Link>
@@ -264,6 +272,14 @@
 		</Content>
 		<Content Include="..\JavaBridge\vendor\deps\*.jar">
 			<Link>JavaBridge\vendor\deps\%(Filename)%(Extension)</Link>
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</Content>
+		<Content Include="..\JavaBridge\vendor\dex2jar\*.jar">
+			<Link>JavaBridge\vendor\dex2jar\%(Filename)%(Extension)</Link>
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</Content>
+		<Content Include="..\JavaBridge\vendor\unidbg\*.jar">
+			<Link>JavaBridge\vendor\unidbg\%(Filename)%(Extension)</Link>
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</Content>
 	</ItemGroup>
