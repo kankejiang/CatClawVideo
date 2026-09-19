@@ -66,7 +66,9 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
     {
         ApplyPosterLayout();
         CaptureColumns();
-        _layer = LayerSwitchSite;
+        // 初始层 = 顶栏：本页不抢焦点，交给顶栏「首页」tab
+        // （MainPage.ShowTab 紧接着会调 FocusTopNav，这里保持不亮即可，避免闪一下切换源环）。
+        _layer = LayerTopNav;
         RenderFocus();
         RemoteKeyRouter.Push(this);
         return _vm.LoadHomeCommand.ExecuteAsync(null);
@@ -255,8 +257,21 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
     /// </summary>
     public void FocusContent() => FocusChips(Math.Max(0, _chipIndex));
 
-    /// <summary>顶栏抢走焦点：清掉海报墙高亮，避免「顶栏与海报同时亮」两个焦点。</summary>
-    public void BlurContent() => ClearPosterFocus();
+    /// <summary>
+    /// 顶栏抢走焦点：本页**所有**焦点层一起熄灭（切换源环 / 分类 chip / 海报墙），
+    /// 并把层标记为「顶栏」。
+    ///
+    /// <para>原先只清了海报墙 —— 因为当时进入这条路径的唯一方式是「从内容区按 ↑ 上顶栏」，
+    /// 起点必然在内容层。现在**启动与切 tab 也由顶栏持有焦点**（见 <c>MainPage.ShowTab</c>），
+    /// 而本页的初始层停在「切换源」上，只清海报就会留下「顶栏首页 + 首页切换源」双高亮
+    /// （2026-09-19 用户截图）。</para>
+    /// </summary>
+    public void BlurContent()
+    {
+        _layer = LayerTopNav;
+        ClearPosterFocus();
+        RenderFocus();
+    }
 
     public bool Handle(RemoteKey key)
     {

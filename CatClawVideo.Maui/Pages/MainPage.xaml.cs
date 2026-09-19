@@ -191,14 +191,23 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
     /// <summary>顶栏的持有者就是本页，无需清理自己的高亮。</summary>
     public void BlurContent() { }
 
-    public void FocusTopNav()
+    /// <summary>把焦点交给顶栏，落在**当前选中**的 tab 上。</summary>
+    public void FocusTopNav() => FocusTopNav(_vm.SelectedTabIndex);
+
+    /// <summary>
+    /// 把焦点交给顶栏，并落在指定 tab 上。
+    ///
+    /// <para><paramref name="tabIndex"/> 由调用方显式传入而不是读 <c>SelectedTabIndex</c>：
+    /// 启动与切页都经由 <see cref="ShowTab"/> 调用，此刻不能依赖 MVVM 属性赋值与事件回调的先后顺序。</para>
+    /// </summary>
+    public void FocusTopNav(int tabIndex)
     {
         // 先让内容区交还焦点：不清它的高亮，顶栏与内容区会「两处同时亮」两个焦点
         // （2026-09-19 用户截图：焦点上移到顶栏后，设置页侧栏还亮着）。
         (CurrentTab as IRemoteKeyHandler)?.BlurContent();
 
         _topNavFocused = true;
-        _focusedTab = Math.Clamp(_vm.SelectedTabIndex, 0, _navShells.Length - 1);
+        _focusedTab = Math.Clamp(tabIndex, 0, _navShells.Length - 1);
         RenderTopNav();
     }
 
@@ -434,8 +443,7 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
     /// <summary>tab 切换入口（MainViewModel 事件）</summary>
     private void OnTabChanged(int index)
     {
-        // 切页后焦点归位到内容区（顶栏不再持焦点）
-        _topNavFocused = false;
+        // 切页后焦点留在顶栏（落在新 tab 上）—— 由 ShowTab 统一决定，见那里的说明。
         ShowTab(index);
     }
 
@@ -457,7 +465,14 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
             _ = tabView.OnTabShownAsync();
 
         UpdateNavTabs();
-        RenderTopNav();
+
+        // 焦点留在顶栏，落在刚显示的 tab 上（2026-09-19 用户反馈：启动时焦点被首页的
+        // 「切换源」抢走，应该在顶栏「首页」上）。要进内容区按 ↓ / OK 即可。
+        //
+        // ⚠ 必须排在 OnTabShownAsync 之后：内容页会在那里给自己设一个初始焦点层
+        // （首页 → 切换源、设置页 → 侧栏），而 FocusTopNav 会调它的 BlurContent
+        // 把这一层熄掉 —— 顺序反过来就会留下双高亮。
+        FocusTopNav(index);
     }
 
     /// <summary>刷新导航 tabs（选中：主题色实底胶囊 + 白字；未选中：透明底 + 次级文字）</summary>
