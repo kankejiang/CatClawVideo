@@ -30,13 +30,30 @@ public static class PosterLayoutHelper
                 Application.Current.Resources["PosterCardWidth"] = cardW;
             }
 
-            var columns = Math.Clamp((int)Math.Floor((width + 12) / (cardW + 12)), 3, 16);
-            if (grid.ItemsLayout is GridItemsLayout g && g.Span != columns)
-                g.Span = columns;
+            // 间距取**模板实际值**：各页模板的 HorizontalItemSpacing 不同
+            // （首页/历史/收藏 14、搜索页 10），原先按 12 硬写会让列数算偏。
+            var layout = (GridItemsLayout)grid.ItemsLayout;
+            var spacing = layout.HorizontalItemSpacing;
+
+            var columns = Math.Clamp((int)Math.Floor((width + spacing) / (cardW + spacing)), 3, 16);
+
+            // 再验一次：按真实列数回推格宽，卡片比格宽就减列。
+            // 卡片宽是固定的（模板里 WidthRequest 写死），超出格子的部分会被 CollectionView
+            // 的 item 容器**在右侧裁掉** —— 海报图看不出来，但焦点环画在卡片边界，
+            // 右半边一被裁就是「焦点缺一边」，右列还容易串到下一格（2026-09-19 用户截图）。
+            while (columns > 3 && cardW > CellWidth(width, columns, spacing))
+                columns--;
+
+            if (layout.Span != columns)
+                layout.Span = columns;
         }
         catch (Exception ex)
         {
             System.Diagnostics.Debug.WriteLine($"[PosterLayout] 自适应失败: {ex.Message}");
         }
     }
+
+    /// <summary>按列数回推每格可用宽度：格宽 = (总宽 − 间隔和) ÷ 列数。</summary>
+    private static double CellWidth(double width, int columns, double spacing) =>
+        (width - (columns - 1) * spacing) / columns;
 }
