@@ -15,7 +15,7 @@ namespace CatClawVideo.Maui.Pages;
 /// 路由携带 sourceKey/type/api/itemId，进入后拉播放线路与选集；
 /// 播放统一走 ResolvePlayUrlAsync（web 源实时解析直链、磁力拦截、防盗链参数）。
 /// </summary>
-public partial class WatchPage : ContentPage, IQueryAttributable
+public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHandler
 {
     private readonly IVodSourceProvider _provider;
     private readonly VideoDatabase _db;
@@ -629,6 +629,10 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     protected override void OnAppearing()
     {
         base.OnAppearing();
+
+        // 接管方向键（本页是整窗推送页，键盘栈顶只它一个消费者）
+        RemoteKeyRouter.Push(this);
+
 #if WINDOWS
         HookEscKey(attach: true);
         // 顶栏拖拽区（SetTitleBar 指定元素；延迟到 Handler 就绪后再挂）
@@ -649,6 +653,8 @@ public partial class WatchPage : ContentPage, IQueryAttributable
     protected override void OnDisappearing()
     {
         base.OnDisappearing();
+        RemoteKeyRouter.Pop(this);
+
 #if WINDOWS
         HookEscKey(attach: false);
         // 离开本页：先解绑本页拖拽元素，再延迟按当前页面重设
@@ -989,18 +995,152 @@ public partial class WatchPage : ContentPage, IQueryAttributable
             _ = ShowTipAsync("该线路暂无选集");
     }
 
-    /// <summary>选集行当前态样式（底色/文字色/序号块）</summary>
+    /// <summary>
+    /// 选集行样式：底色 = 「正在播放的那一集」，描边环 = 「遥控器焦点」，两者互不覆盖
+    /// （焦点可能停在别的集上，此时两格要能同时区分出来）。
+    /// </summary>
     private void HighlightRow(Border border, Label name, Border num, EpisodeRow row)
     {
+        var res = Application.Current!.Resources;
+        bool focused = _episodeFocusEngaged && row.Index == _episodeFocusIndex;
+
         border.BackgroundColor = row.IsCurrent
-            ? (Color)Application.Current!.Resources["PrimaryColor"]
-            : (Color)Application.Current.Resources["CardBackgroundColor"];
-        name.TextColor = row.IsCurrent ? Colors.White : (Color)Application.Current.Resources["TextSecondaryColor"];
+            ? (Color)res["PrimaryColor"]
+            : (Color)res["CardBackgroundColor"];
+        name.TextColor = row.IsCurrent ? Colors.White : (Color)res["TextSecondaryColor"];
         num.BackgroundColor = row.IsCurrent
-            ? (Color)Application.Current.Resources["PrimaryColor"]
+            ? (Color)res["PrimaryColor"]
             : Color.FromArgb("#14FFFFFF");
         if (num.Content is Label numLabel)
-            numLabel.TextColor = row.IsCurrent ? Colors.White : (Color)Application.Current.Resources["TextSecondaryColor"];
+            numLabel.TextColor = row.IsCurrent ? Colors.White : (Color)res["TextSecondaryColor"];
+
+        border.Stroke = focused ? (Color)res["PrimaryColor"] : Colors.Transparent;
+        border.StrokeThickness = focused ? 2.5 : 0;
+    }
+
+    // ═══════════════════════ 遥控器焦点（选集栏） ═══════════════════════
+
+    /// <summary>焦点是否已进入选集栏（未进入时方向键交还外层）。</summary>
+    private bool _episodeFocusEngaged;
+
+    /// <summary>焦点所在集（全局下标，对应 <c>_episodeRows</c>）。</summary>
+    private int _episodeFocusIndex = -1;
+
+    /// <summary>外层把焦点送进来：优先落在正在播放的那一集上。</summary>
+    public void FocusContent() =>
+        FocusEpisodes(_episodeFocusIndex >= 0 ? _episodeFocusIndex : _currentEpisodeIndex);
+
+    /// <summary>外层把焦点收走：熄掉焦点环（当前集底色保留）。</summary>
+    public void BlurContent() => SetEpisodeFocus(false);
+
+    private void SetEpisodeFocus(bool on)
+    {
+        _episodeFocusEngaged = on;
+        RefreshEpisodeVisuals();
+    }
+
+    /// <summary>把焦点送进选集栏。</summary>
+    private void FocusEpisodes(int index)
+    {
+        if (_episodeRows.Count == 0) return;
+
+        _episodeFocusEngaged = true;
+        _episodeFocusIndex = Math.Clamp(index < 0 ? 0 : index, 0, _episodeRows.Count - 1);
+        EnsureEpisodePageOf(_episodeFocusIndex);
+        RefreshEpisodeVisuals();
+        ScrollEpisodeIntoView();
+    }
+
+    /// <summary>重画当前页全部选集格（焦点切换时整页状态都可能变）。</summary>
+    private void RefreshEpisodeVisuals()
+    {
+        foreach (var v in _pageVisuals) HighlightRow(v.Border, v.Name, v.Num, v.Row);
+    }
+
+    /// <summary>焦点所在集不在当前页时先翻页（选集分页显示，跨页必须跟着翻）。</summary>
+    private void EnsureEpisodePageOf(int index)
+    {
+        int perPage = PerPageFor(_episodeRows.Count);
+        if (perPage <= 0) return;
+
+        int page = index / perPage;
+        if (page == _episodePage) return;
+        _episodePage = page;
+        RenderEpisodePage();
+    }
+
+    /// <summary>把焦点格滚进可视区（每页 10 行，不滚会跑到视野外）。</summary>
+    private void ScrollEpisodeIntoView()
+    {
+        try
+        {
+            foreach (var v in _pageVisuals)
+            {
+                if (v.Row.Index != _episodeFocusIndex) continue;
+                _ = EpisodeScroll.ScrollToAsync(v.Border, ScrollToPosition.MakeVisible, animated: false);
+                return;
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>方向键移动焦点。返回 <c>false</c> = 该方向已到头（交还外层）。</summary>
+    private bool MoveEpisodeFocus(RemoteKey dir)
+    {
+        int total = _episodeRows.Count;
+        if (total == 0) return false;
+
+        int cols = Math.Max(1, EpisodeColumnsFor(total));
+        int perPage = Math.Max(1, PerPageFor(total));
+        int start = _episodePage * perPage;
+        int slot = _episodeFocusIndex - start;
+        if (slot < 0) { FocusEpisodes(start); return true; }
+
+        int? target = dir switch
+        {
+            RemoteKey.Left => slot % cols == 0 ? null : _episodeFocusIndex - 1,
+            RemoteKey.Right => (slot % cols == cols - 1 || _episodeFocusIndex >= total - 1) ? null : _episodeFocusIndex + 1,
+            RemoteKey.Up => _episodeFocusIndex - cols < 0 ? null : _episodeFocusIndex - cols,
+            RemoteKey.Down => _episodeFocusIndex + cols > total - 1 ? null : _episodeFocusIndex + cols,
+            _ => null,
+        };
+        if (target is not { } idx) return false;
+
+        _episodeFocusIndex = idx;
+        EnsureEpisodePageOf(idx);
+        RefreshEpisodeVisuals();
+        ScrollEpisodeIntoView();
+        return true;
+    }
+
+    public bool Handle(RemoteKey key)
+    {
+        switch (key)
+        {
+            case RemoteKey.Left:
+            case RemoteKey.Right:
+            case RemoteKey.Up:
+            case RemoteKey.Down:
+                // 未持焦点：第一下 ↓ / → 就把焦点送进选集栏 —— 遥控器必须立刻有反应
+                if (!_episodeFocusEngaged)
+                {
+                    if (key is RemoteKey.Down or RemoteKey.Right) { FocusContent(); return true; }
+                    return false;
+                }
+                return MoveEpisodeFocus(key);
+
+            case RemoteKey.Enter:
+                if (!_episodeFocusEngaged) { FocusContent(); return true; }
+                if (_episodeFocusIndex >= 0 && _episodeFocusIndex < _episodeRows.Count)
+                    PlayEpisodeByRow(_episodeRows[_episodeFocusIndex]);
+                return true;
+
+            case RemoteKey.Back:
+                // 先退焦点，再按一次才返回上一页（避免误触直接退出播放页）
+                if (_episodeFocusEngaged) { SetEpisodeFocus(false); return true; }
+                return false;
+        }
+        return false;
     }
 
     /// <summary>渲染当前分页的选集格（列数按集数自适应：1-3 列 × 10 行）并刷新翻页条可见性</summary>
