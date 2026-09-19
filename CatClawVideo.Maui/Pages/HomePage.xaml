@@ -77,7 +77,7 @@
             </CollectionView.ItemsLayout>
             <CollectionView.ItemTemplate>
                 <DataTemplate>
-                    <VerticalStackLayout Spacing="0">
+                    <Grid RowDefinitions="Auto,Auto">
                         <!-- 尺寸 / 圆角 / 遥控器焦点环见 Styles.xaml 的 PosterCardStyle（四处海报墙共用） -->
                         <Border Style="{StaticResource PosterCardStyle}">
                             <Grid>
@@ -99,21 +99,24 @@
                                         IsVisible="{Binding HasRemark}">
                                     <Label Text="{Binding Remarks}" FontSize="10" TextColor="#FFD76E" MaxLines="1" />
                                 </Border>
-                                <!-- 焦点环：画在图片之上（卡片自己的 Stroke 会被图片盖住） -->
-                                <Border Style="{StaticResource PosterFocusRingStyle}"
-                                        IsVisible="{Binding IsFocused}" />
                             </Grid>
                         </Border>
-                        <Label Text="{Binding Title}" FontSize="12" Margin="0,6,0,0"
-                               LineBreakMode="TailTruncation" MaxLines="2"
-                               TextColor="{DynamicResource TextPrimaryColor}" />
-                        <Label Text="{Binding Year}" FontSize="10" Margin="0,2,0,0"
-                               LineBreakMode="TailTruncation" MaxLines="1"
-                               TextColor="{DynamicResource TextHintColor}" />
+                        <!-- 焦点环与卡片**平级**（只覆盖海报那一行）。放进卡片内部一定会被卡片的
+                             StrokeShape 裁掉一侧 —— 改了几轮才定位到的死结；平级后只受格子边界约束。 -->
+                        <Border Grid.Row="0" Style="{StaticResource PosterFocusRingStyle}"
+                                IsVisible="{Binding IsFocused}" />
+                        <VerticalStackLayout Grid.Row="1" Spacing="0">
+                            <Label Text="{Binding Title}" FontSize="12" Margin="0,6,0,0"
+                                   LineBreakMode="TailTruncation" MaxLines="2"
+                                   TextColor="{DynamicResource TextPrimaryColor}" />
+                            <Label Text="{Binding Year}" FontSize="10" Margin="0,2,0,0"
+                                   LineBreakMode="TailTruncation" MaxLines="1"
+                                   TextColor="{DynamicResource TextHintColor}" />
+                        </VerticalStackLayout>
                         <Grid.GestureRecognizers>
                             <TapGestureRecognizer Tapped="OnPosterTapped" />
                         </Grid.GestureRecognizers>
-                    </VerticalStackLayout>
+                    </Grid>
                 </DataTemplate>
             </CollectionView.ItemTemplate>
         </CollectionView>

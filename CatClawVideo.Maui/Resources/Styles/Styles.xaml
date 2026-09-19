@@ -75,13 +75,12 @@
         <Setter Property="BackgroundColor" Value="Transparent" />
         <Setter Property="StrokeThickness" Value="5" />
         <Setter Property="Stroke" Value="{DynamicResource PrimaryColor}" />
-        <Setter Property="StrokeShape" Value="RoundRectangle 14" />
-        <!--
-            外扩 3px（Margin 取负）：描边是**骑在路径上**画的（一半落在卡片外），而卡片 Border 会把内容裁到
-            自己的形状内 → 外侧那半永远被切掉，环永远看起来只有一半粗、下边缘只剩一条线
-            （2026-09-19 用户截图）。内缩半个描边宽后，整条描边都落在卡片内部，四边一样粗。
-        -->
-        <Setter Property="Margin" Value="-3" />
+        <Setter Property="StrokeShape" Value="RoundRectangle 10" />
+        <!-- 环是卡片的**兄弟**（不在卡片内），尺寸要自己声明并与海报对齐 -->
+        <Setter Property="WidthRequest" Value="{DynamicResource PosterCardWidth}" />
+        <Setter Property="HeightRequest" Value="{DynamicResource PosterCardHeight}" />
+        <Setter Property="HorizontalOptions" Value="Center" />
+        <Setter Property="VerticalOptions" Value="Start" />
         <!-- 外发光：电视离得远，纯描边仍显单薄 -->
         <Setter Property="Shadow">
             <Setter.Value>
