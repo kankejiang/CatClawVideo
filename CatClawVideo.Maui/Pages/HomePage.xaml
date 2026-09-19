@@ -78,19 +78,8 @@
             <CollectionView.ItemTemplate>
                 <DataTemplate>
                     <VerticalStackLayout Spacing="0">
-                        <Border StrokeThickness="0" StrokeShape="RoundRectangle 10"
-                                BackgroundColor="{DynamicResource CardBackgroundColor}"
-                                HeightRequest="{DynamicResource PosterCardHeight}"
-                                WidthRequest="{DynamicResource PosterCardWidth}" HorizontalOptions="Center">
-                            <!-- 遥控器焦点环：由 VodItem.IsFocused 驱动（列表项非可聚焦控件，
-                                 焦点由 HomePage 的 IRemoteKeyHandler 显式管理） -->
-                            <Border.Triggers>
-                                <DataTrigger TargetType="Border" Binding="{Binding IsFocused}" Value="True">
-                                    <Setter Property="Stroke" Value="{DynamicResource PrimaryColor}" />
-                                    <Setter Property="StrokeThickness" Value="3" />
-                                    <Setter Property="Scale" Value="1.04" />
-                                </DataTrigger>
-                            </Border.Triggers>
+                        <!-- 尺寸 / 圆角 / 遥控器焦点环见 Styles.xaml 的 PosterCardStyle（四处海报墙共用） -->
+                        <Border Style="{StaticResource PosterCardStyle}">
                             <Grid>
                                 <Image Source="{Binding CoverDisplay}" Aspect="AspectFill" />
                                 <!-- 占位海报（本地渲染，零网络）：封面解析不到时显示，保证绝不留白 -->
@@ -110,6 +99,9 @@
                                         IsVisible="{Binding HasRemark}">
                                     <Label Text="{Binding Remarks}" FontSize="10" TextColor="#FFD76E" MaxLines="1" />
                                 </Border>
+                                <!-- 焦点环：画在图片之上（卡片自己的 Stroke 会被图片盖住） -->
+                                <Border Style="{StaticResource PosterFocusRingStyle}"
+                                        IsVisible="{Binding IsFocused}" />
                             </Grid>
                         </Border>
                         <Label Text="{Binding Title}" FontSize="12" Margin="0,6,0,0"

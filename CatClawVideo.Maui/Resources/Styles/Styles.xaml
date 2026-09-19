@@ -33,4 +33,56 @@
         <Setter Property="VerticalScrollBarVisibility" Value="Default" />
     </Style>
 
+    <!--
+        ══════════ 海报卡片（首页 / 历史 / 收藏 / 搜索-继续观看 共用） ══════════
+
+        尺寸、圆角、**焦点表现**只在这里定义一次 —— 这四处原来是各自抄一份，
+        改一处必然漏掉几处（2026-09-19 就吃过一次：只有历史页反馈「焦点不清晰」）。
+
+        焦点由两件事配合，缺一不可：
+        · 卡片自身放大 6% —— 让焦点从整片海报里"跳"出来；
+        · 描边环见下面的 PosterFocusRingStyle —— 必须**画在图片之上**。
+          先前把描边交给卡片 Border 自己的 Stroke，被 AspectFill 的图片整个盖住，
+          只在卡片下边缘漏出一条细线（用户截图「焦点不清晰」的真实成因）。
+
+        列表项不是原生可聚焦控件，IsFocused 由各页面的 IRemoteKeyHandler 显式维护
+        （见 Services/PosterWallFocus、HomePage）。
+    -->
+    <Style x:Key="PosterCardStyle" TargetType="Border">
+        <Setter Property="StrokeThickness" Value="0" />
+        <Setter Property="StrokeShape" Value="RoundRectangle 10" />
+        <Setter Property="BackgroundColor" Value="{DynamicResource CardBackgroundColor}" />
+        <Setter Property="HeightRequest" Value="{DynamicResource PosterCardHeight}" />
+        <Setter Property="WidthRequest" Value="{DynamicResource PosterCardWidth}" />
+        <Setter Property="HorizontalOptions" Value="Center" />
+    </Style>
+
+    <!--
+        焦点环：作为卡片内层 Grid 的**最后一个子元素**声明（Grid 按声明顺序叠放，
+        最后声明的画在最上层）→ 描边压在图片之上，清楚可见。
+
+        用法（每处海报墙一行）：
+            <Border Style="{StaticResource PosterFocusRingStyle}" IsVisible="{Binding IsFocused}" />
+
+        ⚠ IsVisible 用**直接绑定**而不是在 Style 里写 DataTrigger：实测本项目的
+        Style.Triggers 不生效（描边与放大 6% 都静默失效，页面不报错，极难排查）。
+        直接绑定与占位海报（IsVisible="{Binding SelectMode}"）走的是同一条路，可靠。
+
+        InputTransparent：环本身不能吃点击（卡片还要响应选中 / 长按菜单）。
+    -->
+    <Style x:Key="PosterFocusRingStyle" TargetType="Border">
+        <Setter Property="InputTransparent" Value="True" />
+        <Setter Property="BackgroundColor" Value="Transparent" />
+        <Setter Property="StrokeThickness" Value="5" />
+        <Setter Property="Stroke" Value="{DynamicResource PrimaryColor}" />
+        <Setter Property="StrokeShape" Value="RoundRectangle 10" />
+        <!-- 外发光：电视离得远，纯描边仍显单薄 -->
+        <Setter Property="Shadow">
+            <Setter.Value>
+                <Shadow Brush="{DynamicResource PrimaryColor}"
+                        Radius="14" Offset="0,0" Opacity="0.9" />
+            </Setter.Value>
+        </Setter>
+    </Style>
+
 </ResourceDictionary>
