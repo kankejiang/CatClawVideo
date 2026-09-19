@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>猫爪影视 · 搜索页重构 v2（填满竖向空间）</title>
+<style>
+  :root{
+    --bg:#12102B; --surface:#2A2755; --card:#332F5A; --card2:#3A3668;
+    --primary:#9B7ED8; --primary-dark:#7C5DCE; --accent:#55D6FF;
+    --text:#F5F6FF; --text2:#BCC0DD; --text3:#868CAE;
+    --divider:rgba(255,255,255,.08); --chip:rgba(255,255,255,.08);
+    --input:rgba(255,255,255,.05); --focus:#B79BFF;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#08070F;font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    color:var(--text);padding:44px 40px 90px}
+  h1{font-size:23px}
+  .sub{color:var(--text3);font-size:13px;line-height:1.85;margin:8px 0 34px;max-width:1080px}
+  .sub b{color:var(--text2)}
+  .sec{max-width:1420px;margin-bottom:66px}
+  .sec-h{display:flex;align-items:center;gap:12px;margin-bottom:7px;flex-wrap:wrap}
+  .sec-h h2{font-size:17px}
+  .tag{font-size:11px;padding:3px 11px;border-radius:99px;background:rgba(155,126,216,.18);
+    color:#C9B6F2;font-weight:700;flex:none}
+  .tag.g{background:rgba(120,255,190,.15);color:#8FF0C4}
+  .tag.r{background:rgba(255,140,140,.15);color:#FFB3B3}
+  .tag.y{background:rgba(255,215,110,.15);color:#FFD76E}
+  .sec-d{font-size:12.5px;color:var(--text3);line-height:1.9;margin-bottom:20px;max-width:1120px}
+  .sec-d b{color:var(--text2)}
+  .cols{display:flex;gap:34px;align-items:flex-start;flex-wrap:wrap}
+
+  /* ── 画布 ── */
+  .frame{border-radius:16px;border:1px solid rgba(255,255,255,.10);overflow:hidden;
+    box-shadow:0 26px 64px rgba(0,0,0,.62);display:flex;flex-direction:column;
+    background:var(--bg);flex:none;position:relative}
+  .tv{width:1280px;height:700px}
+  .cap{font-size:11.5px;color:var(--text3);margin-top:10px;line-height:1.7;max-width:1280px}
+  .cap b{color:var(--text2)}
+  .cap .hi{color:#8FF0C4}
+
+  /* ── 骨架：顶栏 / 主体 / 底提示 ── */
+  .top{height:52px;flex:none;display:flex;align-items:center;gap:12px;padding:0 22px;
+    border-bottom:1px solid var(--divider);background:linear-gradient(180deg,rgba(255,255,255,.03),transparent)}
+  .back{width:34px;height:34px;border-radius:11px;background:var(--chip);display:flex;
+    align-items:center;justify-content:center;font-size:15px;color:var(--text2);flex:none}
+  .sbar{flex:1;display:flex;align-items:center;gap:10px;height:38px;border-radius:11px;
+    background:var(--input);border:1px solid rgba(255,255,255,.10);padding:0 13px;font-size:14px}
+  .sbar .ic{color:var(--text3);font-size:13px}
+  .sbar .ph{color:var(--text3);font-size:13px}
+  .sbar .txt{color:var(--text);letter-spacing:1.5px;font-weight:600}
+  .sbar .caret{width:2px;height:18px;background:var(--focus);animation:bl 1s steps(1) infinite}
+  @keyframes bl{50%{opacity:0}}
+  .sbar .mode{margin-left:auto;font-size:10.5px;font-weight:700;color:#9FE4FF;
+    background:rgba(85,214,255,.14);padding:3px 9px;border-radius:99px;flex:none}
+  .sbar.focus{box-shadow:0 0 0 2.5px var(--focus),0 0 0 7px rgba(155,126,216,.20)}
+  .btn{height:34px;border-radius:9px;background:var(--primary);color:#fff;font-size:12.5px;
+    font-weight:600;display:flex;align-items:center;padding:0 17px;flex:none}
+
+  .hint{height:44px;flex:none;display:flex;align-items:center;gap:20px;padding:0 22px;
+    border-top:1px solid var(--divider);background:linear-gradient(0deg,rgba(255,255,255,.035),transparent);
+    font-size:11.5px;color:var(--text3)}
+  .hint span{display:flex;align-items:center;gap:7px}
+  .hint .now{margin-left:auto;color:var(--focus);font-weight:600}
+  kbd{display:inline-block;min-width:24px;text-align:center;background:rgba(255,255,255,.10);
+    border:1px solid rgba(255,255,255,.15);border-bottom-width:2px;border-radius:6px;
+    padding:2px 7px;font-size:11px;font-family:inherit;color:var(--text)}
+
+  /* ── 键盘：左 QWERTY 3 行 / 右 numpad 4 行，总高由外部给、行高 1fr 均分 → 底边对齐 ── */
+  .kbwrap{display:flex;flex:none}
+  .kb{flex:1;display:flex;flex-direction:column}
+  .kb-main{flex:1;display:flex;gap:13px;align-items:stretch;min-height:0}
+  .kb-qwerty{flex:10;display:flex;flex-direction:column;gap:6px;min-width:0}
+  .qrow{flex:1;display:flex;gap:6px;min-height:0}
+  .qrow .k{flex:1}
+  .kb-digits{flex:3.2;display:grid;grid-template-columns:repeat(3,1fr);grid-auto-rows:1fr;gap:6px;min-height:0}
+  .k{border-radius:9px;background:var(--card);border:1px solid rgba(255,255,255,.07);
+    display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:600;color:var(--text2)}
+  .k.fn{font-size:12.5px;color:var(--text3);background:var(--card2)}
+  .k.prim{background:var(--primary);color:#fff;border-color:transparent;font-size:12.5px}
+  .k.fk{background:rgba(155,126,216,.32);color:#fff;border-color:transparent;
+    box-shadow:0 0 0 2.5px var(--focus),0 0 0 7px rgba(155,126,216,.22)}
+
+  /* ── 区块标题 ── */
+  .gh{display:flex;align-items:center;gap:8px;font-size:11.5px;font-weight:700;
+    letter-spacing:.8px;color:var(--text3);margin-bottom:9px;flex:none}
+  .gh .cnt{font-weight:500;letter-spacing:0;color:var(--text3);opacity:.75}
+  .gh .more{margin-left:auto;font-size:11px;color:var(--primary);font-weight:600}
+
+  /* ── chips ── */
+  .chips{display:flex;flex-wrap:wrap;gap:7px;align-content:flex-start}
+  .chip{font-size:12px;padding:7px 14px;border-radius:99px;background:var(--chip);color:var(--text2);
+    white-space:nowrap}
+  .chip.f{background:rgba(155,126,216,.32);color:#fff;font-weight:700;
+    box-shadow:0 0 0 2.5px var(--focus),0 0 0 7px rgba(155,126,216,.22)}
+  .chip .hot{color:#FFD76E;margin-right:4px;font-size:10px}
+
+  /* ── 海报 ── */
+  .pgrid{display:grid;gap:13px 12px;align-content:start;min-height:0;overflow:hidden}
+  .g5{grid-template-columns:repeat(5,1fr)}
+  .g6{grid-template-columns:repeat(6,1fr)}
+  .card{min-width:0}
+  .poster{position:relative;width:100%;aspect-ratio:2/3;border-radius:10px;overflow:hidden;
+    background:linear-gradient(150deg,#4A4478,#252145);border:1px solid rgba(255,255,255,.07);
+    display:flex;align-items:center;justify-content:center}
+  .poster .t{font-size:11.5px;font-weight:700;color:#D8DDF5;text-align:center;padding:9px;line-height:1.5}
+  .poster .badge{position:absolute;top:7px;right:7px;font-size:10px;color:#FFD76E;
+    background:rgba(0,0,0,.5);border-radius:8px;padding:1px 6px}
+  .poster .site{position:absolute;bottom:7px;left:7px;font-size:10px;color:#D8DDF5;
+    background:rgba(0,0,0,.55);border-radius:8px;padding:1px 6px}
+  .poster .prog{position:absolute;left:7px;right:7px;bottom:6px;height:3px;border-radius:2px;
+    background:rgba(255,255,255,.22)}
+  .poster .prog i{position:absolute;left:0;top:0;bottom:0;border-radius:2px;background:var(--primary)}
+  .cf .poster{box-shadow:0 0 0 3px var(--focus),0 0 0 9px rgba(155,126,216,.22);transform:scale(1.03)}
+  .nm{font-size:12px;margin-top:7px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .yr{font-size:10.5px;color:var(--text3);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  /* ── 联想行 ── */
+  .hits{display:flex;flex-direction:column;gap:8px;overflow:hidden;min-height:0}
+  .hit{display:flex;align-items:center;gap:12px;padding:11px 13px;border-radius:11px;
+    background:var(--card);border:1px solid rgba(255,255,255,.06);flex:none}
+  .hit .th{width:38px;height:52px;border-radius:7px;flex:none;
+    background:linear-gradient(150deg,#4A4478,#252145);display:flex;align-items:center;
+    justify-content:center;font-size:9.5px;color:#C9CDF0;text-align:center;padding:3px;line-height:1.3;overflow:hidden}
+  .hit .nm2{font-size:13.5px;font-weight:700;min-width:0;overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+  .hit .mt{font-size:10.5px;color:var(--text3);margin-top:3px}
+  .hit .py{margin-left:auto;font-size:12px;color:var(--focus);font-weight:700;
+    letter-spacing:1.5px;flex:none}
+  .hit .tag2{font-size:10.5px;padding:3px 9px;border-radius:99px;flex:none;
+    background:rgba(120,255,190,.13);color:#8FF0C4;font-weight:700}
+  .hit .tag2.go{background:rgba(255,255,255,.08);color:var(--text3);font-weight:500}
+  .hit.f{border-color:transparent;background:rgba(155,126,216,.20);
+    box-shadow:0 0 0 2.5px var(--focus),0 0 0 7px rgba(155,126,216,.22)}
+
+  /* ── 站点筛选纵列 ── */
+  .fcol{width:126px;flex:none;display:flex;flex-direction:column;gap:7px}
+  .fchip{font-size:11.5px;padding:8px 12px;border-radius:10px;background:var(--chip);
+    color:var(--text2);display:flex;align-items:center;gap:6px}
+  .fchip .n{margin-left:auto;font-size:10.5px;color:var(--text3)}
+  .fchip.on{background:var(--primary);color:#fff;font-weight:700}
+  .fchip.on .n{color:rgba(255,255,255,.75)}
+  .fchip.f{box-shadow:0 0 0 2.5px var(--focus),0 0 0 6px rgba(155,126,216,.22)}
+
+  /* ── 诊断图专用 ── */
+  .void{position:absolute;left:22px;right:22px;border-radius:12px;
+    border:1.5px dashed rgba(255,120,120,.45);background:rgba(255,90,90,.05);
+    display:flex;align-items:center;justify-content:center;color:#FFB3B3;font-size:12px;
+    font-weight:700;letter-spacing:.5px}
+  .void2{position:absolute;border-radius:12px;border:1.5px dashed rgba(255,120,120,.45);
+    background:rgba(255,90,90,.05);display:flex;align-items:center;justify-content:center;
+    color:#FFB3B3;font-size:11px;font-weight:700;writing-mode:vertical-rl}
+  .ruler{position:absolute;left:0;top:0;bottom:0;width:3px;background:rgba(255,120,120,.5)}
+
+  /* ── 表格 ── */
+  table{border-collapse:collapse;font-size:12.5px;width:100%;max-width:1180px}
+  th,td{text-align:left;padding:9px 13px;border-bottom:1px solid var(--divider);vertical-align:top}
+  th{color:var(--text3);font-size:11.5px;font-weight:600;letter-spacing:.4px}
+  code{background:rgba(255,255,255,.07);border-radius:5px;padding:1px 6px;font-size:11.5px}
+  .note{font-size:11.5px;color:var(--text3);line-height:1.9;margin-top:16px;max-width:1120px;
+    border-left:2px solid rgba(155,126,216,.5);padding-left:13px}
+  .note b{color:var(--text2)}
+  .note.warn{border-left-color:rgba(255,190,90,.65)}
+  .note.ok{border-left-color:rgba(120,255,190,.55)}
+  .verdict{display:flex;gap:11px;align-items:flex-start;padding:14px 16px;border-radius:11px;
+    background:rgba(120,255,190,.07);border:1px solid rgba(120,255,190,.22);margin-top:16px;max-width:1120px}
+  .verdict .ic{font-size:16px;flex:none}
+  .verdict .tx{font-size:12px;color:var(--text2);line-height:1.85}
+  .verdict .tx b{color:#8FF0C4}
+</style>
+</head>
+<body>
+
+<h1>猫爪影视 · 搜索页重构 v2</h1>
+<p class="sub">
+你说得对，<b>下方那一大块是空的</b>。先把根因讲清楚，再给方案 ——
+按你的要求，这一版先只出 <b>HTML 模板</b>，确认后再动 XAML。
+</p>
+
+<!-- ═══════════════════ ① 诊断 ═══════════════════ -->
+<div class="sec">
+  <div class="sec-h"><h2>① 现状诊断：为什么下方是空的</h2><span class="tag r">根因</span></div>
+  <p class="sec-d">
+    主体行的布局是 <code>RowDefinitions="Auto,*,Auto"</code>，中间那行确实是 <code>*</code>（占满剩余高度）。
+    但<b>左右两栏装的都是「自然高度」内容</b>，谁也不去认领这块高度：
+  </p>
+  <table>
+    <tr><th style="width:230px">元素</th><th>实际高度来源</th><th style="width:150px">占位</th></tr>
+    <tr>
+      <td>左栏 <code>KeyboardPane</code></td>
+      <td><code>VerticalStackLayout</code> 包着 <code>VirtualKeyboard</code>；
+          键高是常量 <code>KeyHeight = 46</code>，数字区 4 行最高 →
+          <code>4×46 + 3×6 = 202px</code></td>
+      <td>约 <b>202px</b></td>
+    </tr>
+    <tr>
+      <td>右栏 <code>HotSection</code></td>
+      <td>10 个热词 chip，宽度只占了右栏的一半 → 折成 2~3 行，约 <code>150px</code></td>
+      <td>约 <b>150px</b></td>
+    </tr>
+    <tr>
+      <td><b>中间行可用高度</b></td>
+      <td>窗口 700 − 顶栏 52 − 底提示 44 ≈ <b>604px</b>（1080 宽小窗口下约 430px）</td>
+      <td>—</td>
+    </tr>
+    <tr>
+      <td colspan="2"><b>⇒ 差值</b>：604 − 202 ≈ <b>400px 无人占用</b>（小窗口下也空 ~230px）</td>
+      <td class="tag r">全部空白</td>
+    </tr>
+  </table>
+
+  <div class="cols" style="margin-top:26px">
+    <div>
+      <div class="frame tv">
+        <div class="top">
+          <div class="back">←</div>
+          <div class="sbar"><span class="ic">🔍</span><span class="ph">片名首字母 / 全拼 / 中文</span></div>
+          <div class="btn">搜索</div>
+        </div>
+        <div class="body" style="flex:1;display:flex;gap:18px;padding:0 22px;position:relative;min-height:0">
+          <div style="flex:1;display:flex;flex-direction:column;gap:13px;padding:13px 0;min-width:0">
+            <div class="kbwrap" style="height:202px"><div class="kb" data-kb=""></div></div>
+          </div>
+          <div style="flex:1;display:flex;flex-direction:column;gap:13px;padding:13px 0;min-width:0">
+            <div>
+              <div class="gh">🔥 热门搜索</div>
+              <div class="chips" data-chips="HOT10"></div>
+            </div>
+          </div>
+          <div class="void" style="top:230px;bottom:13px">
+            ↑ 这块 400px 完全没人用 —— 就是你看到的那片空白
+          </div>
+        </div>
+        <div class="hint">
+          <span><kbd>↑↓←→</kbd> 移动</span><span><kbd>OK</kbd> 输入 / 激活</span>
+          <span><kbd>Back</kbd> 退格 / 返回</span>
+          <span class="now">焦点：热门搜索 1/10</span>
+        </div>
+      </div>
+      <div class="cap">
+        <b>现状重现</b>：键盘随内容自然高（202px），热词只折了 2 行就结束；
+        中间行剩下的 <b>400px 全空</b>——底提示条孤零零贴在窗口下沿，中间一片死区。
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ ② 方案 A ═══════════════════ -->
+<div class="sec">
+  <div class="sec-h"><h2>② 方案 A（推荐）· 全高双栏 · 左「键+搜」右「热+看」</h2><span class="tag g">推荐</span></div>
+  <p class="sec-d">
+    思路很简单：<b>让每一栏里都加一段「可长可短」的区块，去认领剩余高度</b>。
+    键盘把键帽撑高到电视友好的尺寸（约 300px），左栏下方补<b>最近搜索</b>；
+    右栏下方补<b>继续观看</b>海报墙（这一段用 <code>flex:1</code> 吸收全部余量，行数随窗口自动增减）。
+    四块内容都是<b>已有真实数据</b>，不需要新接口。
+  </p>
+
+  <div class="cols">
+    <!-- 状态 1 -->
+    <div>
+      <div class="frame tv">
+        <div class="top">
+          <div class="back">←</div>
+          <div class="sbar focus"><span class="ic">🔍</span><span class="ph">片名首字母 / 全拼 / 中文</span></div>
+          <div class="btn">搜索</div>
+        </div>
+        <div id="A1" class="body" style="flex:1;display:flex;gap:18px;padding:0 22px;min-height:0">
+          <div class="colL" style="flex:1;display:flex;flex-direction:column;gap:13px;padding:13px 0;min-width:0">
+            <div class="kbwrap" style="height:300px"><div class="kb" data-kb=""></div></div>
+            <div style="min-height:0">
+              <div class="gh">🕐 最近搜索 <span class="cnt">10</span></div>
+              <div class="chips" data-chips="RECENT" data-focus="1"></div>
+            </div>
+          </div>
+          <div class="colR" style="flex:1;display:flex;flex-direction:column;gap:13px;padding:13px 0;min-width:0">
+            <div style="flex:none">
+              <div class="gh">🔥 热门搜索 <span class="more">换一批 ›</span></div>
+              <div class="chips" data-chips="HOT10" data-focus="2"></div>
+            </div>
+            <div style="flex:1;display:flex;flex-direction:column;min-height:0">
+              <div class="gh">▶ 继续观看 <span class="cnt">8</span></div>
+              <div class="pgrid g5" data-posters="CONTINUE" data-focus="0"></div>
+            </div>
+          </div>
+        </div>
+        <div class="hint">
+          <span><kbd>↑↓←→</kbd> 移动</span><span><kbd>OK</kbd> 输入 / 激活</span>
+          <span><kbd>Back</kbd> 返回</span>
+          <span class="now">焦点：热门搜索 3/10</span>
+        </div>
+      </div>
+      <div class="cap">
+        <b>状态 1 · 初始态（焦点在热门搜索）</b><br>
+        四段内容各就各位，<span class="hi">没有一处空白</span>：
+        左栏键盘 300px + 最近搜索；右栏热门搜索 + 继续观看海报墙（2 行 × 5 列，随高度自动增减）。
+        焦点默认落在<b>热门搜索</b>——不想打字的用户一步到位；按 <kbd>←</kbd> 才进键盘。
+      </div>
+    </div>
+  </div>
+
+  <div class="cols" style="margin-top:34px">
+    <!-- 状态 2 -->
+    <div>
+      <div class="frame tv">
+        <div class="top">
+          <div class="back">←</div>
+          <div class="sbar focus"><span class="ic">🔍</span><span class="txt">lr</span><span class="caret"></span><span class="mode">首字母</span></div>
+          <div class="btn">搜索</div>
+        </div>
+        <div class="body" style="flex:1;display:flex;gap:18px;padding:0 22px;min-height:0">
+          <div style="flex:1;display:flex;flex-direction:column;gap:13px;padding:13px 0;min-width:0">
+            <div class="kbwrap" style="height:300px"><div class="kb" data-kb="L"></div></div>
+            <div>
+              <div class="gh">🕐 最近搜索 <span class="cnt">10</span></div>
+              <div class="chips" data-chips="RECENT"></div>
+            </div>
+          </div>
+          <div style="flex:1;display:flex;flex-direction:column;gap:13px;padding:13px 0;min-width:0">
+            <div style="flex:1;display:flex;flex-direction:column;min-height:0">
+              <div class="gh">🎯 片名联想 <span class="cnt">「lr」命中 6 个</span></div>
+              <div class="hits" data-hits="SUG_LR" data-focus="0"></div>
+            </div>
+          </div>
+        </div>
+        <div class="hint">
+          <span><kbd>↑↓←→</kbd> 移动</span><span><kbd>OK</kbd> 激活</span>
+          <span><kbd>Back</kbd> 退格</span>
+          <span class="now">焦点：键盘 L</span>
+        </div>
+      </div>
+      <div class="cap">
+        <b>状态 2 · 输入态（打 <code>lr</code>）</b><br>
+        右栏被<b>片名联想列表铺满</b>（列表长了就地滚动）——本来这块也是空的。
+        联想只给<b>片名</b>不给出处：同一部片在 10 个源就重复 10 行的问题这里就没了。
+        右侧标签告诉用户这条是 <b>▶ 直接播放</b>（本地有定位）还是<b>去搜索</b>。
+      </div>
+    </div>
+  </div>
+
+  <div class="cols" style="margin-top:34px">
+    <!-- 状态 3 -->
+    <div>
+      <div class="frame tv">
+        <div class="top">
+          <div class="back">←</div>
+          <div class="sbar"><span class="ic">🔍</span><span class="txt" style="letter-spacing:0;font-weight:400">流人 第六季</span></div>
+          <div class="btn">修改</div>
+        </div>
+        <div class="body" style="flex:1;display:flex;flex-direction:column;gap:9px;padding:13px 22px;min-height:0">
+          <div class="gh" style="margin-bottom:0">跨源结果 · <span style="color:#8FF0C4">「流人 第六季」共 14 个源命中</span>
+            <span class="more">按相关度排序</span></div>
+          <div style="flex:1;display:flex;gap:13px;min-height:0">
+            <div class="fcol">
+              <div class="fchip on f">全部 <span class="n">14</span></div>
+              <div class="fchip">高清源 <span class="n">6</span></div>
+              <div class="fchip">老牌源 <span class="n">4</span></div>
+              <div class="fchip">快线 <span class="n">2</span></div>
+              <div class="fchip">备用源 <span class="n">2</span></div>
+            </div>
+            <div style="flex:1;min-width:0;display:flex;flex-direction:column;min-height:0">
+              <div class="pgrid g6" data-posters="RESULTS" data-focus="0"></div>
+            </div>
+          </div>
+        </div>
+        <div class="hint">
+          <span><kbd>↑↓←→</kbd> 移动</span><span><kbd>OK</kbd> 播放</span>
+          <span><kbd>Back</kbd> 回输入态</span>
+          <span class="now">焦点：结果 1/14</span>
+        </div>
+      </div>
+      <div class="cap">
+        <b>状态 3 · 结果态</b><br>
+        键盘整栏收起（宽度压到 0），结果区铺满整宽 —— 原来这块本来就是满的，
+        这一版<b>保持不动</b>，只把站点筛选纵列与结果网格的间距对齐到新规范。
+      </div>
+    </div>
+  </div>
+
+  <div class="note ok">
+    <b>为什么不用「把键盘拉到满高」这一招</b>：<br>
+    中间行 604px 全靠键盘吸收的话，字母区每行要变成 <code>(604−16)÷3 ≈ 196px</code> 高 ——
+    键帽比海报还高，看着像坏掉了。所以键盘<b>封顶在 300px</b>（字母行 ~93px、数字行 ~68px，
+    已是电视遥控器舒适尺寸的上限），<b>余量交给内容区</b>去填。
+  </div>
+
+  <div class="note warn">
+    <b>数据来源（都是现成的，无新接口）</b>：<br>
+    · <b>热门搜索</b> → <code>DoubanHotService.GetHotWordsAsync()</code>（TVBox 同源，实测可用）<br>
+    · <b>最近搜索</b> → 本地 <code>Preferences</code> 历史词（已有 <code>GetHistory()</code>）<br>
+    · <b>继续观看</b> → <code>play_history</code> 表，<b>带封面</b>（<code>PlayHistoryEntry.Cover</code>）<br>
+    · <b>片名联想</b> → <code>search_index</code> 表 + 历史 + 收藏 + 热词，按片名聚合<br>
+    空数据时对应区块<b>整段隐藏</b>，布局自动上移，不留在那里占位。
+  </div>
+</div>
+
+<!-- ═══════════════════ ③ 方案 B ═══════════════════ -->
+<div class="sec">
+  <div class="sec-h"><h2>③ 方案 B · 三栏（键盘 / 词 / 海报墙 各占一栏）</h2><span class="tag">备选</span></div>
+  <p class="sec-d">
+    把方案 A 的左右两栏各再拆一次，变成三栏等分。<b>信息密度更高、更「满」</b>，
+    但 1080 宽的小窗口下每栏只剩 ~340px，chip 与海报都会挤。1080p 及以上还行，窗口拉小就难看。
+  </p>
+
+  <div class="cols">
+    <div>
+      <div class="frame tv">
+        <div class="top">
+          <div class="back">←</div>
+          <div class="sbar focus"><span class="ic">🔍</span><span class="ph">片名首字母 / 全拼 / 中文</span></div>
+          <div class="btn">搜索</div>
+        </div>
+        <div class="body" style="flex:1;display:flex;gap:16px;padding:0 22px;min-height:0">
+          <div style="flex:1.15;display:flex;flex-direction:column;gap:13px;padding:13px 0;min-width:0">
+            <div class="kbwrap" style="height:300px"><div class="kb" data-kb=""></div></div>
+            <div>
+              <div class="gh">🕐 最近搜索</div>
+              <div class="chips" data-chips="RECENT" data-focus="0"></div>
+            </div>
+          </div>
+          <div style="flex:1;display:flex;flex-direction:column;gap:13px;padding:13px 0;min-width:0;border-left:1px solid var(--divider);border-right:1px solid var(--divider);padding-left:16px;padding-right:16px">
+            <div style="flex:none">
+              <div class="gh">🔥 热门搜索 <span class="more">换一批 ›</span></div>
+              <div class="chips" data-chips="HOT10" data-focus="3"></div>
+            </div>
+            <div style="flex:1;display:flex;flex-direction:column;min-height:0">
+              <div class="gh">🎬 热播剧集</div>
+              <div class="chips" data-chips="HOT_MORE"></div>
+            </div>
+          </div>
+          <div style="flex:1;display:flex;flex-direction:column;gap:13px;padding:13px 0;min-width:0">
+            <div style="flex:1;display:flex;flex-direction:column;min-height:0">
+              <div class="gh">▶ 继续观看 <span class="cnt">10</span></div>
+              <div class="pgrid" style="grid-template-columns:repeat(3,1fr)" data-posters="CONTINUE" data-focus="0"></div>
+            </div>
+          </div>
+        </div>
+        <div class="hint">
+          <span><kbd>↑↓←→</kbd> 移动</span><span><kbd>OK</kbd> 输入 / 激活</span>
+          <span><kbd>Back</kbd> 返回</span>
+          <span class="now">焦点：热门搜索 4/10</span>
+        </div>
+      </div>
+      <div class="cap">
+        <b>方案 B</b>：三栏都满，但每栏更窄 —— 键盘只占 1/3 宽时，QWERTY 十个键每个约 40px，
+        电视上略显小；继续观看只能放 3 列。适合 1600×800 以上的窗口。
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ ④ 对比 ═══════════════════ -->
+<div class="sec">
+  <div class="sec-h"><h2>④ 方案对比与建议</h2></div>
+  <table>
+    <tr><th style="width:150px">维度</th><th>现状</th><th>方案 A（推荐）</th><th>方案 B</th></tr>
+    <tr><td>空白占比</td><td class="tag r">约 65% 空</td><td class="tag g">≈ 0</td><td class="tag g">≈ 0</td></tr>
+    <tr><td>键帽高度</td><td>46px（偏小）</td><td><b>约 68~93px</b>（电视友好）</td><td>约 68~93px</td></tr>
+    <tr><td>1080 宽窗口</td><td>—</td><td class="tag g">舒适</td><td class="tag y">偏挤</td></tr>
+    <tr><td>新增数据依赖</td><td>—</td><td class="tag g">无（全是现成数据）</td><td class="tag g">无</td></tr>
+    <tr><td>改动量</td><td>—</td><td>中（XAML 重排 + 键盘可拉伸 + 两个新区块）</td><td>中大（同 A，多了窄栏自适应）</td></tr>
+  </table>
+
+  <div class="verdict">
+    <div class="ic">✅</div>
+    <div class="tx">
+      建议走 <b>方案 A</b>：它用「键盘封顶 300px + 内容区吸收余量」这一条规则，
+      就把空白问题<b>从根上解掉</b>，而且窗口怎么拉都不空 —— 继续观看是 <code>flex:1</code>，
+      海报行数随高度自动增减。<br>
+      另外方案 A 的结构天然容纳后续状态：<b>输入态</b>右栏换成联想列表、
+      <b>结果态</b>键盘整栏收起，三种状态共用同一套栅格，不需要分别调布局。
+    </div>
+  </div>
+
+  <div class="note">
+    <b>三端一致</b>：以上是横屏单套布局 —— 手机 / 平板 / 电视 / Windows 共用（本项目既定约定）。
+    在手机上「继续观看」会自动变成 3 列（窄屏），规则同样是 <code>flex:1</code> + 自适应列数，不写死。
+  </div>
+</div>
+
+<!-- ═══════════════════ ⑤ 导航 ═══════════════════ -->
+<div class="sec">
+  <div class="sec-h"><h2>⑤ 焦点导航（遥控器）</h2></div>
+  <table>
+    <tr><th style="width:210px">当前位置</th><th style="width:120px">按键</th><th>去向</th></tr>
+    <tr><td>热门搜索</td><td><kbd>←</kbd></td><td>进键盘（落在 <code>P</code>，即最靠右的字母）</td></tr>
+    <tr><td>热门搜索 / 最近搜索</td><td><kbd>↓</kbd></td><td>进各自下方的海报墙 / 保持在本栏</td></tr>
+    <tr><td>键盘</td><td><kbd>→</kbd> <kbd>↓</kbd>（越界）</td><td>跳到右栏当前的第一个区块（热门搜索）</td></tr>
+    <tr><td>键盘 · 数字区末行</td><td><kbd>↓</kbd></td><td>跳出键盘 → 左栏「最近搜索」</td></tr>
+    <tr><td>继续观看 / 海报墙</td><td><kbd>↑</kbd>（第一行）</td><td>回「热门搜索」</td></tr>
+    <tr><td>任意</td><td><kbd>OK</kbd></td><td>键盘 → 输入该字母（焦点不动，可连打）；chip → 立即搜；海报 → 进观看页</td></tr>
+    <tr><td>任意</td><td><kbd>Back</kbd></td><td>框内有字 → 退格；结果态 → 回输入态；否则 → 退出搜索页</td></tr>
+  </table>
+
+  <div class="note warn">
+    <b>注意</b>：焦点默认落点由「热门搜索」改为可用时，<b>底部提示条必须跟着改</b>
+    （现在写死的是 <code>移动 / 输入或激活 / 退格或返回</code>，且右侧焦点指示只有「热门搜索 1/10」一种）。
+    新布局有 4 个可聚焦区，提示条右侧应显示<b>当前区名 + 区内序号</b>，否则用户不知道自己站在哪。
+  </div>
+</div>
+
+<!-- ═══════════════════ ⑥ 落地清单 ═══════════════════ -->
+<div class="sec">
+  <div class="sec-h"><h2>⑥ 确认后要动的文件</h2></div>
+  <table>
+    <tr><th style="width:300px">文件</th><th>改动</th></tr>
+    <tr><td><code>Pages/SearchPage.xaml</code></td>
+        <td>主体改双栏栅格；左栏加「最近搜索」区、右栏加「继续观看」区；结果态栅格对齐新规范</td></tr>
+    <tr><td><code>Controls/VirtualKeyboard.cs</code></td>
+        <td><code>KeyHeight</code> 常量 → 行高改 <code>Star</code> 让键帽随外部高度拉伸，
+            并加 <code>MaxHeight</code> 封顶 300px（避免超宽窗口下键帽被拉成长条）</td></tr>
+    <tr><td><code>Pages/SearchPage.xaml.cs</code></td>
+        <td>新增「继续观看」区块构建（读 <code>play_history</code> 带封面）；
+            焦点链路插入新区块；提示条改为动态区名</td></tr>
+    <tr><td><code>Services/TitleNormalizer.cs</code>（已存在）</td>
+        <td>「继续观看」标题同样要清洗（<code>流人 第六季 · 第04集</code> → 片名 + 集数分开显示）</td></tr>
+  </table>
+
+  <div class="note">
+    以上都还<b>没动手</b>——按你说的，先出模板。你在这版上圈一下要保留 / 要砍的区块
+    （比如「最近搜索」和「热门搜索」是不是重复了、「继续观看」要不要换成「我的收藏」），
+    定稿后我再一次性改 XAML 并提交。
+  </div>
+</div>
+
+<script>
+const DATA = {
+  HOT10: ["兰香如故","现在不是出轨的问题","流人 第六季","幸福伽菜子的快乐杀手生活","深渊无间",
+          "交锋","早春晴朗","玫瑰的故事","凡人修仙传","遮天"],
+  HOT_MORE: ["庆余年 第二季","仙逆","诛仙","长歌行","藏海传","斗破苍穹","雪迷宫","不可告人","九部的检察官","边水往事"],
+  RECENT: ["流人","凡人修仙传","庆余年","仙逆","遮天","诛仙","长歌行","藏海传","玫瑰的故事","斗破苍穹"],
+  CONTINUE: [
+    {t:"流人 第六季", b:"第04集", y:"看过 62%", p:62},
+    {t:"凡人修仙传", b:"第118集", y:"看过 35%", p:35},
+    {t:"庆余年 第二季", b:"第22集", y:"看过 78%", p:78},
+    {t:"仙逆", b:"第46集", y:"看过 12%", p:12},
+    {t:"遮天", b:"第88集", y:"看过 51%", p:51},
+    {t:"诛仙", b:"已看完", y:"2026-09-12", p:100},
+    {t:"长歌行", b:"第30集", y:"看过 27%", p:27},
+    {t:"藏海传", b:"第12集", y:"看过 8%",  p:8},
+    {t:"斗破苍穹", b:"第96集", y:"看过 66%", p:66},
+    {t:"玫瑰的故事", b:"第18集", y:"看过 44%", p:44}
+  ],
+  RESULTS: [
+    {t:"流人 第六季", b:"更新至06", s:"高清源", y:"2026"},
+    {t:"流人 第六季", b:"全06集",  s:"老牌源", y:"2026"},
+    {t:"流人 第六季", b:"更新至06", s:"快线",   y:"2026"},
+    {t:"流人 第六季", b:"HD",      s:"备用源", y:"2026"},
+    {t:"流人 第一季", b:"全06集",  s:"高清源", y:"2022"},
+    {t:"流人 第二季", b:"全06集",  s:"高清源", y:"2023"},
+    {t:"流人 第三季", b:"全06集",  s:"老牌源", y:"2024"},
+    {t:"流人 第四季", b:"全06集",  s:"快线",   y:"2025"},
+    {t:"流人 第五季", b:"全06集",  s:"备用源", y:"2025"},
+    {t:"流人 特辑",   b:"HD",      s:"老牌源", y:"2024"},
+    {t:"流人 第六季", b:"更新至06", s:"备用源", y:"2026"},
+    {t:"流人 前传",   b:"HD",      s:"快线",   y:"2023"}
+  ],
+  SUG_LR: [
+    {t:"流人 第六季", py:"LRDLJ", s:"▶ 直接播放", direct:true,  m:"本地索引 · 看过第 04 集"},
+    {t:"流人 第一季", py:"LRDYJ", s:"▶ 直接播放", direct:true,  m:"本地索引"},
+    {t:"流人 第五季", py:"LRDWJ", s:"▶ 直接播放", direct:true,  m:"我的收藏"},
+    {t:"龙日",       py:"LR",    s:"热门",       direct:false, m:"热门搜索"},
+    {t:"落日",       py:"LR",    s:"去搜索",     direct:false, m:"热搜词"},
+    {t:"猎刃",       py:"LR",    s:"去搜索",     direct:false, m:"热搜词"}
+  ]
+};
+
+const LETTERS = ["QWERTYUIOP","ASDFGHJKL","ZXCVBNM"];
+const DIGITS  = [["7","8","9"],["4","5","6"],["1","2","3"],["0","⌫","搜索"]];
+
+function kbHtml(focus){
+  const ind = [0, 5, 15];
+  const q = LETTERS.map((r, i) =>
+    `<div class="qrow" style="margin:0 ${ind[i]}%">` +
+    [...r].map(c => `<div class="k${focus === c ? " fk" : ""}">${c}</div>`).join("") +
+    `</div>`).join("");
+  const d = DIGITS.flat().map(c => {
+    const fn = (c === "⌫" || c === "搜索") ? " fn" : "";
+    const pr = (c === "搜索") ? " prim" : "";
+    return `<div class="k${fn}${pr}${focus === c ? " fk" : ""}">${c}</div>`;
+  }).join("");
+  return `<div class="kb-main"><div class="kb-qwerty">${q}</div><div class="kb-digits">${d}</div></div>`;
+}
+
+function chipsHtml(list, focus){
+  return list.map((w, i) => `<div class="chip${i === focus ? " f" : ""}">${w}</div>`).join("");
+}
+
+function postersHtml(list, focus){
+  return list.map((o, i) => `
+    <div class="card${i === focus ? " cf" : ""}">
+      <div class="poster">
+        <span class="t">${o.t}</span>
+        ${o.b ? `<span class="badge">${o.b}</span>` : ""}
+        ${o.s ? `<span class="site">${o.s}</span>` : ""}
+        ${o.p != null ? `<div class="prog"><i style="width:${o.p}%"></i></div>` : ""}
+      </div>
+      <div class="nm">${o.t}</div>
+      <div class="yr">${o.y || ""}</div>
+    </div>`).join("");
+}
+
+function hitsHtml(list, focus){
+  return list.map((o, i) => `
+    <div class="hit${i === focus ? " f" : ""}">
+      <div class="th">封面</div>
+      <div style="min-width:0;flex:1">
+        <div class="nm2">${o.t}</div>
+        <div class="mt">${o.m}</div>
+      </div>
+      <div class="py">${o.py}</div>
+      <div class="tag2${o.direct ? "" : " go"}">${o.s}</div>
+    </div>`).join("");
+}
+
+document.querySelectorAll("[data-kb]").forEach(el => {
+  el.innerHTML = kbHtml(el.getAttribute("data-kb") || "");
+});
+document.querySelectorAll("[data-chips]").forEach(el => {
+  const list = DATA[el.getAttribute("data-chips")] || [];
+  el.innerHTML = chipsHtml(list, parseInt(el.getAttribute("data-focus") || "-1", 10));
+});
+document.querySelectorAll("[data-posters]").forEach(el => {
+  const list = DATA[el.getAttribute("data-posters")] || [];
+  el.innerHTML = postersHtml(list, parseInt(el.getAttribute("data-focus") || "-1", 10));
+});
+document.querySelectorAll("[data-hits]").forEach(el => {
+  const list = DATA[el.getAttribute("data-hits")] || [];
+  el.innerHTML = hitsHtml(list, parseInt(el.getAttribute("data-focus") || "-1", 10));
+});
+</script>
+</body>
+</html>
