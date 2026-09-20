@@ -106,9 +106,16 @@ public partial class SourceConfigPage : ContentPage
                 _ => $"type {s.Type}",
             },
         };
-        var note = s.SpiderKind == VodSpiderKind.Script && CatClawVideo.Core.Models.SiteRegistry.JsSpiderAvailable
-            ? null
-            : s.StatusNote;
+        // 备注只在「运行时真的不可用」时才该显示：
+        // 解析期写入的 StatusNote 是按「是否 MacCMS(type=1)」判可播得来的，type=3 站点一律带着
+        // 「需 spider 运行时」；若这里不按运行时豁免，jar 源会在**桥明明可用**的机器上照样显示该提示
+        // （2026-09-21 用户反馈「显示需要 spider 运行」—— 实测 jar桥=True 仍显示，纯误导）。
+        var note = s.SpiderKind switch
+        {
+            VodSpiderKind.Script when CatClawVideo.Core.Models.SiteRegistry.JsSpiderAvailable => null,
+            VodSpiderKind.Jar when CatClawVideo.Core.Models.SiteRegistry.JarSpiderAvailable => null,
+            _ => s.StatusNote,
+        };
         return new SiteRow(s.Name, typeName, note, s);
     }
 
