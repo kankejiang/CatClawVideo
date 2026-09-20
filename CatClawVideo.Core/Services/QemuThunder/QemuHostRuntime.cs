@@ -36,11 +36,25 @@ public sealed class QemuHostRuntime : IDisposable
     private StreamWriter? _fileLog;
     private int _filtered;
 
+    /// <summary>
+    /// 稀疏块设备（数据面）——guest 把引擎吐出的字节按文件偏移直接写进来，宿主**直读同一物理文件**。
+    ///
+    /// <para><b>为什么</b>：2026-09-21 实测，现有取流路径每层都在白吃带宽：
+    /// guest 内环 TCP 432 MB/s → SLIRP 40 MB/s（掉 10.8×）→ harness 转发后仅 <b>18.9 MB/s</b>。
+    /// 宿主直读镜像实测 <b>2454~2926 MB/s</b>，且写入侧 84.9~97.7 MB/s 已远高于引擎自身
+    /// 2.5~4.8 MB/s 的 P2P 供数速度。</para>
+    ///
+    /// <para>为 null 时不挂块设备，行为与改动前完全一致（纯 HTTP 通道）——
+    /// 这是刻意的：新通道是**增益**，不是替代，任何环境异常都能安全退化。</para>
+    /// </summary>
+    public SparseBlockStore? BlockStore { get; private set; }
+
     /// <param name="initrdName">initrd 文件名；多实例（如下载专用引擎）传独立控制口的第二份 initrd。</param>
     /// <param name="consoleLogTag">控制台日志文件名后缀（多实例避免互相覆盖）。</param>
     /// <param name="monitorPort">monitor 监听端口（0 = 不开）。仅绑 127.0.0.1，不对外。</param>
     public QemuHostRuntime(string runtimeDir, int mediaPort, Action<string>? log = null,
-        string initrdName = "pkg_initrd.gz", string consoleLogTag = "", int monitorPort = 0)
+        string initrdName = "pkg_initrd.gz", string consoleLogTag = "", int monitorPort = 0,
+        string? blockImagePath = null, long blockImageBytes = 0)
     {
         RuntimeDir = runtimeDir;
         MediaPort = mediaPort;
@@ -49,6 +63,22 @@ public sealed class QemuHostRuntime : IDisposable
         _log = log;
         // Debug/Release 隔离（见 AppPaths）
         ConsoleLogPath = AppPaths.LocalOf($"qemu-console{consoleLogTag}.log");
+
+        // 数据面块设备（可选）：传了路径才启用。失败不影响启动 —— 纯 HTTP 通道照旧可用。
+        if (!string.IsNullOrEmpty(blockImagePath) && blockImageBytes > 0)
+        {
+            try
+            {
+                var store = new SparseBlockStore(blockImagePath!, blockImageBytes);
+                store.EnsureCreated();
+                BlockStore = store;
+                _log?.Invoke($"[qemu] 数据面块设备就绪：{blockImagePath}（{blockImageBytes / 1024 / 1024}MB，稀疏={store.IsSparse}，已占 {store.AllocatedBytes() / 1024 / 1024}MB）");
+            }
+            catch (Exception ex)
+            {
+                _log?.Invoke($"[qemu] 数据面块设备不可用（退化为纯 HTTP 通道）：{ex.GetType().Name}: {ex.Message}");
+            }
+        }
     }
 
     /// <summary>运行时文件是否齐全（缺一件就视为未部署，引擎判未就绪、静默回落）。</summary>
@@ -99,6 +129,19 @@ public sealed class QemuHostRuntime : IDisposable
                 "-netdev", $"user,id=n0,hostfwd=tcp:127.0.0.1:{MediaPort}-:20080",
                 "-device", "virtio-net-pci,netdev=n0",
             };
+
+            // ── 数据面块设备（可选）──
+            // guest 侧 harness 把引擎吐出的字节按文件偏移写进 /dev/vda，宿主随后**直读同一文件**
+            // （实测 2454 MB/s，绕开 SLIRP 的 40 MB/s 与 harness 转发后的 18.9 MB/s）。
+            // cache=unsafe：接受「宿主崩溃丢最后若干 MB 未刷数据」换取写吞吐；
+            //   丢的区间 IsRangeAvailable 会判为不可用，播放自动回落到 HTTP 通道，不会读到脏数据。
+            if (BlockStore is not null)
+            {
+                args.Add("-drive");
+                args.Add($"file={BlockStore.ImagePath},if=none,id=hub0,format=raw,cache=unsafe");
+                args.Add("-device");
+                args.Add("virtio-blk-pci,drive=hub0");
+            }
             // monitor 通道（仅回环）：宿主靠 stop/cont 冻结/唤醒 VM —— 退出播放页时冻住，
             // 迅雷侧下载立刻停又不必丢任务与已下数据（见 SetPaused）。缺失也只是退化成杀 VM。
             if (MonitorPort > 0)

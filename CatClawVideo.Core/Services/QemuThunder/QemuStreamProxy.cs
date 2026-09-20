@@ -30,6 +30,17 @@ public sealed class QemuStreamProxy : IDisposable
     private readonly string _contentType;
     private readonly Action<string>? _log;
 
+    /// <summary>
+    /// 数据面块设备（可选）—— guest 把引擎吐出的字节按文件偏移直接写进宿主镜像，
+    /// 这里**直读同一物理文件**（实测 2454~2926 MB/s），完全绕开 SLIRP（40 MB/s）与
+    /// harness 的转发循环（18.9 MB/s）。
+    ///
+    /// <para>为 null（旧运行时 / 未挂块设备）时行为与改动前完全一致，走 HTTP 上游。</para>
+    /// </summary>
+    private readonly SparseBlockStore? _blockStore;
+    /// <summary>块设备命中的字节数（诊断用：证明数据面真的生效了）。</summary>
+    private long _blockHits;
+
     private readonly object _sync = new();
     private readonly List<byte[]> _chunks = [];
     private readonly List<Req> _requests = [];
@@ -126,7 +137,7 @@ public sealed class QemuStreamProxy : IDisposable
     public string Url { get; private set; } = "";
 
     public QemuStreamProxy(int mediaPort, string path, long totalSize, string contentType, Action<string>? log = null,
-        string? cacheDir = null)
+        string? cacheDir = null, SparseBlockStore? blockStore = null)
     {
         _mediaPort = mediaPort;
         _path = path;
@@ -134,6 +145,7 @@ public sealed class QemuStreamProxy : IDisposable
         _contentType = contentType;
         _log = log;
         _cacheDir = cacheDir;
+        _blockStore = blockStore;
     }
 
     public void Start()
@@ -845,9 +857,20 @@ public sealed class QemuStreamProxy : IDisposable
                 lock (_sync) { baseNow = _base; frontierNow = _base + _len; }
 
                 var want = (int)Math.Min(buf.Length, last - pos + 1);
-                var n = ReadAt(pos, buf, want);
-                if (n <= 0 && _cacheDir is not null)
-                    n = ReadDisk(pos, buf, want);   // 磁盘缓存命中：绕过上游秒供（重看/换集回看秒开）
+
+                // ★① 块设备直读（最高优先级）：guest 已把这段数据按偏移写进宿主镜像，
+                //   直读 2454~2926 MB/s，完全不碰 SLIRP / HTTP 上游。
+                //   IsRangeAvailable 先判「guest 真的写过这段」——未写区间读到的是全零，
+                //   直接用会喂给播放器假数据，所以必须判。
+                var n = 0;
+                if (_blockStore is not null && _blockStore.IsRangeAvailable(pos, want))
+                {
+                    n = _blockStore.ReadAt(pos, buf, 0, want);
+                    if (n > 0) Interlocked.Add(ref _blockHits, n);
+                }
+
+                if (n <= 0) n = ReadAt(pos, buf, want);                                   // ② 内存缓存
+                if (n <= 0 && _cacheDir is not null) n = ReadDisk(pos, buf, want);         // ③ 磁盘缓存
                 if (n > 0)
                 {
                     stallMs = 0;

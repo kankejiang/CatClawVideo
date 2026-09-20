@@ -111,6 +111,21 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IPlaybackSession
     /// 播放数据 4MB 分块落盘，重看/换集回看直接磁盘秒供，不再依赖引擎 tmpfs（VM 重启即空）。</summary>
     public string? StreamCacheRoot { get; set; }
 
+    /// <summary>
+    /// 数据面块设备镜像目录（null = 关闭，默认关）。由宿主注入（AppPaths.Sub("btcache/hub")）。
+    ///
+    /// <para>启用后 QEMU 会多挂一块 virtio-blk，guest 侧 harness 把引擎吐出的字节按文件偏移
+    /// 直接写进去，宿主供数时**直读同一物理文件**（实测 2454~2926 MB/s），
+    /// 绕开 SLIRP（40 MB/s）与 harness 转发（18.9 MB/s）。</para>
+    ///
+    /// <para>为 null 时整个特性关闭，行为与改动前完全一致 —— 这是刻意的：
+    /// 新通道是**增益**，任何环境异常都能安全退化到纯 HTTP。</para>
+    /// </summary>
+    public string? BlockDeviceRoot { get; set; }
+
+    /// <summary>每个会话的块设备镜像容量（默认 16GB，够放一部 4K 片；稀疏文件实际只占写入量）。</summary>
+    public long BlockDeviceCapacityBytes { get; set; } = 16L * 1024 * 1024 * 1024;
+
     private long? _streamCacheCapOverride;
 
     /// <summary>
@@ -286,15 +301,32 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IPlaybackSession
     public async Task<bool> DownloadToFileAsync(string magnet, string preferName,
         Func<string, string> destPathFor, Action<long, long>? progress, CancellationToken ct)
     {
-        if (!IsReady) { Log("磁力下载不可用：迅雷引擎运行时缺失"); return false; }
+        var r = await DownloadToFileExAsync(magnet, preferName, destPathFor, progress, ct).ConfigureAwait(false);
+        return r.Ok;
+    }
+
+    /// <summary>
+    /// <see cref="DownloadToFileAsync"/> 的「带原因」版本。
+    ///
+    /// <para><b>为什么需要它</b>：原方法只返回 <c>bool</c>，而 false 是**至少五种结局**的合集
+    /// （用户取消 / 会话被别的任务顶替 / 引擎建任务失败 / 种子里没有视频 / 导出超时）。
+    /// 调用方只能写一句模糊文案，实测把「引擎报 9128 任务已存在」显示成
+    /// 「引擎被播放占用、超时或无源」—— 把排查方向直接带偏（2026-09-20 用户实测）。</para>
+    /// </summary>
+    public async Task<(bool Ok, string Reason)> DownloadToFileExAsync(string magnet, string preferName,
+        Func<string, string> destPathFor, Action<long, long>? progress, CancellationToken ct)
+    {
+        if (!IsReady) { Log("磁力下载不可用：迅雷引擎运行时缺失"); return (false, "迅雷引擎运行时缺失（ThunderRuntime 未部署）"); }
 
         Session? s = null;
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            if (!await EnsureStartedLockedAsync(ct).ConfigureAwait(false)) return false;
+            if (!await EnsureStartedLockedAsync(ct).ConfigureAwait(false))
+                return (false, "迅雷引擎（QEMU VM）启动失败或 90s 内未就绪");
             s = await PrepareSessionLockedAsync(magnet, preferName, ct).ConfigureAwait(false);
-            if (s is null) return false;
+            if (s is null)
+                return (false, "磁力解析失败：45s 内未拿到种子（疑似死链/无资源），或引擎侧上报了错误");
 
             var pick = SelectFile(s.Files, preferName);
             var destPath = destPathFor(pick.Name);
@@ -305,36 +337,71 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IPlaybackSession
             var exclude = s.Files.Count <= 65
                 ? string.Join(",", s.Files.Where(f => f.Index != pick.Index).Select(f => f.Index))
                 : "";
+            // ★ 种子路径必须用「文件系统路径」，不能拿引擎的 URL 路径顶替（见 TorrentPathFor）。
             s.PickIndex = pick.Index; s.PickName = pick.Name; s.PickSize = pick.Size;
             s.DlSent = true; s.Played = false; s.PlayUrlPath = ""; s.LastError = null;
             s.Others = exclude;
-            s.DLTorrentPath = s.TorrentRawPath.Length > 0 ? s.TorrentRawPath
-                : Uri.UnescapeDataString(Uri.UnescapeDataString(s.TorrentUrlPath));
-            _server!.SetCommand($"DL {s.DLTorrentPath}|{s.Dir}|{pick.Name}|{pick.Index}|{exclude}");
-            _lastActiveUtc = DateTime.UtcNow;
-            LastDirectMediaUrl = MediaUrl(SynthesizeUrlPath(s.Dir + "/" + pick.Name));   // 下载文件的媒体口地址（调试/seektest 用）
-            var deadline = DateTime.UtcNow + TimeSpan.FromMinutes(180);
-            while (!ct.IsCancellationRequested && !s.Cancelled && _session == s && s.LastSt != 2)
+            s.DLTorrentPath = TorrentPathFor(s);
+
+            // ── 下发 DL，并按需做「同种子残留任务」的 VM 级恢复 ──
+            //
+            // guest 侧对 9128（XL_TASK_ALREADY_EXIST）有 stopTask 自愈，但实测**不可靠**：
+            //   引擎停任务后清理句柄是异步的，且同一 btih 的旧句柄经常清不掉 ——
+            //   日志实测 stopTask 返回 9000 后，四次退避重建（0.5/1.5/3/3s）**全部仍撞 9128**。
+            // 此时唯一可靠的办法是把整个 guest 重来：VM 一重启，引擎的任务表就空了。
+            // 代价是丢 tmpfs 里未导出的进度，但**已经落进宿主磁盘缓存（StreamCache）的块不受影响**，
+            // 重下时会直线命中，所以这个代价可以接受（远好于永久卡死）。
+            var dlAttempt = await SendDlWithRecoveryAsync(s, pick, exclude, ct).ConfigureAwait(false);
+            if (!dlAttempt.Ok)
             {
-                if (s.LastSt == 3 || s.LastError is not null)
-                {
-                    Log($"磁力下载失败：{s.LastError ?? $"引擎状态 st={s.LastSt}"}");
-                    return false;
-                }
-                progress?.Invoke(s.LastDone, s.LastTotal > 0 ? s.LastTotal : pick.Size);
-                if (DateTime.UtcNow > deadline) { Log("磁力下载超时（180 分钟）"); return false; }
-                try { await Task.Delay(1000, ct).ConfigureAwait(false); }
-                catch (OperationCanceledException) { return false; }
+                var why = dlAttempt.Reason;
+                Log($"磁力下载失败：{why}");
+                return (false, why);
             }
-            if (s.Cancelled || _session != s)
+            _lastActiveUtc = DateTime.UtcNow;
+
+            // ⚠ 恢复流程（9128 重启 guest）会**换掉 session 对象**，所以此后一律以 _session 为准。
+            var live = _session!;
+            var livePickName = live.PickName;
+            LastDirectMediaUrl = MediaUrl(SynthesizeUrlPath(live.Dir + "/" + livePickName));   // 下载文件的媒体口地址（调试/seektest 用）
+            var deadline = DateTime.UtcNow + TimeSpan.FromMinutes(180);
+            // 「给恢复让路」的等待总次数上限：恢复用尽后 st 可能停在 4，没有这道闸会空转到超时
+            var recoverWaits = 0;
+            while (!ct.IsCancellationRequested && !live.Cancelled && _session == live && live.LastSt != 2)
+            {
+                if (live.LastSt is 3 or 4 || live.LastError is not null)
+                {
+                    // ⚠ 任务死亡（如 err=114010）会触发 RecoverTaskAsync 自动恢复（最多 5 轮 × 15s），
+                    //   而恢复期间 st 会在 3/4/1 之间跳（stopTask → 重建 → st=1）。
+                    //   原代码「一看到 st=3 就判失败」会把**本可续传**的死亡直接判死 ——
+                    //   2026-09-20 hosttest download 实测：跑到 45% 任务死亡，恢复日志与失败日志
+                    //   出现在**同一秒**，恢复循环根本没机会跑。这里给恢复让路。
+                    if (live.Recovering != 0 && live.RetryCount < MaxTaskRetries
+                        && recoverWaits++ < MaxTaskRetries * 20)
+                    {
+                        try { await Task.Delay(1000, ct).ConfigureAwait(false); }
+                        catch (OperationCanceledException) { return (false, "已取消"); }
+                        continue;
+                    }
+                    var why = live.LastError ?? $"引擎状态 st={live.LastSt}";
+                    Log($"磁力下载失败：{why}");
+                    return (false, "引擎建下载任务失败：" + why);
+                }
+                progress?.Invoke(live.LastDone, live.LastTotal > 0 ? live.LastTotal : live.PickSize);
+                if (DateTime.UtcNow > deadline) { Log("磁力下载超时（180 分钟）"); return (false, "下载超时（180 分钟）"); }
+                try { await Task.Delay(1000, ct).ConfigureAwait(false); }
+                catch (OperationCanceledException) { return (false, "已取消"); }
+            }
+            if (live.Cancelled || _session != live)
             {
                 Log("磁力下载中断：会话被播放/其他任务替换（以播放优先），稍后重试可续传");
-                return false;
+                return (false, "引擎会话被其他任务（播放或另一个磁力下载）顶替 —— 迅雷引擎同一时刻只能跑一个任务");
             }
             Log("引擎侧下载完成（st=2），开始导出到本机");
 
-            var encoded = SynthesizeUrlPath(s.Dir + "/" + pick.Name);
-            return await PullToFileAsync(encoded, pick.Size, destPath, progress, ct).ConfigureAwait(false);
+            var encoded = SynthesizeUrlPath(live.Dir + "/" + livePickName);
+            var pulled = await PullToFileAsync(encoded, live.PickSize, destPath, progress, ct).ConfigureAwait(false);
+            return pulled ? (true, "") : (false, "引擎侧已完成，但导出到本机失败（媒体口中断，可重试续传）");
         }
         catch (OperationCanceledException)
         {
@@ -342,10 +409,108 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IPlaybackSession
             // 就停下载（宿主也看不到它的状态），不主动收就是「点了取消，流量继续跑」。
             // 仅在当前会话仍是本任务时收（同引擎单会话，取消 A 不该把正在播的 B 一起收掉）。
             if (ReferenceEquals(_session, s)) Teardown("磁力下载被取消");
-            return false;
+            return (false, "已取消");
         }
-        catch (Exception ex) { Log($"磁力下载异常：{ex.GetType().Name}: {ex.Message}"); return false; }
+        catch (Exception ex)
+        {
+            Log($"磁力下载异常：{ex.GetType().Name}: {ex.Message}");
+            return (false, $"{ex.GetType().Name}: {ex.Message}");
+        }
         finally { _gate.Release(); }
+    }
+
+    /// <summary>下发 DL 并等待任务真正起来；撞上 <c>9128</c>（同种子任务已存在且清理不掉）时重启 guest 重来一次。</summary>
+    private async Task<(bool Ok, string Reason)> SendDlWithRecoveryAsync(
+        Session s, MagnetFile pick, string exclude, CancellationToken ct)
+    {
+        // 首次下发 + 等 20s（正常路径 1~2s 就有 st=1，给 20s 足够区分「起来了」与「卡在 9128」）
+        _server!.SetCommand($"DL {s.DLTorrentPath}|{s.Dir}|{pick.Name}|{pick.Index}|{exclude}");
+        if (await WaitDlStartedAsync(s, TimeSpan.FromSeconds(20), ct).ConfigureAwait(false))
+            return (true, "");
+
+        // 只在「明确是 9128」时才重启 VM —— 其余失败（无源/参数错误）重启也救不回来，
+        // 白丢一次 VM 冷启动（约 11s）与已下进度。
+        if (!IsTaskAlreadyExists(s))
+            return (false, s.LastError ?? $"引擎未能在 20s 内启动下载任务（st={s.LastSt}）");
+
+        Log("⚠ 引擎报 9128（同种子任务已存在）且 guest 侧 stopTask 清理无效 —— 重启 guest 重来一次");
+        _history.TryRemove(s.Magnet, out _);
+
+        // 重启 VM：guest 的引擎任务表随进程消失。数据面（下载目录 tmpfs）会丢，
+        // 但宿主磁盘缓存里的块还在，重下走磁盘命中。
+        try { _server.SetCommand("STOP"); } catch { }
+        try { _runtime?.Stop(); } catch { }
+        _runtime = null;
+        _session = null;
+        s.Cancelled = true;              // 让可能还在跑的旧等待段退出
+
+        if (!await EnsureStartedLockedAsync(ct).ConfigureAwait(false))
+            return (false, "引擎任务冲突（9128），且重启迅雷 VM 失败");
+
+        // 重新走「磁力 → 种子」：VM 重启后 tmpfs 是空的，种子文件必须重新落盘
+        var s2 = await PrepareSessionLockedAsync(s.Magnet, pick.Name, ct).ConfigureAwait(false);
+        if (s2 is null) return (false, "引擎任务冲突（9128）；重启 VM 后重新解析磁力失败");
+
+        var pick2 = SelectFile(s2.Files, pick.Name);
+        var exclude2 = s2.Files.Count <= 65
+            ? string.Join(",", s2.Files.Where(f => f.Index != pick2.Index).Select(f => f.Index))
+            : "";
+        s2.PickIndex = pick2.Index; s2.PickName = pick2.Name; s2.PickSize = pick2.Size;
+        s2.DlSent = true; s2.Played = false; s2.PlayUrlPath = ""; s2.LastError = null;
+        s2.Others = exclude2;
+        s2.DLTorrentPath = TorrentPathFor(s2);
+        _server.SetCommand($"DL {s2.DLTorrentPath}|{s2.Dir}|{pick2.Name}|{pick2.Index}|{exclude2}");
+
+        if (await WaitDlStartedAsync(s2, TimeSpan.FromSeconds(30), ct).ConfigureAwait(false))
+        {
+            Log("✅ 重启 guest 后任务建立成功");
+            return (true, "");
+        }
+        return (false, s2.LastError ?? $"重启 guest 后仍无法建立下载任务（st={s2.LastSt}）");
+    }
+
+    /// <summary>等任务真正起来（<c>st∈{1,2,4}</c> = 已建并可供数）；期间若报错立即返回 false。</summary>
+    private async Task<bool> WaitDlStartedAsync(Session s, TimeSpan timeout, CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (ct.IsCancellationRequested || s.Cancelled) return false;
+            if (s.LastSt is 1 or 2 or 4) return true;
+            if (s.LastError is not null) return false;
+            try { await Task.Delay(500, ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { return false; }
+        }
+        return false;
+    }
+
+    /// <summary>当前会话的失败是否就是 <c>9128</c>（任务已存在）。</summary>
+    private static bool IsTaskAlreadyExists(Session s) =>
+        (s.LastError?.Contains("9128", StringComparison.Ordinal) ?? false) || s.LastSt == 9128;
+
+    /// <summary>
+    /// 下载用**种子文件路径**（给 guest 的 <c>createBtTask</c> 用）。
+    ///
+    /// <para>⚠️ 只能用「文件系统路径」<c>/thunder-data/&lt;任务名&gt;</c>，**绝不能**拿引擎的
+    /// URL 路径顶替 —— 那是双重 URL 编码的形式（<c>/%252Fthunder-data%252Fxxx</c>），
+    /// unescape 两次会得到 <c>//thunder-data/xxx</c>（开头多一个斜杠）。</para>
+    ///
+    /// <para><b>这正是 2026-09-20「暂停后恢复提示引擎被占用」的真根因</b>：当宿主走
+    /// 「直取种子」路径成功时，guest 不会上报 <c>ev=torrent</c>，<c>TorrentRawPath</c> 为空，
+    /// 旧代码就回落到 unescape 引擎 URL → 传下去的双斜杠路径 <c>createBtTask</c> 认不出，
+    /// 任务号恒为 -1，引擎回 <c>9128（任务已存在）</c>；guest 的 <c>stopTask</c> 清理又拦不住
+    /// （同一 btih 的旧任务句柄还在），四次重试全撞 9128 → 最终报成「引擎被占用」。</para>
+    ///
+    /// <para>宿主侧日志证据：<c>DL //thunder-data/4e34b15b9cfe.mp4|...</c>（双斜杠）。</para>
+    /// </summary>
+    private static string TorrentPathFor(Session s)
+    {
+        // guest 阶段一的落盘约定（ctrlloop.c）：snprintf(g_mag_torrent, "%s/%s", EMU_SAVE_PATH, name)
+        // EMU_SAVE_PATH 固定为 /thunder-data，所以规范路径就是「/thunder-data/ + 任务名」。
+        if (s.TorrentRawPath.Length > 0
+            && s.TorrentRawPath.StartsWith("/thunder-data/", StringComparison.Ordinal))
+            return s.TorrentRawPath;
+        return "/thunder-data/" + s.Name;
     }
 
     /// <summary>经媒体口把引擎已就绪的文件拉回宿主磁盘（写 <c>destPath+".part"</c>，Range 断点续传，
@@ -540,7 +705,7 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IPlaybackSession
                 }
             }
             var proxy = new QemuStreamProxy(_mediaPort, s.PlayUrlPath, s.PickSize,
-                QemuStreamProxy.ContentTypeFor(s.PickName), Log, cacheDir);
+                QemuStreamProxy.ContentTypeFor(s.PickName), Log, cacheDir, _runtime?.BlockStore);
             // seek 重定位 → KICK 引擎进入预取模式：让引擎优先下载 seek 目标区间
             //（「seek 到哪下到哪」，不重定位也发无害——引擎已按读位置供数）
             proxy.OnRelocate = () =>
@@ -584,7 +749,23 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IPlaybackSession
             _runtime?.Dispose();
             _mediaPort = PickFreePort(_mediaPort);
             _monitorPort = PickFreePort(_monitorPort);
-            _runtime = new QemuHostRuntime(_runtimeDir, _mediaPort, Log, _initrdName, _consoleTag, _monitorPort);
+            // 数据面块设备镜像：每实例一张（多实例=播放/下载各一，互不干扰）
+            string? blkPath = null;
+            try
+            {
+                if (!string.IsNullOrEmpty(BlockDeviceRoot))
+                {
+                    var tag = string.IsNullOrEmpty(_consoleTag) ? "main" : _consoleTag.Trim('-');
+                    blkPath = Path.Combine(BlockDeviceRoot!, $"store{tag}.img");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[qemu] 数据面镜像路径无效（退化为纯 HTTP 通道）：{ex.Message}");
+                blkPath = null;
+            }
+            _runtime = new QemuHostRuntime(_runtimeDir, _mediaPort, Log, _initrdName, _consoleTag, _monitorPort,
+                blkPath, blkPath is null ? 0 : BlockDeviceCapacityBytes);
             _server.ResetFirstPoll();
             if (!await _runtime.StartAsync(ct).ConfigureAwait(false)) return false;
 
@@ -814,7 +995,38 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IPlaybackSession
                 }
             }
             if (!s.Cancelled && s.RetryCount >= MaxTaskRetries && s.LastSt is 3 or 4)
-                Log("任务自动恢复次数用尽，放弃（请换源或重新点播）");
+            {
+                // ── 最后一招：VM 级恢复（重启 guest） ──
+                //
+                // 实测（2026-09-20 hosttest download）：任务在 45% 处以 err=114010 死亡后，
+                // 引擎里该 btih 的任务句柄**清不掉** —— guest 侧重发 DL 五轮全部撞 9128，
+                // 手工 stopTask 也无济于事。此时唯一可靠的办法是重启 guest（任务表随进程清空）。
+                // 代价：丢 tmpfs 里未导出的进度（已落宿主磁盘缓存的块仍在，重下走磁盘命中）。
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        Log("任务自动恢复次数用尽 → 尝试 VM 级恢复（重启 guest 清空引擎任务表）");
+                        _history.TryRemove(s.Magnet, out _);
+                        try { _server?.SetCommand("STOP"); } catch { }
+                        try { _runtime?.Stop(); } catch { }
+                        _runtime = null;
+                        _session = null;
+                        s.Cancelled = true;   // 打断下载主循环的等待，让它重新走一轮
+
+                        await _gate.WaitAsync().ConfigureAwait(false);
+                        try
+                        {
+                            if (_disposed) return;
+                            if (!await EnsureStartedLockedAsync(CancellationToken.None).ConfigureAwait(false))
+                            { Log("VM 级恢复失败：guest 起不来"); return; }
+                            Log("guest 已重启，引擎任务表已清空（下载可重新发起）");
+                        }
+                        finally { _gate.Release(); }
+                    }
+                    catch (Exception ex) { Log($"VM 级恢复异常：{ex.GetType().Name}: {ex.Message}"); }
+                });
+            }
         }
         finally { Interlocked.Exchange(ref s.Recovering, 0); }
     }

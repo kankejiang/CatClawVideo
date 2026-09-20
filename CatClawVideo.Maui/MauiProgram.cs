@@ -89,6 +89,10 @@ public static class MauiProgram
         var cacheGbPref = Preferences.Default.Get("stream_cache_gb", (int)CatClawVideo.Core.Services.QemuThunder.StreamCachePrefs.DefaultGb);
         CatClawVideo.Core.Services.QemuThunder.StreamCachePrefs.CapGb = cacheGbPref;
         qemuThunder.StreamCacheRoot = CatClawVideo.Core.AppPaths.Sub("btcache");
+        // 数据面块设备：guest 把引擎吐出的字节按偏移写进宿主镜像，供数时直读同一文件
+        //（实测 2454~2926 MB/s，绕开 SLIRP 的 40MB/s 与 harness 转发的 18.9MB/s）。
+        // 稀疏镜像，写多少占多少；环境异常时引擎会自动退化为纯 HTTP 通道。
+        qemuThunder.BlockDeviceRoot = CatClawVideo.Core.AppPaths.Sub("btcache/hub");
         BtFileLog.Write($"[缓存] 上限 {CatClawVideo.Core.Services.QemuThunder.StreamCachePrefs.CapGb}GB（设置页可调）");
         CatClawVideo.Core.Interfaces.MagnetEngines.Thunder = new CatClawVideo.Core.Providers.ChainedMagnetEngine(
             qemuThunder, new CatClawVideo.Core.Providers.ThunderPanEngine());
