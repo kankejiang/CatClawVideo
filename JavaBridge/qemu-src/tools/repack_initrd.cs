@@ -12,6 +12,7 @@
 //     - tmpfs size=1500m → size=3500m（1500m 会在下载 ~1.57GB 时写满，任务 err=114010 死亡）
 //     - 剥离 export EXTRA=1（创建时连发 4 个引擎调用被 A/B 实锤「发了就零速度」；
 //       运行时救援/区间优先下载改由宿主 KICK 命令按需单发，见 ctrlloop.c 的 KICK）
+//     - 数据面块设备：加载 virtio_blk + 导出 BLK_DEV=/dev/vda（见下，2026-09-21）
 //
 // 依赖：系统 tar.exe（Windows 10+ 自带的 libarchive bsdtar，支持 xz 解包与清单列举）。
 // mode/软链目标来自 `tar -tvf` 清单（NTFS 不保留 POSIX 权限，必须从清单恢复）。
@@ -57,6 +58,11 @@ var init = File.ReadAllText(initPath);
     ("export EXTRA=1\n", ""),
     ("export EXTRA=0\r\n", ""),
     ("export EXTRA=0\n", ""),
+
+    // 数据面块设备：把 virtio_blk 加入 insmod 列表（★ 失败不致命 —— blk_open() 会打印警告
+    // 并回退纯转发）。这条天然幂等：替换过之后原串不再存在。
+    ("for m in failover net_failover virtio_net; do",
+     "for m in failover net_failover virtio_net virtio_blk; do"),
 ];
 foreach (var (from, to) in replacements)
 {
@@ -64,6 +70,28 @@ foreach (var (from, to) in replacements)
     init = init.Replace(from, to);
     Console.WriteLine($"已替换: {from} → {to}");
 }
+
+// ── 数据面块设备：导出 BLK_DEV（harness 的 blk_open 读它；默认值本就是 /dev/vda，
+//    显式导出只是让「通道开着」在日志里可见）。⚠ 必须幂等 —— 重复导出虽无害，
+//    但会让「工具跑过几遍」这件事从 init 内容上无法判断。
+if (!init.Contains("BLK_DEV"))
+{
+    const string anch = "export CTRL_PORT=\"18080\"";
+    var idx = init.IndexOf(anch, StringComparison.Ordinal);
+    if (idx >= 0)
+    {
+        var eol = init.IndexOf('\n', idx);
+        if (eol >= 0)
+        {
+            var cr = init[eol - 1] == '\r' ? "\r\n" : "\n";
+            init = init.Insert(eol + 1, $"export BLK_DEV=\"/dev/vda\"{cr}");
+            Console.WriteLine("已插入: export BLK_DEV=\"/dev/vda\"");
+        }
+    }
+    else Console.WriteLine("跳过（未找到 CTRL_PORT 锚点，无法插入 BLK_DEV）");
+}
+else Console.WriteLine("跳过：BLK_DEV 已存在");
+
 File.WriteAllText(initPath, init, new UTF8Encoding(false));
 
 // ── ④ 清单 → newc cpio → gzip ──
