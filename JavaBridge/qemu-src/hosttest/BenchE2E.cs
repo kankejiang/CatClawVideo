@@ -118,6 +118,12 @@ internal static class BenchE2E
 
         using var rt = new QemuHostRuntime(runtimeDir, mediaPort, Log, "pkg_initrd.gz", "", 0, imgPath, fileBytes);
         if (rt.BlockStore is null) { Log("✗ 块设备未就绪，无法做数据面对照"); return 2; }
+        // 可选：覆盖 guest vCPU 数（QEMU 是 TCG 软件模拟，加核能看出 CPU 是不是瓶颈）
+        if (int.TryParse(Environment.GetEnvironmentVariable("BENCH_SMP"), out var smp) && smp > 0)
+        {
+            rt.SmpCount = smp;
+            Log($"[准备] QEMU vCPU 数覆盖为 {smp}（默认 4）");
+        }
 
         using var ctl = new QemuControlServer(CtrlPort);
         string? playPath = null;
