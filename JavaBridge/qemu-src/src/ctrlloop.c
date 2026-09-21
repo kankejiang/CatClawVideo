@@ -262,21 +262,26 @@ static void res_probe(void) {
                                             memset(ub, 0, sizeof ub);
                                             ((void (*)(void *))fUriCtor)(ub);                      // 构造
                                             ((void (*)(void *, void *))fUriGet)((void *)(uintptr_t)obj, ub);
-                                            scan_buf("Uri", ub, sizeof ub);
-                                            if (fToStr) {   // std::string 按值返回 → sret，用 24 字节结构体接
-                                                typedef struct { unsigned long long w0, w1, w2; } Str24;
-                                                Str24 s = ((Str24 (*)(const void *))fToStr)(ub);
-                                                printf("[res]        to_string: w0=0x%llx w1=%llu w2=0x%llx\n", s.w0, s.w1, s.w2);
-                                                if (s.w2) {
-                                                    char url[1024];
-                                                    if (safe_read((const void *)(uintptr_t)(s.w2 & 0x00FFFFFFFFFFFFFFULL),
-                                                                  url, sizeof url - 1) == 0) {
-                                                        url[sizeof url - 1] = 0;
-                                                        printf("[res]  ★★ URL = %s\n", url);
-                                                    }
-                                                } else if (s.w1 && s.w1 < 24) {
-                                                    printf("[res]  ★★ URL(SSO) = %.24s\n", (char *)&s + 16);
+                                            printf("[res]        GetUri 后 ub[0..32) = ");
+                                            for (int q = 0; q < 32; q++) printf("%02x", ub[q]);
+                                            printf("\n");
+                                            // ★ Uri 是「按组件存字符串」的结构（schema/host/path/query…）：
+                                            //   每个 tag 指针指向的就是**裸字符串数据**（首字节即文本），
+                                            //   所以要逐个组件打印，别只扫 32 字节。
+                                            for (int wi = 0; wi < 24; wi++) {
+                                                unsigned long long raw; memcpy(&raw, ub + wi * 8, 8);
+                                                unsigned long long p = raw & 0x00FFFFFFFFFFFFFFULL;
+                                                if (!p) continue;
+                                                char t[420];
+                                                if (safe_read((const void *)(uintptr_t)p, t, 400) != 0) {
+                                                    printf("[res]        ub.w%-2d raw=0x%llx → 不可读\n", wi, raw); continue;
                                                 }
+                                                t[400] = 0;
+                                                int bad = 0;
+                                                for (int q = 0; q < 400 && t[q]; q++)
+                                                    if ((unsigned char)t[q] < 32 || (unsigned char)t[q] > 126) { bad = 1; break; }
+                                                if (bad || strlen(t) < 1) continue;
+                                                printf("[res]  ★组件 w%-2d = %s\n", wi, t);
                                             }
                                         }
                                     }

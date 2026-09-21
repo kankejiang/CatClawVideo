@@ -267,6 +267,50 @@ C++ 类名完整可读**。与协议直接相关的有：
 存在 `_ZThn280_` thunk）。下一步二选一：① 按「w0 是指向 `std::string` 的指针」再解一次；
 ② 用 `_ZThn280_N12HttpResource6GetUriER3Uri`（带 -280 调整的 thunk）传次级指针。
 
+## 10. ★★★ 已取到完整 URL（2026-09-21，方案 B 落地依据）
+
+接上节。**`Uri` 不是 libc++ 的 `std::string`，而是「按组件存字符串」的结构**：
+对象里每个数据字几乎都是**带 tag 的指针，直接指向裸字符串数据**（首字节即文本），
+组件顺序为 `w0=scheme`、`w3=host`、`w5=path`。**不要调 `Uri::to_string()`（实测会崩）**，
+直接逐个组件读即可。
+
+实测（任务 = `http://mirrors.nju.edu.cn/ubuntu-releases/24.04/ubuntu-24.04.3-desktop-amd64.iso`）：
+
+```
+[0] == HttpResource ✅  GetResourceType() = 2
+      w0 = http://
+      w3 = www.huaweiyes.cn
+      w5 = /chfs/shared/ubuntu-24.04.3-desktop-amd64.iso
+[1] == HttpResource ✅  GetResourceType() = 2
+      w0 = https://
+      w3 = multimedia.qfile.qq.com
+      w5 = /download?appid=14901&client_type=web&client_ver=8.9.25
+           &fileid=EhRLicSMfZQurLpnoUv3bBb-dCJXGhiAoPrRFyC1dCi9yuTP2ZuTAzIEcHJvZFCA6kla…&rkey=CAMSqAGmgtos…
+[2] == HttpResource ✅  GetResourceType() = 2   （同 [1] 结构，另一个 fileid / rkey）
+```
+
+**结论（方案 B 的落地依据）**：
+
+1. 引擎为同一个文件返回了 **3 个完整 HTTP 源**，其中两个是 **QQ 微云直链**、一个在 `huaweiyes.cn` 共享盘 ——
+   **迅雷的"加速"本质是「资源发现」**：它替用户在其他网盘/CDN 上找到同一文件的**可下载直链**
+   （注意 `rkey=` 是签名令牌）。
+2. 这些 URL **就是给下载器用的**：宿主完全可以拿它们做多线程 Range 下载。
+   ⚠ 待验证：`rkey` 是否绑定客户端 IP —— SLIRP NAT 下 **guest 与宿主出口 IP 相同**，所以从宿主直连**很可能可用**
+   （这也是 #25 之后要实测的一步）。
+3. 与 §9 的 `GetResourceType()` 三分类（Server/Scdn/Peer）一致：这里拿到的是 **Server/镜像类**资源。
+
+### 检索顺序（复现用）
+
+```
+1. dlsym("_ZTV15ResourceManager") → vtable 地址，对象首字 = vtable + 16
+2. 扫 /proc/self/maps 可读区间（8 字节步进）→ 命中 ResourceManager 实例
+3. 调 GetMirrorResourceList(inst, &vec3)   → 3 个 IResource*（其它三类本次为空）
+4. 每个元素掩 tag（& 0x00FFFFFFFFFFFFFF）→ 读对象首字 → 与 base+0x536b50 比对确认 HttpResource
+5. 调 HttpResource::GetUri(inst, &uriBuf)（uriBuf 先用 Uri::Uri() 构造）
+6. uriBuf 逐字：掩 tag → 当裸字符串读 → w0/w3/w5 = scheme/host/path
+```
+
+
 
 ## 8. 各方案下载速度排序（实测 + 推算）
 
