@@ -35,6 +35,13 @@ public sealed class SparseBlockStore : IDisposable
     private const uint FSCTL_SET_SPARSE = 0x000900C4;
     private const uint FSCTL_QUERY_ALLOCATED_RANGES = 0x000940CF;
 
+    /// <summary>
+    /// 单次 <c>FSCTL_QUERY_ALLOCATED_RANGES</c> 最多带回的区间数。
+    /// 超过这个数 DeviceIoControl 会以 <c>ERROR_MORE_DATA</c> 失败（本实现按「空结果」处理）——
+    /// 所以**任何大范围查询都必须分段**（见 <see cref="AllocatedBytes"/>）。
+    /// </summary>
+    private const int MaxRanges = 64;
+
     [StructLayout(LayoutKind.Sequential)]
     private struct FILE_ALLOCATED_RANGE_BUFFER
     {
@@ -131,7 +138,7 @@ public sealed class SparseBlockStore : IDisposable
         if (!OperatingSystem.IsWindows() || length <= 0) return result;
 
         var inBuf = Marshal.AllocHGlobal(Marshal.SizeOf<FILE_ALLOCATED_RANGE_BUFFER>());
-        const int maxOut = 64;
+        const int maxOut = MaxRanges;
         var outSize = Marshal.SizeOf<FILE_ALLOCATED_RANGE_BUFFER>() * maxOut;
         var outBuf = Marshal.AllocHGlobal(outSize);
         try
@@ -186,13 +193,25 @@ public sealed class SparseBlockStore : IDisposable
         catch { return 0; }
     }
 
-    /// <summary>已实际占用的字节数（判断「有没有数据」「占多少盘」）。</summary>
+    /// <summary>
+    /// 已实际占用的字节数（判断「有没有数据」「占多少盘」）。
+    ///
+    /// <para>⚠ <b>必须分段查</b>：<c>FSCTL_QUERY_ALLOCATED_RANGES</c> 单次最多回 <see cref="MaxRanges"/>
+    /// 个区间，超出时 DeviceIoControl 以 <c>ERROR_MORE_DATA</c> 失败，而本项目把「失败」当「空结果」处理 ——
+    /// 于是查全盘在**碎片化镜像**上会**静默返回 0**。这正是 BT 下载的常态（piece 大段落地、段间留洞）。
+    /// 实测（2026-09-21）：每 1MB 写 512KB 的碎片盘有 512 个区间，查全盘得 <b>0</b>，
+    /// 而分段查询求和得到正确的 512MB。区间数 ≤ 64 时两种查法一致。</para>
+    /// </summary>
     public long AllocatedBytes()
     {
         try
         {
             var total = 0L;
-            foreach (var (s, e) in QueryAllocatedRanges(0, CapacityBytes)) total += e - s;
+            // 32MB 段：段内最多 32 个「1MB 级」区间，离 64 上限有 2 倍余量
+            const long Segment = 32 * 1024 * 1024;
+            for (long off = 0; off < CapacityBytes; off += Segment)
+                foreach (var (s, e) in QueryAllocatedRanges(off, Math.Min(Segment, CapacityBytes - off)))
+                    total += e - s;
             return total;
         }
         catch { return 0; }

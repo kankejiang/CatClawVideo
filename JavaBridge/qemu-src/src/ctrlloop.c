@@ -49,6 +49,298 @@ static int g_dl_index = -1;   // 磁力下载阶段选中的子文件 index（ge
 
 void ctrl_register_engine(EngineFns *e) { g_eng = *e; }
 
+// ═══════════ PROBE：引擎内部接口探针（为「鉴权/索引留 VM、数据面搬宿主」验证交接口）═══════════
+// 原则：**分级执行、只读、绝不猜结构偏移**——任何一级失败都不影响后面，也不会一次崩掉整轮实验。
+//   ① dlsym 解析符号（零风险，只打印是否命中 + 地址）
+//   ② 调「无参静态单例」（GetInstance，不需要 this，只返回指针）
+//   ③ 用②拿到的实例调一个无参成员函数，验证 this 可用
+#include <dlfcn.h>
+static void *probe_sym(const char *name) {
+    return g_eng.sdk ? dlsym(g_eng.sdk, name) : NULL;
+}
+static void probe_run(void) {
+    static const struct { const char *sym; const char *desc; } T[] = {
+        {"_ZN15xy_task_manager11GetInstanceEv",                                       "xy_task_manager::GetInstance"},
+        {"_ZN15xy_task_manager11GetSdkCycleEv",                                       "xy_task_manager::GetSdkCycle"},
+        {"_ZN9SingletonI9LogFilterE11GetInstanceEv",                                  "Singleton<LogFilter>::GetInstance"},
+        {"_ZN15ResourceManager20GetDPhubResourceListERSt6vectorIP9IResourceSaIS2_EE",  "RM::GetDPhubResourceList"},
+        {"_ZN15ResourceManager22GetTrackerResourceListERSt6vectorIP9IResourceSaIS2_EE","RM::GetTrackerResourceList"},
+        {"_ZN15ResourceManager18GetCdnResourceListERSt6vectorIP9IResourceSaIS2_EE",    "RM::GetCdnResourceList"},
+        {"_ZN15ResourceManager21GetMirrorResourceListERSt6vectorIP9IResourceSaIS2_EE", "RM::GetMirrorResourceList"},
+        {"_ZN13TaskIndexInfo19GetQueryIndexDetailEv",                                 "TaskIndexInfo::GetQueryIndexDetail"},
+        {"_ZN13TaskIndexInfo23GetProtocolQueryResInfoEv",                             "TaskIndexInfo::GetProtocolQueryResInfo"},
+        {"_ZN9IResource9IsStatbleEv",                                                 "IResource::IsStatble"},
+        {"_ZN11SingletonExI7SettingE4_refEv",                                         "SingletonEx<Setting>::_ref"},
+        {"_ZN14SettingManager16GetLocalFilePathEv",                                   "SettingManager::GetLocalFilePath"},
+    };
+    const int N = (int)(sizeof T / sizeof T[0]);
+    printf("[probe] ═══ 引擎内部接口探针 ═══  sdk=%p  task_id=%ld\n", g_eng.sdk, g_task_id);
+    for (int i = 0; i < N; i++) {
+        void *p = probe_sym(T[i].sym);
+        if (i == 0 && p) {
+            Dl_info di; memset(&di, 0, sizeof di);
+            if (dladdr(p, &di)) printf("[probe]   .so base=%p  %s\n", di.dli_fbase, di.dli_fname);
+        }
+        printf("[probe]   %-40s %-4s %p\n", T[i].desc, p ? "OK" : "MISS", p);
+    }
+    // ② 无参静态单例（只取指针）
+    typedef void *(*fn_ret_ptr)(void);
+    fn_ret_ptr fTM = (fn_ret_ptr)probe_sym("_ZN15xy_task_manager11GetInstanceEv");
+    void *tm = fTM ? fTM() : NULL;
+    printf("[probe] xy_task_manager::GetInstance() = %p\n", tm);
+    fn_ret_ptr fLF = (fn_ret_ptr)probe_sym("_ZN9SingletonI9LogFilterE11GetInstanceEv");
+    printf("[probe] LogFilter::GetInstance()       = %p\n", fLF ? fLF() : NULL);
+    // ③ 用②的实例调一个无参成员函数（验证 this 可用；返回 uint32/uint64 都只打印）
+    if (tm) {
+        typedef unsigned long (*fn_self)(void *);
+        fn_self fC = (fn_self)probe_sym("_ZN15xy_task_manager11GetSdkCycleEv");
+        if (fC) printf("[probe] → GetSdkCycle() = %lu  （能调通即表示 this 有效）\n", fC(tm));
+        else    printf("[probe] → GetSdkCycle 未解析，跳过\n");
+    } else {
+        printf("[probe] → 单例为空，跳过第三级\n");
+    }
+    printf("[probe] ═══ 探针结束（未触碰任何结构偏移）═══\n");
+    fflush(stdout);
+}
+
+// ── 安全内存读取：指针可疑时用 SIGSEGV 守门，避免一次野 pointer 崩掉整轮实验 ──
+#include <signal.h>
+#include <setjmp.h>
+#include <sys/wait.h>
+static sigjmp_buf g_res_jmp;
+static volatile int g_res_guard = 0;
+static void res_segv_handler(int sig) {
+    (void)sig;
+    if (g_res_guard) siglongjmp(g_res_jmp, 1);
+    _exit(139);
+}
+static int safe_read(const void *addr, void *dst, size_t n) {
+    struct sigaction sa, old;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = res_segv_handler;
+    sa.sa_flags = SA_NODEFER;
+    sigaction(SIGSEGV, &sa, &old);
+    g_res_guard = 1;
+    int bad = sigsetjmp(g_res_jmp, 1);
+    if (!bad) memcpy(dst, addr, n);
+    g_res_guard = 0;
+    sigaction(SIGSEGV, &old, NULL);
+    return bad ? -1 : 0;
+}
+
+// 从一段「我们自己的」缓冲里挖信息：① 内联可打印串 ② 像指针的 8 字节字 → C 串
+// 这样**完全不需要知道结构布局**，引擎写进来什么就报什么。
+static void scan_buf(const char *tag, const unsigned char *buf, int len) {
+    char tmp[512];
+    int i = 0, inlineN = 0;
+    while (i < len) {
+        if (buf[i] >= 32 && buf[i] < 127) {
+            int j = i;
+            while (j < len && buf[j] >= 32 && buf[j] < 127) j++;
+            if (j - i >= 8 && inlineN < 24) {
+                int L = j - i; if (L > 300) L = 300;
+                memcpy(tmp, buf + i, L); tmp[L] = 0;
+                printf("[res]   %s 内联[%d] = %s\n", tag, i, tmp);
+                inlineN++;
+            }
+            i = j;
+        } else i++;
+    }
+    for (int off = 0; off + 8 <= len; off += 8) {
+        unsigned long long v; memcpy(&v, buf + off, 8);
+        if ((v >> 40) != 0xffffULL && (v >> 44) != 0x7ULL) continue;   // 只认 .so / heap 风格地址
+        char s[256];
+        if (safe_read((const void *)(uintptr_t)v, s, sizeof s - 1) == 0) {
+            s[sizeof s - 1] = 0;
+            int n = (int)strlen(s), ok = 0;
+            for (int k = 0; k < n; k++) if (s[k] >= 32 && s[k] < 127) ok++;
+            if (n >= 8 && ok == n) printf("[res]   %s 指针[%d] %p → %s\n", tag, off, (void *)(uintptr_t)v, s);
+        }
+    }
+}
+
+// ── URLINFO：把引擎手里的资源/URL 信息挖出来（task_id 由 TASK 下发后填好）──
+static void res_probe(void) {
+    static const char *NAMES[] = {
+        "XLGetUrlQuickInfo", "XLGetThunderzInfo", "XLGetTaskCheckInfo", "XLGetTaskInfo", "XLGetTaskInfoEx",
+        "XLAddServerResource", "XLAddScdnResource", "XLAddPeerResource", "XLRemoveAddedResource",
+        "XLSetTaskAllowUseResource", "XLSwitchOriginToAllResDownload", "XLSetDownloadTaskOrigin",
+        "XLSetUserId", "XLEnterUltimateSpeed", "XLRequeryIndex", "XLEnterPrefetchMode",
+    };
+    printf("[res] ═══ 资源/URL 探针（task_id=%ld）═══\n", g_task_id);
+    for (size_t i = 0; i < sizeof NAMES / sizeof NAMES[0]; i++)
+        printf("[res]   %-32s %p\n", NAMES[i], probe_sym(NAMES[i]));
+    if (g_task_id <= 0) { printf("[res] → 尚无任务（task_id<=0）：先下发 TASK MAGNET 再来\n"); fflush(stdout); return; }
+
+    // ★★ 路线切换（2026-09-21）：XL* C 门面全部挂死/崩溃（8/8）——
+    //    它是**另一套（PC SDK）门面**，在这条 JNI 路径里没初始化 → 死路。
+    //    改走 C++ 对象：`.so` 的 vtable 是导出的数据符号，**对象首字 = vtable+16**，
+    //    于是可以在进程内存里"逮"出 ResourceManager 实例，再调它的 Get*ResourceList。
+    void *vt = probe_sym("_ZTV15ResourceManager");
+    printf("[res] _ZTV15ResourceManager = %p\n", vt);
+    if (!vt) { printf("[res] 拿不到 vtable，放弃\n"); fflush(stdout); return; }
+    unsigned long long needle = (unsigned long long)(uintptr_t)vt + 16;   // 对象的 vptr 指向 vtable 的地址点
+    printf("[res] 目标 vptr = 0x%llx，开始扫内存（可读区间）…\n", needle);
+
+    fflush(stdout);
+    pid_t sp = fork();          // 扫描放子进程：崩溃被隔离
+    if (sp == 0) {
+        FILE *f = fopen("/proc/self/maps", "r");
+        if (!f) { printf("[res] 打不开 /proc/self/maps\n"); _exit(1); }
+        char line[512]; int regions = 0, hits = 0; unsigned long long scanned = 0;
+        static unsigned char chunk[262144];
+        while (fgets(line, sizeof line, f) && regions < 400) {
+            unsigned long long lo = 0, hi = 0; char perm[8] = "", path[200] = "";
+            int got = sscanf(line, "%llx-%llx %7s %*s %*s %*s %199s", &lo, &hi, perm, path);
+            if (got < 3 || perm[0] != 'r') continue;
+            unsigned long long sz = hi - lo;
+            if (sz > (512ULL << 20)) continue;
+            regions++;
+            if (regions <= 16) printf("[res]   区[%d] %llx-%llx %s %s (%.1fMB)\n", regions, lo, hi, perm,
+                                      path[0] ? path : "(anon)", sz / 1048576.0);
+            scanned += sz;
+            for (unsigned long long a = lo; a + 8 <= hi; a += sizeof chunk) {
+                size_t n = (size_t)((hi - a) < sizeof chunk ? (hi - a) : sizeof chunk);
+                memcpy(chunk, (const void *)(uintptr_t)a, n);
+                for (size_t off = 0; off + 8 <= n; off += 8) {
+                    unsigned long long v; memcpy(&v, chunk + off, 8);
+                    if (v == needle) {
+                        unsigned long long inst = a + off;
+                        if (hits < 6) printf("[res] ★ 命中 ResourceManager 实例 @ 0x%llx（区 %s）\n",
+                                            inst, path[0] ? path : "(anon)");
+                        hits++;
+                        if (hits <= 3) {
+                            // 在子进程里试着调取列表（崩也隔离在这一次 fork 内）
+                            static const char *GETS[4] = {
+                                "_ZN15ResourceManager20GetDPhubResourceListERSt6vectorIP9IResourceSaIS2_EE",
+                                "_ZN15ResourceManager22GetTrackerResourceListERSt6vectorIP9IResourceSaIS2_EE",
+                                "_ZN15ResourceManager18GetCdnResourceListERSt6vectorIP9IResourceSaIS2_EE",
+                                "_ZN15ResourceManager21GetMirrorResourceListERSt6vectorIP9IResourceSaIS2_EE",
+                            };
+                            for (int g = 0; g < 4; g++) {
+                                void *gf = probe_sym(GETS[g]);
+                                if (!gf) continue;
+                                unsigned long long vec[3] = {0, 0, 0};      // std::vector<IResource*> = 3 指针
+                                typedef int (*fget)(void *, void *);
+                                int rc = ((fget)gf)((void *)(uintptr_t)inst, vec);
+                                long cnt = (long)((vec[1] - vec[0]) / 8);
+                                printf("[res]   %s(inst) → rc=%d  cnt=%ld  begin=0x%llx\n",
+                                       strrchr(GETS[g], 'G') ? strrchr(GETS[g], 'G') : GETS[g], rc, cnt, vec[0]);
+                                // ★ 引擎用 ARM64 TBI「带 tag 的指针」（高字节 0xb4），
+                                //   必须先掩掉最高字节才能解引用，否则读到的是别人的内存。
+                                unsigned long long vb = vec[0] & 0x00FFFFFFFFFFFFFFULL;
+                                unsigned long long ve = vec[1] & 0x00FFFFFFFFFFFFFFULL;
+                                long n2 = (long)((ve - vb) / 8);
+                                printf("[res]     raw b=0x%llx e=0x%llx c=0x%llx → 元素数 %ld\n",
+                                       vec[0], vec[1], vec[2], n2);
+                                if (vb && n2 > 0 && n2 < 500) {
+                                    for (long k = 0; k < n2 && k < 20; k++) {
+                                        static unsigned char obuf[1024];
+                                        if (safe_read((const void *)(uintptr_t)(vb + k * 8), obuf, 8) != 0) break;
+                                        unsigned long long raw; memcpy(&raw, obuf, 8);
+                                        unsigned long long obj = raw & 0x00FFFFFFFFFFFFFFULL;
+                                        printf("[res]     [%ld] raw=0x%llx  obj=0x%llx\n", k, raw, obj);
+                                        if (!obj) continue;
+                                        if (safe_read((const void *)(uintptr_t)obj, obuf, sizeof obuf) != 0) {
+                                            printf("[res]       对象读取失败\n"); continue;
+                                        }
+                                        printf("[res]        vptr=0x%llx\n", *(unsigned long long *)obuf);
+                                        // ★ 认类：HttpResource 的 vptr = base + 0x536b50
+                                        unsigned long long so_base = (unsigned long long)(uintptr_t)vt - 0x537250ULL;
+                                        int is_http = (*(unsigned long long *)obuf == so_base + 0x536b50ULL);
+                                        printf("[res]        %s\n", is_http ? "== HttpResource ✅" : "（非 HttpResource）");
+                                        scan_buf("objRaw", obuf, sizeof obuf);          // ← 先做只读的，保证有输出
+                                        void *fTyp = probe_sym("_ZN12HttpResource15GetResourceTypeEv");
+                                        if (fTyp) { typedef unsigned (*fty)(void *);
+                                            printf("[res]        GetResourceType() = %u\n", ((fty)fTyp)((void *)(uintptr_t)obj)); }
+                                        // ★ 正规取 URL：Uri::Uri() → HttpResource::GetUri(Uri&) → Uri::to_string()
+                                        void *fUriCtor = probe_sym("_ZN3UriC1Ev");
+                                        void *fUriGet  = probe_sym("_ZN12HttpResource6GetUriER3Uri");
+                                        void *fToStr   = probe_sym("_ZNK3Uri9to_stringEv");
+                                        static unsigned char ub[512];
+                                        if (fUriCtor && fUriGet) {
+                                            memset(ub, 0, sizeof ub);
+                                            ((void (*)(void *))fUriCtor)(ub);                      // 构造
+                                            ((void (*)(void *, void *))fUriGet)((void *)(uintptr_t)obj, ub);
+                                            printf("[res]        GetUri 后 ub[0..32) = ");
+                                            for (int q = 0; q < 32; q++) printf("%02x", ub[q]);
+                                            printf("\n");
+                                        // ★ 裸 URL 在宿主 curl 会被拒（QQ 微云回 400）⇒ 必须带上引擎为该资源
+                                        //   设置的请求头。取 HttpResource::GetHttpHeaderProperty(vector<KeyValue<string,string>>&)
+                                        void *fHdr = probe_sym("_ZN12HttpResource21GetHttpHeaderPropertyERSt6vectorI8KeyValueISsSsESaIS2_EE");
+                                        printf("[res]        fHdr=%p\n", fHdr);
+                                        if (fHdr) {
+                                            unsigned long long hv[3] = {0, 0, 0};
+                                            ((void (*)(void *, void *))fHdr)((void *)(uintptr_t)obj, hv);
+                                            unsigned long long hb = hv[0] & 0x00FFFFFFFFFFFFFFULL;
+                                            unsigned long long he = hv[1] & 0x00FFFFFFFFFFFFFFULL;
+                                            long hn = (long)((he - hb) / 48);          // KeyValue = 两个 libc++ string = 48B
+                                            printf("[res]        请求头 raw b=0x%llx e=0x%llx → %ld 条\n", hv[0], hv[1], hn);
+                                            for (long k = 0; k < hn && k < 20; k++) {
+                                                unsigned char kv[64];
+                                                if (safe_read((const void *)(uintptr_t)(hb + (unsigned long long)k * 48),
+                                                              kv, 48) != 0) break;
+                                                for (int half = 0; half < 2; half++) {
+                                                    unsigned char *q = kv + half * 24;
+                                                    unsigned long long w0; memcpy(&w0, q, 8);
+                                                    char t[300]; t[0] = 0;
+                                                    if (w0 & 1) {                  // libc++ long：cap|1, size, data
+                                                        unsigned long long sz, dp;
+                                                        memcpy(&sz, q + 8, 8); memcpy(&dp, q + 16, 8);
+                                                        unsigned long long dd = dp & 0x00FFFFFFFFFFFFFFULL;
+                                                        if (sz > 0 && sz < 280 && dd &&
+                                                            safe_read((const void *)(uintptr_t)dd, t, 279) == 0) {
+                                                            t[279] = 0; t[sz] = 0;
+                                                        } else t[0] = 0;
+                                                    } else {                       // short：内联
+                                                        int z = 0;
+                                                        for (; z < 23 && q[z]; z++) t[z] = (char)q[z];
+                                                        t[z] = 0;
+                                                    }
+                                                    if (t[0]) printf("[res]          hdr[%ld.%d] = %s\n", k, half, t);
+                                                }
+                                            }
+                                        }
+
+                                            // ★ Uri 是「按组件存字符串」的结构（scheme/host/path…）：
+                                            //   每个 tag 指针直接指向裸字符串数据（首字节即文本），逐个组件打印。
+                                            for (int wi = 0; wi < 24; wi++) {
+                                                unsigned long long raw; memcpy(&raw, ub + wi * 8, 8);
+                                                unsigned long long p = raw & 0x00FFFFFFFFFFFFFFULL;
+                                                if (!p) continue;
+                                                char t[420];
+                                                if (safe_read((const void *)(uintptr_t)p, t, 400) != 0) {
+                                                    printf("[res]        ub.w%-2d raw=0x%llx → 不可读\n", wi, raw); continue;
+                                                }
+                                                t[400] = 0;
+                                                int bad = 0;
+                                                for (int q = 0; q < 400 && t[q]; q++)
+                                                    if ((unsigned char)t[q] < 32 || (unsigned char)t[q] > 126) { bad = 1; break; }
+                                                if (bad || strlen(t) < 1) continue;
+                                                printf("[res]  ★组件 w%-2d = %s\n", wi, t);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        fclose(f);
+        printf("[res] 扫描完成：区间 %d，已扫 %.1f MB，命中 %d\n", regions, scanned / 1048576.0, hits);
+        fflush(stdout);
+        _exit(0);
+    }
+    int st = 0;
+    for (int w = 0; w < 100; w++) { if (waitpid(sp, &st, WNOHANG) == sp) break; usleep(100000); if (w == 99) { kill(sp, SIGKILL); waitpid(sp, &st, 0); } }
+    printf("[res] 扫描子进程结束 status=%d\n", st);
+    printf("[res] ═══ 结束 ═══\n");
+    fflush(stdout);
+}
+
+
 // ── 网络小工具 ──
 static int tcp_connect_ip(const char *ip, int port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -476,6 +768,10 @@ static void main_loop(void) {
                 if (sscanf(cmd + 5, "%15s %1023s %255s", kind, uri, name) >= 2) {
                     start_task(!strcmp(kind, "MAGNET"), uri, name[0] ? name : "download.bin");
                 }
+            } else if (!strncmp(cmd, "URLINFO", 7)) {
+                res_probe();
+            } else if (!strncmp(cmd, "PROBE", 5)) {
+                probe_run();
             } else if (!strncmp(cmd, "DL ", 3)) {
                 // DL <torrentPath>|<dir>|<relPath>|<index>|<exclude-csv> —— 用 | 分隔，路径里的空格不会拆错
                 char *parts[5] = {0}; int np = 0;

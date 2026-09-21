@@ -613,8 +613,8 @@ QEMU 控制台日志里直接能抓到。关键行：
 ```bash
 # ① 编译 harness（NDK）
 cd /d/Code/_scratch_tb/thunder-harness
-NDK="C:/Users/lvjin/AppData/Local/Android/Sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/windows-x86_64/bin"
-"$NDK/aarch64-linux-android21-clang.cmd" harness4.c -o harness4 -ldl -Wl,-export-dynamic
+NDK="/opt/ndk/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin"   # ★ 改在 debian 容器 10.0.0.108 上编译（Windows 端 NDK 已不存在）
+"$NDK/aarch64-linux-android21-clang" harness4.c -o harness4 -ldl -Wl,-export-dynamic
 
 # ② 打包 initrd（WSL；会预置 setting.cfg + Identify2.txt，挂 tmpfs）
 wsl -d Debian bash -c 'cd /mnt/d/Code/_scratch_tb/qemu-system && MAGNET= URL= MON_SECS=0 \

@@ -37,6 +37,15 @@ public sealed class QemuHostRuntime : IDisposable
     private int _filtered;
 
     /// <summary>
+    /// guest 的 vCPU 数（<c>-smp</c>）。默认 4。
+    ///
+    /// <para>QEMU 这里是 **TCG 软件模拟**（ARM64 跑在 x86 上，没有硬件虚拟化加速），
+    /// 引擎的下载链路是 CPU 密集型（分片/校验/memcpy），实测下载时 QEMU 已占到
+    /// 3.4 个核（4 vCPU 的 85%）—— 多给核对这类负载可能有效。</para>
+    /// </summary>
+    public int SmpCount { get; set; } = 4;
+
+    /// <summary>
     /// 稀疏块设备（数据面）——guest 把引擎吐出的字节按文件偏移直接写进来，宿主**直读同一物理文件**。
     ///
     /// <para><b>为什么</b>：2026-09-21 实测，现有取流路径每层都在白吃带宽：
@@ -121,7 +130,7 @@ public sealed class QemuHostRuntime : IDisposable
             {
                 // -m 5120：guest RAM 需容得下 /thunder-data 的 tmpfs（3500m，见 initrd 的 /init）+ 引擎开销；
                 //  旧的 4096 + tmpfs 1500m 会在下载 ~1.57GB 时写满 tmpfs，任务以 err=114010 死亡
-                "-M", "virt", "-cpu", "max", "-m", "5120", "-smp", "4", "-nographic",
+                "-M", "virt", "-cpu", "max", "-m", "5120", "-smp", SmpCount.ToString(), "-nographic",
                 "-L", "share",
                 "-kernel", "pkg_kernel",
                 "-initrd", InitrdName,
