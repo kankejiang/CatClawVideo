@@ -521,3 +521,54 @@ CatClawVideo 侧只需新增一个"远程引擎"后端：投递磁力 → 轮询
 
 ⚠ 与 §1/§12 同样的授权性质说明：该引擎为迅雷官方发布、但**以 NAS 套件形式分发**，
 对接其未公开接口属逆向使用，需自行评估合规性。
+
+
+### 13.6 ★ 更正：登录是「面板 / 云盘」的门槛，**不是 BT 引擎的门槛**
+
+13.5 写的"唯一外部依赖是迅雷账号登录"**是错的**。查 `xunlei-pan-cli.3.23.5.amd64` 的符号表后更正：
+
+**① 引擎导出 19064 个动态符号，其中 1010 个是同一族下载库**
+`xldownloadlib::{CreateP2SPTask, SetUserId, SetAccelerateToken, RemoveAccelerateToken,
+GetPremiumResInfo, GetTaskInfoEx, SetMiUiVersion, SynPlayState, GetLocalUrl, GetHttpHeaderInfo}Command` ·
+`DownloadLib::{SetPipeLimit, SetEmuleSwitch, GetPremiumResInfo, GetFileNameFromUrl}` ·
+以及 `VodPlayServer::*`（边下边播）、`TaskManager::GetLocalUrl*`
+
+★★ **`SetUserIdCommand` 与 `SetAccelerateTokenCommand` 是彼此独立、各自可选的命令**
+⇒ 不设 userid、不设加速令牌**照样能建任务**（走 DHT / tracker / P2P）；
+**只有「会员超级加速」（P2SP 镜像 + 迅雷自有节点）才需要加速令牌**。
+
+**② 匿名通道的门牌与 TVBox 同款**
+`app_key=%s, app_name=%s, app_version=%s, peer_id=%s, guid=%s` · `GlobalInfo::GetAppKey()` ·
+`IMEI=%s` · `gen deviceid by nas` · `GetDeviceID GetFileKV().Get device_id`
+⇒ **appKey + 伪造 device_id / peer_id / guid = 匿名**，
+与 TVBox 的 Android SDK（以及本项目 Android 版伪造 IMEI/MAC 的做法）**完全是同一套机制**。
+（`SetMiUiVersionCommand` 进一步说明这支与 Android 那支同源。）
+
+**③ 所有"登录"字样都指向 UI，不指向引擎**
+`"user not login"` / `"no login"` 只是**错误码枚举里的一项**（与 `no_anode` / `no_error` / `no_proxy` 并列）；
+`unlogin-cinema-*.png`、`.unlogin-*` 是 **Web UI 的 CSS 类名**；
+`withOtherAuthAndQrcodeLogin` 是 **Vue 前端扫码登录组件**；
+`401 unauthorized` / `WWW-Authenticate` 来自静态链接进来的 Go 标准库 / openssl / nmap 指纹库。
+
+**④ 为什么 TVBox 不用登录而 NAS 套件要 —— 产品形态不同，不是技术限制**
+
+| | TVBox / 本项目 Android | 迅雷 NAS 套件 |
+|---|---|---|
+| 本体 | 从 OEM 产品里**提取的裸 Android SDK** | 迅雷**官方产品** `pan-xunlei-com` |
+| 官方是否管得到 | 管不到（无产品形态） | 管得到（有自己的面板与账号体系） |
+| 认证 | 硬编码 appKey + 伪造设备标识（匿名） | **同样有 appKey 匿名通道**，但**面板 UI 默认走扫码登录** |
+| 登录换来了什么 | — | 云盘、远程下载推送、**会员超级加速** |
+
+### ⇒ 行动修正
+
+**不要走面板登录。** 正确做法是**像 TVBox 那样绕过面板直接驱动引擎**：
+
+1. 在 x86_64 Linux 起引擎（`10.0.0.108` 或 WSL2）
+2. **不经 `index.cgi` 面板**，直接驱动 —— 两条路：
+   - (a) 直接 POST `/index.cgi`（可能仍需过设备校验）
+   - (b) ★ **像本项目在 Windows 上互操作 `xldl.dll` 那样，写个 Linux 小程序链接它导出的
+     `xldownloadlib::*Command` / `DownloadLib::*`** —— **1010 个明文 C++ 符号，比 Windows 那版还全**
+3. 喂 **appKey + 伪造 device_id / peer_id / guid**（可对齐 2014 版 `id.dat` 的 `[partner] id = 80000043`）
+
+⚠ 待实验确认的只剩一点：**迅雷是否对未登录态限制 BT 索引访问**
+（`hub5btmain.v6.shub.sandai.net` / `pool.v6.bt.n0808.com`）。若受限，再评估是否值得登录。
