@@ -52,7 +52,10 @@ if (mode == "xfer-e2e")
     var fMb = argList.Count > 1 && long.TryParse(argList[1], out var f1) ? f1 : 512;
     var wMb = argList.Count > 2 && long.TryParse(argList[2], out var w1) ? w1 : 128;
     var mPort = argList.Count > 3 && int.TryParse(argList[3], out var m1) ? m1 : 20092;
-    return await BenchE2E.RunAsync(rtDir, fMb, wMb, mPort);
+    // 第 5 参（可选）：**外部直链 URL** —— 让引擎去下真实大文件（如系统镜像 ISO），
+    // 用来验证「下载超过旧 tmpfs 1.5G 上限的大文件」这类场景。
+    var extUrl = argList.Count > 4 ? argList[4] : null;
+    return await BenchE2E.RunAsync(rtDir, fMb, wMb, mPort, extUrl);
 }
 
 if (mode == "proxy-bench")

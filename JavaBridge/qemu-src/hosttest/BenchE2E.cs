@@ -43,7 +43,9 @@ internal static class BenchE2E
         Console.WriteLine(line);
     }
 
-    public static async Task<int> RunAsync(string runtimeDir, long fileMb, long waitMb, int mediaPort)
+    /// <param name="extUrl">非空则让引擎去下这个**外部直链**（如系统镜像 ISO），
+    /// 只考核「引擎能否把大文件下完 + tmpfs 容量够不够」；合成源仍会起、只用于宿主自测。</param>
+    public static async Task<int> RunAsync(string runtimeDir, long fileMb, long waitMb, int mediaPort, string? extUrl = null)
     {
         try { Console.OutputEncoding = System.Text.Encoding.UTF8; } catch { }
 
@@ -131,14 +133,17 @@ internal static class BenchE2E
 
         // ── 起 VM ──
         if (!await rt.StartAsync()) { Log("✗ QEMU 启动失败"); return 3; }
-        if (!await ctl.WaitFirstPollAsync(TimeSpan.FromSeconds(120))) { Log("✗ guest 120s 未轮询（VM 没起来）"); return 4; }
+        if (!await ctl.WaitFirstPollAsync(TimeSpan.FromSeconds(900))) { Log("✗ guest 900s 未轮询（VM 没起来，或 /init 的前置测速段卡住）"); return 4; }
         var bootSec = swAll.Elapsed.TotalSeconds;
         Log($"[1] VM 冷启动 → guest 就绪：{bootSec:F1}s");
 
         // ── 下发直链任务 ──
         var tTask = swAll.Elapsed;
-        ctl.SetCommand($"TASK URL http://10.0.2.2:{src.Port}/synth.mp4 synth.mp4");
-        Log($"[2] 已下发直链任务（TASK URL …/synth.mp4）");
+        var taskUrl = extUrl ?? $"http://10.0.2.2:{src.Port}/synth.mp4";
+        var taskName = extUrl is null ? "synth.mp4" : Path.GetFileName(new Uri(extUrl).AbsolutePath);
+        ctl.SetCommand($"TASK URL {taskUrl} {taskName}");
+        Log($"[2] 已下发{(extUrl is null ? "合成" : "**外部**")}直链任务：{taskName}");
+        if (extUrl is not null) Log($"     源：{extUrl}");
 
         // ── 等引擎把文件下完 ──
         // ★ 关键认知（2026-09-21 实测）：数据面是「**宿主读的时候**顺带落盘」——
@@ -149,8 +154,9 @@ internal static class BenchE2E
         const long off0 = 0;
         long alloc = 0;
         var lastLog = TimeSpan.Zero;
-        var deadline = DateTime.UtcNow.AddMinutes(3);
-        while (DateTime.UtcNow < deadline && LastDone < fileBytes * 9 / 10)
+        var deadline = DateTime.UtcNow.AddMinutes(extUrl is null ? 3 : 30);
+        var txTarget = extUrl is null ? fileBytes * 9 / 10 : waitMb * MB;
+        while (DateTime.UtcNow < deadline && LastDone < txTarget)
         {
             if (swAll.Elapsed - lastLog > TimeSpan.FromSeconds(3))
             {
@@ -159,8 +165,26 @@ internal static class BenchE2E
             }
             await Task.Delay(200);
         }
-        Log($"[2] 引擎下载完成：done={LastDone / (double)MB:F0}MB / {fileMb}MB"
+        Log($"[2] 引擎下载完成：done={LastDone / (double)MB:F0}MB"
             + $"（耗时 {swAll.Elapsed.TotalSeconds - tTask.TotalSeconds:F1}s）");
+
+        // 外部直链模式：只考核「引擎能否把大文件下完」（tmpfs 容量、任务存活），不做数据面对照
+        if (extUrl is not null)
+        {
+            var secs = Math.Max(0.1, swAll.Elapsed.TotalSeconds - tTask.TotalSeconds);
+            var mm = LastDone / (double)MB;
+            Console.WriteLine();
+            Console.WriteLine("════════════════════════════════════════════════════════════════════════════");
+            Console.WriteLine($"  【外部直链模式】引擎下载 {mm:F0}MB / {secs:F1}s = {mm / secs:F1} MB/s");
+            Console.WriteLine($"  源：{extUrl}");
+            Console.WriteLine($"  guest tmpfs 情况见上方 [init] 行；块设备镜像已落 "
+                              + $"{rt.BlockStore.AllocatedBytes() / (double)MB:F0}MB");
+            Console.WriteLine("  （外部源不经本机数据面，故跳过回填与块设备对照）");
+            Console.WriteLine("════════════════════════════════════════════════════════════════════════════");
+            var logPath2 = Path.Combine(Path.GetDirectoryName(imgPath)!, "catclaw-e2e-bench.log");
+            try { await File.WriteAllLinesAsync(logPath2, LogLines); } catch { }
+            return 0;
+        }
         Log($"    此刻块设备已落 {rt.BlockStore.AllocatedBytes() / (double)MB:F0}MB"
             + "   <- 引擎下载不会写块设备（符合设计）");
 
