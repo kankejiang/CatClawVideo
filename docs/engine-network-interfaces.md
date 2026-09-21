@@ -375,3 +375,79 @@ C++ 类名完整可读**。与协议直接相关的有：
 - 清单是 **HTTP 直链** ⇒ B 成立，自研多线程 HTTP = 最快。
 - 清单是 **peer 列表** ⇒ 自研只能用标准 BT 连标准 peer、**连不上迅雷私有 peer**，
   速度**可能反而不如 A** ⇒ 此时最快的是 **C（ARM64 宿主原生）**；没有 ARM 硬件就维持 A。
+
+
+---
+
+## 12. ★★★★ 转机：迅雷有 **Windows 原生 x86 SDK**，实测 **112 MB/s**（2026-09-21）
+
+§11 的否定结论只否掉了「**搬 URL**」这条路。但迅雷对 **Windows 桌面**本来就发布过原生引擎，
+**既不需要模拟、也不需要搬 URL** —— 直接调它自己的 API。
+
+### 12.1 来源（三层证据）
+
+1. **官方文档**：`http://open.xunlei.com/wiki/api_doc.html`（迅雷开放平台「迅雷下载引擎」API 文档，
+   逐条对应 `XL_Init` / `XL_CreateTask` …）。
+2. **OEM 集成**：小米（MIUI 系统库 + `com.android.providers.downloads.XlTaskHelper`）、猎豹、
+   360 极速浏览器、迅雷 7 本体。独立佐证：`libxl_thunder_sdk.so` 的导出符号含 Jenkins 路径
+   **`dl_miui_union_master-…/downloadlib/src/main/cpp/dl_miui_downloadlib/`** ⇒ 迅雷×小米联合构建。
+3. **社区归档**：`cryzlasm/ThunderOpenSDK`（README 原文：*"版权与最终解释权归迅雷公司所有 /
+   迅雷下载引擎 / 分别由 小米, 猎豹, 360极速浏览器等软件提取"*），收录 5 套 OEM 提取版 +
+   官方头文件 `xldl.h`；另有 `megahertz0/android_thunder`、`ZoranLi/thunder`（自述"迅雷apk反编译"）
+   提供 Java 层全量反编译源码与 40 个 `parameter` 参数类。
+
+### 12.2 运行时组成与架构（实测 PE 头）
+
+| 文件 | 架构 | 作用 |
+|---|---|---|
+| `xldl.dll`（293 KB） | **i386 / x86 32 位** | 外壳 API，**31 个 `XL_*` 导出**，与 `xldl.h` 逐字对上 |
+| `download_engine.dll`（3.35 MB） | **i386 / x86 32 位** | 真引擎，**139 个明文 C 导出**（Android 那份是 12984 个 C++ mangled） |
+| `MiniThunderPlatform.exe` | x86 | 引擎宿主进程（头文件有 `TASK_ERROR_TP_CRASHED=0x42 "MINITP崩溃"`） |
+| `dl_peer_id.dll` / `dc.ini` / `id.dat` / `version.data` | — | 设备标识与版本（`id.dat` = `[partner] id = 80000043`；`version.data = 1.2.141023`） |
+
+★ `download_engine.dll` 的明文导出直接解释了 §9 里用 vtable 扫描才挖出的东西：
+**资源搜索引擎四路** `dhub_searcher` / `p2p_res_searcher` / **`p2s_res_searcher`** / `phub_res_searcher`；
+**CID 索引** `bcid_calculator` / `cid_store` / `get_task_gcid`；
+**协议命令** `cmd_query_res_info_hub` / `cmd_query_p2phub` / `cmd_query_hub`；
+**来源统计** `bytes_from_dphub_res` / `bytes_from_nondphub_res`（↔ 反推得到的 `mScdnSpeed`/`mPcdnSpeed`）；
+**边下边播** `create_predownload_task` / `start_predownload_task`；**块级读取** `get_downloaded_blocks`。
+
+### 12.3 实测结果
+
+测试程序：`C://Code//.tvbox-ref//xldl-probe//test//`（.NET 10，`PlatformTarget=x86` + `RuntimeIdentifier=win-x86`），
+部署到 `..\sdk\`（与 `xldl.dll` 同目录）运行。结构体布局自校验：
+`SizeOf(DownTaskParam)=26564` ✅ `SizeOf(DownTaskInfo)=1429` ✅（与 `#pragma pack(1)` 逐字节吻合）。
+
+| 项 | 结果 |
+|---|---|
+| `XL_Init()` | **= 1**（125 ms），`MiniThunderPlatform.exe` 正常拉起/退出 |
+| HTTP 直链任务 | ★★★ **112~113 MB/s**（NJU Ubuntu ISO 6347 MB，23 s 下 1.92 GB） |
+| `https://` 任务 | ✗ 4 s 后 ERROR —— **2014 引擎不支持现代 TLS**（走 WININET） |
+| 磁力 / 种子文件路径 | ✗ `ID_INVALID (0x43)` |
+| `XL_CreateBTTaskByThunder()` | ✗ `0x80040154 REGDB_E_CLASSNOTREG` ⇒ 是去 COM 拉起迅雷7本体的壳，不是引擎入口 |
+
+**速度对照（同机同源）**：
+
+| 路径 | 速度 | 相对 |
+|---|---|---|
+| ★ **原生 x86 迅雷引擎** | **112 MB/s** | **5.7×** |
+| QEMU 内 wget 纯 TCP | 40.8 MB/s | 2.1× |
+| 宿主 curl 直连 | 38.1 MB/s | 2.0× |
+| QEMU TCG 模拟 ARM64 引擎 | 19.5 MB/s | 1× |
+
+### 12.4 结论修正
+
+- §11「能不能绕开 TCG」的答案要改：**不能搬 URL，但可以换平台**。
+- **直链 / 网盘 / HTTP 类任务**：Windows 上**可零模拟跑原生满速**（112 MB/s）。
+- **磁力类**：本版 2014 SDK 的 BT 索引路径已废（`ID_INVALID`）⇒ 磁力暂时仍走 QEMU 的
+  Android 引擎（2015 世代，BT 可用）。想让磁力也原生，需找**更新一代**的 Windows 迅雷 SDK。
+
+### 12.5 产品化要点（踩过的坑）
+
+1. **必须 32 位进程**：x64 宿主加载 x86 DLL 直接 `BadImageFormatException`
+   ⇒ 走 **x86 助手进程 + IPC**（与现有"引擎独立进程"同构，但零模拟）。
+2. **`DownTaskParam.nReserved1 = 5`** 是官方构造函数写死的魔法值，零初始化语言（C#/Go）必须手动补。
+3. **`https://` 会直接失败** ⇒ 直链任务需回落 http，或由宿主先代理一次。
+4. 引擎**预分配**完整尺寸临时文件：`<name>.dl` + `<name>.dl.cfg`（任务位图）。
+5. ⚠ 该 SDK 仍是**从第三方软件提取的闭源二进制**，授权性质与 §1 打包的 `libxl_thunder_sdk.so` 同级
+   （partner id 硬编码、可被迅雷随时失效）。
