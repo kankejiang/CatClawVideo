@@ -231,6 +231,16 @@ public class DownloadManager : IDisposable
     private readonly CatClawVideo.Core.Services.QemuThunder.QemuThunderEngine? _thunder;
     /// <summary>排队任务等待"并发槽位空出"的通知信号</summary>
     private readonly SemaphoreSlim _slotWake = new(0);
+
+    /// <summary>
+    /// 磁力任务的**单并发闸**（与 HTTP 下载的 <see cref="_active"/><see cref="ConcurrentLimit"/> 分离）。
+    ///
+    /// <para>迅雷引擎是**单 VM 单会话**：新任务会把 <c>QemuThunderEngine._session</c> 顶掉，
+    /// 正在跑的旧任务随即判定「会话被替换」失败。而 <c>ConcurrentLimit</c>（默认 2）是为 HTTP
+    /// 下载设计的，两个磁力同时进来必然互顶 —— 表现为「暂停后恢复提示引擎被占用」
+    /// （2026-09-20 用户实测）。故磁力永远串行，与用户设置的并发数无关。</para>
+    /// </summary>
+    private readonly SemaphoreSlim _magnetGate = new(1, 1);
     private readonly Dictionary<string, CancellationTokenSource> _ctsMap = new();
     private readonly object _lock = new();
     /// <summary>落盘串行化（主线程与后台线程都会触发保存，避免写出半截文件）</summary>
@@ -548,10 +558,26 @@ public class DownloadManager : IDisposable
         var cts = new CancellationTokenSource();
         lock (_lock) _ctsMap[task.Id] = cts;
         var reserved = false;
+        var magnetSlot = false;
         try
         {
-            // 排队阶段即注册 cts：排队/等待 slot 的任务也能被取消，暂停同样生效
-            await AcquireSlotAsync(cts.Token).ConfigureAwait(false);
+            // ── 磁力：引擎是**单会话**，必须独占跑，不能与任何其他磁力并发 ──
+            //
+            // 2026-09-20 用户实测「暂停后恢复提示引擎被占用」的真因之一：并发槽位
+            // （默认 2）是按 HTTP 下载设计的，对磁力**不适用** —— 两个磁力任务同时进来时，
+            // 后到的会把 QemuThunderEngine._session 顶掉（单 VM 单会话），先到的随即
+            // 判定「会话被替换」返回 false，界面报「引擎被播放占用」。
+            // 这里给磁力单独一道**单并发闸**，与 HTTP 的 _active/ConcurrentLimit 完全分开：
+            // 无论用户把并发设成几，磁力永远串行。
+            if (task.Kind == "magnet")
+            {
+                await _magnetGate.WaitAsync(cts.Token).ConfigureAwait(false);
+                magnetSlot = true;
+            }
+            else
+            {
+                await AcquireSlotAsync(cts.Token).ConfigureAwait(false);
+            }
             reserved = true;
             if (_disposed || IsTerminal(task)) return;
 
@@ -575,12 +601,13 @@ public class DownloadManager : IDisposable
         }
         finally
         {
-            if (reserved) ReleaseSlot();
+            if (reserved && !magnetSlot) ReleaseSlot();
+            if (magnetSlot) { try { _magnetGate.Release(); } catch (SemaphoreFullException) { } }
             lock (_lock) { _ctsMap.Remove(task.Id); cts.Dispose(); }
         }
     }
 
-    /// <summary>获取一个下载并发槽位（并发已满时等待通知，无固定轮询）</summary>
+    /// <summary>获取一个 HTTP 下载并发槽位（并发已满时等待通知，无固定轮询）</summary>
     private async Task AcquireSlotAsync(CancellationToken ct)
     {
         while (true)
@@ -617,9 +644,12 @@ public class DownloadManager : IDisposable
 
         long lastTick = 0, lastBytes = 0;
         var ok = false;
+        var reason = "";
         try
         {
-            ok = await engine.DownloadToFileAsync(
+            // 用带原因的重载：失败时不再只拿到一个 bool（那样只能写「占用/超时/无源」的模糊文案，
+            // 实测把引擎的 9128 任务已存在显示成「被占用」，把排查方向带偏）。
+            (ok, reason) = await engine.DownloadToFileExAsync(
                 task.Url, task.Name,
                 destPathFor: pickName =>
                 {
@@ -655,7 +685,9 @@ public class DownloadManager : IDisposable
         }
         else if (!ct.IsCancellationRequested && task.Status == DownloadStatus.Downloading)
         {
-            MarkFailed(task, "磁力下载未完成（引擎被播放占用、超时或无源；重试可从已下部分续传）");
+            MarkFailed(task, string.IsNullOrEmpty(reason)
+                ? "磁力下载未完成（重试可从已下部分续传）"
+                : $"磁力下载未完成：{reason}（重试可从已下部分续传）");
         }
     }
 

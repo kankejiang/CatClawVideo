@@ -219,15 +219,22 @@ static void start_dl(const char *torrentPath, const char *dir, const char *relPa
             printf("[ctrl]   stopTask(%ld) → %d（9000=成功；9104/9119=任务不存在/未运行）\n", g_task_id, sr);
             // ★ 引擎清理任务句柄是**异步**的：stopTask 返回 9000 后立即重建仍撞 9128
             //   （2026-09-17 实测：127ms 后重建失败 → 会话死亡 → 「迅雷无法解析该磁力链接」）。
-            //   退避重试：0.5s / 1.5s / 3s / 3s，共 4 次；每次重建前重取 getTorrentInfo（对齐手机端）。
+            //
+            //   ⚠ 2026-09-20 实测：0.5/1.5/3/3s 共 4 次退避**全部仍撞 9128**
+            //   （EBWH-343、FC2-PPV 等种子；stopTask 回 9000 或 9105 都一样），
+            //   说明引擎对同 btih 的任务句柄清理可能到分钟级、甚至根本不清。
+            //   把控住总时长（否则用户等成「卡死」）：拉到 1/2/4/8/8s，共 5 次 ≈23s。
+            //   仍失败则由宿主侧做 VM 级恢复（重启 guest，任务表清空）—— 见
+            //   QemuThunderEngine.SendDlWithRecoveryAsync。
             typedef jint (*fn_tinfo)(JNIEnv *, jobject, jstring, jobject);
             fn_tinfo getTorrentInfo = (fn_tinfo)dlsym((void *)g_eng.sdk,
                                                        "Java_com_xunlei_downloadlib_XLLoader_getTorrentInfo");
+            static const long backoff_ms[5] = {1000, 2000, 4000, 8000, 8000};
             jint r2 = 0; long id2 = -1;
-            for (int attempt = 0; attempt < 4 && (r2 != 9000 || id2 <= 0); attempt++) {
-                long us = attempt == 0 ? 500000L : (attempt == 1 ? 1500000L : 3000000L);
-                printf("[ctrl]   等待引擎清理任务句柄 %ldms 后重建（第 %d 次）\n", us / 1000, attempt + 1);
-                usleep((useconds_t)us);
+            for (int attempt = 0; attempt < 5 && (r2 != 9000 || id2 <= 0); attempt++) {
+                printf("[ctrl]   等待引擎清理任务句柄 %ldms 后重建（第 %d/5 次）\n",
+                       backoff_ms[attempt], attempt + 1);
+                usleep((useconds_t)(backoff_ms[attempt] * 1000));
                 if (getTorrentInfo) {
                     JObj *tinfo = new_obj("com/xunlei/downloadlib/parameter/TorrentInfo");
                     printf("[ctrl]   getTorrentInfo 重取 → %d\n",
@@ -237,6 +244,7 @@ static void start_dl(const char *torrentPath, const char *dir, const char *relPa
                                                      3, 1, ++s_seq, (jobject)tid);
                 id2 = obj_get_long(tid, "mTaskId");
                 printf("[ctrl]   重试建下载任务(BT) 返回 %d，id=%ld seq=%d\n", (int)r2, id2, s_seq);
+                if (r2 != 9128) break;   // 换了别的错（无源/参数）就不必再等：重试也救不回来
             }
             if (r2 == 9000 && id2 > 0) { r = r2; id = id2; }
         }
