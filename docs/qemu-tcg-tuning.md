@@ -283,18 +283,29 @@ guest 物理地址→宿主地址的映射与页表模拟，guest RAM 越大，�
 
 ```powershell
 # 1) 从生产 initrd 里取出 guest busybox
-python D:\Code\_re_xl\qemu_bench\build_bench_initramfs.py `
-       D:\Code\_re_xl\qemu_bench\extract\busybox `
-       D:\Code\_re_xl\qemu_bench\bench.gz
+python D:\Code\_qemu_bench\build_bench_initramfs.py `
+       D:\Code\_qemu_bench\extract\busybox `
+       D:\Code\_qemu_bench\bench.gz
 
 # 2) 交叉轮转矩阵（每配置 4 次，约 20 分钟）
-. D:\Code\_re_xl\qemu_bench\run_matrix3.ps1
+. D:\Code\_qemu_bench\run_matrix3.ps1
 
 # 3) 真实引擎功能验证（需要 18080 空闲＝CatClawVideo 已关闭）
-. D:\Code\_re_xl\qemu_bench\run_smoke.ps1
+. D:\Code\_qemu_bench\run_smoke.ps1
+
+# 4) §6.2 / §7 的引擎吞吐与多实例基准（本地 HTTP 源，无外网、无 peer 波动）
+#    先造 4 GiB 负载并用宿主 HTTP 服务器喂给 guest（guest 经 SLIRP 走 10.0.2.2）
+fsutil file createnew D:\Code\_qemu_bench\payload.bin 4294967296
+python D:\Code\_qemu_bench\serve_payload.py D:\Code\_qemu_bench\payload.bin 18099
+python D:\Code\_qemu_bench\make_bench_initrd.py `
+       <ThunderRuntime>\pkg_initrd.gz D:\Code\_qemu_bench\bench_engine.gz
+. D:\Code\_qemu_bench\run_engine_smp.ps1      # vCPU 扩展曲线（§6.2）
+. D:\Code\_qemu_bench\run_multi_instance.ps1  # 多实例并发（§7）
 ```
 
-原始数据：`D:\Code\_re_xl\qemu_bench\matrix*.csv`、`logs*/`、`smoke/`。
+> `payload.bin`（4 GiB）是临时负载，测完可删；按上面第一行一行命令即可重建。
+
+原始数据：`D:\Code\_qemu_bench\matrix*.csv`、`engine_smp.csv`、`multi_instance.csv`、`logs*/`、`smoke/`。
 
 ### 附录 B：避坑记录
 
