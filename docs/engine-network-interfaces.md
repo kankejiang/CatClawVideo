@@ -712,3 +712,48 @@ down.360safe.com/gc/browser360-cn-beta_10.95.1003.29-1_amd64.deb
 基础设施已有：`LinkServer`（配对）、Android 侧 `ThunderP2P` / `JpP2P` 本地 httpd。
 落地只需：Android 侧把回环服务暴露到局域网 + PC 侧加 `RemoteThunderEngine`
 （实现 `IPreferredMagnetEngine`，挂进 `ChainedMagnetEngine` 链）。
+
+## 13.8 ❌ 终局否决：NAS 引擎的登录需要**邀请码**（2026-09-21 实测，别再试）
+
+§13.5/§13.6 把希望押在「像 TVBox 那样绕过面板、匿名驱动引擎」。§13.7 实测任务 API 强制 JWT 后，
+本轮把引擎**完整跑起来并走到登录环节**，结论：**这条路走不通，与实现无关**。
+
+### 实测链路（全部可复现）
+
+1. 引擎在 x86_64 Debian（`10.0.0.108`）上启动成功（平台伪装沿用 §13.7 的 synology 两步）：
+   ```
+   detect platform: synology X9ibISwpIp8jQ4Ya
+   Client.DoLoginQrcode → https://xluser-ssl.xunlei.com/v1/auth/device/code  resp_code=200
+   Client.startWatch&deviceCode=AWqx…
+   ```
+2. 它给出的登录地址是扫码/设备码流程：
+   ```
+   https://pan.xunlei.com/yc/?client_id=X9ibISwpIp8jQ4Ya&platform=synology&privilege=PAN_CLI_PREVIEW&space=device_id%23…&user_code=AWqx…
+   ```
+3. **用户用自己已登录的迅雷账号扫码 → 页面要求「邀请码」才能继续** ⇒ 无法完成登录。
+
+### 为什么这不是"再想想办法"能绕过的
+
+- 该引擎是迅雷 **NAS 套件（内测/预览形态）**，登录换取的是 `PAN_CLI_PREVIEW` **预览权限**；
+  平台标签里也明写着 `withPreviewPrivilege`/`withQrcodeLogin` —— **权限由迅雷服务端按账号发放**，
+  本地伪造平台身份能过"平台门"，但过不了"账号门"。
+- 任务模型是 `user#download`（云端任务挂在账号下，本地引擎只做执行）⇒ **没有有效账号 = 没有任务系统**，
+  连"解析磁力"（`resource/list`）都被同一把 JWT 挡住（§13.7 实测 403）。
+- 因此 §13.6(b)「符号直驱绕开 HTTP/JWT」**也不值得再投入**：即便把 `DownloadLib::CreateBtTask`
+  调通，引擎内部的 `TaskManager` 仍在 `WaitForLogin scene=NextTask` 等账号凭据。
+
+### 补充踩坑（复现时省时间）
+
+- 引擎**不会自动续签二维码**：`DoLoginQrcode` 只在启动时执行 1 次，过期只能重启进程。
+- 启动必须给 **pty + `TERM`**，否则 panic：`open /dev/tty` / `termbox: TERM environment variable not set`。
+  用 `tmux new-session -d` 最稳（`script` 配 `</dev/null` 会读 EOF 退出，把引擎一起带走）。
+- `ConfigPath` 传**父目录**（引擎自己拼 `.drive`）；`pkill -f xunlei-pan-cli` 会连自己那条 ssh 一起杀。
+
+### ⇒ 桌面端提速的最终可行集（收敛）
+
+| 路线 | 免账号 | 提速 | 状态 |
+|---|---|---|---|
+| **① 提高数据面直读覆盖率** | ✅ | 重读/seek/重播 4578 MB/s（首次拉取仍受引擎限制） | **推荐，纯软件** |
+| ② ARM64 宿主（Windows on ARM / ARM64 Linux） | ✅ | 原生 100%（30 MB/s 量级） | 需换硬件 |
+| ③ NAS 引擎（本机 x86 原生） | ❌ 需邀请码 | 原生 | **本轮否决** |
+| ④ 混血：VM 找源 + 宿主下载 | ✅ | — | §11 已否决（rkey 绑会话） |
