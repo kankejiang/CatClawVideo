@@ -103,6 +103,118 @@ static void probe_run(void) {
     fflush(stdout);
 }
 
+// ── 安全内存读取：指针可疑时用 SIGSEGV 守门，避免一次野 pointer 崩掉整轮实验 ──
+#include <signal.h>
+#include <setjmp.h>
+static sigjmp_buf g_res_jmp;
+static volatile int g_res_guard = 0;
+static void res_segv_handler(int sig) {
+    (void)sig;
+    if (g_res_guard) siglongjmp(g_res_jmp, 1);
+    _exit(139);
+}
+static int safe_read(const void *addr, void *dst, size_t n) {
+    struct sigaction sa, old;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = res_segv_handler;
+    sa.sa_flags = SA_NODEFER;
+    sigaction(SIGSEGV, &sa, &old);
+    g_res_guard = 1;
+    int bad = sigsetjmp(g_res_jmp, 1);
+    if (!bad) memcpy(dst, addr, n);
+    g_res_guard = 0;
+    sigaction(SIGSEGV, &old, NULL);
+    return bad ? -1 : 0;
+}
+
+// 从一段「我们自己的」缓冲里挖信息：① 内联可打印串 ② 像指针的 8 字节字 → C 串
+// 这样**完全不需要知道结构布局**，引擎写进来什么就报什么。
+static void scan_buf(const char *tag, const unsigned char *buf, int len) {
+    char tmp[512];
+    int i = 0, inlineN = 0;
+    while (i < len) {
+        if (buf[i] >= 32 && buf[i] < 127) {
+            int j = i;
+            while (j < len && buf[j] >= 32 && buf[j] < 127) j++;
+            if (j - i >= 8 && inlineN < 24) {
+                int L = j - i; if (L > 300) L = 300;
+                memcpy(tmp, buf + i, L); tmp[L] = 0;
+                printf("[res]   %s 内联[%d] = %s\n", tag, i, tmp);
+                inlineN++;
+            }
+            i = j;
+        } else i++;
+    }
+    for (int off = 0; off + 8 <= len; off += 8) {
+        unsigned long long v; memcpy(&v, buf + off, 8);
+        if ((v >> 40) != 0xffffULL && (v >> 44) != 0x7ULL) continue;   // 只认 .so / heap 风格地址
+        char s[256];
+        if (safe_read((const void *)(uintptr_t)v, s, sizeof s - 1) == 0) {
+            s[sizeof s - 1] = 0;
+            int n = (int)strlen(s), ok = 0;
+            for (int k = 0; k < n; k++) if (s[k] >= 32 && s[k] < 127) ok++;
+            if (n >= 8 && ok == n) printf("[res]   %s 指针[%d] %p → %s\n", tag, off, (void *)(uintptr_t)v, s);
+        }
+    }
+}
+
+// ── URLINFO：把引擎手里的资源/URL 信息挖出来（task_id 由 TASK 下发后填好）──
+static void res_probe(void) {
+    static const char *NAMES[] = {
+        "XLGetUrlQuickInfo", "XLGetThunderzInfo", "XLGetTaskCheckInfo", "XLGetTaskInfo", "XLGetTaskInfoEx",
+        "XLAddServerResource", "XLAddScdnResource", "XLAddPeerResource", "XLRemoveAddedResource",
+        "XLSetTaskAllowUseResource", "XLSwitchOriginToAllResDownload", "XLSetDownloadTaskOrigin",
+        "XLSetUserId", "XLEnterUltimateSpeed", "XLRequeryIndex", "XLEnterPrefetchMode",
+    };
+    printf("[res] ═══ 资源/URL 探针（task_id=%ld）═══\n", g_task_id);
+    for (size_t i = 0; i < sizeof NAMES / sizeof NAMES[0]; i++)
+        printf("[res]   %-32s %p\n", NAMES[i], probe_sym(NAMES[i]));
+    if (g_task_id <= 0) { printf("[res] → 尚无任务（task_id<=0）：先下发 TASK MAGNET 再来\n"); fflush(stdout); return; }
+
+    // ★ 每个「签名未知」的调用都 fork 到子进程里执行：崩了只损失这一条，父进程继续
+    #include <sys/wait.h>
+    static unsigned char buf[65536];
+    struct { const char *name; int variant; const char *desc; } probes[] = {
+        { "XLGetUrlQuickInfo",    2, "GetUrlQuickInfo(id, out)" },
+        { "XLGetTaskInfo",        2, "GetTaskInfo(id, out)" },
+        { "XLGetTaskInfoEx",      2, "GetTaskInfoEx(id, out)" },
+        { "XLGetThunderzInfo",    2, "GetThunderzInfo(id, out)" },
+        { "XLGetTaskCheckInfo",   2, "GetTaskCheckInfo(id, out)" },
+        { "XLGetTaskInfoEx",      3, "GetTaskInfoEx(id, out, sz)" },
+    };
+    for (size_t i = 0; i < sizeof probes / sizeof probes[0]; i++) {
+        void *fn = probe_sym(probes[i].name);
+        if (!fn) { printf("[res] %s 未解析，跳过\n", probes[i].name); continue; }
+        fflush(stdout);
+        pid_t pid = fork();
+        if (pid < 0) { printf("[res] fork 失败\n"); continue; }
+        if (pid == 0) {
+            memset(buf, 0, sizeof buf);
+            int rc = -12345;
+            if (probes[i].variant == 2) {
+                typedef int (*f2)(unsigned long long, void *);
+                rc = ((f2)fn)((unsigned long long)g_task_id, buf);
+            } else {
+                typedef int (*f3)(unsigned long long, void *, int);
+                rc = ((f3)fn)((unsigned long long)g_task_id, buf, (int)sizeof buf);
+            }
+            printf("[res] %s → rc=%d\n", probes[i].desc, rc);
+            printf("[res]   hex[0..48) = ");
+            for (int k = 0; k < 48; k++) printf("%02x", buf[k]);
+            printf("\n");
+            scan_buf(probes[i].name, buf, 16384);
+            fflush(stdout);
+            _exit(0);
+        }
+        int st = 0; waitpid(pid, &st, 0);
+        printf("[res]   ↑ %s 子进程 status=%d%s\n", probes[i].desc, st,
+               (st & 0x7f) == 11 ? "  ★ 崩了（该签名不对，已隔离）" : "");
+        fflush(stdout);
+    }
+    printf("[res] ═══ 结束 ═══\n");
+    fflush(stdout);
+}
+
 
 // ── 网络小工具 ──
 static int tcp_connect_ip(const char *ip, int port) {
@@ -523,6 +635,8 @@ static void main_loop(void) {
                 if (sscanf(cmd + 5, "%15s %1023s %255s", kind, uri, name) >= 2) {
                     start_task(!strcmp(kind, "MAGNET"), uri, name[0] ? name : "download.bin");
                 }
+            } else if (!strncmp(cmd, "URLINFO", 7)) {
+                res_probe();
             } else if (!strncmp(cmd, "PROBE", 5)) {
                 probe_run();
             } else if (!strncmp(cmd, "DL ", 3)) {
