@@ -1,6 +1,6 @@
 # TVBox 功能复刻评估与路线图
 
-> 参考源码：`D:\Code\.workbuddy\refs\TVBoxOSC`（191 个 java 文件；`app` = 应用 + `player` = DKVideoPlayer + `catvod/crawler` 仅 4 个类）
+> 参考源码：`C:\Code\.tvbox-ref（release 20260914-1520 / sourceCode-ab11d28，573 文件；旧路径 D:\Code\.workbuddy\refs\TVBoxOSC 已失效）`（191 个 java 文件；`app` = 应用 + `player` = DKVideoPlayer + `catvod/crawler` 仅 4 个类）
 > 评估日期：2026-09-16　评估对象：CatClawVideo（`net11.0-android` / `net11.0-windows`）
 
 ## 一、结论先说
