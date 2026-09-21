@@ -45,8 +45,25 @@
 
 ## 5. 落地步骤（建议顺序）
 
-1. **装 aarch64 NDK**（README 里记的原路径 `C:\Users\lvjin\AppData\Local\Android\Sdk\ndk\27.0.12077973`
-   在本机**已不存在**）→ 没有它就无法重编 harness，交接口 ① 无从做起。
+1. ✅ **编译链已打通**（2026-09-21 实测）—— 工具链在 **debian 容器 `10.0.0.108`** 上：
+   `/opt/ndk/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang`
+   （clang 18.0.3）。⚠ README 里记的 Windows NDK 路径 `C:\Users\lvjin\...\ndk\27.0.12077973`
+   在本机**不存在**，别照着走。
+
+   ```bash
+   # ① 传源码到容器
+   tar -cf - src | ssh root@10.0.0.108 'mkdir -p /opt/ndk/work && tar xf - -C /opt/ndk/work'
+   # ② 交叉编译（约 0.4 秒）
+   ssh root@10.0.0.108 'NDK=/opt/ndk/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin; \
+     cd /opt/ndk/work/src && "$NDK/aarch64-linux-android21-clang" harness4.c \
+       -o /opt/ndk/work/harness4 -ldl -Wl,-export-dynamic'
+   # ③ 取回并打进 initrd（repack_initrd.cs 的第 2 个参数就是新 harness 路径）
+   ssh root@10.0.0.108 'cat /opt/ndk/work/harness4' > harness4-new
+   dotnet run repack_initrd.cs <runtimeDir> harness4-new
+   ```
+
+   实测产出：**128736 字节 ARM64 bionic PIE**，`interpreter /system/bin/linker64`。
+   ⚠ `harness4.c` 是 `gen_harness4.py` 生成的**产物**：直接改 `.c` 能编译，但重跑生成器会覆盖它。
 2. `ctrlloop.c` 加 `RES` 命令：`dlsym` 上面那批方法 → 以文本把资源清单回传宿主。
 3. 跑一次真实磁力任务，看清单形态（§3）。
 4. 形态确定后分流：
