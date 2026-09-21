@@ -24,11 +24,36 @@ using System.Text;
 using CatClawVideo.Core.Services.QemuThunder;
 
 var argList = args.ToList();
-var mode = argList.Count > 0 && (argList[0] == "bench" || argList[0] == "proxy-bench" || argList[0] == "download" || argList[0] == "seektest" || argList[0] == "rangetest" || argList[0] == "playtest") ? argList[0] : "";
+var mode = argList.Count > 0 && (argList[0] == "bench" || argList[0] == "proxy-bench" || argList[0] == "download" || argList[0] == "seektest" || argList[0] == "rangetest" || argList[0] == "playtest" || argList[0] == "xfer" || argList[0] == "xfer-e2e") ? argList[0] : "";
 if (mode.Length > 0) argList.RemoveAt(0);
 
 var sw = Stopwatch.StartNew();
 void Log(string m) => Console.WriteLine($"[{sw.Elapsed.TotalSeconds,7:F1}s] {m}");
+
+// ═══ xfer 模式：数据面基准（宿主侧文件通道，不需要 QEMU）═══
+// 量化「guest 写入 → 宿主直读」稀疏块设备通道的速度 / 延迟 / 并发扩展。
+// 用法: dotnet run -c Release --project hosttest -- xfer [imagePath] [capacityMB] [fillMB]
+if (mode == "xfer")
+{
+    var img = argList.Count > 0 && argList[0].Length > 0
+        ? argList[0]
+        : Path.Combine(Path.GetTempPath(), "catclaw-xfer-bench.img");
+    var capMb = argList.Count > 1 && int.TryParse(argList[1], out var c0) ? c0 : 2048;
+    var fillMb = argList.Count > 2 && int.TryParse(argList[2], out var f0) ? f0 : 512;
+    return BenchXfer.RunDisk(img, capMb, fillMb);
+}
+
+// ═══ xfer-e2e 模式：端到端数据面对照（真实 QEMU）═══
+// 用宿主自产合成直链喂 guest 引擎，对同段已落盘数据做「块设备直读 vs HTTP 经 SLIRP」同场对照。
+// 用法: dotnet run -c Release --project hosttest -- xfer-e2e <runtimeDir> [fileMB] [waitMB] [mediaPort]
+if (mode == "xfer-e2e")
+{
+    var rtDir = argList.Count > 0 ? argList[0] : @"D:\Code\_scratch_tb\qemu-runtime";
+    var fMb = argList.Count > 1 && long.TryParse(argList[1], out var f1) ? f1 : 512;
+    var wMb = argList.Count > 2 && long.TryParse(argList[2], out var w1) ? w1 : 128;
+    var mPort = argList.Count > 3 && int.TryParse(argList[3], out var m1) ? m1 : 20092;
+    return await BenchE2E.RunAsync(rtDir, fMb, wMb, mPort);
+}
 
 if (mode == "proxy-bench")
 {
