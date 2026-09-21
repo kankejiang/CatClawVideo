@@ -17,6 +17,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using CatClawVideo.Core.Services.QemuThunder;
+using Microsoft.Win32.SafeHandles;
 
 internal static class BenchE2E
 {
@@ -24,6 +25,14 @@ internal static class BenchE2E
     private const int CtrlPort = 18080;          // 烧死在 initrd 里，改不了
     /// <summary>合成源端口：固定，好让 guest 里的 busybox wget（initrd 基准补丁）能直接访问。</summary>
     private const int BenchPort = 18099;
+
+    /// <summary>
+    /// 源数据的 backing 文件。**存在就让合成源从磁盘真实读，而不是在内存里算出来** ——
+    /// 否则测的只是 CPU + loopback，与「数据要落盘、内存只做缓存」的真实形态不符。
+    /// </summary>
+    private static readonly string BackingPath =
+        Environment.GetEnvironmentVariable("BENCH_SRC")
+        ?? Path.Combine(Path.GetTempPath(), "catclaw-bench-src.bin");
 
     private static readonly List<string> LogLines = [];
 
@@ -41,6 +50,14 @@ internal static class BenchE2E
         var fileBytes = fileMb * MB;
         var imgPath = Path.Combine(Path.GetTempPath(), "catclaw-e2e-bench.img");
 
+        // ★ 源数据落盘：有 backing 文件就用它（真实磁盘读路径），否则回退内存生成
+        var backing = File.Exists(BackingPath) ? BackingPath : null;
+        if (backing is not null)
+        {
+            fileBytes = new FileInfo(backing).Length;
+            fileMb = fileBytes / MB;
+        }
+
         Console.WriteLine("╔══════════════════════════════════════════════════════════════════════════╗");
         Console.WriteLine("║  数据面基准 · 端到端（QEMU 引擎写入 → 宿主直读  vs  经 SLIRP 的 HTTP）   ║");
         Console.WriteLine("╚══════════════════════════════════════════════════════════════════════════╝");
@@ -52,8 +69,10 @@ internal static class BenchE2E
         if (!QemuHostRuntime.IsPresent(runtimeDir)) { Console.WriteLine("✗ 运行时缺失"); return 1; }
 
         // ── 合成数据源：宿主自产，guest 经 10.0.2.2 拉 ──
-        using var src = new SynthSource(fileBytes, BenchPort, Log);
-        Log($"[准备] 合成直链源 http://127.0.0.1:{src.Port}/synth.mp4（{fileMb}MB，支持 Range，字节可校验）");
+        using var src = new SynthSource(fileBytes, BenchPort, Log, backing);
+        Log(backing is not null
+            ? $"[准备] 合成直链源 http://127.0.0.1:{src.Port}/synth.mp4（{fileMb}MB，**从磁盘文件 {Path.GetFileName(backing)} 真实读**）"
+            : $"[准备] 合成直链源 http://127.0.0.1:{src.Port}/synth.mp4（{fileMb}MB，内存生成 —— 未找到 backing 文件）");
         Log($"        同一源也供 guest 内的 busybox wget 访问（http://10.0.2.2:{BenchPort}/bench.bin）");
 
         // ★ 关键对照：合成源**自身的并发供数上限**（纯宿主、不经 QEMU）。
@@ -63,6 +82,35 @@ internal static class BenchE2E
         {
             var self = await HostSelfTestAsync(src.Port, 16 * MB, c);
             Log($"[自测] 宿主并发 {c,2} 连接拉合成源 → {self,7:F0} MB/s");
+        }
+        Console.WriteLine();
+
+        // ★ 模拟产品真正要做的事：**一边读、一边导出到本地磁盘**（数据不停在内存里）。
+        //   既实测磁盘写路径，也回答「导出会不会拖慢供数」。
+        {
+            var sink = Path.Combine(Path.GetTempPath(), "catclaw-sink.bin");
+            const int mb = 256;
+            var t0 = Stopwatch.GetTimestamp();
+            long total = 0;
+            using (var h2 = new HttpClient { Timeout = TimeSpan.FromMinutes(2) })
+            using (var resp = await h2.GetAsync($"http://127.0.0.1:{src.Port}/synth.mp4", HttpCompletionOption.ResponseHeadersRead))
+            await using (var s = await resp.Content.ReadAsStreamAsync())
+            using (var outFs = new FileStream(sink, FileMode.Create, FileAccess.Write, FileShare.None, 4 << 20))
+            {
+                var b2 = new byte[1 << 20];
+                while (total < (long)mb * MB)
+                {
+                    var rd2 = await s.ReadAsync(b2);
+                    if (rd2 <= 0) break;
+                    await outFs.WriteAsync(b2.AsMemory(0, rd2));
+                    total += rd2;
+                }
+                await outFs.FlushAsync();
+            }
+            var el = (Stopwatch.GetTimestamp() - t0) * 1000.0 / Stopwatch.Frequency;
+            Log($"[自测] 边读边导出到磁盘 {total / (double)MB:F0}MB / {el / 1000:F2}s"
+                + $" = {total / (double)MB / (el / 1000):F0} MB/s（含 Flush）→ {Path.GetFileName(sink)}");
+            try { File.Delete(sink); } catch { }
         }
         Console.WriteLine();
 
@@ -352,17 +400,24 @@ internal static class BenchE2E
         private readonly long _size;
         private readonly CancellationTokenSource _cts = new();
         private readonly Action<string>? _log;
+        private readonly SafeFileHandle? _backing;
         private long _connSeq;
 
         public int Port { get; }
 
-        public SynthSource(long size, int port = 0, Action<string>? log = null)
+        /// <param name="backingPath">非空则从该**磁盘文件**读数据（真实落盘路径）；为空则内存生成。</param>
+        public SynthSource(long size, int port = 0, Action<string>? log = null, string? backingPath = null)
         {
             _size = size;
             _log = log;
             _listener = new TcpListener(IPAddress.Loopback, port);
             _listener.Start();
             Port = ((IPEndPoint)_listener.LocalEndpoint).Port;
+            if (!string.IsNullOrEmpty(backingPath) && File.Exists(backingPath))
+            {
+                _backing = File.OpenHandle(backingPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                _size = Math.Min(_size, RandomAccess.GetLength(_backing));
+            }
             _ = Task.Run(AcceptLoopAsync);
         }
 
@@ -449,7 +504,8 @@ internal static class BenchE2E
                     while (remain > 0)
                     {
                         var n = (int)Math.Min(chunk.Length, remain);
-                        Fill(off, chunk.AsSpan(0, n));
+                        if (_backing is not null) RandomAccess.Read(_backing, chunk.AsSpan(0, n), off);   // 真实磁盘读
+                        else Fill(off, chunk.AsSpan(0, n));                                              // 内存生成
                         await ns.WriteAsync(chunk.AsMemory(0, n));
                         off += n;
                         remain -= n;
@@ -480,6 +536,7 @@ internal static class BenchE2E
         {
             try { _cts.Cancel(); } catch { }
             try { _listener.Stop(); } catch { }
+            try { _backing?.Dispose(); } catch { }
             _cts.Dispose();
         }
     }
