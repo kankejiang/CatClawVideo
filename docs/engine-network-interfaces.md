@@ -757,3 +757,35 @@ down.360safe.com/gc/browser360-cn-beta_10.95.1003.29-1_amd64.deb
 | ② ARM64 宿主（Windows on ARM / ARM64 Linux） | ✅ | 原生 100%（30 MB/s 量级） | 需换硬件 |
 | ③ NAS 引擎（本机 x86 原生） | ❌ 需邀请码 | 原生 | **本轮否决** |
 | ④ 混血：VM 找源 + 宿主下载 | ✅ | — | §11 已否决（rkey 绑会话） |
+
+
+---
+
+## 15. 🔒 部署约束定盘（2026-09-21 晚，用户明确「不要让用户安装任何环境」）
+
+### 15.1 ❌ 「零安装 + Windows 用户态模拟」在技术上不成立（两重证据）
+
+1. **QEMU 官方立场**：user-mode 仅支持 Linux 宿主（syscall 翻译需要稳定的内核 ABI；
+   Windows 的 ABI 不稳定且未文档化），状态页原文：
+   **"QEMU user mode emulator is not yet available for Windows host, there is no plan to add such a feature."**
+2. **实物验证**：本机 `qemu.pkg.tar`（MSYS2 Windows QEMU 包）解包清单**只有 `qemu-system-*.exe` + 工具**
+   （qemu-img / qemu-nbd / qemu-io / qemu-storage-daemon）；**不存在 `qemu-aarch64.exe` 类用户态可执行文件**。
+
+⇒ 用户零安装 ⇔ 没有 Linux 内核面 ⇒ Windows 上跑 ARM64 只有全系统 TCG 一条路。
+**「自带 QEMU」= 该约束下的最优架构**；19.5 MB/s 上限是它的结构性代价。
+
+### 15.2 实验室旁路（不算安装路径，仅供开发/自用）
+
+qemu-user（WSL / 容器）桌面实测比全系统快 ~2×（**直链** 持续 18–23 MB/s、峰值 38–48；**磁力未验**）。
+两个必改点：ctrlserver 绑 `0.0.0.0` + `ip addr add 10.0.2.2/32 dev lo`；控制口用 `-E CTRL_PORT=`。
+合理用途只有两个：① 实验室基准/回归；② **环境已存在时**的自用或局域网「远程引擎」
+（容器 `10.0.0.108` 已验证可跑用户态引擎；PC 侧零安装，服务器侧一次性）。
+
+### 15.3 零安装约束下的最终可选集（覆盖 §13.8 旧表）
+
+| 路线 | 零安装 | 速度量级 | 状态 |
+|---|---|---|---|
+| 现状：自带全系统 QEMU | ✅ | 19.5 MB/s（TCG 上限） | 维持；剩 tb-size / cpu 模型等微调未试（收益小） |
+| ★ 手机当引擎（§14.4 D） | ✅（需本产品 Android 端在场） | 原生 ARM，30 MB/s 级 | **唯一没做过的大杠杆，建议立项** |
+| 局域网远程引擎（NAS/自托管 + qemu-user） | PC 侧 ✅；服务器侧一次性 | 18–23 MB/s 级（待磁力验证） | 自用/进阶 |
+| Windows 用户态模拟 | — | — | ❌ 官方永不支持（15.1） |
