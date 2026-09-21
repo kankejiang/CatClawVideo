@@ -151,3 +151,71 @@ grep -a '\[dns-hook\]' console.log
    （补上宿主控制服务器，或修掉那次 SIGSEGV），再抓 hub 查询与 `/psdk_param` 的响应体。
 3. **产品侧性价比最高**仍是：**数据面直读**（4578 MB/s）承担重读 + HTTP 直链不经引擎。
    详见 `docs/qemu-engine-performance.md`。
+
+## 6. 二次抓包（长跑 200s）：修正与关键补充
+
+首次只抓到 104 个报文（harness 在链启动约 1s 时 SIGSEGV）。**根因已定位**：`/init` 里
+`MON_SECS=0` ⇒ 元数据还没拿到就进第二阶段 `createBtTask(torrentPath=/thunder-data/cc-test)`
+（该路径不存在）⇒ 崩溃。**改成 `MON_SECS=90` 后不再崩**，抓到 **670 KB / 1026 报文**、
+元数据（484518 B）完整拉齐。（修改打在 runtime 的**副本**上，用 `tools/repack_initrd.cs` 的副本，
+**没动仓库原件**。）
+
+### 6.1 修正：迅雷服务端不是"零响应"，而是分通道
+
+| 通道 | 结果 |
+|---|---|
+| **`pool.bt.n0808.com` → `112.64.218.66:11400`** | ✅ **`POST /`（288 B 加密）→ `200 OK`，`Server: openresty/1.9.15.1`，`Content-Length: 484564`** —— 引擎日志里的「已下载=484518/484518」就是它。**BT 资源池直接下发种子** |
+| `hub5btmain.sandai.net` → `112.64.218.64:80` | ✅ 下行 61 KB（**新发现的在用 hub**） |
+| `112.64.218.71:80`（initrd 里 hosts 钉的旧 hub） | ⚠ 下行 5.4 KB |
+| `conf-darwin.xycdn.com/psdk_param` | ❌ 404（带不带 `Scid` 都一样） |
+| `flowcontroll.dcdn.sandai.net:8080/query` | 请求已发出，下行 0.9 KB |
+
+### 6.2 私有报文的形态：HTTP + AES，Host 头是伪值
+
+```
+POST / HTTP/1.1
+Host: res.res.res.res:11400          ← 刻意伪造的 Host
+Content-Type: application/octet-stream
+Content-Length: 288
+User-Agent: Mozilla/4.0
+<288 字节 AES 密文>
+```
+
+对应导出符号 **`HubClientHttpHijackAes`** —— 所以抓包里看不到明文；`Content-Type` 还被写两次
+（先 `form-urlencoded` 再 `octet-stream`）做伪装。
+
+### 6.3 ★ 修正：`.so` **并没有 strip** —— 导出符号表完整
+
+此前写「已 strip」是**错的**（我只查了 `.symtab`）。实际 **`.dynsym` 有 12984 个导出符号，
+C++ 类名完整可读**。与协议直接相关的有：
+
+| 符号 | 含义 |
+|---|---|
+| `ResourceManager::GetDPhubResourceList` / `GetTrackerResourceList` | **引擎内部就有「取资源列表」的方法** |
+| `ProtocolQueryCdn` / `QueryCdnResponse` / `DcdnAccountsManager` / `ParseCdnInfo` | **CDN 加速查询协议** |
+| `ProtocolQueryBcid` / `QueryBcidResponse` | 资源 ID（BCID）查询 |
+| `ProtocolQueryXtPool` / `QueryXtPoolResponse` | 迅雷资源池查询 |
+| `TaskIndexInfo::GetQueryStateInfo` / `GetQueryIndexDetail` | 索引查询状态 / 详情 |
+| `HubClientHttpHijackAes` | hub 通信 = HTTP + AES |
+| `rtmfp::protocol::*`（`EncodeDirectRHelloChunk` / `_CreateKey`） | P2P 数据面 = RTMFP + 非对称密钥 |
+| `XLRequeryIndex` | 已导出的纯 C 救援接口 |
+
+## 7. 「鉴权用原版 `.so`、下载用自研」这个方案行不行
+
+**结论：技术前提已经具备，可行；而且不需要复刻 AES、也不需要逆向签名。** 依据：
+
+1. **职责在引擎内部本来就是分开的** —— `ProtocolQueryCdn` / `ResourceManager::Get*ResourceList`
+   （查资源）与下载器是不同模块，而且 `.so` **把它们导出了**。
+2. **鉴权 / 索引的流量极小**：288 B 请求 / 484 KB 响应。这点流量跑在 TCG（2.9%）上**完全无感**；
+   性能瓶颈（19.5 MB/s）全在数据面 —— 正好交给自研。
+3. **交接口有两个候选**：
+   - (a) 现有 JNI API —— 但 `getTaskInfo` 只给速度/字节，**没给 URL 列表**；
+   - (b) **直接 `dlsym` 上面那几个导出方法**（因为没 strip），在 guest 内把资源清单取出来，
+     经控制通道回传宿主 ⇒ **这是最干净的"混血"接缝**。
+4. **仍然未知、且决定成败的一点**：资源清单里是 **HTTP 直链**（CDN/DCDN 分片地址）还是
+   **peer 列表**（IP:port + RTMFP）？
+   - **HTTP 直链** ⇒ 自研下载器 = 多线程 HTTP，立刻可做 ✅
+   - **peer 列表** ⇒ 数据面是私有 P2P（RTMFP），自研不划算 ⚠️
+
+   → **下一步**：让第二阶段真正跑起来（本轮 `createBtTask` 因 `torrentPath=/thunder-data/cc-test`
+   不存在而返回 **9303**，DL 未开始），或直接在 guest 内调用 `GetDPhubResourceList` 打印输出。

@@ -19,7 +19,7 @@
 
 | 文件 | 体积 | 备注 |
 |---|---|---|
-| `system/lib64/libxl_thunder_sdk.so` | **5.35 MB** | **已 strip**（无 `.symtab`），优化过的闭源 C++ |
+| `system/lib64/libxl_thunder_sdk.so` | **5.35 MB** | 优化过的闭源 C++；`.symtab` 已剥，但 **`.dynsym` 保留 12984 个导出符号**（C++ 类名完整可读） |
 | `system/lib64/libxl_stat.so` | 0.80 MB | 同上 |
 | `harness` | 0.10 MB | 我们自己写的 ARM64 ELF，负责调引擎 |
 | `system/lib64/lib{c,c++,m,z,log,android,dl,stdc++}.so` | 3.46 MB | bionic 运行库（Android 用户空间） |

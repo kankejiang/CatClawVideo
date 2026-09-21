@@ -7,6 +7,7 @@ from collections import defaultdict
 
 PCAP = sys.argv[1] if len(sys.argv) > 1 else r"C:\Code\.unidbg-probe\engine.pcap"
 MAX = int(sys.argv[2]) if len(sys.argv) > 2 else 1500
+PORTS = ({int(x) for x in sys.argv[3].split(",")} if len(sys.argv) > 3 else {80, 8080})
 
 d = open(PCAP, "rb").read()
 endian = "<" if d[:4] == b"\xd4\xc3\xb2\xa1" else ">"
@@ -58,7 +59,7 @@ print("=" * 70)
 print(" TCP 明文流内容（端口 80 为主）")
 print("=" * 70)
 for (a, ap, b, bp), v in sorted(flows.items(), key=lambda x: -len(x[1]["c2s"])):
-    if bp not in (80, 8080) and ap not in (80, 8080):
+    if bp not in PORTS and ap not in PORTS:
         continue
     print("\n──── %s:%d ⇄ %s:%d   （上行 %d 字节 / 下行 %d 字节）────"
           % (a, ap, b, bp, len(v["c2s"]), len(v["s2c"])))
