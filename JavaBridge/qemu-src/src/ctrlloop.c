@@ -265,9 +265,45 @@ static void res_probe(void) {
                                             printf("[res]        GetUri 后 ub[0..32) = ");
                                             for (int q = 0; q < 32; q++) printf("%02x", ub[q]);
                                             printf("\n");
-                                            // ★ Uri 是「按组件存字符串」的结构（schema/host/path/query…）：
-                                            //   每个 tag 指针指向的就是**裸字符串数据**（首字节即文本），
-                                            //   所以要逐个组件打印，别只扫 32 字节。
+                                        // ★ 裸 URL 在宿主 curl 会被拒（QQ 微云回 400）⇒ 必须带上引擎为该资源
+                                        //   设置的请求头。取 HttpResource::GetHttpHeaderProperty(vector<KeyValue<string,string>>&)
+                                        void *fHdr = probe_sym("_ZN12HttpResource21GetHttpHeaderPropertyERSt6vectorI8KeyValueISsSsESaIS2_EE");
+                                        printf("[res]        fHdr=%p\n", fHdr);
+                                        if (fHdr) {
+                                            unsigned long long hv[3] = {0, 0, 0};
+                                            ((void (*)(void *, void *))fHdr)((void *)(uintptr_t)obj, hv);
+                                            unsigned long long hb = hv[0] & 0x00FFFFFFFFFFFFFFULL;
+                                            unsigned long long he = hv[1] & 0x00FFFFFFFFFFFFFFULL;
+                                            long hn = (long)((he - hb) / 48);          // KeyValue = 两个 libc++ string = 48B
+                                            printf("[res]        请求头 raw b=0x%llx e=0x%llx → %ld 条\n", hv[0], hv[1], hn);
+                                            for (long k = 0; k < hn && k < 20; k++) {
+                                                unsigned char kv[64];
+                                                if (safe_read((const void *)(uintptr_t)(hb + (unsigned long long)k * 48),
+                                                              kv, 48) != 0) break;
+                                                for (int half = 0; half < 2; half++) {
+                                                    unsigned char *q = kv + half * 24;
+                                                    unsigned long long w0; memcpy(&w0, q, 8);
+                                                    char t[300]; t[0] = 0;
+                                                    if (w0 & 1) {                  // libc++ long：cap|1, size, data
+                                                        unsigned long long sz, dp;
+                                                        memcpy(&sz, q + 8, 8); memcpy(&dp, q + 16, 8);
+                                                        unsigned long long dd = dp & 0x00FFFFFFFFFFFFFFULL;
+                                                        if (sz > 0 && sz < 280 && dd &&
+                                                            safe_read((const void *)(uintptr_t)dd, t, 279) == 0) {
+                                                            t[279] = 0; t[sz] = 0;
+                                                        } else t[0] = 0;
+                                                    } else {                       // short：内联
+                                                        int z = 0;
+                                                        for (; z < 23 && q[z]; z++) t[z] = (char)q[z];
+                                                        t[z] = 0;
+                                                    }
+                                                    if (t[0]) printf("[res]          hdr[%ld.%d] = %s\n", k, half, t);
+                                                }
+                                            }
+                                        }
+
+                                            // ★ Uri 是「按组件存字符串」的结构（scheme/host/path…）：
+                                            //   每个 tag 指针直接指向裸字符串数据（首字节即文本），逐个组件打印。
                                             for (int wi = 0; wi < 24; wi++) {
                                                 unsigned long long raw; memcpy(&raw, ub + wi * 8, 8);
                                                 unsigned long long p = raw & 0x00FFFFFFFFFFFFFFULL;
