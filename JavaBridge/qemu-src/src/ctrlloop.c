@@ -49,6 +49,61 @@ static int g_dl_index = -1;   // 磁力下载阶段选中的子文件 index（ge
 
 void ctrl_register_engine(EngineFns *e) { g_eng = *e; }
 
+// ═══════════ PROBE：引擎内部接口探针（为「鉴权/索引留 VM、数据面搬宿主」验证交接口）═══════════
+// 原则：**分级执行、只读、绝不猜结构偏移**——任何一级失败都不影响后面，也不会一次崩掉整轮实验。
+//   ① dlsym 解析符号（零风险，只打印是否命中 + 地址）
+//   ② 调「无参静态单例」（GetInstance，不需要 this，只返回指针）
+//   ③ 用②拿到的实例调一个无参成员函数，验证 this 可用
+#include <dlfcn.h>
+static void *probe_sym(const char *name) {
+    return g_eng.sdk ? dlsym(g_eng.sdk, name) : NULL;
+}
+static void probe_run(void) {
+    static const struct { const char *sym; const char *desc; } T[] = {
+        {"_ZN15xy_task_manager11GetInstanceEv",                                       "xy_task_manager::GetInstance"},
+        {"_ZN15xy_task_manager11GetSdkCycleEv",                                       "xy_task_manager::GetSdkCycle"},
+        {"_ZN9SingletonI9LogFilterE11GetInstanceEv",                                  "Singleton<LogFilter>::GetInstance"},
+        {"_ZN15ResourceManager20GetDPhubResourceListERSt6vectorIP9IResourceSaIS2_EE",  "RM::GetDPhubResourceList"},
+        {"_ZN15ResourceManager22GetTrackerResourceListERSt6vectorIP9IResourceSaIS2_EE","RM::GetTrackerResourceList"},
+        {"_ZN15ResourceManager18GetCdnResourceListERSt6vectorIP9IResourceSaIS2_EE",    "RM::GetCdnResourceList"},
+        {"_ZN15ResourceManager21GetMirrorResourceListERSt6vectorIP9IResourceSaIS2_EE", "RM::GetMirrorResourceList"},
+        {"_ZN13TaskIndexInfo19GetQueryIndexDetailEv",                                 "TaskIndexInfo::GetQueryIndexDetail"},
+        {"_ZN13TaskIndexInfo23GetProtocolQueryResInfoEv",                             "TaskIndexInfo::GetProtocolQueryResInfo"},
+        {"_ZN9IResource9IsStatbleEv",                                                 "IResource::IsStatble"},
+        {"_ZN11SingletonExI7SettingE4_refEv",                                         "SingletonEx<Setting>::_ref"},
+        {"_ZN14SettingManager16GetLocalFilePathEv",                                   "SettingManager::GetLocalFilePath"},
+    };
+    const int N = (int)(sizeof T / sizeof T[0]);
+    printf("[probe] ═══ 引擎内部接口探针 ═══  sdk=%p  task_id=%ld\n", g_eng.sdk, g_task_id);
+    for (int i = 0; i < N; i++) {
+        void *p = probe_sym(T[i].sym);
+        if (i == 0 && p) {
+            Dl_info di; memset(&di, 0, sizeof di);
+            if (dladdr(p, &di)) printf("[probe]   .so base=%p  %s\n", di.dli_fbase, di.dli_fname);
+        }
+        printf("[probe]   %-40s %-4s %p\n", T[i].desc, p ? "OK" : "MISS", p);
+    }
+    // ② 无参静态单例（只取指针）
+    typedef void *(*fn_ret_ptr)(void);
+    fn_ret_ptr fTM = (fn_ret_ptr)probe_sym("_ZN15xy_task_manager11GetInstanceEv");
+    void *tm = fTM ? fTM() : NULL;
+    printf("[probe] xy_task_manager::GetInstance() = %p\n", tm);
+    fn_ret_ptr fLF = (fn_ret_ptr)probe_sym("_ZN9SingletonI9LogFilterE11GetInstanceEv");
+    printf("[probe] LogFilter::GetInstance()       = %p\n", fLF ? fLF() : NULL);
+    // ③ 用②的实例调一个无参成员函数（验证 this 可用；返回 uint32/uint64 都只打印）
+    if (tm) {
+        typedef unsigned long (*fn_self)(void *);
+        fn_self fC = (fn_self)probe_sym("_ZN15xy_task_manager11GetSdkCycleEv");
+        if (fC) printf("[probe] → GetSdkCycle() = %lu  （能调通即表示 this 有效）\n", fC(tm));
+        else    printf("[probe] → GetSdkCycle 未解析，跳过\n");
+    } else {
+        printf("[probe] → 单例为空，跳过第三级\n");
+    }
+    printf("[probe] ═══ 探针结束（未触碰任何结构偏移）═══\n");
+    fflush(stdout);
+}
+
+
 // ── 网络小工具 ──
 static int tcp_connect_ip(const char *ip, int port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -468,6 +523,8 @@ static void main_loop(void) {
                 if (sscanf(cmd + 5, "%15s %1023s %255s", kind, uri, name) >= 2) {
                     start_task(!strcmp(kind, "MAGNET"), uri, name[0] ? name : "download.bin");
                 }
+            } else if (!strncmp(cmd, "PROBE", 5)) {
+                probe_run();
             } else if (!strncmp(cmd, "DL ", 3)) {
                 // DL <torrentPath>|<dir>|<relPath>|<index>|<exclude-csv> —— 用 | 分隔，路径里的空格不会拆错
                 char *parts[5] = {0}; int np = 0;
