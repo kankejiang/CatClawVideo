@@ -640,3 +640,75 @@ GET  /drive/v1/privilege/…    → 403（同上）
 免登录且能跑磁力的只有 Android ARM 那支（= 现状 QEMU 路线）。
 若要吃 A 的收益（去 QEMU + 引擎新一代 + 云盘加速），**必须接受迅雷账号登录**。
 建议：**A/B 并存**（`ChainedMagnetEngine` 已是链式）—— 配了账号走 A，未配走 B。
+
+
+---
+
+## 14. ❌ 否定结论：**OEM 解包拿不到「免登录 + x86 原生 + BT」**（2026-09-21 穷举）
+
+> 起因：既然 Android 版 SDK 是从 OEM 软件里提取的（并且它免登录），那 360 浏览器也有
+> Windows/Linux 版，是否能从那里拿到**免登录**的 x86 引擎？—— **思路对，产物否。** 逐项验证如下。
+
+### 14.1 360 浏览器 Linux 版：不含迅雷模块
+
+官网 `https://browser.360.cn/se/linux/` 可达，页面内给出真实直链：
+
+```
+down.360safe.com/gc/browser360-cn-stable_10.6.1000.37-1_amd64.deb
+down.360safe.com/gc/browser360-cn-beta_10.95.1003.29-1_amd64.deb
+（同目录另有 arm64 / loongarch64 / mips64el 的 deb 与 rpm）
+```
+
+下载解包实测（各 **96.6 MB**）：**仅 103 个文件，纯 Chromium 文件集**；
+`.so` 只有 `libGLESv2 / libvk_swiftshader / libEGL / libvulkan`；
+**迅雷相关文件 0 个**（唯一 `xunlei` 字样出现在 `skin/iframe.srx`）。
+⇒ Linux 版是**信创精简版**（麒麟/UOS 适配），商业加速模块被裁掉。
+
+### 14.2 五个 OEM 版「真引擎」全部无 BT
+
+对 `cryzlasm/ThunderOpenSDK` 各套的 `download/download_engine.dll` 逐个做字符串检测：
+
+| 引擎 | 体积 | sha256 前 12 | magnet | btih | info_hash | libtorrent |
+|---|---|---|---|---|---|---|
+| `360Jisu_Thunder_Cloud` | 3.35 MB | `ce09928019dd` | 0 | 0 | 0 | 0 |
+| `xiaomi_Thunder_Cloud` | 3.35 MB | `ce09928019dd` ★ 与 360 版**同一份** | 0 | 0 | 0 | 0 |
+| `liebao_Thunder_Cloud` | 3.24 MB | `5d9ca72cfafa` | 0 | 0 | 0 | 0 |
+| `0.CurUseCommonLib` | 3.35 MB | — | 0 | 0 | 0 | 0 |
+| `ashe27/XLDownload` | 3.35 MB | `440d13b2bd09` | 0 | 0 | 0 | 0 |
+
+★ `xldl.dll`（外壳，293 KB）里**确实有** `magnet:?xt` / `urn:btih` / `XL_CreateBTTask*`
+（`xiaomi` 版最全，30 个 `XL_*`），但那些只是 **URL 识别字符串 + 转发壳**：
+`XL_CreateBTTaskByThunder()` 走的是 COM（实测返回 `0x80040154 REGDB_E_CLASSNOTREG`），
+即**把 BT 任务转交给"已安装的迅雷客户端"**，引擎自身不实现 BT。
+
+### 14.3 ★ 产品规律（别再逐家解包试）
+
+| 类型 | BT | 登录 | 平台 |
+|---|---|---|---|
+| 浏览器 OEM 加速模块（360 / 猎豹 / 小米 `xldl`） | ❌ 无 | 免登录 | Win x86 |
+| 迅雷官方旧版下载库（`XLDownload.dll`） | ❌ 无 | 免登录 | Win x86 |
+| **Android SDK（`libxl_thunder_sdk.so`）** | ✅ **有** | **免登录** | **仅 ARM** |
+| NAS 套件（`xunlei-pan-cli`） | ✅ 有 | **要登录** | Linux x86_64 / arm64 |
+| 桌面客户端（迅雷 11） | ✅ 有 | 要登录 | Win |
+
+**规律：迅雷只在「完整产品」里交付 BT；而完整产品要么要求登录（NAS / 桌面客户端），
+要么只有 ARM（Android）。OEM 那批全是「浏览器下载加速模块」→ 天生无 BT。**
+
+### 14.4 ⇒ 结论
+
+**「免登录 + x86 原生 + 有 BT」在当前迅雷产品线上不存在。**（§13.7 + 本节 + 纯 BT 实测，三重穷举）
+
+目前可选的只有：
+
+| 方案 | 免登录 | x86 原生 | BT | 边下边播 |
+|---|---|---|---|---|
+| **A. QEMU + Android ARM 迅雷引擎**（现状） | ✅ | ❌ 模拟 | ✅ | ✅ |
+| B. 现代 NAS 引擎（已跑通，见 §13.7） | ❌ 要登录 | ✅ | ✅ | ✅ |
+| C. 纯 BT 引擎 | ✅ | ✅ | ⚠️ 无速度 | — |
+| ★ **D. 用 Android 设备当引擎** | ✅ | ✅（真实 ARM） | ✅ | ✅ |
+
+**D 是目前唯一没做过的「免登录 + 原生 + 有 BT」方案**：Android 版本身就是免登录 + 原生 ARM +
+满速 + 有 BT + 边下边播；PC 版把手机当下载引擎（局域网投磁力 + 拉流）。
+基础设施已有：`LinkServer`（配对）、Android 侧 `ThunderP2P` / `JpP2P` 本地 httpd。
+落地只需：Android 侧把回环服务暴露到局域网 + PC 侧加 `RemoteThunderEngine`
+（实现 `IPreferredMagnetEngine`，挂进 `ChainedMagnetEngine` 链）。
