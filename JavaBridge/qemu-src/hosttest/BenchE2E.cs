@@ -22,6 +22,8 @@ internal static class BenchE2E
 {
     private const long MB = 1024 * 1024;
     private const int CtrlPort = 18080;          // 烧死在 initrd 里，改不了
+    /// <summary>合成源端口：固定，好让 guest 里的 busybox wget（initrd 基准补丁）能直接访问。</summary>
+    private const int BenchPort = 18099;
 
     private static readonly List<string> LogLines = [];
 
@@ -50,8 +52,19 @@ internal static class BenchE2E
         if (!QemuHostRuntime.IsPresent(runtimeDir)) { Console.WriteLine("✗ 运行时缺失"); return 1; }
 
         // ── 合成数据源：宿主自产，guest 经 10.0.2.2 拉 ──
-        using var src = new SynthSource(fileBytes);
+        using var src = new SynthSource(fileBytes, BenchPort, Log);
         Log($"[准备] 合成直链源 http://127.0.0.1:{src.Port}/synth.mp4（{fileMb}MB，支持 Range，字节可校验）");
+        Log($"        同一源也供 guest 内的 busybox wget 访问（http://10.0.2.2:{BenchPort}/bench.bin）");
+
+        // ★ 关键对照：合成源**自身的并发供数上限**（纯宿主、不经 QEMU）。
+        //   没有这一步就无法排除「引擎慢是因为测试装置太弱」——
+        //   实测 wget 单连接能跑到 59 MB/s，而引擎只有 ~26 MB/s，必须知道宿主侧天花板在哪。
+        foreach (var c in new[] { 1, 4, 8, 16, 32 })
+        {
+            var self = await HostSelfTestAsync(src.Port, 16 * MB, c);
+            Log($"[自测] 宿主并发 {c,2} 连接拉合成源 → {self,7:F0} MB/s");
+        }
+        Console.WriteLine();
 
         using var rt = new QemuHostRuntime(runtimeDir, mediaPort, Log, "pkg_initrd.gz", "", 0, imgPath, fileBytes);
         if (rt.BlockStore is null) { Log("✗ 块设备未就绪，无法做数据面对照"); return 2; }
@@ -227,6 +240,37 @@ internal static class BenchE2E
 
     private static long LastDone;
 
+    /// <summary>宿主自测：<paramref name="conns"/> 条并发连接各拉 <paramref name="bytesPerConn"/> 字节，返回总吞吐 MB/s。</summary>
+    private static async Task<double> HostSelfTestAsync(int port, long bytesPerConn, int conns)
+    {
+        var handler = new SocketsHttpHandler { MaxConnectionsPerServer = 64, PooledConnectionLifetime = Timeout.InfiniteTimeSpan };
+        using var http = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(2) };
+        var url = $"http://127.0.0.1:{port}/synth.mp4";
+
+        var t0 = Stopwatch.GetTimestamp();
+        var tasks = new Task<long>[conns];
+        for (var i = 0; i < conns; i++)
+        {
+            tasks[i] = Task.Run(async () =>
+            {
+                using var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
+                await using var s = await resp.Content.ReadAsStreamAsync();
+                var buf = new byte[256 * 1024];
+                long got = 0;
+                while (got < bytesPerConn)
+                {
+                    var n = await s.ReadAsync(buf.AsMemory(0, (int)Math.Min(buf.Length, bytesPerConn - got)));
+                    if (n <= 0) break;
+                    got += n;
+                }
+                return got;
+            });
+        }
+        var total = (await Task.WhenAll(tasks)).Sum();
+        var el = (Stopwatch.GetTimestamp() - t0) * 1000.0 / Stopwatch.Frequency;
+        return el <= 0 ? 0 : total / (double)MB / (el / 1000);
+    }
+
     private static bool RangeAllAvailable(SparseBlockStore st, long off, long len)
     {
         const int chunk = 256 * 1024;
@@ -307,13 +351,16 @@ internal static class BenchE2E
         private readonly TcpListener _listener;
         private readonly long _size;
         private readonly CancellationTokenSource _cts = new();
+        private readonly Action<string>? _log;
+        private long _connSeq;
 
         public int Port { get; }
 
-        public SynthSource(long size)
+        public SynthSource(long size, int port = 0, Action<string>? log = null)
         {
             _size = size;
-            _listener = new TcpListener(IPAddress.Loopback, 0);
+            _log = log;
+            _listener = new TcpListener(IPAddress.Loopback, port);
             _listener.Start();
             Port = ((IPEndPoint)_listener.LocalEndpoint).Port;
             _ = Task.Run(AcceptLoopAsync);
@@ -348,6 +395,10 @@ internal static class BenchE2E
         {
             using (c)
             {
+                var id = Interlocked.Increment(ref _connSeq);
+                var t0 = Stopwatch.GetTimestamp();
+                var sent = 0L;
+                var label = "";
                 try
                 {
                     var ns = c.GetStream();
@@ -362,8 +413,11 @@ internal static class BenchE2E
                     }
                     if (len == 0) return;
                     var head = Encoding.ASCII.GetString(hb, 0, len);
+                    label = head.Split('\r')[0].Trim();
+                    _log?.Invoke($"[src] #{id} <- {label}");
 
                     long from = 0, to = _size - 1;
+                    var hasRange = false;
                     foreach (var line in head.Split("\r\n"))
                     {
                         if (!line.StartsWith("Range:", StringComparison.OrdinalIgnoreCase)) continue;
@@ -374,15 +428,19 @@ internal static class BenchE2E
                         if (dash <= 0) continue;
                         _ = long.TryParse(spec[..dash], out from);
                         if (dash + 1 < spec.Length && long.TryParse(spec[(dash + 1)..], out var e2)) to = e2;
+                        hasRange = true;
                     }
                     if (from < 0) from = 0;
                     if (to >= _size) to = _size - 1;
                     if (to < from) { await ns.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")); return; }
 
                     var body = to - from + 1;
-                    var respHead = $"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {from}-{to}/{_size}\r\n"
-                                   + $"Content-Length: {body}\r\nContent-Type: video/mp4\r\n"
-                                   + "Accept-Ranges: bytes\r\nConnection: close\r\n\r\n";
+                    // 无 Range → 200（标准语义，busybox wget 只认 200）；有 Range → 206。
+                    var respHead = (hasRange
+                            ? $"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {from}-{to}/{_size}\r\n"
+                            : "HTTP/1.1 200 OK\r\n")
+                        + $"Content-Length: {body}\r\nContent-Type: video/mp4\r\n"
+                        + "Accept-Ranges: bytes\r\nConnection: close\r\n\r\n";
                     await ns.WriteAsync(Encoding.ASCII.GetBytes(respHead));
 
                     var chunk = new byte[256 * 1024];
@@ -395,9 +453,19 @@ internal static class BenchE2E
                         await ns.WriteAsync(chunk.AsMemory(0, n));
                         off += n;
                         remain -= n;
+                        sent += n;
                     }
                 }
-                catch { }
+                catch (Exception ex) { _log?.Invoke($"[src] #{id} 异常 {ex.GetType().Name}: {ex.Message}"); }
+                finally
+                {
+                    var el = (Stopwatch.GetTimestamp() - t0) * 1000.0 / Stopwatch.Frequency;
+                    if (sent > 0 && el > 50)
+                        _log?.Invoke($"[src] #{id} 结束  {sent / (double)MB:F1}MB / {el / 1000:F2}s"
+                                     + $"  =  {sent / (double)MB / (el / 1000):F1} MB/s   [{label}]");
+                    else
+                        _log?.Invoke($"[src] #{id} 结束  sent={sent}B el={el:F0}ms   [{label}]");
+                }
             }
         }
 
