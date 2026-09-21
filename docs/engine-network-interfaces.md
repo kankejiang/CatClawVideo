@@ -220,6 +220,54 @@ C++ 类名完整可读**。与协议直接相关的有：
    → **下一步**：让第二阶段真正跑起来（本轮 `createBtTask` 因 `torrentPath=/thunder-data/cc-test`
    不存在而返回 **9303**，DL 未开始），或直接在 guest 内调用 `GetDPhubResourceList` 打印输出。
 
+## 9. ★★ 运行时实测：引擎的加速资源 = `HttpResource`（2026-09-21，方案 B 关键验证）
+
+方案 B（VM 只做鉴权/索引、数据面搬宿主）成立与否，取决于**引擎手里的资源是什么形态**。
+本轮用「vtable 指针扫描」在运行中的 guest 里直接逮到了 `ResourceManager` 实例并调用了它的取列表方法：
+
+```
+★ 命中 ResourceManager 实例 @ 0xffffb84dd180
+  GetDPhubResourceList(inst)   → 元素数 0
+  GetTrackerResourceList(inst) → 元素数 0
+  GetCdnResourceList(inst)     → 元素数 0
+  GetMirrorResourceList(inst)  → 元素数 3        ← 直链任务的镜像资源
+    [0] obj=0xffffb84d6380  vptr=0xffffb5d71b50  == HttpResource ✅  GetResourceType() = 2
+    [1] obj=0xffffb84d7880  vptr=…1b50           == HttpResource ✅  GetResourceType() = 2
+    [2] obj=0xffffb84dc580  vptr=…1b50           == HttpResource ✅  GetResourceType() = 2
+```
+
+- **类的判定是硬证据**：对象首字（vptr）与 `_ZTV12HttpResource + 16` **精确相等**（运行时算出 `base+0x536b50`）。
+- **`GetResourceType() = 2`** 支持**按来源分类**：`Server / Scdn / Peer` 是三个独立类别
+  （`XLAddServerResource` / `XLAddScdnResource` / `XLAddPeerResource` 三个注入接口印证）。
+- ⇒ **结论：引擎的加速资源是 HTTP 资源（`HttpResource`，带 `Uri`），不是 peer 列表。**
+  **方案 B 的核心前提成立。**
+
+### 可复用的技术手法（都在 `ctrlloop.c` 的 `URLINFO` 里）
+
+| 手法 | 要点 |
+|---|---|
+| **vtable 扫描定位 C++ 实例** | `.so` 的 vtable 是导出数据符号：`dlsym("_ZTV15ResourceManager")` 拿到地址，**对象首字 = vtable + 16**。读 `/proc/self/maps` 拿可读区间，8 字节步进扫这个值 → 实例地址 |
+| **未知签名安全调用** | 每个调用 **fork 到子进程 + 3s 超时 + SIGKILL**：崩/挂都只损失这一条（实测 `XLGetThunderzInfo` 挂死、`XLGetUrlQuickInfo` 挂死） |
+| **★ ARM64 TBI tag** | 引擎的 C++ 指针高字节带 tag（`0xb400ffff…`）→ **解引用前必须 `& 0x00FFFFFFFFFFFFFF`**，否则读到别人的内存 |
+| **按值返回的类** | libc++ `std::string` 是 24 字节 → 用 `struct{u64,u64,u64}` 接收（sret 由编译器处理） |
+| **输出引用参数** | `GetUri(Uri&)`、`GetUserAgent(std::string&)` 这类**不能传零缓冲**（内部会做 `=`/析构）→ 必须先构造（`Uri::Uri()` 已导出） |
+
+### ⚠ 两条死路（别再走）
+
+1. **`XL*` 纯 C 门面（75 个接口）全部不可用** —— `XLGetUrlQuickInfo` / `XLGetTaskInfo` /
+   `XLGetTaskInfoEx` / `XLGetTaskCheckInfo` **挂死**，`XLGetThunderzInfo` **SIGSEGV**（8/8 变体全失败）。
+   它们是**另一套（PC SDK）门面**，在这条 JNI 路径里没有初始化。**要用 JNI 层或 C++ 对象层。**
+2. **`ctrlloop` 的 `main_loop()` 排在「自动磁力链」之后** —— 自动链要跑 `MON_SECS+DL_SECS`
+   （实测 90+240s），所以想用控制通道就必须用**产品配置**：`MAGNET=""`、`MON_SECS=0`、`DL_SECS=0`。
+
+### 仍差一步
+
+**把 URI 字符串取出来**：`Uri::Uri()` → `HttpResource::GetUri(Uri&)` → `Uri::to_string()` 的链条已跑通，
+但 `to_string` 返回的 24 字节里 `size=0`（返回约定或 `this` 调整待定：`HttpResource` 多继承，
+存在 `_ZThn280_` thunk）。下一步二选一：① 按「w0 是指向 `std::string` 的指针」再解一次；
+② 用 `_ZThn280_N12HttpResource6GetUriER3Uri`（带 -280 调整的 thunk）传次级指针。
+
+
 ## 8. 各方案下载速度排序（实测 + 推算）
 
 | 方案 | 数据面谁搬 | 本机可期上界 | 源覆盖 | 改造量 |

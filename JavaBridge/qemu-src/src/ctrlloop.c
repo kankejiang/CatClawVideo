@@ -106,6 +106,7 @@ static void probe_run(void) {
 // ── 安全内存读取：指针可疑时用 SIGSEGV 守门，避免一次野 pointer 崩掉整轮实验 ──
 #include <signal.h>
 #include <setjmp.h>
+#include <sys/wait.h>
 static sigjmp_buf g_res_jmp;
 static volatile int g_res_guard = 0;
 static void res_segv_handler(int sig) {
@@ -171,46 +172,129 @@ static void res_probe(void) {
         printf("[res]   %-32s %p\n", NAMES[i], probe_sym(NAMES[i]));
     if (g_task_id <= 0) { printf("[res] → 尚无任务（task_id<=0）：先下发 TASK MAGNET 再来\n"); fflush(stdout); return; }
 
-    // ★ 每个「签名未知」的调用都 fork 到子进程里执行：崩了只损失这一条，父进程继续
-    #include <sys/wait.h>
-    static unsigned char buf[65536];
-    struct { const char *name; int variant; const char *desc; } probes[] = {
-        { "XLGetUrlQuickInfo",    2, "GetUrlQuickInfo(id, out)" },
-        { "XLGetTaskInfo",        2, "GetTaskInfo(id, out)" },
-        { "XLGetTaskInfoEx",      2, "GetTaskInfoEx(id, out)" },
-        { "XLGetThunderzInfo",    2, "GetThunderzInfo(id, out)" },
-        { "XLGetTaskCheckInfo",   2, "GetTaskCheckInfo(id, out)" },
-        { "XLGetTaskInfoEx",      3, "GetTaskInfoEx(id, out, sz)" },
-    };
-    for (size_t i = 0; i < sizeof probes / sizeof probes[0]; i++) {
-        void *fn = probe_sym(probes[i].name);
-        if (!fn) { printf("[res] %s 未解析，跳过\n", probes[i].name); continue; }
-        fflush(stdout);
-        pid_t pid = fork();
-        if (pid < 0) { printf("[res] fork 失败\n"); continue; }
-        if (pid == 0) {
-            memset(buf, 0, sizeof buf);
-            int rc = -12345;
-            if (probes[i].variant == 2) {
-                typedef int (*f2)(unsigned long long, void *);
-                rc = ((f2)fn)((unsigned long long)g_task_id, buf);
-            } else {
-                typedef int (*f3)(unsigned long long, void *, int);
-                rc = ((f3)fn)((unsigned long long)g_task_id, buf, (int)sizeof buf);
+    // ★★ 路线切换（2026-09-21）：XL* C 门面全部挂死/崩溃（8/8）——
+    //    它是**另一套（PC SDK）门面**，在这条 JNI 路径里没初始化 → 死路。
+    //    改走 C++ 对象：`.so` 的 vtable 是导出的数据符号，**对象首字 = vtable+16**，
+    //    于是可以在进程内存里"逮"出 ResourceManager 实例，再调它的 Get*ResourceList。
+    void *vt = probe_sym("_ZTV15ResourceManager");
+    printf("[res] _ZTV15ResourceManager = %p\n", vt);
+    if (!vt) { printf("[res] 拿不到 vtable，放弃\n"); fflush(stdout); return; }
+    unsigned long long needle = (unsigned long long)(uintptr_t)vt + 16;   // 对象的 vptr 指向 vtable 的地址点
+    printf("[res] 目标 vptr = 0x%llx，开始扫内存（可读区间）…\n", needle);
+
+    fflush(stdout);
+    pid_t sp = fork();          // 扫描放子进程：崩溃被隔离
+    if (sp == 0) {
+        FILE *f = fopen("/proc/self/maps", "r");
+        if (!f) { printf("[res] 打不开 /proc/self/maps\n"); _exit(1); }
+        char line[512]; int regions = 0, hits = 0; unsigned long long scanned = 0;
+        static unsigned char chunk[262144];
+        while (fgets(line, sizeof line, f) && regions < 400) {
+            unsigned long long lo = 0, hi = 0; char perm[8] = "", path[200] = "";
+            int got = sscanf(line, "%llx-%llx %7s %*s %*s %*s %199s", &lo, &hi, perm, path);
+            if (got < 3 || perm[0] != 'r') continue;
+            unsigned long long sz = hi - lo;
+            if (sz > (512ULL << 20)) continue;
+            regions++;
+            if (regions <= 16) printf("[res]   区[%d] %llx-%llx %s %s (%.1fMB)\n", regions, lo, hi, perm,
+                                      path[0] ? path : "(anon)", sz / 1048576.0);
+            scanned += sz;
+            for (unsigned long long a = lo; a + 8 <= hi; a += sizeof chunk) {
+                size_t n = (size_t)((hi - a) < sizeof chunk ? (hi - a) : sizeof chunk);
+                memcpy(chunk, (const void *)(uintptr_t)a, n);
+                for (size_t off = 0; off + 8 <= n; off += 8) {
+                    unsigned long long v; memcpy(&v, chunk + off, 8);
+                    if (v == needle) {
+                        unsigned long long inst = a + off;
+                        if (hits < 6) printf("[res] ★ 命中 ResourceManager 实例 @ 0x%llx（区 %s）\n",
+                                            inst, path[0] ? path : "(anon)");
+                        hits++;
+                        if (hits <= 3) {
+                            // 在子进程里试着调取列表（崩也隔离在这一次 fork 内）
+                            static const char *GETS[4] = {
+                                "_ZN15ResourceManager20GetDPhubResourceListERSt6vectorIP9IResourceSaIS2_EE",
+                                "_ZN15ResourceManager22GetTrackerResourceListERSt6vectorIP9IResourceSaIS2_EE",
+                                "_ZN15ResourceManager18GetCdnResourceListERSt6vectorIP9IResourceSaIS2_EE",
+                                "_ZN15ResourceManager21GetMirrorResourceListERSt6vectorIP9IResourceSaIS2_EE",
+                            };
+                            for (int g = 0; g < 4; g++) {
+                                void *gf = probe_sym(GETS[g]);
+                                if (!gf) continue;
+                                unsigned long long vec[3] = {0, 0, 0};      // std::vector<IResource*> = 3 指针
+                                typedef int (*fget)(void *, void *);
+                                int rc = ((fget)gf)((void *)(uintptr_t)inst, vec);
+                                long cnt = (long)((vec[1] - vec[0]) / 8);
+                                printf("[res]   %s(inst) → rc=%d  cnt=%ld  begin=0x%llx\n",
+                                       strrchr(GETS[g], 'G') ? strrchr(GETS[g], 'G') : GETS[g], rc, cnt, vec[0]);
+                                // ★ 引擎用 ARM64 TBI「带 tag 的指针」（高字节 0xb4），
+                                //   必须先掩掉最高字节才能解引用，否则读到的是别人的内存。
+                                unsigned long long vb = vec[0] & 0x00FFFFFFFFFFFFFFULL;
+                                unsigned long long ve = vec[1] & 0x00FFFFFFFFFFFFFFULL;
+                                long n2 = (long)((ve - vb) / 8);
+                                printf("[res]     raw b=0x%llx e=0x%llx c=0x%llx → 元素数 %ld\n",
+                                       vec[0], vec[1], vec[2], n2);
+                                if (vb && n2 > 0 && n2 < 500) {
+                                    for (long k = 0; k < n2 && k < 20; k++) {
+                                        static unsigned char obuf[1024];
+                                        if (safe_read((const void *)(uintptr_t)(vb + k * 8), obuf, 8) != 0) break;
+                                        unsigned long long raw; memcpy(&raw, obuf, 8);
+                                        unsigned long long obj = raw & 0x00FFFFFFFFFFFFFFULL;
+                                        printf("[res]     [%ld] raw=0x%llx  obj=0x%llx\n", k, raw, obj);
+                                        if (!obj) continue;
+                                        if (safe_read((const void *)(uintptr_t)obj, obuf, sizeof obuf) != 0) {
+                                            printf("[res]       对象读取失败\n"); continue;
+                                        }
+                                        printf("[res]        vptr=0x%llx\n", *(unsigned long long *)obuf);
+                                        // ★ 认类：HttpResource 的 vptr = base + 0x536b50
+                                        unsigned long long so_base = (unsigned long long)(uintptr_t)vt - 0x537250ULL;
+                                        int is_http = (*(unsigned long long *)obuf == so_base + 0x536b50ULL);
+                                        printf("[res]        %s\n", is_http ? "== HttpResource ✅" : "（非 HttpResource）");
+                                        scan_buf("objRaw", obuf, sizeof obuf);          // ← 先做只读的，保证有输出
+                                        void *fTyp = probe_sym("_ZN12HttpResource15GetResourceTypeEv");
+                                        if (fTyp) { typedef unsigned (*fty)(void *);
+                                            printf("[res]        GetResourceType() = %u\n", ((fty)fTyp)((void *)(uintptr_t)obj)); }
+                                        // ★ 正规取 URL：Uri::Uri() → HttpResource::GetUri(Uri&) → Uri::to_string()
+                                        void *fUriCtor = probe_sym("_ZN3UriC1Ev");
+                                        void *fUriGet  = probe_sym("_ZN12HttpResource6GetUriER3Uri");
+                                        void *fToStr   = probe_sym("_ZNK3Uri9to_stringEv");
+                                        static unsigned char ub[512];
+                                        if (fUriCtor && fUriGet) {
+                                            memset(ub, 0, sizeof ub);
+                                            ((void (*)(void *))fUriCtor)(ub);                      // 构造
+                                            ((void (*)(void *, void *))fUriGet)((void *)(uintptr_t)obj, ub);
+                                            scan_buf("Uri", ub, sizeof ub);
+                                            if (fToStr) {   // std::string 按值返回 → sret，用 24 字节结构体接
+                                                typedef struct { unsigned long long w0, w1, w2; } Str24;
+                                                Str24 s = ((Str24 (*)(const void *))fToStr)(ub);
+                                                printf("[res]        to_string: w0=0x%llx w1=%llu w2=0x%llx\n", s.w0, s.w1, s.w2);
+                                                if (s.w2) {
+                                                    char url[1024];
+                                                    if (safe_read((const void *)(uintptr_t)(s.w2 & 0x00FFFFFFFFFFFFFFULL),
+                                                                  url, sizeof url - 1) == 0) {
+                                                        url[sizeof url - 1] = 0;
+                                                        printf("[res]  ★★ URL = %s\n", url);
+                                                    }
+                                                } else if (s.w1 && s.w1 < 24) {
+                                                    printf("[res]  ★★ URL(SSO) = %.24s\n", (char *)&s + 16);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            printf("[res] %s → rc=%d\n", probes[i].desc, rc);
-            printf("[res]   hex[0..48) = ");
-            for (int k = 0; k < 48; k++) printf("%02x", buf[k]);
-            printf("\n");
-            scan_buf(probes[i].name, buf, 16384);
-            fflush(stdout);
-            _exit(0);
         }
-        int st = 0; waitpid(pid, &st, 0);
-        printf("[res]   ↑ %s 子进程 status=%d%s\n", probes[i].desc, st,
-               (st & 0x7f) == 11 ? "  ★ 崩了（该签名不对，已隔离）" : "");
+        fclose(f);
+        printf("[res] 扫描完成：区间 %d，已扫 %.1f MB，命中 %d\n", regions, scanned / 1048576.0, hits);
         fflush(stdout);
+        _exit(0);
     }
+    int st = 0;
+    for (int w = 0; w < 100; w++) { if (waitpid(sp, &st, WNOHANG) == sp) break; usleep(100000); if (w == 99) { kill(sp, SIGKILL); waitpid(sp, &st, 0); } }
+    printf("[res] 扫描子进程结束 status=%d\n", st);
     printf("[res] ═══ 结束 ═══\n");
     fflush(stdout);
 }
