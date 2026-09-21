@@ -572,3 +572,71 @@ GetPremiumResInfo, GetTaskInfoEx, SetMiUiVersion, SynPlayState, GetLocalUrl, Get
 
 ⚠ 待实验确认的只剩一点：**迅雷是否对未登录态限制 BT 索引访问**
 （`hub5btmain.v6.shub.sandai.net` / `pool.v6.bt.n0808.com`）。若受限，再评估是否值得登录。
+
+
+### 13.7 ★ 已把它跑起来了 —— 但它的任务 API 全部强制账号鉴权（2026-09-21 实测）
+
+13.5/13.6 说「差平台校验、不是登录」。**平台校验已经由本项目破解并跑通，剩下卡住的确实是账号。**
+
+#### (1) 平台门破解（可复现，在 x86_64 Debian LXC 上实测）
+
+```bash
+# 包：nasxunlei-DSM7-x86_64.spk → tar -xf → package.tgz（★ 实为 xz，用 tar -xJf）
+# ★★ 关键两步：伪造群晖平台身份
+printf 'unique="synology_bromolow_3615xs"\n' > /etc/synoinfo.conf
+#   unique 必须是 synology_<board>_<model> 形式；写 32 位 hex 会报 `<值> format error`
+mkdir -p /usr/syno/synoman/webman/modules
+cat > /usr/syno/synoman/webman/modules/authenticate.cgi <<'EOF'
+#!/bin/sh
+echo "Content-Type: application/json"; echo ""; echo '{"success":true,"is_admin":true}'
+EOF
+chmod 755 /usr/syno/synoman/webman/modules/authenticate.cgi
+
+# 启动（照抄 SPK 的 scripts/service-setup）
+PLATFORM="群晖" OS_VERSION="synology_bromolow_3615xs dsm 7.0-40759" \
+ConfigPath=... DownloadPATH=... HOME=... \
+bin/xunlei-pan-cli-launcher.amd64 -launcher_listen=127.0.0.1:5051 -pid <文件> -logfile <文件>
+```
+
+定位手法（值得复用）：`strace -f -e trace=openat,newfstatat,access` 过滤 `ENOENT`
+→ 一眼看到它要 `/etc/synoinfo.conf`、`…/authenticate.cgi`、`pan-cli.debug.secret.mod`；
+再对字段值做**二分**（改值后报错从 `key file lost:<A>` 变 `<B>` = 值被接受，变 `format error` = 格式非法）。
+
+**结果：引擎完整启动**
+
+```
+> detect platform: synology X9ibISwpIp8jQ4Ya          ← 平台门通过
+InitGlobalConfig url: https://conf-m-ssl.xunlei.com/… → resp_code=200 len=25137
+LISTEN 127.0.0.1:5050 / *:21603
+GET http://127.0.0.1:5050/  →  200（Web 面板）
+```
+
+#### (2) 但任务 API 全部 403
+
+```
+POST /drive/v1/resource/list  → 403 {"error":"permission_deny: checkAuth failed:token contains an invalid number of segments"}
+POST /drive/v1/task           → 403（同上）
+GET  /drive/v1/privilege/…    → 403（同上）
+引擎日志：VerifyToken err: token contains an invalid number of segments
+```
+**⇒ 是 JWT 鉴权，且"解析磁力"（`resource/list`）与"建任务"（`task`）同样受保护。**
+
+#### (3) 为什么这是产品设计而非可绕的 bug
+
+该引擎的任务类型是 **`user#download` / `user#download-url`** —— 迅雷把 NAS 版的下载做成
+**"云端任务挂在你的账号下，本地引擎只是执行器"**。日志里持续 `WaitForLogin scene=NextTask`
+（任务系统在等登录），`uploadWatcher` / `watchUserChange` 也在等凭据。
+
+#### (4) ⇒ 方案的最终裁决
+
+| 方案 | 需账号 | x86 原生 | BT | 备注 |
+|---|---|---|---|---|
+| **A. 现代 NAS 引擎 3.23.5** | ❌ **需** | ✅ | ✅ | 云盘加速；本方案已跑通，只差登录 |
+| **B. 现状：QEMU + Android ARM 引擎** | ✅ 不需 | ❌ 模拟 | ✅ | ~50 Mbps，已验证可用 |
+| C. 纯 BT（MonoTorrent 等） | ✅ 不需 | ✅ | ⚠️ **无速度** | 实测 0.1~0.3 Mbps，已排除 |
+| D. Windows 2014 OEM SDK | ✅ 不需 | ✅ | ❌ **无 BT** | 对磁力无用 |
+
+**结论：「x86 原生 + 有 BT」与「免登录」在当前迅雷产品线上不可兼得。**
+免登录且能跑磁力的只有 Android ARM 那支（= 现状 QEMU 路线）。
+若要吃 A 的收益（去 QEMU + 引擎新一代 + 云盘加速），**必须接受迅雷账号登录**。
+建议：**A/B 并存**（`ChainedMagnetEngine` 已是链式）—— 配了账号走 A，未配走 B。
