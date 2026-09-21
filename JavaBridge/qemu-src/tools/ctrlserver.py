@@ -31,9 +31,11 @@ CMDS = args or [""]
 
 srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-srv.bind(("127.0.0.1", port))
+# 绑 0.0.0.0：全系统 QEMU 下 SLIRP 会把 guest 的 10.0.2.2 转到宿主 loopback（127.0.0.1 即可）；
+# qemu-user（用户态/无 SLIRP）下 guest 直连 10.0.2.2（lo 别名）→ 必须 0.0.0.0。
+srv.bind(("0.0.0.0", port))
 srv.listen(16)
-print("[ctrl] 监听 127.0.0.1:%d  hold=%ds  命令数=%d" % (port, hold, len(CMDS)), flush=True)
+print("[ctrl] 监听 0.0.0.0:%d  hold=%ds  命令数=%d" % (port, hold, len(CMDS)), flush=True)
 
 t0 = time.time()
 last_log = 0.0
