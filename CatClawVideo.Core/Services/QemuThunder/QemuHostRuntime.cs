@@ -37,13 +37,24 @@ public sealed class QemuHostRuntime : IDisposable
     private int _filtered;
 
     /// <summary>
-    /// guest 的 vCPU 数（<c>-smp</c>）。默认 4。
+    /// guest 的 vCPU 数（<c>-smp</c>）。默认 = <c>宿主逻辑核数</c>，**但硬上限 4**。
     ///
     /// <para>QEMU 这里是 **TCG 软件模拟**（ARM64 跑在 x86 上，没有硬件虚拟化加速），
-    /// 引擎的下载链路是 CPU 密集型（分片/校验/memcpy），实测下载时 QEMU 已占到
-    /// 3.4 个核（4 vCPU 的 85%）—— 多给核对这类负载可能有效。</para>
+    /// 引擎的下载链路是 CPU 密集型（分片/校验/memcpy）。</para>
+    ///
+    /// <para><b>为什么不是「用满所有核心」</b>（2026-09-21 实测，详见
+    /// <c>docs/qemu-tcg-tuning.md</c> §6/§7）：引擎吞吐在 <b>2~4 vCPU 达到峰值</b>，
+    /// 超过 4 不再增长；本机 12 逻辑核（6 物理核）实测 <c>-smp 12</c> 反而降到
+    /// <b>0.78×</b> —— 12 条 vCPU 线程抢 6 个物理核，再叠加 SLIRP（单线程）与宿主侧代理，
+    /// 严重超订；且 TCG 的翻译块缓存与翻译锁是全局共享的，vCPU 越多撞锁越频繁。</para>
+    ///
+    /// <para>⚠️ 限制**每实例**速度的是它自己的 vCPU 数，而不是宿主争用：
+    /// 2 个实例并存时把每实例从 4 降到 2，合计吞吐反而从 38.1 掉到 29.1 MB/s。
+    /// 所以多实例场景交给操作系统调度器分时即可，不要把单实例的 -smp 反向放大。</para>
+    ///
+    /// <para>下调到宿主核数是为了弱机：4 核以下按实际核数给，避免在 2 核机器上超订。</para>
     /// </summary>
-    public int SmpCount { get; set; } = 4;
+    public int SmpCount { get; set; } = Math.Clamp(Environment.ProcessorCount, 1, 4);
 
     /// <summary>
     /// 稀疏块设备（数据面）——guest 把引擎吐出的字节按文件偏移直接写进来，宿主**直读同一物理文件**。
@@ -130,7 +141,21 @@ public sealed class QemuHostRuntime : IDisposable
             {
                 // -m 5120：guest RAM 需容得下 /thunder-data 的 tmpfs（3500m，见 initrd 的 /init）+ 引擎开销；
                 //  旧的 4096 + tmpfs 1500m 会在下载 ~1.57GB 时写满 tmpfs，任务以 err=114010 死亡
-                "-M", "virt", "-cpu", "max", "-m", "5120", "-smp", SmpCount.ToString(), "-nographic",
+                //
+                // -cpu cortex-a76（原为 max）+ -accel tcg,tb-size=256,split-wx=off
+                //  （2026-09-21 实测，见 docs/qemu-tcg-tuning.md §3）：
+                //   CPU 跑分 **1.22×**（B1 中位 67s→55s，4 轮采样分布不重叠）。
+                //   · cortex-a76 无 SVE/SME，而 -cpu max 会打开它们 —— TCG 下 SVE 的
+                //     状态保存/翻译块占用更重，收益主要来自关掉 SVE；a76 仍具备 NEON/AES/
+                //     PMULL/SHA1/SHA2/CRC32/LSE atomics/dotprod，即该引擎会用到的全部能力。
+                //   · split-wx=off 关闭 QEMU 的 W^X 双映射保护换取性能 —— **有意为之**，
+                //     guest 只跑我们自己的 initrd，可接受。
+                //   · tb-size 不是越大越好：512 实测 0.86×、64 实测 0.79×，256 才最佳。
+                //   · ⚠️ 切勿引入 thread=single / -icount：实测 MTTCG 值 **4.1×**
+                //     （910 vs 221 MB/s），aarch64 + smp>1 默认已开，别关掉。
+                //   真实引擎端到端验证：该参数下引擎从本地源稳定下载 3.36GB（30~54 MB/s，err=0）。
+                "-M", "virt", "-cpu", "cortex-a76", "-m", "5120", "-smp", SmpCount.ToString(), "-nographic",
+                "-accel", "tcg,tb-size=256,split-wx=off",
                 "-L", "share",
                 "-kernel", "pkg_kernel",
                 "-initrd", InitrdName,
