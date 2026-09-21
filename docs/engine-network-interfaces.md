@@ -451,3 +451,73 @@ C++ 类名完整可读**。与协议直接相关的有：
 4. 引擎**预分配**完整尺寸临时文件：`<name>.dl` + `<name>.dl.cfg`（任务位图）。
 5. ⚠ 该 SDK 仍是**从第三方软件提取的闭源二进制**，授权性质与 §1 打包的 `libxl_thunder_sdk.so` 同级
    （partner id 硬编码、可被迅雷随时失效）。
+
+
+---
+
+## 13. ★★★★★ 磁力的正解：现代迅雷引擎 `xunlei-pan-cli` 3.23.5（x86_64 原生 + 完整 BT + 边下边播）
+
+### 13.1 先排除：§12 那个 Windows OEM 引擎**没有 BT**
+
+解析 `download_engine.dll`（2014 版）的导出表与全量字符串：
+**`bt` / `torrent` / `magnet` / `btih` / `announce` / `info_hash` 命中数全为 0**。
+⇒ 它是**浏览器 OEM 版（纯 P2SP 镜像加速）**，
+磁力任务报 `ID_INVALID (0x43)` 的真因是 **BT 模块压根没编译进去**，不是调用方式错。
+
+### 13.2 现代引擎：迅雷官方 NAS 套件（可直下）
+
+| 项 | 值 |
+|---|---|
+| 下载 | `https://down.sandai.net/nas/nasxunlei-DSM7-x86_64.spk`（实测 206 + `application/octet-stream`，**25.8 MB**） |
+| SPK INFO | `package="pan-xunlei-com"` · `version="3.23.5-0814080017"` · `arch="x86_64"` · `maintainer="深圳市迅雷网络技术有限公司"` · `adminport=21603` |
+| payload | ★ **`bin/bin/xunlei-pan-cli.3.23.5.amd64`（59.86 MB, x86_64 ELF）= 引擎本体** + `xunlei-pan-cli-launcher.amd64`(18.8 MB) + `ui/index.cgi`(16.7 MB) |
+| 运行语言 | **Go 外壳**（`gitlab.xunlei.cn/xlppc/pan-cli/pkg/service.proxyToLocalUrl`、`download_runner`）+ **C++ 下载库**（`xldownloadlib` / `DownloadLib` / `P2spTask` / `HLSTask`） |
+
+### 13.3 ★ 引擎自带能力（字符串实证）
+
+**BT / 磁力 —— 完整协议栈**
+`magnet:?` · `xt=urn:btih:` · `announce` / `announce-list` · `info_hash` ·
+**`libtorrent`** · `DHT` · `ut_metadata` / `ut_pex`（BEP9/11）· `bep_00`；
+DHT 实现细节齐全：`Announce peer!` / `Announce_peer with no info_hash` / `...wrong token` /
+`...forbidden port %d`
+
+**★ 边下边播（`VodPlayServer`）—— 与 Android 版 `getLoclUrl` 同源同构**
+`VodPlayServer::Init / GetLocalUrl / OnTcpAccept / OnSessionPlay / SynPlayPos / SynPlaySpeed /
+SynPlayState / SynPlayCached / SynPlayBitrate / PathSign` ·
+`TaskManager::GetLocalUrl[ById]` · `DownloadLib::GetLocalUrl[ById]` ·
+`xldownloadlib::GetLocalUrlCommand` · `XLGetLocalUrl` / `XLGetLocalUrlById` ·
+日志格式 **`TaskId=%llu, ret=%s, play_url=%s`**
+
+**★ 另有 HLS 转码**：`/transcodeplay/task/concise%v.m3u8?resolution=%v` · `HLSTask::ParseVodPlayUrl`
+
+**服务端集群（新一代 `.v6.` 命名）**
+```
+hub5btmain.v6.shub.sandai.net  hub5idx.v6.shub.sandai.net  hub5u.v6.phub.sandai.net
+hub5pr.v6.phub.sandai.net      pool.v6.bt.n0808.com        bt.box.n0808.com
+btinfo.sandai.net   hubciddata.sandai.net   dcdnhub.dcdn.sandai.net   dcdnhub.xfs.xcloud.sandai.net
+api-pan.xunlei.com  pan.xunlei.com  nas.xunlei.com  speedup.xunlei.com
+```
+
+### 13.4 客户端对接（社区已验证的形状）
+
+- 引擎本地接口是 **`/index.cgi`**（CGI）+ `/drive/v1/*`；任务类型 `user#download-url` / `user#download`
+- 社区载体 **`cnk3x/xunlei`（2041★，2026-09 仍在更新）**：把它容器化跑起来，
+  `embed/authenticate_cgi` 负责**设备伪装**以通过迅雷的绑定校验，面板扫码登录
+- 社区 REST 封装 **`myth815/xunlei-api`**：`/v1/resources/resolve`（投递链接）·
+  `/v1/resources/torrent`（上传种子解析）· `/v1/tasks` 系列 · 进度/暂停/恢复/重试
+
+### 13.5 ⇒ 结论
+
+**磁力可以做到零模拟（原生满速），但载体从「Windows DLL」换成了「Linux x86_64 服务」：**
+
+| 落点 | 说明 |
+|---|---|
+| **`10.0.0.108`**（x86_64 Debian LXC，20 核 / 227 GB 空闲） | 现成可用，局域网内延迟极低 |
+| 本机 **WSL2** | 需 `wsl --install`；同架构 ⇒ 零模拟，且 localhost 与 Windows 互通 |
+| PVE 宿主（10.0.0.100） | 也可，但会与虚拟机争资源 |
+
+CatClawVideo 侧只需新增一个"远程引擎"后端：投递磁力 → 轮询任务 → 取 `play_url` 播放。
+**唯一外部依赖是迅雷账号登录**（`cnk3x/xunlei` 已解决设备伪装 + 扫码登录这一步）。
+
+⚠ 与 §1/§12 同样的授权性质说明：该引擎为迅雷官方发布、但**以 NAS 套件形式分发**，
+对接其未公开接口属逆向使用，需自行评估合规性。
