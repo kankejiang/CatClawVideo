@@ -132,6 +132,13 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IPlaybackSession
     /// 镜像是稀疏的（Windows 先 FSCTL_SET_SPARSE 再 SetLength；Linux ftruncate 天然稀疏），调大不占盘。</para></summary>
     public long BlockDeviceCapacityBytes { get; set; } = 64L * 1024 * 1024 * 1024;
 
+    /// <summary>交换区镜像容量（默认 6GB；稀疏文件，实际只占**真正被换出**的量）。
+    ///
+    /// <para>给 guest 的 tmpfs 提供换出空间 —— 这是「播放时内存随下载量增长」的正解：
+    /// 无 swap 时 <c>-m</c> 必须容下整个 tmpfs（5120），有 swap 时降到 2560 仍能跑大文件。
+    /// 0 = 关闭，退回旧行为（纯内存 tmpfs 3500m + <c>-m 5120</c>）。</para></summary>
+    public long SwapDeviceCapacityBytes { get; set; } = 6L * 1024 * 1024 * 1024;
+
     private long? _streamCacheCapOverride;
 
     /// <summary>
@@ -765,23 +772,30 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IPlaybackSession
             _runtime?.Dispose();
             _mediaPort = PickFreePort(_mediaPort);
             _monitorPort = PickFreePort(_monitorPort);
-            // 数据面块设备镜像：每实例一张（多实例=播放/下载各一，互不干扰）
+            // 数据面块设备镜像 / 交换区镜像：每实例各一张（多实例=播放/下载各一，互不干扰）
             string? blkPath = null;
+            string? swapPath = null;
             try
             {
                 if (!string.IsNullOrEmpty(BlockDeviceRoot))
                 {
                     var tag = string.IsNullOrEmpty(_consoleTag) ? "main" : _consoleTag.Trim('-');
                     blkPath = Path.Combine(BlockDeviceRoot!, $"store{tag}.img");
+                    // 交换区：让 /thunder-data（tmpfs）的冷页换出到宿主盘 ——
+                    // guest RAM 不再随下载量线性增长，-m 从 5120 降到 2560，且 tmpfs 上限可抬高。
+                    if (SwapDeviceCapacityBytes > 0)
+                        swapPath = Path.Combine(BlockDeviceRoot!, $"swap{tag}.img");
                 }
             }
             catch (Exception ex)
             {
-                Log($"[qemu] 数据面镜像路径无效（退化为纯 HTTP 通道）：{ex.Message}");
+                Log($"[qemu] 数据面/交换区镜像路径无效（退化为纯 HTTP 通道 + 纯内存 tmpfs）：{ex.Message}");
                 blkPath = null;
+                swapPath = null;
             }
             _runtime = new QemuHostRuntime(_runtimeDir, _mediaPort, Log, _initrdName, _consoleTag, _monitorPort,
-                blkPath, blkPath is null ? 0 : BlockDeviceCapacityBytes);
+                blkPath, blkPath is null ? 0 : BlockDeviceCapacityBytes,
+                swapPath, swapPath is null ? 0 : SwapDeviceCapacityBytes);
             // VM 退出事件：留一条明确日志（下载循环靠 HasExited 判活、播放靠看门狗，各自已就位）
             _runtime.Died += () => Log("[引擎] QEMU 进程退出事件 —— 下载循环将在 1s 内感知并返回可续传的失败");
             _server.ResetFirstPoll();

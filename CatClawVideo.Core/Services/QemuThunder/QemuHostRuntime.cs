@@ -69,12 +69,40 @@ public sealed class QemuHostRuntime : IDisposable
     /// </summary>
     public SparseBlockStore? BlockStore { get; private set; }
 
+    /// <summary>
+    /// 交换区块设备（可选）——**raw 设备，不需要文件系统**，由 guest 侧 <c>mkswap</c> 写签名。
+    ///
+    /// <para><b>为什么</b>：guest 的 <c>/thunder-data</c> 是 tmpfs，而 tmpfs 的页**可以换出**
+    /// （ramfs 不行，这也是当初必须挂 tmpfs 的原因）。给一块宿主盘当 swap 后，已完成/
+    /// 离播放头远的冷数据会被换到宿主磁盘上 —— <b>guest RAM 不再随下载量线性增长</b>。
+    /// 后果：<c>-m</c> 可以从 5120 降到 ~2560，且 tmpfs 上限能抬高（&gt;3.5GB 的片不再被
+    /// <c>err=114010</c> 打死）。附带收益：<c>docs/qemu-tcg-tuning.md</c> §7.2 实测降 <c>-m</c>
+    /// 还有约 1.5× 提速。</para>
+    ///
+    /// <para>为 null 时不挂这块盘，guest 退回纯内存 tmpfs 3500m + <c>-m 5120</c>，
+    /// 行为与改动前完全一致 —— 与数据面块设备同样的「增益而非替代」原则。</para>
+    /// </summary>
+    public SparseBlockStore? SwapStore { get; private set; }
+
+    /// <summary>无 swap 时的 guest RAM（MB）—— 必须容得下 <see cref="DataDirMb"/> 的内存盘。</summary>
+    public int GuestMemoryMb { get; set; } = 5120;
+
+    /// <summary>启用 swap 时的 guest RAM（MB）—— 冷页能换出，取值可小得多。</summary>
+    public int GuestMemoryMbWithSwap { get; set; } = 2560;
+
+    /// <summary>无 swap 时 <c>/thunder-data</c> 的 tmpfs 大小（MB）。</summary>
+    public int DataDirMb { get; set; } = 3500;
+
+    /// <summary>启用 swap 时 <c>/thunder-data</c> 的 tmpfs 大小（MB）—— 上限由 RAM + swap 共同支撑。</summary>
+    public int DataDirMbWithSwap { get; set; } = 6144;
+
     /// <param name="initrdName">initrd 文件名；多实例（如下载专用引擎）传独立控制口的第二份 initrd。</param>
     /// <param name="consoleLogTag">控制台日志文件名后缀（多实例避免互相覆盖）。</param>
     /// <param name="monitorPort">monitor 监听端口（0 = 不开）。仅绑 127.0.0.1，不对外。</param>
     public QemuHostRuntime(string runtimeDir, int mediaPort, Action<string>? log = null,
         string initrdName = "pkg_initrd.gz", string consoleLogTag = "", int monitorPort = 0,
-        string? blockImagePath = null, long blockImageBytes = 0)
+        string? blockImagePath = null, long blockImageBytes = 0,
+        string? swapImagePath = null, long swapImageBytes = 0)
     {
         RuntimeDir = runtimeDir;
         MediaPort = mediaPort;
@@ -97,6 +125,23 @@ public sealed class QemuHostRuntime : IDisposable
             catch (Exception ex)
             {
                 _log?.Invoke($"[qemu] 数据面块设备不可用（退化为纯 HTTP 通道）：{ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
+        // 交换区块设备（可选）。建法与数据面镜像相同（稀疏文件，实际只占写入量）——
+        // 交换区的实际占用 = 真正被换出的字节数，通常远小于容量。失败即退回纯内存 tmpfs。
+        if (!string.IsNullOrEmpty(swapImagePath) && swapImageBytes > 0)
+        {
+            try
+            {
+                var sw = new SparseBlockStore(swapImagePath!, swapImageBytes);
+                sw.EnsureCreated();
+                SwapStore = sw;
+                _log?.Invoke($"[qemu] 交换区镜像就绪：{swapImagePath}（{swapImageBytes / 1024 / 1024}MB，稀疏={sw.IsSparse}）");
+            }
+            catch (Exception ex)
+            {
+                _log?.Invoke($"[qemu] 交换区不可用（退化为纯内存 tmpfs）：{ex.GetType().Name}: {ex.Message}");
             }
         }
     }
@@ -158,6 +203,11 @@ public sealed class QemuHostRuntime : IDisposable
                 StandardOutputEncoding = Encoding.UTF8,
                 StandardErrorEncoding = Encoding.UTF8,
             };
+            // ── 内存与数据盘取值：有没有 swap 决定给多少 ──
+            // 无 swap：tmpfs 全在 RAM ⇒ -m 必须容下它；有 swap：冷页可换出 ⇒ -m 可以小得多。
+            var memMb = SwapStore is not null ? GuestMemoryMbWithSwap : GuestMemoryMb;
+            var tdataMb = SwapStore is not null ? DataDirMbWithSwap : DataDirMb;
+
             var args = new List<string>
             {
                 // -m 5120：guest RAM 需容得下 /thunder-data 的 tmpfs（3500m，见 initrd 的 /init）+ 引擎开销；
@@ -175,12 +225,11 @@ public sealed class QemuHostRuntime : IDisposable
                 //   · ⚠️ 切勿引入 thread=single / -icount：实测 MTTCG 值 **4.1×**
                 //     （910 vs 221 MB/s），aarch64 + smp>1 默认已开，别关掉。
                 //   真实引擎端到端验证：该参数下引擎从本地源稳定下载 3.36GB（30~54 MB/s，err=0）。
-                "-M", "virt", "-cpu", "cortex-a76", "-m", "5120", "-smp", SmpCount.ToString(), "-nographic",
+                "-M", "virt", "-cpu", "cortex-a76", "-m", memMb.ToString(), "-smp", SmpCount.ToString(), "-nographic",
                 "-accel", "tcg,tb-size=256,split-wx=off",
                 "-L", "share",
                 "-kernel", "pkg_kernel",
                 "-initrd", InitrdName,
-                "-append", "console=ttyAMA0 rdinit=/init loglevel=4",
                 "-netdev", $"user,id=n0,hostfwd=tcp:127.0.0.1:{MediaPort}-:20080",
                 "-device", "virtio-net-pci,netdev=n0",
             };
@@ -197,6 +246,28 @@ public sealed class QemuHostRuntime : IDisposable
                 args.Add("-device");
                 args.Add("virtio-blk-pci,drive=hub0");
             }
+
+            // ── 交换区块设备（可选）──
+            // raw 块设备即可，**不需要文件系统**（swap 签名由 guest 的 mkswap 写）。
+            // 它给 tmpfs 提供换出空间：/thunder-data 的冷页落到宿主盘 ⇒ guest RAM 不随下载量涨。
+            if (SwapStore is not null)
+            {
+                args.Add("-drive");
+                args.Add($"file={SwapStore.ImagePath},if=none,id=swap0,format=raw,cache=unsafe");
+                args.Add("-device");
+                args.Add("virtio-blk-pci,drive=swap0");
+            }
+
+            // ★ 块设备名**由宿主认定后经 cmdline 告诉 guest**，不能让 guest 猜：
+            //   vda/vdb 取决于挂载顺序，而数据面孔是**可选的** —— 若它缺席，vda 就变成了交换区，
+            //   harness 会把引擎字节按文件偏移写进交换区（后果严重）。
+            var vdIndex = 0;
+            var append = $"console=ttyAMA0 rdinit=/init loglevel=4 tdata={tdataMb}m";
+            if (BlockStore is not null) append += $" blkdev=/dev/vd{(char)('a' + vdIndex++)}";
+            if (SwapStore is not null) append += $" swapdev=/dev/vd{(char)('a' + vdIndex++)}";
+            args.Add("-append");
+            args.Add(append);
+            _log?.Invoke($"[qemu] guest 内存 {memMb}MB · tmpfs {tdataMb}MB · swap={(SwapStore is null ? "无" : SwapStore.CapacityBytes / 1024 / 1024 + "MB")} · {append}");
             // monitor 通道（仅回环）：宿主靠 stop/cont 冻结/唤醒 VM —— 退出播放页时冻住，
             // 迅雷侧下载立刻停又不必丢任务与已下数据（见 SetPaused）。缺失也只是退化成杀 VM。
             if (MonitorPort > 0)
