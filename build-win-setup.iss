@@ -7,7 +7,7 @@
 ;       已在系统里装过则跳过（见下方 [Code] VCRedistPresent）。
 #define MyAppName "猫爪影视"
 #ifndef MyAppVersion
-#define MyAppVersion "0.1.1"
+#define MyAppVersion "0.1.3"
 #endif
 #ifndef MyPublishDir
 #define MyPublishDir "CatClawVideo.Maui\bin\Release\net11.0-windows10.0.26100.0\win-x64\publish"
