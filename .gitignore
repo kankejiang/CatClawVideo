@@ -428,3 +428,7 @@ CLAUDE.local.md
 
 # 发布产物（由 GitHub Release 分发，不入库）
 *.zip
+
+# JavaBridge 随包 JRE 的 bin/ 是运行时启动器（java.exe / jvm.dll），
+# 会被上面的 [Bb]in/ 规则误伤 —— 必须否定，否则 clone 出来的 JRE 没有 bin/，随包运行时整体失效。
+!JavaBridge/jre/bin/
