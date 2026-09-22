@@ -36,13 +36,13 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
     };
 
     public MainPage(MainViewModel vm, IThemeService theme, HomePage home, HistoryPage history,
-        FavoritesPage favorites, DownloadsPage downloads, LocalMediaPage local, SettingsPage settings)
+        FavoritesPage favorites, LocalMediaPage local, SettingsPage settings)
     {
         InitializeComponent();
         _vm = vm;
         _theme = theme;
-        // 顺序须与 MainViewModel.Tabs 一致：首页 / 历史 / 收藏 / 下载 / 本地 / 设置
-        _tabs = [home, history, favorites, downloads, local, settings];
+        // 顺序须与 MainViewModel.Tabs 一致：首页 / 历史 / 收藏 / 本地 / 设置
+        _tabs = [home, history, favorites, local, settings];
 
         foreach (var tab in _tabs)
         {
@@ -142,7 +142,7 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
     /// </summary>
     private void BuildTopNavFocusShells()
     {
-        var tabs = new[] { NavBg0, NavBg1, NavBg2, NavBg3, NavBg4, NavBg5 };
+        var tabs = new[] { NavBg0, NavBg1, NavBg2, NavBg3, NavBg4 };
         for (int i = 0; i < tabs.Length; i++)
         {
             var shell = new Border
@@ -448,7 +448,6 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
         : (sender == NavBg2) ? 2
         : (sender == NavBg3) ? 3
         : (sender == NavBg4) ? 4
-        : (sender == NavBg5) ? 5
         : 0;
 
     /// <summary>hover 空壳胶囊：未选中 tab 悬停时显示主题色描边 + 文字提亮；选中态样式不覆盖。</summary>
@@ -461,8 +460,8 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
         var primary = Microsoft.Maui.Graphics.Color.FromArgb($"#{activeHex}");
         b.Stroke = primary;
         b.StrokeThickness = 1;
-        if (index >= 0 && index < 6)
-            ((new[] { NavLabel0, NavLabel1, NavLabel2, NavLabel3, NavLabel4, NavLabel5 })[index]).TextColor =
+        if (index >= 0 && index < 5)
+            ((new[] { NavLabel0, NavLabel1, NavLabel2, NavLabel3, NavLabel4 })[index]).TextColor =
                 (Microsoft.Maui.Graphics.Color)Application.Current!.Resources["TextPrimaryColor"];
     }
 
@@ -472,8 +471,8 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
         var index = TabIndexOf(b);
         if (_vm.SelectedTabIndex == index) return;
         b.StrokeThickness = 0;
-        if (index >= 0 && index < 6)
-            ((new[] { NavLabel0, NavLabel1, NavLabel2, NavLabel3, NavLabel4, NavLabel5 })[index]).TextColor =
+        if (index >= 0 && index < 5)
+            ((new[] { NavLabel0, NavLabel1, NavLabel2, NavLabel3, NavLabel4 })[index]).TextColor =
                 (Microsoft.Maui.Graphics.Color)Application.Current!.Resources["TextSecondaryColor"];
     }
 
@@ -549,8 +548,8 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
     {
         var activeHex = ThemeHex.GetValueOrDefault(_theme.CurrentTheme, "9b7ed8");
         var primary = Microsoft.Maui.Graphics.Color.FromArgb($"#{activeHex}");
-        var labels = new[] { NavLabel0, NavLabel1, NavLabel2, NavLabel3, NavLabel4, NavLabel5 };
-        var bgs = new[] { NavBg0, NavBg1, NavBg2, NavBg3, NavBg4, NavBg5 };
+        var labels = new[] { NavLabel0, NavLabel1, NavLabel2, NavLabel3, NavLabel4 };
+        var bgs = new[] { NavBg0, NavBg1, NavBg2, NavBg3, NavBg4 };
 
         for (int i = 0; i < labels.Length; i++)
         {

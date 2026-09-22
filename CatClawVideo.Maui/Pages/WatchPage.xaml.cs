@@ -70,9 +70,6 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
     /// <summary>播放历史会话（观看页播放也落库，海报墙封面来自 _item.Cover）</summary>
     private readonly VideoPlaybackManager _playback;
 
-    /// <summary>下载管理器（磁力资源行"下载"按钮入口）</summary>
-    private readonly DownloadManager? _downloads;
-
     /// <summary>网速徽章：BT 会话 infoHash / 刷新定时器 / 鼠标悬浮开关</summary>
     private string? _btInfoHex;
     private IDispatcherTimer? _speedTimer;
@@ -93,14 +90,12 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
     private readonly TaskCompletionSource _argsReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private double _resumePosition;
 
-    public WatchPage(IVodSourceProvider provider, VideoDatabase db, VideoPlaybackManager playback,
-        DownloadManager? downloads = null)
+    public WatchPage(IVodSourceProvider provider, VideoDatabase db, VideoPlaybackManager playback)
     {
         InitializeComponent();
         _provider = provider;
         _db = db;
         _playback = playback;
-        _downloads = downloads;
 
         // 控件条随播放框尺寸自适应：手机端内嵌小窗里，桌面尺寸的按钮会占掉大半个画面。
         // 用控件条自身宽度（= 播放框宽度）推算，缩放不会反向影响宽度，故不会触发循环。
@@ -1441,9 +1436,9 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
 
         VisualElement cell = border;
 
-        // 磁力资源：卡片下方附"播放 / 下载"按钮行（在卡片手势识别区外，点击互不干扰）。
-        // ⚠ 宽度必须随列数收敛：3 列时每列仅约 88dp，两个带文字的 chip 合计约 122dp
-        //   会溢出并压到相邻列上（2026-09-18 用户截图实测）。故多列时改用纯图标 chip。
+        // 磁力资源：卡片下方附"播放"按钮行（在卡片手势识别区外，点击互不干扰）。
+        // ⚠ 宽度必须随列数收敛：3 列时每列仅约 88dp，带文字的 chip 会溢出并压到相邻列上
+        //   （2026-09-18 用户截图实测）。故多列时改用纯图标 chip。
         if (isMagnet)
         {
             bool narrow = cols >= 3;
@@ -1454,8 +1449,6 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
             };
             actions.Add(BuildCellChip("▶", narrow ? null : "播放", icPlay: true,
                 () => PlayEpisodeByRow(row), narrow));
-            actions.Add(BuildCellChip("⬇", narrow ? null : "下载", icPlay: false,
-                () => _ = DownloadEpisodeAsync(episode), narrow));
 
             var wrapper = new VerticalStackLayout { Spacing = 2 };
             wrapper.Add(border);
@@ -1499,57 +1492,6 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
         tap.Tapped += (_, _) => onTap();
         chip.GestureRecognizers.Add(tap);
         return chip;
-    }
-
-    /// <summary>
-    /// 磁力资源下载：入队下载管理器，由迅雷引擎独占下载后导出到本机下载目录。
-    ///
-    /// <para>⚠ 这里曾是一个「磁力已不再走内置 BT 下载」的硬编码提示（移除 MonoTorrent 时留下），
-    /// 但下载链路其实完好（<see cref="DownloadManager.EnqueueMagnet"/> → 引擎 DownloadToFileAsync），
-    /// 导致功能可用却完全无法触发（2026-09-19 用户实测）。现恢复真实调用。</para>
-    ///
-    /// <para>引擎不可用时（Android / 运行时缺失）明确告知，而不是建个必然失败的任务。</para>
-    /// </summary>
-    private async Task DownloadEpisodeAsync(VodEpisode episode)
-    {
-        if (_downloads == null)
-        {
-            await ShowTipAsync("下载管理器不可用");
-            return;
-        }
-        if (!_downloads.SupportsMagnetDownload)
-        {
-            await ShowTipAsync("磁力下载仅在 Windows 版可用（需迅雷引擎）；本机可直接播放边下边播");
-            return;
-        }
-
-        try
-        {
-            var item = _downloads.EnqueueMagnet(episode.Url, episode.Name);
-            var go = await DisplayAlertAsync("已加入下载队列",
-                $"《{item.Name}》\n\n迅雷引擎独占下载，完成后导出到本机下载目录。",
-                "去下载页看看", "留在此页");
-            if (go) NavigationToDownloadsTab();
-        }
-        catch (Exception ex)
-        {
-            DiagLog.Write($"[下载] 磁力入队失败 {episode.Name}: {ex.GetType().Name}: {ex.Message}");
-            await ShowTipAsync($"加入下载失败：{ex.Message}");
-        }
-    }
-
-    /// <summary>切到顶部「下载」标签（索引见 MainViewModel.Tabs）。</summary>
-    private static void NavigationToDownloadsTab()
-    {
-        try
-        {
-            if (Shell.Current?.CurrentPage is MainPage main)
-                ((ViewModels.MainViewModel)main.BindingContext).SelectTab(3);
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"[下载] 切换下载标签失败: {ex.Message}");
-        }
     }
 
     /// <summary>行高亮刷新入口：仅当前页已渲染的行有可视件（不在本页的行事件静默）</summary>

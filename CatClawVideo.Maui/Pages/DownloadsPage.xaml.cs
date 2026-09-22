@@ -141,22 +141,6 @@ public partial class DownloadsPage : ContentView, ITabView
         }
     }
 
-    /// <summary>右上角 ＋ ：新建下载任务（支持 http/https 直链与 magnet: 磁力链接——磁力走迅雷引擎）</summary>
-    private async void OnAddDownloadTapped(object? sender, EventArgs e)
-    {
-        var url = await PromptAsync("新建下载", "输入下载地址\n支持：http/https 直链 · magnet: 磁力（迅雷引擎）", "开始下载", "取消",
-            placeholder: "https://... 或 magnet:?xt=urn:btih:...", keyboard: Keyboard.Url);
-        if (string.IsNullOrWhiteSpace(url)) return;
-
-        string? name = null;
-        if (!url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase))
-        {
-            name = await PromptAsync("文件名称", "输入保存文件名（留空自动识别）", "开始下载", "取消",
-                placeholder: "video.mp4", keyboard: Keyboard.Text);
-        }
-        _vm.AddUrlDownload(url, string.IsNullOrWhiteSpace(name) ? null : name);
-    }
-
     /// <summary>⚙ 下载设置：并发任务数（复刻音乐版并发槽位；用 ActionSheet 简化面板）</summary>
     private async void OnSettingsTapped(object? sender, EventArgs e)
     {

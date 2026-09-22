@@ -260,8 +260,6 @@ public static class MauiProgram
         services.AddSingleton<Pages.MainPage>();
         services.AddTransient<Pages.HomePage>();
         services.AddTransient<Pages.FavoritesPage>();
-        // 下载管理：现在是顶部 tab（"下载"）的内容，由 MainPage 注入常驻复用
-        services.AddTransient<Pages.DownloadsPage>();
         services.AddTransient<Pages.SettingsPage>();
         services.AddTransient<Pages.DownloadDetailPage>();
         services.AddTransient<Pages.VideoPlayerPage>();
