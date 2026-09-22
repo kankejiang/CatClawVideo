@@ -123,8 +123,14 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IPlaybackSession
     /// </summary>
     public string? BlockDeviceRoot { get; set; }
 
-    /// <summary>每个会话的块设备镜像容量（默认 16GB，够放一部 4K 片；稀疏文件实际只占写入量）。</summary>
-    public long BlockDeviceCapacityBytes { get; set; } = 16L * 1024 * 1024 * 1024;
+    /// <summary>每个会话的块设备镜像容量（默认 64GB，覆盖到 4K 原盘；稀疏文件实际只占写入量）。
+    ///
+    /// <para>⚠ 这个容量就是**数据面快路径的覆盖范围**：文件超过它的部分永远命不中块设备直读
+    /// （<see cref="SparseBlockStore.IsRangeAvailable"/> 里 `offset+count > CapacityBytes` 直接返回 false），
+    /// 只能退回 HTTP（4578 MB/s → 40 / 18.9 MB/s）。旧值 16GB 会把 20~60GB 的 4K remux 挤出快路径 ——
+    /// 越大的片越慢、越容易烧完播放端 60s 等待预算（表现为「大文件放着放着就断」）。
+    /// 镜像是稀疏的（Windows 先 FSCTL_SET_SPARSE 再 SetLength；Linux ftruncate 天然稀疏），调大不占盘。</para></summary>
+    public long BlockDeviceCapacityBytes { get; set; } = 64L * 1024 * 1024 * 1024;
 
     private long? _streamCacheCapOverride;
 
@@ -369,6 +375,16 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IPlaybackSession
             var recoverWaits = 0;
             while (!ct.IsCancellationRequested && !live.Cancelled && _session == live && live.LastSt != 2)
             {
+                // ★ QEMU 进程死了必须**立刻知道**。旧代码只在 Exited 里打一行日志、这里也不看进程存活 ——
+                //   guest 被系统回收（Android LMK / 内存压力）或自己崩掉后，LastSt 停在上一个值、
+                //   LastError 为 null，于是空转到 180 分钟才报「下载超时」，而进度早已冻结
+                //   （用户看到的就是「下载到大文件时中断」）。这里 1s 一拍地判进程存活，死了立即返回
+                //   **可续传**的失败 —— 宿主磁盘缓存块与引擎已落盘数据都还在。
+                if (_runtime is { } rt && rt.HasExited)
+                {
+                    Log("引擎 VM 进程已退出（崩溃或被系统回收）—— 中止本次下载；已下数据在宿主磁盘缓存，重试即续传");
+                    return (false, "引擎 VM 已退出（可续传：重试即从断点继续）");
+                }
                 if (live.LastSt is 3 or 4 || live.LastError is not null)
                 {
                     // ⚠ 任务死亡（如 err=114010）会触发 RecoverTaskAsync 自动恢复（最多 5 轮 × 15s），
@@ -766,6 +782,8 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IPlaybackSession
             }
             _runtime = new QemuHostRuntime(_runtimeDir, _mediaPort, Log, _initrdName, _consoleTag, _monitorPort,
                 blkPath, blkPath is null ? 0 : BlockDeviceCapacityBytes);
+            // VM 退出事件：留一条明确日志（下载循环靠 HasExited 判活、播放靠看门狗，各自已就位）
+            _runtime.Died += () => Log("[引擎] QEMU 进程退出事件 —— 下载循环将在 1s 内感知并返回可续传的失败");
             _server.ResetFirstPoll();
             if (!await _runtime.StartAsync(ct).ConfigureAwait(false)) return false;
 

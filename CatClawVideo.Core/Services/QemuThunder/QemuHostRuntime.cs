@@ -112,6 +112,27 @@ public sealed class QemuHostRuntime : IDisposable
 
     public bool IsRunning => _proc is { HasExited: false };
 
+    /// <summary>
+    /// 进程是否已退出（异常安全：对象已 Dispose / 未启动时返回 true，不抛异常）。
+    /// <para>与 <see cref="IsRunning"/> 分开是刻意的：IsRunning 对 null 返回 false（"没在跑"），
+    /// 而下载循环要的是"**明明起过、现在死了**"这个正向信号 —— 用 null 误判会把主动收尾也当成崩溃。</para>
+    /// </summary>
+    public bool HasExited
+    {
+        get
+        {
+            try { return _proc is null || _proc.HasExited; }
+            catch { return true; }
+        }
+    }
+
+    /// <summary>
+    /// QEMU 进程退出时触发（崩溃 / 被系统 OOM 杀掉 / 主动 Stop 都会走）。
+    /// <para>旧行为只在 Exited 里打一行日志 —— guest 被系统杀掉后宿主完全失明：下载轮询看不到
+    /// 状态变化，一路空转到 180 分钟才报「下载超时」，而进度早已冻结。</para>
+    /// </summary>
+    public event Action? Died;
+
     /// <summary>启动 QEMU（不等待 guest 就绪；就绪信号由控制端首次轮询给出）。</summary>
     public Task<bool> StartAsync(CancellationToken ct = default)
     {
@@ -186,7 +207,11 @@ public sealed class QemuHostRuntime : IDisposable
             var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
             proc.OutputDataReceived += OnLine;
             proc.ErrorDataReceived += OnLine;
-            proc.Exited += (_, _) => _log?.Invoke("[qemu] 进程退出");
+            proc.Exited += (_, _) =>
+            {
+                _log?.Invoke("[qemu] 进程退出");
+                try { Died?.Invoke(); } catch { }
+            };
             if (!proc.Start()) return Task.FromResult(false);
             proc.BeginOutputReadLine();
             proc.BeginErrorReadLine();
