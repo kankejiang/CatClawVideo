@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -23,6 +24,9 @@ public sealed class QemuStreamProxy : IDisposable
     private const long SliceBytes = 32 * 1024 * 1024;     // 上游单次 Range 切片
     private const int BufSize = 256 * 1024;
     private const int BodyStallMs = 8_000;                // 上游响应体停滞上限（超时断开重连换新请求）
+
+    /// <summary>播放器存活探测用的 1 字节缓冲（静态复用，避免在循环里 stackalloc 触发 CA2014）。</summary>
+    private static readonly byte[] ProbeByte = new byte[1];
 
     private readonly int _mediaPort;
     private readonly string _path;
@@ -315,12 +319,19 @@ public sealed class QemuStreamProxy : IDisposable
         {
             if (_diskPendingLen != StreamCache.ChunkSize) return;
             chunkIndex = _diskPendingStart / StreamCache.ChunkSize;
-            snapshot = new byte[StreamCache.ChunkSize];
+            // ★ 4MB 快照从池租：整块落盘是「每流 4MB 就分配 4MB」的热点，而 4MB 必然进
+            //   大对象堆（LOH，默认不压缩）——边播边下时托管内存只涨不落、GC 越来越长。
+            //   WriteWholeChunk 收的是显式长度，所以租来（可能更大）的数组可直接用。
+            snapshot = ArrayPool<byte>.Shared.Rent(StreamCache.ChunkSize);
             Buffer.BlockCopy(_diskPending, 0, snapshot, 0, StreamCache.ChunkSize);
             _diskPendingLen = 0;
         }
         var cd = _cacheDir!;
-        Task.Run(() => StreamCache.WriteWholeChunk(cd, chunkIndex, snapshot, StreamCache.ChunkSize));
+        Task.Run(() =>
+        {
+            try { StreamCache.WriteWholeChunk(cd, chunkIndex, snapshot, StreamCache.ChunkSize); }
+            finally { ArrayPool<byte>.Shared.Return(snapshot); }
+        });
     }
 
     /// <summary>文件尾的不足 4MB 半块落盘（EOF 时调用）——尾块含 Cues，重看秒开的关键。</summary>
@@ -388,6 +399,7 @@ public sealed class QemuStreamProxy : IDisposable
     private async Task PrefetchChunkAsync(long ci)
     {
         var cd = _cacheDir!;
+        byte[] pooled = [];   // 池租的 4MB 预取缓冲，finally 归还（declared 在外以覆盖 finally）
         try
         {
             if (StreamCache.ChunkComplete(cd, _totalSize, ci)) return;
@@ -398,7 +410,8 @@ public sealed class QemuStreamProxy : IDisposable
             // 扩展段与上游循环同思路：读后丢弃，不写入缓存数据
             var ext = want < 256 * 1024 && from > 0 ? Math.Min(from, 256 * 1024 - want) : 0;
             var from2 = from - ext;
-            var data = new byte[want];
+            // ★ 同样池租（want ≤ 4MB → LOH）。下面所有使用点都走显式长度（got/want），安全。
+            var data = pooled = ArrayPool<byte>.Shared.Rent(want);
             var got = 0;
             var sw = System.Diagnostics.Stopwatch.StartNew();
             var consecutiveBad = 0;
@@ -492,6 +505,7 @@ public sealed class QemuStreamProxy : IDisposable
         finally
         {
             lock (_prefetchSync) _prefetching.Remove(ci);
+            if (pooled.Length > 0) ArrayPool<byte>.Shared.Return(pooled);
         }
     }
 
@@ -655,6 +669,7 @@ public sealed class QemuStreamProxy : IDisposable
 
                     // ── 响应体 → 缓冲 ──
                     var buf = new byte[BufSize];
+                    var frozenMs = 0;   // 本连接已停滞的毫秒数（BodyStallMs 判定用）
                     while (!_stopped && !abandoned && got < sliceWant)
                     {
                         bool stale;
@@ -672,7 +687,24 @@ public sealed class QemuStreamProxy : IDisposable
                             if (slow >= 0) Trim(slow);
                             continue;
                         }
-                        if (!sock.Poll(1_000_000, SelectMode.SelectRead)) continue;   // 1s 超时：回循环复查
+                        if (!sock.Poll(1_000_000, SelectMode.SelectRead))
+                        {
+                            // ★ 上游 body 停滞：`BodyStallMs` 原本是个**声明了却从未接线**的常量，
+                            //   旧代码在这里无限 continue —— 引擎「TCP 不断但不再供数」时，下游只能
+                            //   烧完 60s 等待预算，随后截断响应体（播放中断的根因）。
+                            //   到点就断开、让外层循环重发 Range：换一条连接本身就会重新触发引擎
+                            //   对该区间的按需供数（外层每轮都从 from = base+len 重新请求）。
+                            //   已收到过字节（got>0，说明这条连接已过期）按 BodyStallMs 判；一个字节
+                            //   都没收到（引擎还在下这个区间）放宽到 6 倍，避免打爆 guest 串行 accept。
+                            frozenMs += 1_000;
+                            if (frozenMs >= (got > 0 ? BodyStallMs : BodyStallMs * 6))
+                            {
+                                _log?.Invoke($"[proxy] 上游 body 停滞 {frozenMs / 1000}s（本次已收 {got / 1024}KB）→ 断开重发 Range");
+                                break;
+                            }
+                            continue;   // 1s 超时：回循环复查
+                        }
+                        frozenMs = 0;
                         var n = sock.Receive(buf);
                         if (n <= 0) break;                                            // 切片结束 / 对端关闭
                         Interlocked.Add(ref _upstreamTotal, n);
@@ -844,13 +876,16 @@ public sealed class QemuStreamProxy : IDisposable
 
             if (method == "HEAD") return;
 
-            // 等待预算：60s（引擎对 seek 目标区间按需下载，通常数秒～数十秒可出数）。
-            // 首开探测期的远端区间已在上面被 416 干净拒绝，走不到这里。
+            // 等待预算：60s 到点**只自救**（打断上游重发 Range），**绝不截断响应体**。
+            // 首开探测期的远端区间已在上面被干净拒绝，走不到这里。
             const int stallBudget = 60_000;
+            const int hardBudget = 5 * 60_000;    // 绝对上限，防死连接永久占着请求位（正常远早于此结束）
 
             var buf = new byte[BufSize];
             var pos = first;
             var stallMs = 0;
+            var selfRescued = false;   // 60s 自救是否已做过（只做一次）
+            var probeTick = 0;         // 停滞期播放器存活探测节拍（~1s 一次）
             while (pos <= last && !_stopped)
             {
                 long baseNow, frontierNow;
@@ -885,7 +920,36 @@ public sealed class QemuStreamProxy : IDisposable
                 if (UpstreamEofLocked() && pos >= frontierNow) break;   // 正常短读（文件尾）
                 await Task.Delay(30).ConfigureAwait(false);
                 stallMs += 30;
-                if (stallMs >= stallBudget) { _log?.Invoke($"[proxy] 播放器请求等待数据超时（{stallBudget / 1000}s）"); break; }
+
+                // ★ 到点**不自断**。旧代码在这里 `break` → 响应体短于上面已经声明出去的
+                //   Content-Length → FFmpeg 的 http 层把短读当 EOF → 播放「结束」退出，
+                //   而且**不可恢复**（播放器以为文件就这么长）。
+                //   改为保持连接继续等：播放器自己的读超时会断开重连，重连即新的 Range 请求，
+                //   相当于给了它一次可恢复的重试；同时这里主动打断上游重发，逼引擎重新供数。
+                if (!selfRescued && stallMs >= stallBudget)
+                {
+                    selfRescued = true;
+                    _log?.Invoke($"[proxy] 等待数据 {stallBudget / 1000}s（已供 {pos - first}B）→ 自救：打断上游重发 Range，不截断响应体");
+                    KickUpstream();
+                }
+
+                // 全程每 ~1s 探一次播放器还在不在：它放弃时会关连接，我们就别再为它占着请求位
+                // （残留的 Req 会压住 _requests 的最小位置，害上游从旧位置白拉整段）。
+                // 注意 Poll 为真不一定是断开 —— keep-alive 下可能是播放器的下一个请求（Peek 非 0），
+                // 那种情况不消费、留给外层循环处理。只在 Peek 返回 0（对端已关闭）时才结束。
+                if (++probeTick % 33 == 0
+                    && stream.Socket.Poll(0, SelectMode.SelectRead)
+                    && stream.Socket.Receive(ProbeByte, SocketFlags.Peek) == 0)
+                {
+                    _log?.Invoke("[proxy] 播放器已关闭连接，结束该请求");
+                    break;
+                }
+
+                if (stallMs >= hardBudget)
+                {
+                    _log?.Invoke($"[proxy] 等待数据超过 {hardBudget / 60000} 分钟仍未到位，放弃本次请求（播放器会重试）");
+                    break;
+                }
             }
         }
         finally { ExitRead(rq); }
