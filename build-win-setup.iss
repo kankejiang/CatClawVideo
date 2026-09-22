@@ -40,7 +40,15 @@ Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.i
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式(&D)"; GroupDescription: "附加图标:"; Flags: unchecked
 [Files]
-Source: "{#MyPublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "*.pdb,*.xml"
+; ★ Excludes 里的后四项是 2026-09-22 用 A/B 实测挑出来的（同一 publish 目录重压对比）：
+;   · *.lib —— 链接期文件，运行时完全不用（9 个 / 1.4MB 原始）
+;   · onnxruntime.dll + DirectML.dll + Microsoft.ML.OnnxRuntime.dll + Microsoft.Windows.AI.*
+;     —— Windows App SDK 的 **Windows AI 组件**，随包带入但本 App 代码里零引用
+;     （grep onnx|DirectML|Windows.AI 无命中）。共 25 个文件 / 43.3MB 原始。
+;   实测收益：安装包 251.3MB → 238.0MB，**省 13.3MB（5.3%）**。
+;   ⚠ 另测过再排掉 ThunderRuntime 的 libgtk-3-0/libaom/libSvtAv1Enc-4/libjxl（`-nographic` 看似不用），
+;     只再多省 7.9MB，而它们在 QEMU 的导入表里、被加载期硬要求，收益不抵风险 ⇒ **不排**。
+Source: "{#MyPublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "*.pdb,*.xml,*.lib,onnxruntime.dll,DirectML.dll,Microsoft.ML.OnnxRuntime.dll,Microsoft.Windows.AI.*"
 ; VC++ 2015-2022 运行库（x64）。放到 {tmp} 并在装完后删除，不往用户机器上留垃圾文件。
 ; ⚠ 必须是**完整包**（约 24MB），不能是 VS Package Cache 里那种 600KB 的下载器桩（离线装不上）。
 Source: "installer\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
