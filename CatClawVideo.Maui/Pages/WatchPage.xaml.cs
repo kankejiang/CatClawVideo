@@ -1365,8 +1365,8 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
             int slot = i - start;
             int r = slot / cols, c = slot % cols;
             if (c == 0) EpisodeListHost.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
-            var (cell, border, name, num) = BuildEpisodeCell(i, source.Episodes[i], row, cols);
-            EpisodeListHost.Add(cell, c, r);
+            var (border, name, num) = BuildEpisodeCell(i, source.Episodes[i], row, cols);
+            EpisodeListHost.Add(border, c, r);
             _pageVisuals.Add((border, name, num, row));
             HighlightRow(border, name, num, row);
         }
@@ -1382,14 +1382,11 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
         }
     }
 
-    /// <summary>构建单个选集格：卡片（序号块 + 集名，点击播放）；
-    /// 磁力资源额外附"▶ 播放 / ⬇ 下载"按钮行（按钮在卡片手势区外，避免与卡片点击冲突）。
-    /// <paramref name="cols"/> 用于决定按钮形态：列多时收成纯图标，避免横向溢出压到邻列。</summary>
-    private (VisualElement Cell, Border Border, Label Name, Border Num) BuildEpisodeCell(
+    /// <summary>构建单个选集格：卡片（序号块 + 集名，**点卡片即播放**）。
+    /// <paramref name="cols"/> 用于按列数收敛字号，避免文案横向溢出压到邻列。</summary>
+    private (Border Border, Label Name, Border Num) BuildEpisodeCell(
         int index, VodEpisode episode, EpisodeRow row, int cols)
     {
-        var isMagnet = episode.Url?.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase) == true;
-
         var border = new Border
         {
             StrokeThickness = 0,
@@ -1434,64 +1431,10 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
         tap.Tapped += (_, _) => PlayEpisodeByRow(row);
         border.GestureRecognizers.Add(tap);
 
-        VisualElement cell = border;
-
-        // 磁力资源：卡片下方附"播放"按钮行（在卡片手势识别区外，点击互不干扰）。
-        // ⚠ 宽度必须随列数收敛：3 列时每列仅约 88dp，带文字的 chip 会溢出并压到相邻列上
-        //   （2026-09-18 用户截图实测）。故多列时改用纯图标 chip。
-        if (isMagnet)
-        {
-            bool narrow = cols >= 3;
-            var actions = new HorizontalStackLayout
-            {
-                Spacing = narrow ? 4 : 6,
-                HorizontalOptions = LayoutOptions.Center,
-            };
-            actions.Add(BuildCellChip("▶", narrow ? null : "播放", icPlay: true,
-                () => PlayEpisodeByRow(row), narrow));
-
-            var wrapper = new VerticalStackLayout { Spacing = 2 };
-            wrapper.Add(border);
-            wrapper.Add(actions);
-            cell = wrapper;
-        }
-
-        return (cell, border, nameLabel, num);
-    }
-
-    /// <summary>选集格内的小操作 chip。<paramref name="text"/> 为 null 时只显示图标（窄列用）。</summary>
-    private Border BuildCellChip(string icon, string? text, bool icPlay, Action onTap, bool compact)
-    {
-        var chip = new Border
-        {
-            StrokeThickness = 0,
-            StrokeShape = new RoundRectangle { CornerRadius = 12 },
-            BackgroundColor = (Color)Application.Current!.Resources["ChipInactiveColor"],
-            Padding = compact ? new Thickness(7, 3) : new Thickness(10, 3),
-            HorizontalOptions = LayoutOptions.Center,
-            Content = new HorizontalStackLayout { Spacing = 4 },
-        };
-        var stack = (HorizontalStackLayout)chip.Content!;
-        stack.Children.Add(new Image
-        {
-            Source = icPlay ? "ic_play.png" : "ic_download_white.png",
-            WidthRequest = 10, HeightRequest = 10,
-            VerticalOptions = LayoutOptions.Center,
-        });
-        if (!string.IsNullOrEmpty(text))
-        {
-            stack.Children.Add(new Label
-            {
-                Text = text,
-                FontSize = 10.5,
-                TextColor = (Color)Application.Current.Resources["TextSecondaryColor"],
-                VerticalOptions = LayoutOptions.Center,
-            });
-        }
-        var tap = new TapGestureRecognizer();
-        tap.Tapped += (_, _) => onTap();
-        chip.GestureRecognizers.Add(tap);
-        return chip;
+        // ⚠ 2026-09-22：磁力行原先在卡片下方再挂一枚「▶ 播放」chip（更早还有「⬇ 下载」），
+        //   与「点卡片即播放」（见上面的 tap → PlayEpisodeByRow）功能完全重复，按用户要求移除。
+        //   连带去掉当时为放 chip 而包的那层 VerticalStackLayout wrapper（故不再需要 Cell 别名）。
+        return (border, nameLabel, num);
     }
 
     /// <summary>行高亮刷新入口：仅当前页已渲染的行有可视件（不在本页的行事件静默）</summary>
