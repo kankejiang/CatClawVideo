@@ -145,6 +145,19 @@ public class JavaSpiderRuntime : ISpiderRuntime
     /// </summary>
     public static string? FindJavaExe()
     {
+        // ★ 随包的精简运行时**优先**（JavaBridge/jre，jlink 自 Microsoft OpenJDK 21，MIT 许可）。
+        //   两个理由：
+        //   ① 开箱即用 —— 装了这份就不要求用户自备 JDK。社区反馈里最常见的「显示需要 spider 运行」
+        //      根因就是用户机器上没有 Java（2026-09-22 用户反馈）。
+        //   ② 版本可控 —— bridge.jar 是 **major 65（Java 21）** 编译的，而下面按"版本号最大"
+        //      挑系统 Java 的做法，在用户装了 Java 17 时会挑中 17 ⇒ 桥 UnsupportedClassVersionError
+        //      直接起不来。随包运行时永远是对的版本，所以**短路返回**、不与系统 Java 比大小。
+        if (FindBridgeDir() is { } bundledDir)
+        {
+            var bundled = Path.Combine(bundledDir, "jre", "bin", "java.exe");
+            if (File.Exists(bundled)) return bundled;
+        }
+
         var candidates = new List<(int Major, string Path)>();
         void Consider(string? p)
         {

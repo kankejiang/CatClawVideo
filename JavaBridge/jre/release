@@ -1,0 +1,2 @@
+JAVA_VERSION="21.0.11"
+MODULES="java.base java.datatransfer java.xml java.prefs java.desktop java.instrument java.logging java.management java.security.sasl java.naming java.net.http java.scripting java.security.jgss java.transaction.xa java.sql jdk.charsets jdk.crypto.ec jdk.crypto.cryptoki jdk.httpserver jdk.localedata jdk.unsupported jdk.zipfs"

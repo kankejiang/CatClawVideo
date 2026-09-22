@@ -282,6 +282,17 @@
 			<Link>JavaBridge\vendor\unidbg\%(Filename)%(Extension)</Link>
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</Content>
+
+		<!-- ★ 第四块：**随包的精简 Java 运行时**（jlink 自 Microsoft OpenJDK 21，MIT 许可可再分发）。
+		     此前 jar 类爬虫源要求用户自备 JDK 21——社区反馈里最常见的「显示需要 spider 运行」
+		     根因就是它（2026-09-22 用户反馈「好像不行 显示需要spider运行」）。
+		     随包后**开箱即用**，用户不再需要安装任何 Java。体积约 62MB，按用户要求接受。
+		     ⚠ 必须整目录递归带上：jlink 产物有 bin/ conf/ legal/ lib/ 多级子目录。
+		     ⚠ 扫描顺序：JavaSpiderRuntime.FindJavaExe 会**优先**用这份，见其注释。 -->
+		<Content Include="..\JavaBridge\jre\**\*">
+			<Link>JavaBridge\jre\%(RecursiveDir)%(Filename)%(Extension)</Link>
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</Content>
 	</ItemGroup>
 
 </Project>

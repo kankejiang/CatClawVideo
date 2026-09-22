@@ -107,7 +107,10 @@ _Modern cross-platform video player built with .NET MAUI._
 - MAUI 工作负载（`dotnet workload install maui-android`）
 - Android：API 36 平台，运行时标识 `android-arm64` / `android-x64`
 - Windows：WinAppSDK 1.7，10.0.19041.0 以上
-- JavaBridge：JDK 17+（构建 `bridge.jar`）；Guard 解壳器需 JDK 17+ 运行（`JavaBridge\build-unidbg.cmd` 构建 `vendor\unidbg\unpacker.jar`）
+- JavaBridge：**JDK 21**（构建 `bridge.jar`；产物字节码为 major 65，17 起不来）；Guard 解壳器需 JDK 21（`JavaBridge\build-unidbg.cmd` 构建 `vendor\unidbg\unpacker.jar`）
+- **用户端无需装 Java**：`JavaBridge\jre\`（jlink 自 Microsoft OpenJDK 21 的精简运行时，约 62MB）随应用分发，
+  `JavaSpiderRuntime.FindJavaExe()` 优先用它。重新生成见 `CatClawVideo.Maui.csproj` 里该 Content 项的注释。
+- 终端用户需要什么环境 → 见 [docs/user-runtime-requirements.md](docs/user-runtime-requirements.md)
 
 ### 构建 App
 
