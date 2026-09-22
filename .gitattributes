@@ -1,0 +1,3 @@
+# initrd 里的 /init 是 busybox sh 脚本：CRLF 会让 sh 崩，必须锁 LF（本仓 core.autocrlf 默认开）
+JavaBridge/qemu-src/initrd/*.sh text eol=lf
+JavaBridge/qemu-src/tools/*.py text eol=lf
