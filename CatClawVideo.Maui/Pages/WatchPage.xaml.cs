@@ -1518,6 +1518,18 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
             var play = await _provider.ResolvePlayUrlAsync(_site, episode);
             if (generation != _playGeneration) return; // 已被后续点击取代，丢弃过期解析
             _resolvedPlay = play;
+
+            // ── Guard 系「云盘配置」卡片：返回的是宿主本地 proxy 的 HTML 配置页（非视频流）──
+            // 用 WebView 打开让用户完成网盘登录/启停（对齐 TVBox 嗅探后渲染网页的行为）；
+            // 喂给播放器只会 Source error（2026-09-24 真机实测）。
+            if (play.IsHtmlPage)
+            {
+                ShowBufferingIndeterminate(false);
+                await Shell.Current.GoToAsync(
+                    $"webpage?title={Uri.EscapeDataString(episode.Name)}&url={Uri.EscapeDataString(play.Url)}");
+                return;
+            }
+
             UpdateControlBarSubtitle(episode, play.Title);
             // 防盗链头透传播放器（spider header 全量；此前 Referer/UA 在此被丢弃导致部分源 403）
             Player.Headers = play.Headers ??

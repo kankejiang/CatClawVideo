@@ -240,4 +240,18 @@ public class PlayRequest
 
     /// <summary>是否需要网页嗅探（spider playerContent parse=1 或站点 parse 未解析时为 true）</summary>
     public bool NeedsSniff { get; set; }
+
+    /// <summary>
+    /// HTML 交互页标记：Url 不是视频流而是宿主本地 proxy 提供的网页配置页
+    /// （Guard 系网盘源「云盘配置」卡片，如 csp_MyDriveGuard 的 itemId=0000 登入入口），
+    /// 播放器无法消费，须用 WebView 打开（对齐 TVBox 嗅探后渲染网页的行为）。
+    /// </summary>
+    public bool IsHtmlPage { get; set; }
+
+    /// <summary>
+    /// spider playerContent 的 danmaku 字段。Guard 系网盘源把它用作**宿主钩子**：
+    /// 指向本地 proxy 的 do=danmu&url=&lt;vod_id&gt;，GET 该 URL 会回调 jar 的 proxy(Map)，
+    /// 触发网盘配置对话框（TVBox 由弹幕加载隐式触发同一 URL）。
+    /// </summary>
+    public string? DanmakuUrl { get; set; }
 }

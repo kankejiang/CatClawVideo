@@ -67,13 +67,25 @@ public class DexSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime
     private readonly HttpClient _http = new();
     private readonly string _cacheDir;
     private readonly Action<string>? _log;
+    private readonly Func<global::Android.App.Activity?>? _currentActivity;
 
-    public DexSpiderRuntime(string cacheDir, Action<string>? log = null)
+    /// <summary>
+    /// <param name="currentActivity">前台 Activity 访问器：Guard 系 jar 的 init(context, ext) 拿到
+    /// Activity 而非 Application 才能弹网盘配置对话框（「已登录+启用中」列表/扫码登录浮层，
+    /// Alert 弹窗需要 Activity token）。返回 null 时退化为 Application.Context。</param>
+    /// </summary>
+    public DexSpiderRuntime(string cacheDir, Action<string>? log = null,
+        Func<global::Android.App.Activity?>? currentActivity = null)
     {
         _cacheDir = cacheDir;
         _log = log;
+        _currentActivity = currentActivity;
         Directory.CreateDirectory(cacheDir);
     }
+
+    /// <summary>给 jar 的 Context：前台 Activity 优先（可弹窗），否则 Application.Context。</summary>
+    private global::Android.Content.Context UiContext
+        => _currentActivity?.Invoke() ?? global::Android.App.Application.Context;
 
     private void Log(string m) => _log?.Invoke("[dex] " + m);
 
@@ -454,8 +466,7 @@ public class DexSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime
                 Log($"init {className} ext={ext[..System.Math.Min(60, ext.Length)]}");
                 try
                 {
-                    holder.Init.Invoke(holder.Instance,
-                        global::Android.App.Application.Context, new Java.Lang.String(ext));
+                    holder.Init.Invoke(holder.Instance, UiContext, new Java.Lang.String(ext));
                 }
                 catch (Java.Lang.Throwable t)
                 {
@@ -601,6 +612,11 @@ public class DexSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime
             catch { }
 
             var appCtx = global::Android.App.Application.Context;
+            // Guard 系网盘源（csp_MyDriveGuard 等）弹「云盘配置」对话框需要 **Activity** token：
+            // 优先把前台 Activity 绑进 "c" 字段（jar 内部 instanceof Activity 判断 UI 能力）；
+            // 字段声明类型是 Application 时（jun 壳常见）绑 Activity 会 IllegalArgumentException，回落 Application。
+            var uiActivity = _currentActivity?.Invoke();
+            var uiCtx = (global::Android.Content.Context?)uiActivity ?? appCtx;
 
             // ① bindContext（对照 jun ProtectedInitJar.bindContext）：先试字段名 "c"，否则按类型匹配实例字段。
             // ⚠️ 必须用「类型可赋值性」判断，不能用字段类型名字符串：混淆后的 Guard jar 里该字段的声明类型是
@@ -615,7 +631,7 @@ public class DexSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime
                 {
                     var f = initCls.GetField("c");
                     Java.Lang.Reflect.AccessibleObject.SetAccessible(new Java.Lang.Reflect.AccessibleObject[] { f }, true);
-                    f.Set(init, appCtx);
+                    f.Set(init, uiCtx);
                     bound = true;
                 }
                 catch { }
@@ -630,8 +646,12 @@ public class DexSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime
                             {
                                 if (Java.Lang.Reflect.Modifier.IsStatic(f.Modifiers)) continue;
                                 if (!contextType.IsAssignableFrom(f.Type)) continue;
+                                // 声明类型是 Application → 只能绑 Application（绑 Activity 会 IllegalArgumentException）
+                                var value = f.Type == Java.Lang.Class.FromType(typeof(global::Android.App.Application))
+                                    ? (global::Android.Content.Context)appCtx
+                                    : uiCtx;
                                 Java.Lang.Reflect.AccessibleObject.SetAccessible(new Java.Lang.Reflect.AccessibleObject[] { f }, true);
-                                f.Set(init, appCtx);
+                                f.Set(init, value);
                                 bound = true;
                             }
                             catch { }

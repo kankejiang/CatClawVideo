@@ -12,6 +12,9 @@ public partial class AppShell : Shell
         // 播放页路由（参数：title / url）
         Routing.RegisterRoute("player", typeof(Pages.VideoPlayerPage));
 
+        // 网页展示页（Guard 系云盘配置等 HTML 交互页；参数：title / url）
+        Routing.RegisterRoute("webpage", typeof(Pages.WebPagePage));
+
         // 观看页路由（详情+播放合并页；参数：title）
         Routing.RegisterRoute("watch", typeof(Pages.WatchPage));
 

@@ -164,9 +164,16 @@ public sealed class SpiderProxyServer : IDisposable
                     return;
                 }
 
-                // ①½ JS Spider 回环代理（js2Proxy 语义）：交给注入的 JsProxyHandler；
+                // ①½ Spider proxy 回调（TVBox ApiConfig.proxyLocal 语义）：交给注入的 JsProxyHandler
+                //    （MauiProgram 按 SpiderKind 分派 Jar/JS 运行时，jar 的 proxy(Map) 自答）。
                 //    必须在「missing url → 400」之前——部分 proxy 请求可能没有 url 参数。
-                if (args.GetValueOrDefault("from") == "catvod" || args.GetValueOrDefault("do") == "js")
+                //    ① catvod/js2Proxy：from=catvod / do=js；
+                //    ② Guard 系网盘源（csp_MyDriveGuard 等）：do=config / do=danmu —— jar 的
+                //      proxy(Map) 自答「云盘配置」数据（登录/启用状态 JSON），宿主只做回环转发；
+                //      不转发的话 jar 拿到「missing url」文本 → Gson 解析炸 → 配置界面弹不出来
+                //      （真机实测：detailContent 内 Expected BEGIN_OBJECT but was STRING）。
+                var doVal = args.GetValueOrDefault("do");
+                if (args.GetValueOrDefault("from") == "catvod" || doVal is "js" or "config" or "danmu")
                 {
                     var handler = JsProxyHandler;
                     if (handler is null)

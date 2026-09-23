@@ -1,4 +1,4 @@
-using CatClawVideo.Core.Interfaces;
+﻿using CatClawVideo.Core.Interfaces;
 using CatClawVideo.Core.Models;
 
 namespace CatClawVideo.Core.Providers;
@@ -17,6 +17,9 @@ public class SpiderVodProvider : IVodSourceProvider
     private readonly ISpiderRuntime? _tvboxJsRuntime;
     private readonly Action<string>? _log;
     private readonly IWebSniffer? _sniffer;
+
+    /// <summary>danmaku 钩子请求用（仅本机回环 proxy，独立实例避免全局超时配置干扰）</summary>
+    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(8) };
 
     public SpiderVodProvider(ISpiderRuntime? jsRuntime, ISpiderRuntime? jarRuntime = null,
         IWebSniffer? sniffer = null,
@@ -105,6 +108,7 @@ public class SpiderVodProvider : IVodSourceProvider
 
         // episode.Url 可能是 "线路名$id"（来自 vod_play_url 的 集$链接 拆分，此处只剩链接）
         var json = await rt.PlayerContentAsync(site, flag: episode.Flag ?? "", id: episode.Url, ct);
+        _log?.Invoke($"[解析] {site.Key}.playerContent(flag={episode.Flag},id={episode.Url}) → {json}");
         var play = SpiderJsonParser.ParsePlayRequest(json, episode.Name);
         if (string.IsNullOrEmpty(play.Url))
             play.Url = episode.Url;
@@ -122,8 +126,45 @@ public class SpiderVodProvider : IVodSourceProvider
         var bt = await TryOpenBtAsync(play, episode, ct);
         if (bt is not null) return bt;
 
+        // ── Guard 系「云盘配置」卡片拦截（csp_MyDriveGuard 等，itemId=0000 登入 / 4444 排序…）──
+        // playerContent 返回的不是视频流，而是宿主本地 proxy 提供的 HTML 配置页
+        // （http://127.0.0.1:<port>/proxy?do=config&url=…；真机实测 jar 会先探测 9978…9999
+        //   找活代理，探不到直接 Source error）。TVBox 里该地址嗅探后由 WebView 渲染成配置
+        //   界面；这里标记 IsHtmlPage 交 UI 层打开 WebView，绝不能喂给播放器。
+        if (IsHtmlConfigPage(play.Url))
+            return new PlayRequest { Title = episode.Name, Url = play.Url, IsHtmlPage = true };
+
+        // ── Guard 系「云盘配置」卡片（csp_MyDriveGuard 等，itemId=0000 登入 / 4444 排序…）──
+        // playerContent 返回的 url 是**字面量 id**（非视频流），danmaku 字段携带本地 proxy 钩子
+        // （do=danmu&url=0000）。GET 该钩子 → 回调 jar 的 proxy(Map) → jar 在 UI 线程弹
+        // 「已登录+启用中」网盘配置对话框（TVBox 由弹幕加载隐式触发同一 URL）。
+        // 不满足上述形态但 danmaku 指向本地 proxy 的，同样请求一次（幂等钩子）。
+        if (play.DanmakuUrl is { Length: > 0 } danmaku &&
+            danmaku.StartsWith("http://127.0.0.1:", StringComparison.OrdinalIgnoreCase) &&
+            (IsHtmlConfigPage(danmaku) || !play.Url.StartsWith("http", StringComparison.OrdinalIgnoreCase)))
+        {
+            try
+            {
+                using var hook = new HttpRequestMessage(HttpMethod.Get, danmaku);
+                using var resp = await Http.SendAsync(hook, ct).ConfigureAwait(false);
+                _log?.Invoke($"[解析] {site.Key}.danmaku钩子 → {(int)resp.StatusCode}");
+            }
+            catch (System.Exception ex)
+            {
+                _log?.Invoke($"[解析] {site.Key}.danmaku钩子失败: {ex.Message}");
+            }
+        }
+
         return await TvBoxPlayPipeline.ResolveAsync(site, play, episode.Flag ?? "", _sniffer, ct);
     }
+
+    /// <summary>
+    /// Guard 系网盘配置页 URL：宿主本地 proxy 的 do=config 端点
+    /// （127.0.0.1 回环 + /proxy?do=config…）。普通视频反代（do=…/proxy?url=）不命中。
+    /// </summary>
+    private static bool IsHtmlConfigPage(string url)
+        => url.StartsWith("http://127.0.0.1:", StringComparison.OrdinalIgnoreCase)
+           && url.Contains("/proxy?do=config", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// BT 流式拦截（对齐 <see cref="CatClawSourceProvider"/> 的磁力分支）：

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="CatClawVideo.Maui.Pages.WebPagePage"
+             BackgroundColor="#12121C"
+             NavigationPage.HasNavigationBar="False">
+
+    <!-- 隐藏 Shell 系统返回键（顶栏自带返回按钮，避免双返回，同 VideoPlayerPage） -->
+    <Shell.BackButtonBehavior>
+        <BackButtonBehavior IsVisible="False" />
+    </Shell.BackButtonBehavior>
+
+    <Grid RowDefinitions="Auto,*">
+
+        <!-- 顶栏：返回 + 标题（与 WatchPage 顶栏同风格） -->
+        <Border Grid.Row="0"
+                BackgroundColor="#1B1B2A"
+                Padding="16,10">
+            <Grid ColumnDefinitions="Auto,*" VerticalOptions="Center">
+                <Border Grid.Column="0" BackgroundColor="#2A2A3E" StrokeShape="RoundRectangle 10">
+                    <Label Text="←" FontSize="18" TextColor="White"
+                           Padding="12,4">
+                        <Label.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnBackTapped" />
+                        </Label.GestureRecognizers>
+                    </Label>
+                </Border>
+                <Label x:Name="TitleLabel" Grid.Column="1"
+                       Text="网页"
+                       FontSize="16" FontAttributes="Bold" TextColor="White"
+                       VerticalOptions="Center" Margin="12,0,0,0"
+                       LineBreakMode="TailTruncation" />
+            </Grid>
+        </Border>
+
+        <!-- 网页内容：宿主本地 proxy 的 HTML 配置页（云盘登录/启用等） -->
+        <WebView x:Name="Web" Grid.Row="1" HorizontalOptions="Fill" VerticalOptions="Fill" />
+    </Grid>
+</ContentPage>

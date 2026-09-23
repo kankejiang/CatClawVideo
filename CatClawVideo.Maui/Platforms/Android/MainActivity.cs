@@ -60,6 +60,15 @@ public class MainActivity : MauiAppCompatActivity
         base.OnResume();
         SetupEdgeToEdge();
         UpdateWindowChromeColor();
+        // TVBox 爬虫兼容桥：Guard 系 jar 弹网盘配置对话框前会反射 AppManager 取当前
+        // 前台 Activity（拿不到就退化成「无 UI 模式」，表现为云盘配置卡片播放失败）
+        Platforms.Android.TvBoxCompatBridge.ReportActivity(this);
+    }
+
+    protected override void OnDestroy()
+    {
+        Platforms.Android.TvBoxCompatBridge.RemoveActivity(this);
+        base.OnDestroy();
     }
 
     /// <summary>

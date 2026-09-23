@@ -141,6 +141,9 @@ public static class SpiderJsonParser
             if (playUrl.Length > 0 && url.Length > 0)
                 url = playUrl + url;   // TVBox 协议：playUrl 前缀拼接
             var play = new PlayRequest { Title = title, Url = url };
+            // Guard 系网盘源的宿主钩子：danmaku 字段指向本地 proxy（do=danmu&url=<vod_id>），
+            // GET 该 URL 回调 jar 的 proxy(Map) 触发网盘配置对话框（TVBox 弹幕加载语义）
+            play.DanmakuUrl = GetStr(root, "danmaku");
             // TVBox PlayFragment L1198：parse 缺省按 "1"；但直链源（m3u8/mp4）不嗅探直接播，
             // 故缺省语义收敛为「非视频格式 URL 即走解析」。显式 parse=0/jx=0 必须直连。
             var explicitParse = (bool?)null;

@@ -53,14 +53,41 @@ public class SpiderApi {
     /** {@code ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE} - inlined to stay dependency-free. */
     private static final int SCREEN_ORIENTATION_SENSOR_LANDSCAPE = 6;
 
-    /** No local proxy server is hosted, so there is no address to hand out. */
-    public String getAddress(boolean local) {
-        return "";
+    /**
+     * 宿主本地 proxy（SpiderProxyServer）实际监听的端口，由宿主启动后通过 JNI 写入
+     * （TvBoxCompatBridge.SetProxyPort）。Guard 系网盘源（csp_MyDriveGuard 等）用
+     * {@code getAddress}/{@code getPort} 拼「云盘配置」页 URL，返回空会导致
+     * 配置入口失效（URL 拼不出 / 探测走错端口）。0 = proxy 未就绪。
+     */
+    public static volatile int hostProxyPort = 0;
+
+    /**
+     * 当前前台 Activity，由宿主生命周期上报（TvBoxCompatBridge.ReportActivity）。
+     * Guard 系 jar 需要一个能弹对话框的 Activity——拿到它才能渲染
+     * 「已登录+启用中」云盘配置界面（TVBox 里由 App.getCurrentActivity() 提供）。
+     */
+    public static volatile android.app.Activity currentActivity = null;
+
+    /** JNI 桥：宿主写 proxy 端口（JNIEnv 无直接静态字段写入的友好重载，走 setter 稳妥）。 */
+    public static void setHostProxyPort(int port) {
+        hostProxyPort = port;
     }
 
-    /** No local proxy server is hosted, so there is no port to hand out. */
+    /** JNI 桥：宿主写当前前台 Activity。 */
+    public static void setCurrentActivity(android.app.Activity activity) {
+        currentActivity = activity;
+    }
+
+    /** Host proxy base URL（127.0.0.1 回环；proxy 未就绪返回空串）。 */
+    public String getAddress(boolean local) {
+        int port = hostProxyPort;
+        return port > 0 ? "http://127.0.0.1:" + port : "";
+    }
+
+    /** Host proxy 端口号字符串；proxy 未就绪返回空串。 */
     public String getPort() {
-        return "";
+        int port = hostProxyPort;
+        return port > 0 ? String.valueOf(port) : "";
     }
 
     public void log(String msg) {
@@ -71,6 +98,17 @@ public class SpiderApi {
     }
 
     public int getScreenOrientation() {
+        android.app.Activity activity = currentActivity;
+        if (activity != null) {
+            try {
+                int orientation = activity.getResources().getConfiguration().orientation;
+                if (orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT) {
+                    return android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT;
+                }
+                return android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE;
+            } catch (Throwable ignored) {
+            }
+        }
         return SCREEN_ORIENTATION_SENSOR_LANDSCAPE;
     }
 

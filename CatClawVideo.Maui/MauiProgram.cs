@@ -127,6 +127,12 @@ public static class MauiProgram
         spiderProxy.Start();
         services.AddSingleton(spiderProxy);
 
+#if ANDROID
+        // proxy 端口上报给 Java 侧 SpiderApi.hostProxyPort（Guard 系网盘源用
+        // spiderApi.getAddress/getPort 拼「云盘配置」页 URL，返回空则配置入口失效）
+        Platforms.Android.TvBoxCompatBridge.SetProxyPort(spiderProxy.Port);
+#endif
+
         // TVBox 社区 JS Spider 运行时（Jint）：csp_ + .js spider 包的 type=3 站点（含网盘聚合源）。
         // proxyPort 用懒访问器——此处 spiderProxy 已构造，端口在首请求时才真正读取。
         var tvboxJsRuntime = new CatClawVideo.Core.Providers.TvBoxJsSpiderRuntime(
@@ -137,7 +143,9 @@ public static class MauiProgram
 #if ANDROID
         var jarRuntime = new Platforms.Android.DexSpiderRuntime(
             Path.Combine(FileSystem.CacheDirectory, "spider"),
-            m => System.Diagnostics.Debug.WriteLine(m));
+            m => System.Diagnostics.Debug.WriteLine(m),
+            // Guard 系网盘源弹「云盘配置」对话框需要前台 Activity（Alert 需要 Activity token）
+            currentActivity: () => Microsoft.Maui.ApplicationModel.Platform.CurrentActivity);
 
         // 荐片（csp_Jianpian）宿主侧 P2P：
         //  ① libp2p.so + com.p2p.P2PClass 起本地 httpd（实测端口 8087+）；
