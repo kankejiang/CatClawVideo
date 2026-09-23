@@ -44,3 +44,18 @@ public interface ISpiderRuntime
     /// </summary>
     Task<string> PlayerContentAsync(VodSiteInfo site, string flag, string id, CancellationToken ct = default);
 }
+
+/// <summary>
+/// 支持宿主本地 <c>/proxy</c> 回调的运行时（TVBox <c>ApiConfig.proxyLocal</c> 语义）。
+/// js2Proxy 拼出的 <c>http://127.0.0.1:port/proxy?...</c> 由 <see cref="Services.SpiderProxyServer"/>
+/// 接收后回调本方法，运行时把它转给 JS/Java 爬虫的 <c>proxy()</c> 拿内容。
+/// </summary>
+public interface ISpiderProxyRuntime
+{
+    /// <summary>
+    /// 处理一条本地代理请求。
+    /// 返回 null = 该运行时无法处理（调用方回 502）。
+    /// </summary>
+    Task<(int Status, string Mime, byte[]? Body)?> ProxyAsync(
+        IReadOnlyDictionary<string, string> query, CancellationToken ct = default);
+}

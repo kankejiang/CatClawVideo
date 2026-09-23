@@ -4,7 +4,7 @@ using CatClawVideo.Core.Models;
 namespace CatClawVideo.Core.Providers;
 
 /// <summary>占位爬虫运行时：平台不可用（如 Windows 上的 jar/dex）时抛出明确异常</summary>
-public class NullSpiderRuntime : ISpiderRuntime
+public class NullSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime
 {
     public string Id { get; }
     public bool IsSupported => false;
@@ -19,4 +19,8 @@ public class NullSpiderRuntime : ISpiderRuntime
     public Task<string> DetailContentAsync(VodSiteInfo site, string id, CancellationToken ct = default) => throw Unsupported();
     public Task<string> SearchContentAsync(VodSiteInfo site, string keyword, string pg, CancellationToken ct = default) => throw Unsupported();
     public Task<string> PlayerContentAsync(VodSiteInfo site, string flag, string id, CancellationToken ct = default) => throw Unsupported();
+
+    public Task<(int Status, string Mime, byte[]? Body)?> ProxyAsync(
+        IReadOnlyDictionary<string, string> query, CancellationToken ct = default)
+        => Task.FromResult<(int, string, byte[]?)?>(null);
 }

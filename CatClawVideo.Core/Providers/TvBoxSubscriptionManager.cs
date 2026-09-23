@@ -148,7 +148,8 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
             var searchableFlag = ReadFlag(s, "searchable");
             var quickSearchFlag = ReadFlag(s, "quickSearch");
 
-            var (spiderKind, statusNote) = Classify(type, api);
+            var (spiderKind, statusNote) = Classify(type, api,
+                string.IsNullOrWhiteSpace(jar) ? globalSpider : jar);
             var (needsCreds, credServers) = DetectCredentials(ext);
 
             // 猫爪源（type=100/101）：原生数据源，地址有效即可播
@@ -185,9 +186,9 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
 
     /// <summary>
     /// 判定爬虫运行时类型与不可播原因。type=3 按 api 形态细分：
-    /// csp_ 前缀为 jar 爬虫、http(s) 地址为脚本爬虫。
+    /// csp_ 前缀为爬虫（jar 或 JS，取决于 spider 包扩展名）、http(s) 地址为脚本爬虫。
     /// </summary>
-    private static (VodSpiderKind Kind, string Note) Classify(int type, string api)
+    private static (VodSpiderKind Kind, string Note) Classify(int type, string api, string? spiderPkg = null)
     {
         if (type is CatClawSourceDoc.SiteType or CatClawSourceWeb.WebSiteType)
             return (VodSpiderKind.None, "");
@@ -195,7 +196,17 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
         if (type == 3)
         {
             if (api.StartsWith("csp_", StringComparison.OrdinalIgnoreCase))
+            {
+                // TVBox 真实形态：spider 包是 .js 文件时 csp_ 站点走 JS 引擎而非 dex
+                // （spiderPkg 格式 "url;md5;hash"，取 URL 段并剥掉 ?query 再判扩展名）
+                var pkgUrl = spiderPkg?.Split(';')[0];
+                var pkgPath = pkgUrl?.Split('?')[0];
+                if (!string.IsNullOrEmpty(pkgPath) &&
+                    (pkgPath.EndsWith(".js", StringComparison.OrdinalIgnoreCase) ||
+                     pkgPath.EndsWith(".drpy", StringComparison.OrdinalIgnoreCase)))
+                    return (VodSpiderKind.Script, "JS 爬虫源 · 需 JS 引擎");
                 return (VodSpiderKind.Jar, "jar 爬虫源 · 需 spider 运行时");
+            }
 
             if (api.StartsWith("http", StringComparison.OrdinalIgnoreCase))
                 return (VodSpiderKind.Script, "脚本爬虫源 · 需 JS 引擎");

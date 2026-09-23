@@ -1,0 +1,13 @@
+{
+  "spider": "http://127.0.0.1:18080/test-spider.js?v=4",
+  "sites": [
+    {
+      "key": "test_js",
+      "name": "测试JS源",
+      "type": 3,
+      "api": "csp_test",
+      "searchable": 1,
+      "quickSearch": 0
+    }
+  ]
+}

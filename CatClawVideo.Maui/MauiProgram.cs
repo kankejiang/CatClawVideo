@@ -1,3 +1,4 @@
+using System.Text;
 using CatClawVideo.Maui.Services;
 using CatClawVideo.Maui.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
@@ -61,6 +62,8 @@ public static class MauiProgram
         // ═══════════════════════════════════════════════════
         // 影视源提供者：MacCMS JSON 直连 + TVBox spider 爬虫运行时 + 聚合路由
         // ═══════════════════════════════════════════════════
+        // GBK 等代码页：部分采集站/网盘源响应为 GBK，须在首次 GetEncoding 前注册（最前！）
+        Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
         services.AddSingleton<ISubscriptionManager, CatClawVideo.Core.Providers.TvBoxSubscriptionManager>();
 
         // spider 运行时：JS（drpy2，Jint 纯托管，双端可用）+ jar/dex（Android DexClassLoader，仅 Android）
@@ -123,6 +126,14 @@ public static class MauiProgram
         var spiderProxy = new CatClawVideo.Core.Services.SpiderProxyServer { Log = BtFileLog.Write };
         spiderProxy.Start();
         services.AddSingleton(spiderProxy);
+
+        // TVBox 社区 JS Spider 运行时（Jint）：csp_ + .js spider 包的 type=3 站点（含网盘聚合源）。
+        // proxyPort 用懒访问器——此处 spiderProxy 已构造，端口在首请求时才真正读取。
+        var tvboxJsRuntime = new CatClawVideo.Core.Providers.TvBoxJsSpiderRuntime(
+            new CatClawVideo.Core.Services.JsRuntimeService(),
+            cacheDir: CatClawVideo.Core.AppPaths.LocalSub("tvbox-js"),
+            proxyPort: () => spiderProxy.Port,
+            log: m => { System.Diagnostics.Debug.WriteLine(m); DiagLog.Write(m); });
 #if ANDROID
         var jarRuntime = new Platforms.Android.DexSpiderRuntime(
             Path.Combine(FileSystem.CacheDirectory, "spider"),
@@ -137,7 +148,7 @@ public static class MauiProgram
         var jpP2p = new Platforms.Android.JianpianP2P(
             Path.Combine(FileSystem.CacheDirectory, "p2p"), BtFileLog.Write)
         {
-            ProxyHandler = jarRuntime.ProxyAsync,
+            ProxyHandler = (q, ct) => jarRuntime.ProxyAsync(new Dictionary<string, string>(q), ct),
         };
         CatClawVideo.Core.Interfaces.JpP2PSupport.Current = jpP2p;
         _ = Task.Run(async () => { try { await jpP2p.EnsureReadyAsync(); } catch { } });
@@ -164,8 +175,24 @@ public static class MauiProgram
             : new CatClawVideo.Core.Providers.NullSpiderRuntime("jvm-dex");
 
 #endif
-        CatClawVideo.Core.Models.SiteRegistry.JsSpiderAvailable = jsRuntime.IsSupported;
+        CatClawVideo.Core.Models.SiteRegistry.JsSpiderAvailable = jsRuntime.IsSupported || tvboxJsRuntime.IsSupported;
         CatClawVideo.Core.Models.SiteRegistry.JarSpiderAvailable = jarRuntime.IsSupported;
+
+        // js2Proxy 回环代理路由：按 siteKey 查站点 → 按 SpiderKind 分派 JS/Java 爬虫运行时
+        spiderProxy.JsProxyHandler = (query, ct) =>
+        {
+            var key = query.GetValueOrDefault("siteKey");
+            var site = key is null ? null : CatClawVideo.Core.Models.SiteRegistry.Find(key);
+            CatClawVideo.Core.Interfaces.ISpiderRuntime? rt = site?.SpiderKind switch
+            {
+                CatClawVideo.Core.Models.VodSpiderKind.Jar => jarRuntime,
+                CatClawVideo.Core.Models.VodSpiderKind.Script => tvboxJsRuntime,
+                _ => null,
+            };
+            return rt is CatClawVideo.Core.Interfaces.ISpiderProxyRuntime pr
+                ? pr.ProxyAsync(query, ct)
+                : Task.FromResult<(int Status, string Mime, byte[]? Body)?>(null);
+        };
 
         // 「源看不到」类问题的第一现场：订阅解析完/站点集合一变就记一行
         // （可播 = type1 MacCMS + 运行时就绪的 spider 源；jar 桥可用性单独打印）
@@ -193,7 +220,8 @@ public static class MauiProgram
             {
                 new CatClawVideo.Core.Providers.CatClawSourceProvider(),
                 new CatClawVideo.Core.Providers.MacCmsJsonProvider(),
-                new CatClawVideo.Core.Providers.SpiderVodProvider(jsRuntime, jarRuntime, sniffer, log: BtFileLog.Write),
+                new CatClawVideo.Core.Providers.SpiderVodProvider(jsRuntime, jarRuntime, sniffer, log: BtFileLog.Write,
+                    tvboxJsRuntime: tvboxJsRuntime),
             });
         services.AddSingleton<IVodSourceProvider>(vodProvider);
 

@@ -57,6 +57,13 @@ public sealed class SpiderProxyServer : IDisposable
     /// <summary>日志回调（可设属性，便于对象初始化器注入）。</summary>
     public Action<string>? Log { get; set; }
 
+    /// <summary>
+    /// JS Spider 回环代理回调（js2Proxy 语义，<c>from=catvod</c> 或 <c>do=js</c> 的请求）。
+    /// 由宿主在构造运行时后注入；返回 null = 无人处理（回 502）。
+    /// </summary>
+    public Func<IReadOnlyDictionary<string, string>, CancellationToken,
+        Task<(int Status, string Mime, byte[]? Body)?>?>? JsProxyHandler { get; set; }
+
     private static HttpClient CreateClient()
     {
         var handler = new HttpClientHandler
@@ -154,6 +161,29 @@ public sealed class SpiderProxyServer : IDisposable
                 if (args.GetValueOrDefault("do") == "ck")
                 {
                     await RespondTextAsync(stream, "200 OK", "ok", "text/plain").ConfigureAwait(false);
+                    return;
+                }
+
+                // ①½ JS Spider 回环代理（js2Proxy 语义）：交给注入的 JsProxyHandler；
+                //    必须在「missing url → 400」之前——部分 proxy 请求可能没有 url 参数。
+                if (args.GetValueOrDefault("from") == "catvod" || args.GetValueOrDefault("do") == "js")
+                {
+                    var handler = JsProxyHandler;
+                    if (handler is null)
+                    {
+                        await RespondTextAsync(stream, "502 Bad Gateway", "js proxy handler missing")
+                            .ConfigureAwait(false);
+                        return;
+                    }
+                    var result = await handler(args, timeout.Token).ConfigureAwait(false);
+                    if (result is not { } r)
+                    {
+                        await RespondTextAsync(stream, "502 Bad Gateway", "proxy not handled")
+                            .ConfigureAwait(false);
+                        return;
+                    }
+                    await RespondBytesAsync(stream, r.Status >= 200 && r.Status < 600 ? $"{r.Status} OK" : "200 OK",
+                        r.Body ?? Array.Empty<byte>(), r.Mime, "Connection: close\r\n").ConfigureAwait(false);
                     return;
                 }
 

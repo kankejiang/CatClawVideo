@@ -19,7 +19,7 @@ namespace CatClawVideo.Maui.Platforms.Android;
 /// - searchContent(String key, boolean quick[, int pg])
 /// - playerContent(String flag, String id, List vipFlags)
 /// </summary>
-public class DexSpiderRuntime : ISpiderRuntime
+public class DexSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime
 {
     public string Id => "android-dex";
     public bool IsSupported => true;
@@ -773,7 +773,7 @@ public class DexSpiderRuntime : ISpiderRuntime
     /// <para>返回 <c>(status, mime, body)</c>；无法处理时返回 null。</para>
     /// </summary>
     public async Task<(int Status, string Mime, byte[]? Body)?> ProxyAsync(
-        IDictionary<string, string> query, CancellationToken ct = default)
+        IReadOnlyDictionary<string, string> query, CancellationToken ct = default)
     {
         // 优先按 siteKey 定位（与 TVBox getCurrentProxySource 一致），否则用最近一次使用的爬虫
         SpiderHolder? holder = null;

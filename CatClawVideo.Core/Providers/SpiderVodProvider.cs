@@ -6,22 +6,26 @@ namespace CatClawVideo.Core.Providers;
 /// <summary>
 /// TVBox spider 站点适配器（type=3）：把 ISpiderRuntime 的 TVBox 协议 JSON
 /// 解析为统一领域模型，接入现有播放管线。
-/// - Script（drpy2 JS）→ <see cref="DrpyJsSpiderRuntime"/>
+/// - Script（JS 爬虫）→ csp_ 类走 <see cref="TvBoxJsSpiderRuntime"/>（社区 JS 协议）、
+///   http 脚本走 <see cref="DrpyJsSpiderRuntime"/>（drpy2 协议）
 /// - Jar（Java/dex）→ 运行时由平台侧提供（Android DexClassLoader）；不可用时抛出明确异常
 /// </summary>
 public class SpiderVodProvider : IVodSourceProvider
 {
     private readonly ISpiderRuntime? _jsRuntime;
     private readonly ISpiderRuntime? _jarRuntime;
+    private readonly ISpiderRuntime? _tvboxJsRuntime;
     private readonly Action<string>? _log;
     private readonly IWebSniffer? _sniffer;
 
     public SpiderVodProvider(ISpiderRuntime? jsRuntime, ISpiderRuntime? jarRuntime = null,
         IWebSniffer? sniffer = null,
-        Action<string>? log = null)
+        Action<string>? log = null,
+        ISpiderRuntime? tvboxJsRuntime = null)
     {
         _jsRuntime = jsRuntime;
         _jarRuntime = jarRuntime;
+        _tvboxJsRuntime = tvboxJsRuntime;
         _log = log;
         _sniffer = sniffer;
     }
@@ -31,14 +35,15 @@ public class SpiderVodProvider : IVodSourceProvider
 
     private ISpiderRuntime? RuntimeFor(VodSiteInfo site)
     {
-        var local = site.SpiderKind switch
+        return site.SpiderKind switch
         {
-            VodSpiderKind.Script => _jsRuntime,
+            // TVBox 社区 JS 协议源：csp_ + .js spider 包；其余 http 脚本走 drpy2
+            VodSpiderKind.Script => site.Api.StartsWith("csp_", StringComparison.OrdinalIgnoreCase)
+                ? (_tvboxJsRuntime ?? _jsRuntime)
+                : _jsRuntime,
             VodSpiderKind.Jar => _jarRuntime,
             _ => null,
         };
-
-        return local;
     }
 
     public bool CanHandle(VodSiteInfo site) => site.SpiderKind != VodSpiderKind.None && RuntimeFor(site) != null;
