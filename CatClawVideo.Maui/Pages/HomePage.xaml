@@ -53,13 +53,19 @@
                                    BindableLayout.ItemsSource="{Binding Categories}">
                 <BindableLayout.ItemTemplate>
                     <DataTemplate>
-                        <Border StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,6"
-                                BackgroundColor="{DynamicResource ChipInactiveColor}">
-                            <Label Text="{Binding Name}" FontSize="11.5"
-                                   TextColor="{DynamicResource TextSecondaryColor}" />
-                            <Border.GestureRecognizers>
-                                <TapGestureRecognizer Tapped="OnCategoryTapped" />
-                            </Border.GestureRecognizers>
+                        <!-- 外层 = 焦点环壳（不占布局：负 margin 抵消 padding），内层 = 分类 chip（点击/选中态）。
+                             两层都在模板里静态声明，禁止运行时重排：旧版由代码后台包壳（把 chip 摘出再塞进新
+                             Border）会重挂原生视图，Android 上切站点后 Tap 手势整体失效（点击分类无反应）。 -->
+                        <Border StrokeThickness="2" Stroke="Transparent"
+                                StrokeShape="RoundRectangle 16" Padding="2" Margin="-2">
+                            <Border StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,6"
+                                    BackgroundColor="{DynamicResource ChipInactiveColor}">
+                                <Label Text="{Binding Name}" FontSize="11.5"
+                                       TextColor="{DynamicResource TextSecondaryColor}" />
+                                <Border.GestureRecognizers>
+                                    <TapGestureRecognizer Tapped="OnCategoryTapped" />
+                                </Border.GestureRecognizers>
+                            </Border>
                         </Border>
                     </DataTemplate>
                 </BindableLayout.ItemTemplate>

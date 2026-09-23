@@ -103,11 +103,10 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
     // ═══════════════════════ 分类 chips ═══════════════════════
 
     /// <summary>
-    /// 给每个分类 chip 包一层透明焦点壳（描边不占布局：用负 margin 抵消 padding）。
-    ///
-    /// <para>chip 由 <c>BindableLayout</c> 从 <c>Categories</c> 生成，无法在 XAML 里逐个加壳。
-    /// 集合变化回调触发时子项可能尚未完成布局，故延后一轮再包装；
-    /// 已包装过的（Content 就是原 chip）直接跳过，保证幂等。</para>
+    /// 刷新分类 chip 引用：焦点外壳已由 XAML 模板静态声明（外层 Border=壳，内层 Border=chip），
+    /// 集合变化后直接遍历建立索引即可。**禁止在此重排/重挂视图**——旧版运行时包壳
+    /// （把 chip 从 BindableLayout 摘出再塞进新建 Border）会重挂原生视图，
+    /// Android 上切站点后 TapGestureRecognizer 整体失效（点击分类无反应，真机复现）。
     /// </summary>
     private void RebuildChipShells()
     {
@@ -116,28 +115,10 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
             try
             {
                 _chipShells.Clear();
-                for (int i = 0; i < CategoryChipHost.Children.Count; i++)
+                foreach (var child in CategoryChipHost.Children)
                 {
-                    if (CategoryChipHost.Children[i] is not Border existing) continue;
-
-                    // 已是外壳（其 Content 是 Border）→ 直接复用
-                    if (existing.Content is Border)
-                    {
-                        _chipShells.Add(existing);
-                        continue;
-                    }
-
-                    var shell = new Border
-                    {
-                        StrokeThickness = 2,
-                        Stroke = Colors.Transparent,
-                        StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 16 },
-                        Padding = new Thickness(2),
-                        Margin = new Thickness(-2),
-                        Content = existing,
-                    };
-                    CategoryChipHost.Children[i] = shell;
-                    _chipShells.Add(shell);
+                    if (child is Border shell && shell.Content is Border)
+                        _chipShells.Add(shell);
                 }
 
                 if (_chipIndex >= _chipShells.Count) _chipIndex = Math.Max(0, _chipShells.Count - 1);
@@ -446,7 +427,17 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
     /// <summary>分类 chip 点击 → 拉取该分类影片</summary>
     private async void OnCategoryTapped(object? sender, TappedEventArgs e)
     {
-        if ((sender as VisualElement)?.BindingContext is not VodCategory cat) return;
+        // 诊断：分类点击无反应问题——记录点击是否触发、绑定上下文是否解析成功
+        if (sender is VisualElement ve)
+            DiagLog.Write($"[cat-tap] 触发 sender={ve.GetType().Name} ctx={(ve.BindingContext?.GetType().Name ?? "null")}");
+        else
+            DiagLog.Write("[cat-tap] 触发 sender=null");
+        if ((sender as VisualElement)?.BindingContext is not VodCategory cat)
+        {
+            DiagLog.Write("[cat-tap] 绑定上下文不是 VodCategory，忽略");
+            return;
+        }
+        DiagLog.Write($"[cat-tap] 切换分类 id={cat.Id} name={cat.Name}");
         await _vm.SelectCategoryAsync(cat);
     }
 

@@ -178,6 +178,7 @@ public partial class HomeViewModel : ObservableObject
     public async Task SelectCategoryAsync(VodCategory? category)
     {
         if (category == null) return;
+        DiagLog.Write($"[cat-select] 开始 site={(CurrentSite?.Name ?? "null")} cat={category.Name} loading={IsHomeLoading}");
         SelectedCategoryId = category.Id;
         _currentCategory = category;
         _currentPage = 1;
@@ -190,11 +191,12 @@ public partial class HomeViewModel : ObservableObject
         if (CurrentSite != null)
         {
             try { items = await _provider.GetItemsAsync(CurrentSite, category, 1); }
-            catch { }
+            catch (Exception ex) { DiagLog.Write($"[cat-select] 拉取失败: {ex.Message}"); }
         }
 
         foreach (var it in items) Items.Add(it);
         CoverResolver.Attach(_covers, items);   // 列表先出，封面异步补齐（失败 → 占位海报）
+        DiagLog.Write($"[cat-select] 完成 cat={category.Name} items={items.Count}");
         HomeStatus = Items.Count == 0
             ? $"{CurrentSite?.Name ?? "当前源"} · {category.Name} · 暂无影片"
             : $"{CurrentSite!.Name} · {category.Name} · 已加载 {Items.Count} 部";
