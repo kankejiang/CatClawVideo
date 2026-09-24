@@ -491,6 +491,83 @@ static const char *g_GetStringUTFChars(JNIEnv *e, jstring s, jboolean *c) {
 static void g_ReleaseStringUTFChars(JNIEnv *e, jstring s, const char *c) { (void)e; (void)s; (void)c; }
 static jsize g_GetStringUTFLength(JNIEnv *e, jstring s) { (void)e; return (jsize)strlen(gstr_chars(s)); }
 
+// ═══════════ UTF-16 槽位：NewString / GetStringLength / GetStringChars / ReleaseStringChars ═══════════
+// decrypt 的返回值是 so 自己用 **NewString**（UTF-16 版）造出来的。这一格空着 ⇒ 走
+// jni_trap 的兜底（打印槽位名后返回 0）⇒ so 拿到 NULL 就直接返回 null，
+// 宿主侧只看到 "ERR null result"。2026-09-25 桌面网盘登录态（Cloud_quark.init 的 10232B
+// DECRYPT）就是卡在这一格上，而 guest 日志里那行 `[trap] JNI.NewString(#163) 被调用` 是唯一线索。
+
+static unsigned u8_decode(const char **pp) {
+    const unsigned char *s = (const unsigned char *)*pp;
+    unsigned cp; int n;
+    if (s[0] < 0x80) { cp = s[0]; n = 0; }
+    else if ((s[0] >> 5) == 0x6) { cp = s[0] & 0x1Fu; n = 1; }
+    else if ((s[0] >> 4) == 0xE) { cp = s[0] & 0x0Fu; n = 2; }
+    else if ((s[0] >> 3) == 0x1E) { cp = s[0] & 0x07u; n = 3; }
+    else { *pp += 1; return 0xFFFD; }
+    for (int i = 0; i < n; i++) {
+        if ((s[i + 1] & 0xC0) != 0x80) { *pp += 1; return 0xFFFD; }
+        cp = (cp << 6) | (s[i + 1] & 0x3Fu);
+    }
+    *pp += n + 1;
+    return cp;
+}
+
+static jstring g_NewString(JNIEnv *e, const jchar *u, jsize len) {
+    (void)e;
+    if (!u || len <= 0) return (jstring)gstr("");
+    char *buf = (char *)malloc((size_t)len * 3 + 4);   // 代理对占 2 单元出 4 字节 ⇒ 每单元均摊 ≤3
+    if (!buf) return (jstring)gstr("");
+    int n = 0;
+    for (jsize i = 0; i < len; i++) {
+        unsigned cp = u[i];
+        if (cp >= 0xD800 && cp < 0xDC00 && i + 1 < len && u[i + 1] >= 0xDC00 && u[i + 1] < 0xE000)
+            cp = 0x10000u + ((cp - 0xD800u) << 10) + (u[++i] - 0xDC00u);
+        if (cp < 0x80) buf[n++] = (char)cp;
+        else if (cp < 0x800) { buf[n++] = (char)(0xC0 | (cp >> 6)); buf[n++] = (char)(0x80 | (cp & 0x3F)); }
+        else if (cp < 0x10000) { buf[n++] = (char)(0xE0 | (cp >> 12)); buf[n++] = (char)(0x80 | ((cp >> 6) & 0x3F)); buf[n++] = (char)(0x80 | (cp & 0x3F)); }
+        else { buf[n++] = (char)(0xF0 | (cp >> 18)); buf[n++] = (char)(0x80 | ((cp >> 12) & 0x3F)); buf[n++] = (char)(0x80 | ((cp >> 6) & 0x3F)); buf[n++] = (char)(0x80 | (cp & 0x3F)); }
+    }
+    buf[n] = 0;
+    jstring r = (jstring)gstr(buf);
+    free(buf);
+    return r;
+}
+
+static jsize g_GetStringLength(JNIEnv *e, jstring s) {
+    (void)e;
+    const char *p = gstr_chars(s);
+    jsize n = 0;
+    while (*p) n += u8_decode(&p) < 0x10000 ? 1 : 2;
+    return n;
+}
+
+static const jchar *g_GetStringChars(JNIEnv *e, jstring s, jboolean *isCopy) {
+    (void)e;
+    const char *p = gstr_chars(s);
+    jsize cap = g_GetStringLength(e, s);
+    jchar *out = (jchar *)malloc(((size_t)cap + 1) * sizeof(jchar));
+    if (!out) return NULL;
+    jsize k = 0;
+    while (*p && k + 1 <= cap) {
+        unsigned cp = u8_decode(&p);
+        if (cp < 0x10000) out[k++] = (jchar)cp;
+        else {
+            cp -= 0x10000u;
+            out[k++] = (jchar)(0xD800u + (cp >> 10));
+            out[k++] = (jchar)(0xDC00u + (cp & 0x3FFu));
+        }
+    }
+    out[k] = 0;
+    if (isCopy) *isCopy = JNI_TRUE;
+    return out;
+}
+
+static void g_ReleaseStringChars(JNIEnv *e, jstring s, const jchar *c) {
+    (void)e; (void)s;
+    free((void *)c);   // 我们一律返回 malloc 的副本（isCopy=TRUE），所以这里必须释放
+}
+
 static jclass g_FindClass(JNIEnv *e, const char *name) {
     (void)e;
     printf("[gcall] FindClass(%s)\n", name);
@@ -1826,6 +1903,10 @@ int guard_init(void) {
     iface.GetFieldID = g_GetFieldID;
     iface.GetStaticFieldID = g_GetFieldID;
     iface.NewStringUTF = g_NewStringUTF;
+    iface.NewString = g_NewString;
+    iface.GetStringLength = g_GetStringLength;
+    iface.GetStringChars = g_GetStringChars;
+    iface.ReleaseStringChars = g_ReleaseStringChars;
     iface.GetStringUTFChars = g_GetStringUTFChars;
     iface.ReleaseStringUTFChars = g_ReleaseStringUTFChars;
     iface.GetStringUTFLength = g_GetStringUTFLength;
