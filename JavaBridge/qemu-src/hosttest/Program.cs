@@ -18,13 +18,20 @@
 //   dotnet run --project hosttest -- playtest <runtimeDir> <magnet> [preferName] [durationSec]
 //     真实观看模拟（2026-09-17 用户要求）：开播首字节耗时 → 播放 2 分钟 → seek 15 分钟
 //     → 再播 2 分钟 → seek 片尾取样，逐段输出耗时/吞吐/最差首字节，用于定位起播与 seek 优化点。
+//
+//   dotnet run --project hosttest -- guard <runtimeDir> <rawJar> [k=v ...]
+//     Guard VM 台架（2026-09-24 网盘 proxyInvoke 排障）：启动 Guard VM → GLOAD 该 raw jar 的
+//     guard so → 直发一行 PROXY（默认 do=config）→ 打印 guest 内 so 的返回与上行的 UI 事件。
+//     脱离 MAUI/JVM 桥复现「so 弹窗/扫码为何到不了宿主」。
 using System.Diagnostics;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json.Nodes;
 using CatClawVideo.Core.Services.QemuThunder;
 
 var argList = args.ToList();
-var mode = argList.Count > 0 && (argList[0] == "bench" || argList[0] == "proxy-bench" || argList[0] == "download" || argList[0] == "seektest" || argList[0] == "rangetest" || argList[0] == "playtest" || argList[0] == "xfer" || argList[0] == "xfer-e2e") ? argList[0] : "";
+var mode = argList.Count > 0 && (argList[0] == "bench" || argList[0] == "proxy-bench" || argList[0] == "download" || argList[0] == "seektest" || argList[0] == "rangetest" || argList[0] == "playtest" || argList[0] == "xfer" || argList[0] == "xfer-e2e" || argList[0] == "guard") ? argList[0] : "";
 if (mode.Length > 0) argList.RemoveAt(0);
 
 var sw = Stopwatch.StartNew();
@@ -78,6 +85,96 @@ if (argList.Count < 2)
     Console.WriteLine("用法: dotnet run --project hosttest -- [bench] <runtimeDir> <magnet> [preferName]");
     return 1;
 }
+
+// ═══ guard 模式：Guard VM 台架（脱离 MAUI/JVM 桥直调 guest 内 so）═══
+// 用法: dotnet run -c Release --project hosttest -- guard <runtimeDir> <rawJar> [k=v ...]
+if (mode == "guard") return await RunGuardAsync();
+
+async Task<int> RunGuardAsync()
+{
+    if (argList.Count < 2)
+    {
+        Console.WriteLine("用法: dotnet run -c Release --project hosttest -- guard <runtimeDir> <rawJar> [k=v ...]");
+        return 1;
+    }
+    var rtDir = argList[0];
+    var rawJar = argList[1];
+    if (!File.Exists(rawJar)) { Log($"✗ raw jar 不存在: {rawJar}"); return 1; }
+
+    // 与 JavaSpiderRuntime 转换管线一致：hash = jar 标识的 SHA256 前 24 位（这里用路径，台架自洽即可）
+    var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(rawJar)))[..24].ToLowerInvariant();
+    Log($"runtimeDir={rtDir}  jar={Path.GetFileName(rawJar)}  hash={hash}");
+
+    using var gengine = new QemuGuardEngine(rtDir, Log);
+    gengine.UiEvent += ev => Log($"  ⬆ UI 事件（so 弹出，宿主待渲染）: {ev.ToJsonString()}");
+    gengine.RegisterJar(hash, rawJar);
+
+    var tLoad = sw.Elapsed.TotalSeconds;
+    if (!await gengine.EnsureLoadedAsync(hash)) { Log("✗ GLOAD 失败（so 未就绪）"); return 20; }
+    Log($"✓ guard so 就绪（{sw.Elapsed.TotalSeconds - tLoad:F1}s）");
+
+    // 组 PROXY 行：PROXY <np>（台架不带 prefs 快照）<nm> k v ...（全 b64，空值以 "." 占位）
+    var map = new List<(string K, string V)>();
+    for (var i = 2; i < argList.Count; i++)
+    {
+        var kv = argList[i].Split('=', 2);
+        map.Add((kv[0], kv.Length > 1 ? kv[1] : ""));
+    }
+    if (map.Count == 0) map.Add(("do", "config"));
+    if (map.All(p => p.K != "url")) map.Add(("url", "0000"));
+
+    static string B64(string s) => string.IsNullOrEmpty(s) ? "."
+        : Convert.ToBase64String(Encoding.UTF8.GetBytes(s));
+    var req = new StringBuilder("PROXY 0");
+    req.Append(' ').Append(map.Count);
+    foreach (var (k, v) in map) req.Append(' ').Append(B64(k)).Append(' ').Append(B64(v));
+    Log($"→ {req}");
+
+    using var tcp = new TcpClient();
+    await tcp.ConnectAsync("127.0.0.1", QemuGuardEngine.GuardPort);
+    var ns = tcp.GetStream();
+    await ns.WriteAsync(Encoding.UTF8.GetBytes(req + "\n"));
+
+    // 行式响应（body 的 b64 可达数百 KB）：读到换行或连接关闭，120s 上限
+    var resp = new StringBuilder();
+    using var ctsG = new CancellationTokenSource(120_000);
+    var one = new byte[1];
+    try
+    {
+        while (true)
+        {
+            var n = await ns.ReadAsync(one, ctsG.Token);
+            if (n <= 0) break;
+            if (one[0] == (byte)'\n') break;
+            if (one[0] != (byte)'\r') resp.Append((char)one[0]);
+        }
+    }
+    catch (OperationCanceledException) { Log("✗ 响应超时"); }
+    var text = resp.ToString();
+    Log($"← 响应 {text.Length} 字节: {text[..Math.Min(text.Length, 160)]}{(text.Length > 160 ? "…" : "")}");
+
+    if (text.StartsWith("OK3"))
+    {
+        var parts = text.Split(' ');
+        Log($"  status={parts[1]} mime={B64Dec(parts[2])} body={(parts[3] == "-" ? "无（可能仅弹窗）" : B64Dec(parts[3]).Length + " 字符")}");
+        if (parts[3] != "-")
+        {
+            var body = B64Dec(parts[3]);
+            var isHtml = body.Contains("<html", StringComparison.OrdinalIgnoreCase) || body.Contains("Cookie", StringComparison.Ordinal);
+            Log(isHtml
+                ? "  ⚠ so 返回的是 HTML 配置页（贴 Cookie），不是原生对话框 → 弹窗分支仍未走到"
+                : "  ✓ so 返回非 HTML 内容");
+            var snip = Path.Combine(Path.GetTempPath(), "guard-resp-body.html");
+            File.WriteAllText(snip, body);
+            Log($"  响应体已存: {snip}");
+        }
+        return 0;
+    }
+    Log("✗ so 未返回 OK3 —— 这就是宿主回落到 Pan.proxyInput(HTML) 的原因");
+    return 21;
+}
+
+static string B64Dec(string s) => s == "." ? "" : Encoding.UTF8.GetString(Convert.FromBase64String(s));
 var magnet = argList[1];
 var prefer = argList.Count > 2 ? argList[2] : null;
 
