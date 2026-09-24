@@ -2,6 +2,7 @@ package android.content;
 
 import android.content.pm.ApplicationInfo;
 import java.io.File;
+import java.util.Map;
 
 /** 桌面环境的 Context 实现（stub）：spider jar 在 PC 上运行所需的 android.content.Context。 */
 public class Context {
@@ -72,9 +73,9 @@ public class Context {
     public String getPackageName() { return "com.catclaw.video"; }
     public ApplicationInfo getApplicationInfo() { return new ApplicationInfo(); }
 
-    public SharedPreferences getSharedPreferences(String name, int mode) { return new MemPrefs(); }
-    public SharedPreferences getSharedPreferences(File file, int mode) { return new MemPrefs(); }
-    public boolean deleteSharedPreferences(String name) { return true; }
+    public SharedPreferences getSharedPreferences(String name, int mode) { return new MemPrefs(name); }
+    public SharedPreferences getSharedPreferences(File file, int mode) { return new MemPrefs(file == null ? null : file.getName()); }
+    public boolean deleteSharedPreferences(String name) { PrefsStore.drop(name); return true; }
 
     public String getString(int resId) { return ""; }
     public String getString(int resId, Object... formatArgs) { return ""; }
@@ -121,28 +122,52 @@ public class Context {
     public int checkSelfPermission(String permission) { return 0; }
     public Context getApplicationContext() { return this; }
 
+    /**
+     * SharedPreferences 桩：按 <b>prefs 文件名</b>定位存储（真机是 {@code shared_prefs/<name>.xml}
+     * 一个文件一套键），并写回磁盘。所有 name 共用一张全局 Map 会让 {@code spUtils}（cookie）
+     * 与 {@code myDrive_useState}（启用开关）互相串数据，且重启全丢。
+     */
     public static class MemPrefs implements SharedPreferences {
-        @Override public String getString(String key, String defValue) { Object v = SharedPreferences.DATA.get(key); return v instanceof String ? (String) v : defValue; }
-        @Override public java.util.Set<String> getStringSet(String key, java.util.Set<String> defValue) { Object v = SharedPreferences.DATA.get(key); return v instanceof java.util.Set ? (java.util.Set<String>) v : defValue; }
-        @Override public int getInt(String key, int defValue) { Object v = SharedPreferences.DATA.get(key); return v instanceof Integer ? (Integer) v : defValue; }
-        @Override public long getLong(String key, long defValue) { Object v = SharedPreferences.DATA.get(key); return v instanceof Long ? (Long) v : defValue; }
-        @Override public float getFloat(String key, float defValue) { Object v = SharedPreferences.DATA.get(key); return v instanceof Float ? (Float) v : defValue; }
-        @Override public boolean getBoolean(String key, boolean defValue) { Object v = SharedPreferences.DATA.get(key); return v instanceof Boolean ? (Boolean) v : defValue; }
-        @Override public boolean contains(String key) { return SharedPreferences.DATA.containsKey(key); }
-        @Override public SharedPreferences.Editor edit() { return new MemEditor(); }
+        private final String name;
+
+        public MemPrefs() { this(null); }
+        public MemPrefs(String prefsName) { name = PrefsStore.normalize(prefsName); }
+
+        /** 可读的 prefs 文件名（诊断与宿主读登录态用）。 */
+        public String prefsName() { return name; }
+
+        private Map<String, Object> store() { return PrefsStore.store(name); }
+
+        @Override public String getString(String key, String defValue) { Object v = store().get(key); return v instanceof String ? (String) v : defValue; }
+        @Override public java.util.Set<String> getStringSet(String key, java.util.Set<String> defValue) { Object v = store().get(key); return v instanceof java.util.Set ? (java.util.Set<String>) v : defValue; }
+        @Override public int getInt(String key, int defValue) { Object v = store().get(key); return v instanceof Integer ? (Integer) v : defValue; }
+        @Override public long getLong(String key, long defValue) { Object v = store().get(key); return v instanceof Long ? (Long) v : defValue; }
+        @Override public float getFloat(String key, float defValue) { Object v = store().get(key); return v instanceof Float ? (Float) v : defValue; }
+        @Override public boolean getBoolean(String key, boolean defValue) { Object v = store().get(key); return v instanceof Boolean ? (Boolean) v : defValue; }
+        @Override public boolean contains(String key) { return store().containsKey(key); }
+        @Override public SharedPreferences.Editor edit() { return new MemEditor(name); }
         @Override public void registerOnSharedPreferenceChangeListener(OnSharedPreferenceChangeListener l) { }
         @Override public void unregisterOnSharedPreferenceChangeListener(OnSharedPreferenceChangeListener l) { }
     }
+    /**
+     * Editor 桩：与旧实现一致地<b>立即写入</b>（不等 commit/apply）—— 第三方 jar 里
+     * {@code edit().putString(..)} 漏调 apply 的写法不少见，攒到 commit 会静默丢；
+     * commit/apply 只负责把该 prefs 落盘。
+     */
     public static class MemEditor implements SharedPreferences.Editor {
-        @Override public SharedPreferences.Editor putString(String k, String v) { SharedPreferences.DATA.put(k, v); return this; }
-        @Override public SharedPreferences.Editor putStringSet(String k, java.util.Set<String> v) { SharedPreferences.DATA.put(k, v); return this; }
-        @Override public SharedPreferences.Editor putInt(String k, int v) { SharedPreferences.DATA.put(k, v); return this; }
-        @Override public SharedPreferences.Editor putLong(String k, long v) { SharedPreferences.DATA.put(k, v); return this; }
-        @Override public SharedPreferences.Editor putFloat(String k, float v) { SharedPreferences.DATA.put(k, v); return this; }
-        @Override public SharedPreferences.Editor putBoolean(String k, boolean v) { SharedPreferences.DATA.put(k, v); return this; }
-        @Override public SharedPreferences.Editor remove(String k) { SharedPreferences.DATA.remove(k); return this; }
-        @Override public SharedPreferences.Editor clear() { SharedPreferences.DATA.clear(); return this; }
-        @Override public boolean commit() { return true; }
-        @Override public void apply() { }
+        private final String name;
+        MemEditor(String prefsName) { name = prefsName; }
+        private Map<String, Object> store() { return PrefsStore.store(name); }
+
+        @Override public SharedPreferences.Editor putString(String k, String v) { store().put(k, v); return this; }
+        @Override public SharedPreferences.Editor putStringSet(String k, java.util.Set<String> v) { store().put(k, v); return this; }
+        @Override public SharedPreferences.Editor putInt(String k, int v) { store().put(k, v); return this; }
+        @Override public SharedPreferences.Editor putLong(String k, long v) { store().put(k, v); return this; }
+        @Override public SharedPreferences.Editor putFloat(String k, float v) { store().put(k, v); return this; }
+        @Override public SharedPreferences.Editor putBoolean(String k, boolean v) { store().put(k, v); return this; }
+        @Override public SharedPreferences.Editor remove(String k) { store().remove(k); return this; }
+        @Override public SharedPreferences.Editor clear() { store().clear(); return this; }
+        @Override public boolean commit() { return PrefsStore.flush(name); }
+        @Override public void apply() { PrefsStore.flush(name); }
     }
 }

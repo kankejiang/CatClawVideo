@@ -295,7 +295,7 @@ public final class GuardSession {
                 StringBuilder req = new StringBuilder("PROXY ");
                 // prefs 快照随行：so 读 SharedPreferences 判断登录态（夸克/UC Cookie 等）
                 List<String> pk = new ArrayList<>(), pv = new ArrayList<>();
-                for (var e : android.content.SharedPreferences.DATA.entrySet()) {
+                for (var e : android.content.PrefsStore.snapshot().entrySet()) {
                     String vs = e.getValue() == null ? "" : e.getValue().toString();
                     if (!vs.isEmpty()) { pk.add(e.getKey()); pv.add(vs); }
                 }
@@ -343,7 +343,7 @@ public final class GuardSession {
                 Object r = po.getMethod("proxy", java.util.Map.class).invoke(null, b);
                 if (r instanceof Object[] arr) { System.err.println("[guard] proxyInvoke → ProxyOrigin.proxy"); return arr; }
             } catch (Throwable t) {
-                System.err.println("[guard] proxyInvoke → ProxyOrigin 失败: " + t);
+                System.err.println("[guard] proxyInvoke → ProxyOrigin 失败: " + why(t));
             }
         }
         Object doVal = m.get("do");
@@ -354,16 +354,37 @@ public final class GuardSession {
                 Object r = mm.invoke(null, b);
                 if (r instanceof Object[] arr) { System.err.println("[guard] proxyInvoke → Cloud_" + dv); return arr; }
             } catch (Throwable t) {
-                System.err.println("[guard] proxyInvoke → Cloud_" + dv + " 失败: " + t);
+                System.err.println("[guard] proxyInvoke → Cloud_" + dv + " 失败: " + why(t));
             }
         }
-        // 兜底：Pan.proxyInput() 配置推送页
-        try {
-            Class<?> pan = realLoader.loadClass("com.github.catvod.spider.Pan");
-            Object r = pan.getMethod("proxyInput").invoke(null);
-            if (r instanceof Object[] arr) { System.err.println("[guard] proxyInvoke → Pan.proxyInput"); return arr; }
-        } catch (Throwable ignored) { }
+        // 兜底：Pan.proxyInput() 配置推送页 —— 只对「配置/输入」族生效。
+        // 必须收窄：它对任何 do 都返回非空 HTML，不加闸的话宿主就分不清
+        // 「爬虫不接这个 do」和「爬虫接了」，取流类请求会被整张 Cookie 页吞掉
+        // （2026-09-24 排查网盘扫码时确认）。
+        String doStr = doVal instanceof String s0 ? s0 : "";
+        if (doStr.equalsIgnoreCase("config") || doStr.equalsIgnoreCase("input")) {
+            try {
+                Class<?> pan = realLoader.loadClass("com.github.catvod.spider.Pan");
+                Object r = pan.getMethod("proxyInput").invoke(null);
+                if (r instanceof Object[] arr) { System.err.println("[guard] proxyInvoke → Pan.proxyInput"); return arr; }
+            } catch (Throwable ignored) { }
+        }
         return null;
+    }
+
+    /**
+     * 反射调用失败的可读根因。
+     * <para>{@code InvocationTargetException} 的 toString 只有类名、不含 cause，直接打它等于没打
+     * （2026-09-24 排查 {@code Cloud_quark} 时踩到）——剥到最底层 cause 并带栈顶几帧。</para>
+     */
+    private static String why(Throwable t) {
+        Throwable c = t;
+        while (c.getCause() != null) c = c.getCause();
+        StringBuilder sb = new StringBuilder(c.getClass().getSimpleName())
+                .append(": ").append(c.getMessage());
+        StackTraceElement[] st = c.getStackTrace();
+        for (int i = 0; i < Math.min(5, st.length); i++) sb.append("\n      at ").append(st[i]);
+        return sb.toString();
     }
 
     // ═══════════ 宿主注入 ═══════════

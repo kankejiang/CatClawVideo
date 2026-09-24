@@ -50,7 +50,34 @@ public class AlertDialog extends Dialog {
             if (neutral != null || neutralText.length() > 0) spec.put("neutral", neutralText.length() > 0 ? neutralText : "中性");
             JSONObject qr = findQr(view);
             if (qr != null) spec.put("qr", qr);
+            // 排障留痕：「弹了但没东西」只能靠这个看清 jar 到底往 setView 里塞了什么、
+            // 二维码像素有没有被桩接住（2026-09-24 扫码框空白的定位手段）
+            System.err.println("[ui] 视图树 " + describe(view) + " qr="
+                    + (qr == null ? "无" : qr.optInt("w") + "x" + qr.optInt("h")));
         } catch (Throwable ignored) { }
+    }
+
+    /** 把 View 树压成一行：{@code FrameLayout[ImageView(bmp=240x240,像素ok)][可点]}。 */
+    private static String describe(View v) {
+        if (v == null) return "null";
+        StringBuilder sb = new StringBuilder(v.getClass().getSimpleName());
+        if (v instanceof ImageView iv) {
+            android.graphics.Bitmap b = iv.getImageBitmap();
+            sb.append(b == null ? "(无图)" : "(bmp=" + b.getWidth() + "x" + b.getHeight()
+                    + (b.snapshotPixels() == null ? ",像素未捕获" : ",像素ok") + ")");
+        } else if (v instanceof android.widget.TextView t) {
+            sb.append(" \"").append(t.getText()).append("\"");
+        }
+        if (v.clickListener() != null) sb.append("[可点]");
+        if (v instanceof ViewGroup vg && vg.getChildCount() > 0) {
+            sb.append('[');
+            for (int i = 0; i < vg.getChildCount(); i++) {
+                if (i > 0) sb.append(',');
+                sb.append(describe(vg.getChildAt(i)));
+            }
+            sb.append(']');
+        }
+        return sb.toString();
     }
 
     /** 深挖视图树找带像素数据的 ImageView（扫码二维码）。 */

@@ -46,9 +46,17 @@ public class View {
 
     public android.os.Handler getHandler() { return new android.os.Handler(); }
 
-    public void setTag(Object tag) { }
+    /**
+     * ⚠ tag 必须真的存下来：jar 用它携带业务索引（网盘对话框给每个按钮
+     * {@code setTag(第几家盘)}，点击时 {@code ((Integer) v.getTag()).intValue()} 取回）。
+     * 早先这里是空实现 → getTag() 恒 null → 点击监听器一进来就 NPE，
+     * 宿主表现为「点了没反应、二维码不弹」（2026-09-24 实测栈：Pan.SN ← merge.Bu.onClick）。
+     */
+    private Object tag;
 
-    public Object getTag() { return null; }
+    public void setTag(Object t) { tag = t; }
+
+    public Object getTag() { return tag; }
 
     public void setBackgroundColor(int color) { }
 
@@ -60,7 +68,12 @@ public class View {
 
     public void setFocusableInTouchMode(boolean f) { }
 
-    public boolean performClick() { return false; }
+    /** Android 语义：触发本节点的 OnClickListener（jar 会自己调它模拟点击）。 */
+    public boolean performClick() {
+        if (clickListener == null) return false;
+        try { clickListener.onClick(this); } catch (Throwable ignored) { }
+        return true;
+    }
 
     public void bringToFront() { }
 
@@ -91,8 +104,15 @@ public class View {
     public void setAlpha(float alpha) { }
     public float getAlpha() { return 1f; }
     public void setElevation(float elevation) { }
-    public void setTag(int key, Object tag) { }
-    public Object getTag(int key) { return null; }
+    /** 带 key 的 tag（Android 用资源 id 区分多个附加数据），同样必须真存。 */
+    private java.util.Map<Integer, Object> tagged;
+
+    public void setTag(int key, Object t) {
+        if (tagged == null) tagged = new java.util.HashMap<>();
+        tagged.put(key, t);
+    }
+
+    public Object getTag(int key) { return tagged == null ? null : tagged.get(key); }
     public void setSelected(boolean selected) { }
     public boolean isSelected() { return false; }
     public void setClickable(boolean clickable) { }
@@ -141,7 +161,17 @@ public class View {
     //   jar 是预编译的，调用点描述符写死 `(Landroid/view/View$OnFocusChangeListener;)V`，
     //   用 Object 声明只会把 NoSuchMethodError 留到运行时（2026-09-24 实测 Pan.tF 踩到）。
     //   我们的嵌套接口方法签名与真实 Android 一致，jar 的匿名监听类能正常赋值进来。
-    public void setOnClickListener(OnClickListener l) { }
+    public void setOnClickListener(OnClickListener l) { clickListener = l; }
+    private OnClickListener clickListener;
+
+    /**
+     * jar 挂在节点上的点击监听。
+     * <para>宿主摊平 {@code setView} 的自定义 View 树时按它决定「哪一行可点」，
+     * 用户点击再回过来触发它——网盘「已登录+启用中」列表就是这么工作的。
+     * 早先这里是纯 no-op，监听器直接丢弃，所以对话框永远只有个空壳。</para>
+     */
+    public OnClickListener clickListener() { return clickListener; }
+
     public void setOnLongClickListener(OnLongClickListener l) { }
     public void setOnTouchListener(OnTouchListener l) { }
     public void setOnKeyListener(OnKeyListener l) { }

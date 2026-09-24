@@ -10,7 +10,14 @@ public class LinearLayout extends ViewGroup {
     public LinearLayout(Context c) { super(c); }
     public LinearLayout(Context c, AttributeSet attrs) { super(c, attrs); }
     public void setOrientation(int o) { }
-    public void addView(View v) { }
+
+    /**
+     * ⚠ 必须转交 {@code super}：jar 的调用点描述符写死 {@code LinearLayout.addView(View)}，
+     * 这里留空实现会把 ViewGroup 那个真正存子节点的实现挡掉 —— 网盘对话框的
+     * LinearLayout 于是永远是空的，宿主只收到一个没有内容的框（2026-09-24 实测）。
+     */
+    @Override public void addView(View v) { super.addView(v); }
+
     public void setGravity(int gravity) { }
     public void setWeightSum(float weightSum) { }
 

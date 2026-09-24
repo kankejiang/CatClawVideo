@@ -3,7 +3,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 public interface SharedPreferences {
-    Map<String, Object> DATA = new HashMap<>();
+    /** 存储后端在 {@link PrefsStore}：按 prefs 文件名分文件、并落盘成 Android 同款 XML。 */
     String getString(String key, String defValue);
     Set<String> getStringSet(String key, Set<String> defValues);
     int getInt(String key, int defValue);

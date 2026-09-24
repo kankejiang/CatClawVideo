@@ -43,11 +43,20 @@ public final class UiBridge {
         public final DialogInterface.OnClickListener neutral;
         public final DialogInterface.OnCancelListener cancel;
         public final DialogInterface.OnDismissListener dismiss;
+        /**
+         * 条目来自摊平的自定义 View 树 → 点完**不关框**。
+         * <para>Android 里 {@code setItems} 的列表框点一项就自动收，但网盘那种
+         * 「盘名 + 启用/停用」的自定义视图框点了要留着（用户会连续切几家盘，
+         * 点盘名还会再弹扫码框）。照 setItems 语义一收，宿主就表现为一点即关。</para>
+         */
+        public final boolean keepOpen;
 
         public Pending(Dialog d, DialogInterface.OnClickListener i, DialogInterface.OnClickListener p,
                        DialogInterface.OnClickListener n, DialogInterface.OnClickListener ne,
-                       DialogInterface.OnCancelListener c, DialogInterface.OnDismissListener dis) {
+                       DialogInterface.OnCancelListener c, DialogInterface.OnDismissListener dis,
+                       boolean keepOpen) {
             dialog = d; items = i; positive = p; negative = n; neutral = ne; cancel = c; dismiss = dis;
+            this.keepOpen = keepOpen;
         }
     }
 
@@ -90,7 +99,7 @@ public final class UiBridge {
         try { emit(new JSONObject().put("ev", "ui-toast").put("text", text == null ? "" : text.toString())); } catch (Throwable ignored) { }
     }
 
-    /** 二维码事件载荷：把 Bitmap 的黑白矩阵打包成 {"w":..,"h":..,"pixels":[1,0,..]}（1=黑）。 */
+    /** 二维码事件载荷：把 Bitmap 的黑白矩阵打包成 {"w","h","pixels","png"}（1=黑；png 是放大 4 倍的 PNG base64）。 */
     public static JSONObject qrJson(Bitmap bm) {
         if (bm == null) return null;
         int[] px = bm.snapshotPixels();
@@ -99,8 +108,38 @@ public final class UiBridge {
             int w = bm.getWidth(), h = bm.getHeight();
             JSONArray arr = new JSONArray();
             for (int v : px) arr.put(((v & 0xFF) < 128 && ((v >> 24) & 0xFF) > 0) || ((v & 0xFFFFFF) == 0 && ((v >> 24) & 0xFF) > 0) ? 1 : 0);
-            return new JSONObject().put("w", w).put("h", h).put("pixels", arr);
+            JSONObject o = new JSONObject().put("w", w).put("h", h).put("pixels", arr);
+            // 同时出一张 PNG：宿主手搓 24 位 BMP 在 WinUI 上渲染不出来（整页只剩「取消」），
+            // 而 java.desktop（ImageIO）在随包的 jlink 运行时里就有，桥侧出图最稳。
+            String png = pngB64(px, w, h);
+            if (png != null) o.put("png", png);
+            return o;
         } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** 黑白矩阵 → 放大 4 倍的 PNG（base64，无换行）。任何 AWT 异常都退回 null（宿主仍可用 pixels 兜底）。 */
+    private static String pngB64(int[] px, int w, int h) {
+        try {
+            final int scale = 4;
+            int ow = w * scale, oh = h * scale;
+            java.awt.image.BufferedImage img = new java.awt.image.BufferedImage(
+                    ow, oh, java.awt.image.BufferedImage.TYPE_INT_RGB);
+            for (int y = 0; y < oh; y++) {
+                int sy = y / scale;
+                for (int x = 0; x < ow; x++) {
+                    int m = px[sy * w + x / scale];
+                    boolean black = (m & 0xFF) < 128 && ((m >> 24) & 0xFF) > 0
+                            || (m & 0xFFFFFF) == 0 && ((m >> 24) & 0xFF) > 0;
+                    img.setRGB(x, y, black ? 0xFF000000 : 0xFFFFFFFF);
+                }
+            }
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            if (!javax.imageio.ImageIO.write(img, "png", bos)) return null;
+            return java.util.Base64.getEncoder().encodeToString(bos.toByteArray());
+        } catch (Throwable t) {
+            System.err.println("[ui] 二维码转 PNG 失败（宿主改用 pixels 兜底）: " + t);
             return null;
         }
     }
@@ -113,8 +152,13 @@ public final class UiBridge {
     public static void dispatchResult(JSONObject req) {
         final int seq = req.optInt("seq", -1);
         final int which = req.optInt("which", -2);
-        Pending p = PENDING.remove(seq);
+        final Pending p = PENDING.get(seq);
         if (p == null) return;
+        // 摊平的自定义视图框：**只有点条目（which≥0）不收框**，点按钮（取消/确定）照旧收 ——
+        // 网盘那种框用户要连续切几家盘；而「取消」就是真取消。Android 的 which 常量：
+        // BUTTON_POSITIVE=-1 / NEGATIVE=-2 / NEUTRAL=-3，与宿主回传值一致。
+        final boolean stay = p.keepOpen && which >= 0;
+        if (!stay) PENDING.remove(seq);
         final Dialog d = p.dialog;
         Thread t = new Thread(() -> {
             try {
@@ -123,6 +167,7 @@ public final class UiBridge {
                 else if (which == DialogInterface.BUTTON_NEGATIVE && p.negative != null) p.negative.onClick(d, which);
                 else if (which == DialogInterface.BUTTON_NEUTRAL && p.neutral != null) p.neutral.onClick(d, which);
             } catch (Throwable ig) { }
+            if (stay) return;
             try { if (p.dismiss != null) p.dismiss.onDismiss(d); } catch (Throwable ig) { }
             try { emit(new JSONObject().put("ev", "ui-dismiss").put("seq", seq).put("cancelled", false)); } catch (Throwable ig) { }
         }, "ui-result-" + seq);

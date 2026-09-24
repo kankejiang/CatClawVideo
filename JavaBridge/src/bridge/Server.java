@@ -127,7 +127,7 @@ public class Server {
                         // 网盘登录态读取：jar 的 proxyInput/do=xx 推送把 Cookie 写 SharedPreferences.DATA，
                         // 宿主「已登录+启用中」对话框按它渲染状态（key 含 quark/uc/baidu/ali 等）
                         org.json.JSONArray arr = new org.json.JSONArray();
-                        for (var e : android.content.SharedPreferences.DATA.entrySet()) {
+                        for (var e : android.content.PrefsStore.snapshot().entrySet()) {
                             Object v = e.getValue();
                             arr.put(new JSONObject().put("key", e.getKey())
                                     .put("value", v == null ? "" : v.toString()));
@@ -452,6 +452,11 @@ public class Server {
                 }
                 case "playerContent" -> result = cls.getMethod("playerContent", String.class, String.class, List.class)
                         .invoke(instance, args.optString(0), args.optString(1), new ArrayList<String>());
+                // TVBox SourceViewModel.doAction 对等：卡片自带 action JSON（如网盘「登入自己网盘」）
+                // → spider.action(String)。缺这条时宿主只能走 detailContent 兜底，
+                // jar 里由 action 建出的原生对话框/扫码（Pan.showInputQRCode）永远到不了 UI 层。
+                case "action" -> result = cls.getMethod("action", String.class)
+                        .invoke(instance, args.optString(0));
                 default -> throw new IllegalArgumentException("unknown method: " + method);
             }
             var out = result == null ? "{}" : result.toString();
