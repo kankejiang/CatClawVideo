@@ -176,6 +176,14 @@ public class VodItem : INotifyPropertyChanged
     /// </summary>
     public string Action { get; set; } = string.Empty;
 
+    /// <summary>
+    /// 卡片类型标记（协议 <c>vod_tag</c>）。网盘源用它表达「这是一层目录」：
+    /// <c>folder</c> = 点进去要用本条目的 <see cref="Id"/> 当分类 ID 重新拉列表，
+    /// <c>cover</c> = 同样重拉但换封面式排版。都不是影片，绝不能走 detailContent。
+    /// （TVBox <c>GridFragment.onItemClick</c> 里 <c>video.tag</c> 的语义。）
+    /// </summary>
+    public string Tag { get; set; } = string.Empty;
+
     /// <summary>更新说明（如「更新至12集」「HD」）</summary>
     public string? Remarks { get; set; }
 
@@ -236,6 +244,14 @@ public class PlayRequest
 
     /// <summary>播放地址（直链）</summary>
     public string Url { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 爬虫给的失败原因（协议 <c>msg</c> / <c>errMsg</c>）。
+    /// <para>网盘源尤其重要：像「夸克盘容量不足,请购买会员扩容或清理空间」这类是**用户自己的盘**
+    /// 的状态,`url` 会返回空。此时绝不能把剧集 id 当地址喂给播放器 —— 那只会得到一句
+    /// 毫无信息量的「播放失败: Source error」（2026-09-24 真机实测）。</para>
+    /// </summary>
+    public string Message { get; set; } = string.Empty;
 
     /// <summary>请求播放地址时需要的 Referer（TVBox 源常见防盗链要求）</summary>
     public string? Referer { get; set; }

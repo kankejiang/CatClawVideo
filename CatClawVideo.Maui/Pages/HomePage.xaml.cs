@@ -453,13 +453,22 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
     {
         if (_vm.Site is null) return;
 
-        // Guard 系网盘配置入口（登入自己网盘/排序等数字 id 卡片）：不进播放页——
-        // 直接走解析链（jar 解析 UI）弹「已登录+启用中」对话框/扫码二维码，宿主展示
-        if (item.Id.Length <= 4 && uint.TryParse(item.Id, out _) &&
-            _vm.Site.Api.StartsWith("csp_", StringComparison.OrdinalIgnoreCase) &&
-            _vm.Site.Api.EndsWith("Guard", StringComparison.OrdinalIgnoreCase))
+        // TVBox GridFragment.onItemClick 的优先级照搬：action 先于 tag。
+        // ① 带 action 的卡片是「操作入口」（网盘登录/清除 Cookie/排序…），交给爬虫的
+        //    action(String) —— 只有这条路会弹 jar 的原生对话框与扫码二维码。
+        //    （旧实现用「数字 id + csp_*Guard」猜，真机确认 8 张卡全带 action，按字段判更准。）
+        if (item.Action.Length > 0)
         {
             _ = CatClawVideo.Maui.Services.SpiderUiHost.OpenDriveEntryAsync(_vm.Site, item);
+            return;
+        }
+
+        // ② tag=folder/cover = 网盘里的一层目录：点它要用本条目 ID 当分类 ID 重新拉列表
+        //    （TVBox changeView），喂给 detailContent/playerContent 会把目录路径当播放地址，
+        //    表现为「播放失败：MalformedURLException: no protocol: /movies/137018/@folder」。
+        if (item.Tag is "folder" or "cover")
+        {
+            _ = _vm.SelectCategoryAsync(new VodCategory { Id = item.Id, Name = item.Title });
             return;
         }
 

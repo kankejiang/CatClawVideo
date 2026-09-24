@@ -70,6 +70,7 @@ public static class SpiderJsonParser
                         Director = NullToEmpty(GetStr(v, "vod_director")),
                         Description = NullToEmpty(GetStr(v, "vod_content")),
                         Action = GetAction(v),
+                        Tag = NullToEmpty(GetStr(v, "vod_tag")),
                         Score = GetDouble(v, "vod_score"),
                     });
                 }
@@ -145,6 +146,8 @@ public static class SpiderJsonParser
             // Guard 系网盘源的宿主钩子：danmaku 字段指向本地 proxy（do=danmu&url=<vod_id>），
             // GET 该 URL 回调 jar 的 proxy(Map) 触发网盘配置对话框（TVBox 弹幕加载语义）
             play.DanmakuUrl = GetStr(root, "danmaku");
+            // 失败原因：网盘源 url 为空时靠这两个字段说明为什么（盘满 / 转存失败 / 无权限…）
+            play.Message = NullToEmpty(GetStr(root, "errMsg").Length > 0 ? GetStr(root, "errMsg") : GetStr(root, "msg"));
             // TVBox PlayFragment L1198：parse 缺省按 "1"；但直链源（m3u8/mp4）不嗅探直接播，
             // 故缺省语义收敛为「非视频格式 URL 即走解析」。显式 parse=0/jx=0 必须直连。
             var explicitParse = (bool?)null;

@@ -89,7 +89,8 @@ public class SpiderVodProvider : IVodSourceProvider, IActionVodSourceProvider
         var raw = await rt.CategoryContentAsync(site, category.Id, page.ToString(), ct);
         var items = SpiderJsonParser.ParseItems(raw, site.Key);
         _log?.Invoke($"[解析] {site.Key}.category(tid={category.Id},pg={page}) → {raw.Length}B → {items.Count} 条"
-                     + $"（带 action {items.Count(i => i.Action.Length > 0)} 条）");
+                     + $"（带 action {items.Count(i => i.Action.Length > 0)}，"
+                     + $"tag={string.Join('/', items.Select(i => i.Tag).Where(t => t.Length > 0).Distinct())}）");
         return items;
     }
 
@@ -208,7 +209,13 @@ public class SpiderVodProvider : IVodSourceProvider, IActionVodSourceProvider
         _log?.Invoke($"[解析] {site.Key}.playerContent(flag={episode.Flag},id={episode.Url}) → {json}");
         var play = SpiderJsonParser.ParsePlayRequest(json, episode.Name);
         if (string.IsNullOrEmpty(play.Url))
-            play.Url = episode.Url;
+        {
+            // 爬虫明确给了失败原因（网盘「容量不足」这类）时**不要**拿剧集 id 兜底：
+            // 网盘文件的 id 是一整段 JSON,喂给播放器只会 MalformedURLException,
+            // 把真正该告诉用户的原因盖成「Source error」。
+            if (play.Message.Length == 0) play.Url = episode.Url;
+            else return play;
+        }
 
         // 荐片私有地址（tvbox-xg: / ftp…gbl.114s）：交宿主 P2P 引擎转成本地 http 地址
         var jp = TryResolveJianpian(play, episode);

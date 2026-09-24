@@ -226,7 +226,14 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
             ShowBuffering(false);
             _playing = false;
             UpdatePlayIcon();
-            try { await ShowTipAsync($"播放失败：{Player.ErrorMessage ?? "格式或网络错误"}"); }
+            try
+            {
+                // 协议侧给过原因时优先用它，比 ExoPlayer 的 "Source error" 有用得多
+                var why = _resolvedPlay?.Message;
+                await ShowTipAsync(string.IsNullOrEmpty(why)
+                    ? $"播放失败：{Player.ErrorMessage ?? "格式或网络错误"}"
+                    : $"播放失败：{why}");
+            }
             catch { }
         });
 
@@ -1531,6 +1538,16 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
                 ShowBufferingIndeterminate(false);
                 await Shell.Current.GoToAsync(
                     $"webpage?title={Uri.EscapeDataString(episode.Name)}&url={Uri.EscapeDataString(play.Url)}");
+                return;
+            }
+
+            // ── 解析失败但协议带了原因（playerContent 的 msg/errMsg）──
+            // 例：网盘容量不足 / 未登录 / 需要会员。直接抛给播放器只会 Source error，
+            // 用户看不到是订阅侧拒绝的（2026-09-24 真机实测「夸克盘容量不足」被吞成 Source error）。
+            if (string.IsNullOrEmpty(play.Url) && play.Message.Length > 0)
+            {
+                ShowBufferingIndeterminate(false);
+                await ShowTipAsync(play.Message);
                 return;
             }
 
