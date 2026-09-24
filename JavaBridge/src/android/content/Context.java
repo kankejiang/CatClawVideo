@@ -138,14 +138,24 @@ public class Context {
 
         private Map<String, Object> store() { return PrefsStore.store(name); }
 
-        @Override public String getString(String key, String defValue) { Object v = store().get(key); return v instanceof String ? (String) v : defValue; }
+        @Override public String getString(String key, String defValue) {
+            Object v = store().get(key);
+            // 留痕：凭据类键的"读"必须看得见 —— 只看到写会误判"没写"，
+            // 实际可能是 jar 根本没走 SharedPreferences 这条路（2026-09-25 网盘登录态排障）
+            boolean cred = key != null && (key.contains("_ck") || key.endsWith("St") || key.contains("token") || key.contains("_ut"));
+            if (cred) System.err.println("[prefs] get " + name + "." + key + " → " + (v instanceof String s ? (s.isEmpty() ? "空" : s.length() + "B") : "缺省"));
+            return v instanceof String ? (String) v : defValue;
+        }
         @Override public java.util.Set<String> getStringSet(String key, java.util.Set<String> defValue) { Object v = store().get(key); return v instanceof java.util.Set ? (java.util.Set<String>) v : defValue; }
         @Override public int getInt(String key, int defValue) { Object v = store().get(key); return v instanceof Integer ? (Integer) v : defValue; }
         @Override public long getLong(String key, long defValue) { Object v = store().get(key); return v instanceof Long ? (Long) v : defValue; }
         @Override public float getFloat(String key, float defValue) { Object v = store().get(key); return v instanceof Float ? (Float) v : defValue; }
         @Override public boolean getBoolean(String key, boolean defValue) { Object v = store().get(key); return v instanceof Boolean ? (Boolean) v : defValue; }
         @Override public boolean contains(String key) { return store().containsKey(key); }
-        @Override public SharedPreferences.Editor edit() { return new MemEditor(name); }
+        @Override public SharedPreferences.Editor edit() {
+            System.err.println("[prefs] edit(" + name + ")");
+            return new MemEditor(name);
+        }
         @Override public void registerOnSharedPreferenceChangeListener(OnSharedPreferenceChangeListener l) { }
         @Override public void unregisterOnSharedPreferenceChangeListener(OnSharedPreferenceChangeListener l) { }
     }

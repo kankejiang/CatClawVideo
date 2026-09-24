@@ -32,16 +32,32 @@ public class Handler {
                 return t;
             });
 
+    /** 按 Runnable 身份记待执行任务，供 {@link #cancel} 与 removeCallbacks 取消。 */
+    private static final Map<Object, ScheduledFuture<?>> SCHEDULED =
+            java.util.Collections.synchronizedMap(new IdentityHashMap<>());
+
     /** 供 {@link android.view.View#postDelayed} 等复用：桌面统一的"延迟执行"落点。 */
     public static ScheduledFuture<?> schedule(Runnable r, long delayMillis) {
         if (r == null) return null;
-        return POOL.schedule(() -> {
+        ScheduledFuture<?> f = POOL.schedule(() -> {
+            SCHEDULED.remove(r);
             try {
                 r.run();
             } catch (Throwable t) {
                 t.printStackTrace();
             }
         }, Math.max(0L, delayMillis), TimeUnit.MILLISECONDS);
+        SCHEDULED.put(r, f);
+        return f;
+    }
+
+    /** 取消某个 Runnable 尚未执行的延迟任务（{@code View.removeCallbacks} 也走这里）。 */
+    public static boolean cancel(Runnable r) {
+        if (r == null) return false;
+        ScheduledFuture<?> f = SCHEDULED.remove(r);
+        if (f == null) return false;
+        f.cancel(false);
+        return true;
     }
 
     public interface Callback {
@@ -50,9 +66,6 @@ public class Handler {
 
     private final Looper looper;
     private final Callback callback;
-    /** 按 Runnable 身份记录待执行任务，供 removeCallbacks/removeCallbacksAndMessages 取消。 */
-    private final Map<Object, List<ScheduledFuture<?>>> pending =
-            java.util.Collections.synchronizedMap(new IdentityHashMap<>());
 
     public Handler() { this(Looper.getMainLooper(), null); }
 
@@ -75,7 +88,7 @@ public class Handler {
 
     public boolean postDelayed(Runnable r, long delayMillis) {
         if (r == null) return false;
-        track(r, schedule(r, delayMillis));
+        schedule(r, delayMillis);
         return true;
     }
 
@@ -83,7 +96,7 @@ public class Handler {
 
     public boolean sendMessageDelayed(Message m, long delayMillis) {
         if (m == null) return false;
-        track(m, schedule(() -> deliver(m), delayMillis));
+        schedule(() -> deliver(m), delayMillis);
         return true;
     }
 
@@ -112,22 +125,8 @@ public class Handler {
     public void removeMessages(int what) { /* 桌面不区分 what：任务一旦排入即视为已投递 */ }
 
     public void removeCallbacksAndMessages(Object token) {
-        List<ScheduledFuture<?>> all = new ArrayList<>();
-        synchronized (pending) {
-            for (List<ScheduledFuture<?>> l : pending.values()) all.addAll(l);
-            pending.clear();
-        }
+        List<ScheduledFuture<?>> all;
+        synchronized (SCHEDULED) { all = new ArrayList<>(SCHEDULED.values()); SCHEDULED.clear(); }
         for (ScheduledFuture<?> f : all) f.cancel(false);
-    }
-
-    private void track(Object key, ScheduledFuture<?> f) {
-        if (key == null || f == null) return;
-        pending.computeIfAbsent(key, k -> new ArrayList<>()).add(f);
-    }
-
-    private void cancel(Object key) {
-        List<ScheduledFuture<?>> l = pending.remove(key);
-        if (l == null) return;
-        for (ScheduledFuture<?> f : l) f.cancel(false);
     }
 }

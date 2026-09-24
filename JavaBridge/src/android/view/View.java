@@ -52,6 +52,13 @@ public class View {
         return true;
     }
 
+    /** 真实存在被调用（{@code ProxyOrigin} 用它撤弹幕/轮询的重试），缺了就是 NoSuchMethodError。 */
+    public boolean removeCallbacks(Runnable action) {
+        if (action == null) return false;
+        android.os.Handler.cancel(action);
+        return true;
+    }
+
     public android.os.Handler getHandler() { return new android.os.Handler(); }
 
     /**
