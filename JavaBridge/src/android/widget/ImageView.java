@@ -7,11 +7,14 @@ import android.util.AttributeSet;
 import android.view.View;
 
 public class ImageView extends View {
+    private Bitmap bitmap;
+
     public ImageView() { super(); }
     public ImageView(Context c) { super(c); }
     public ImageView(Context c, AttributeSet attrs) { super(c, attrs); }
 
-    public void setImageBitmap(Bitmap bm) { }
+    public void setImageBitmap(Bitmap bm) { bitmap = bm; }
+    public Bitmap getImageBitmap() { return bitmap; }
     public void setImageDrawable(Drawable drawable) { }
     public void setImageResource(int resId) { }
     public void setScaleType(ScaleType scaleType) { }

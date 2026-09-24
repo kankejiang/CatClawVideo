@@ -82,6 +82,11 @@ static void *g_localurl_fn = NULL;    // Java_..._getLocalUrl 的函数指针
 // 所以由代理线程发起请求、**主线程**执行 getLocalUrl，用一组 volatile 变量握手。
 static volatile int g_rearm_req = 0, g_rearm_done = 0, g_rearm_port = 0;
 static struct JNINativeInterface *g_env_ptr = NULL;
+// 每线程 env：thunder 线程取默认（thunder env），guard 线程置成 guard env（guard.c）
+static __thread struct JNINativeInterface *g_tls_env = NULL;
+// guard 模块命令钩子（实现在 guard.c，经 ctrlloop 下发）
+void guard_on_cmd(const char *cmd);
+int guard_init(void);
 
 // —— 数组辅助的前置声明（实现在后面的"字节数组 / 整数数组"节）——
 typedef struct { jsize n; int *v; } JIntArray;
@@ -772,7 +777,7 @@ static jobject my_NewObjectA(JNIEnv *env, jclass clazz, jmethodID mid, const jva
 // 这里给一个永远返回同一个 env 的最小实现。
 static jint vm_AttachCurrentThread(JavaVM *vm, JNIEnv **penv, void *args) {
     (void)vm; (void)args;
-    if (penv) *penv = (JNIEnv *)g_env_ptr;
+    if (penv) *penv = (JNIEnv *)(g_tls_env ? g_tls_env : g_env_ptr);
     return JNI_OK;
 }
 static jint vm_AttachCurrentThreadAsDaemon(JavaVM *vm, JNIEnv **penv, void *args) {
@@ -781,7 +786,17 @@ static jint vm_AttachCurrentThreadAsDaemon(JavaVM *vm, JNIEnv **penv, void *args
 static jint vm_DetachCurrentThread(JavaVM *vm) { (void)vm; return JNI_OK; }
 static jint vm_GetEnv(JavaVM *vm, void **penv, jint version) {
     (void)vm; (void)version;
-    if (penv) *penv = (JNIEnv *)g_env_ptr;
+    // ⚠ 层级语义（2026-09-24 对照 ftyguard so 反汇编实测）：so 侧 `(*env)->` 是三级
+    //   解引用（*env = 表指针的指针），GetEnv 必须填「指向表指针变量的地址」。
+    //   thunder 线程沿用 g_env_ptr（thunder so 模式一致，正常工作）；
+    //   guard 线程填 &g_tls_env —— 其值恰为 &guard_iface（二级 ✓）。
+    if (g_tls_env) {
+        if (penv) *penv = (void *)&g_tls_env;
+    } else {
+        if (penv) *penv = (void *)g_env_ptr;
+    }
+    printf("[vm] GetEnv(ver=%d) -> filled=%p (tls=%p default=%p)\n", version,
+           penv ? *(void **)penv : NULL, (void *)g_tls_env, (void *)g_env_ptr);
     return JNI_OK;
 }
 static jint vm_DestroyJavaVM(JavaVM *vm) { (void)vm; return JNI_OK; }
@@ -1001,12 +1016,19 @@ static void run_full_chain(JNIEnv *env, void *sdk) {
     printf("[chain] ── createBtMagnetTask ──\n");
     const char *magnet = getenv("MAGNET");
     if (!magnet) magnet = "magnet:?xt=urn:btih:1363FB911E8603FDE757C9B02979D508DE2D195B";
+    // ★ MAGNET=none → 跳过整条磁力链（guard VM 用）：引擎对无效磁力串的解析可能长时间
+    //   阻塞（实测卡死在 createBtMagnetTask，main_loop 进不去 → GLOAD/控制通道全瘫）
+    long id = -1;
+    if (!strcmp(magnet, "none")) {
+        printf("[chain] MAGNET=none → 跳过磁力链（控制通道承载任务）\n");
+    } else {
     printf("[chain]   magnet = %s\n", magnet);
     JObj *taskId = new_obj("com/xunlei/downloadlib/parameter/GetTaskId");
     jint mrc = createMagnet(env, (jobject)thiz, (jstring)magnet, (jstring)EMU_SAVE_PATH,
                             (jstring)"cc-test", (jobject)taskId);
-    long id = obj_get_long(taskId, "mTaskId");
+    id = obj_get_long(taskId, "mTaskId");
     printf("[chain] ← createBtMagnetTask 返回 %d（9000=XL_NO_ERRNO 成功），taskId = %ld\n", (int)mrc, id);
+    }   // end of magnet chain (MAGNET=none skip)
 
     // 任务建好但还没跑 —— 必须显式 startTask（并设 GsState），否则永远是"未开始"
     if (id > 0 && startTask) {
@@ -1208,6 +1230,9 @@ static void run_full_chain(JNIEnv *env, void *sdk) {
 // ↓↓↓ 控制通道（宿主 App ⇄ guest）：用 qemu 用户网络的 10.0.2.2 回连宿主 ↓↓↓
 #include "ctrlloop.c"
 
+// ↓↓↓ Guard 模块（ftyguard so 承载）：依赖 ctrlloop 的 g_ctrl_port，必须在其后 ↓↓↓
+#include "guard.c"
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);   // 关缓冲：崩溃前也要能看到日志
     printf("[v2] ===== 迷你 JNIEnv + 首次真调用 =====\n");
@@ -1285,6 +1310,9 @@ int main(void) {
     struct JNINativeInterface *envp = &iface;
     g_env_ptr = &iface;
     JNIEnv *env = (JNIEnv *)&envp;
+
+    // Guard 模块（ftyguard so 承载）：thunder env 就绪后启动，独立线程 + 独立 env
+    guard_init();
 
     void *sdk = dlopen("libxl_thunder_sdk.so", RTLD_NOW);
     if (!sdk) { printf("[v2] dlopen 失败: %s\n", dlerror()); return 1; }

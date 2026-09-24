@@ -27,7 +27,7 @@ import java.util.List;
  */
 public class Server {
 
-    private static final HashMap<String, Object> SPIDERS = new HashMap<>();
+    private static final java.util.concurrent.ConcurrentHashMap<String, Object> SPIDERS = new java.util.concurrent.ConcurrentHashMap<>();
     /** jar 集合 -> 类加载器。按 jar 集合分桶，而不是全局单例。 */
     private static final HashMap<String, URLClassLoader> LOADERS = new HashMap<>();
     private static final Object LOCK = new Object();
@@ -67,41 +67,180 @@ public class Server {
         // data 目录：spider 的 Context 文件操作都落在 App 约定的桥工作目录
         System.setProperty("data.dir", new File("data").getAbsolutePath());
         BufferedReader in = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
+        // ⚠ proxy op 必须与 call 并行：call(detailContent) 在主循环同步执行期间，spider 内部
+        //   会同步发 HTTP 请求（do=config）→ 宿主 → proxy op。若在主循环排队，call 不返回
+        //   proxy 就轮不到 → 死锁到 HTTP 超时 → spider 拿错误文本喂 Gson 炸（2026-09-24 实测）。
+        //   协议响应按 id 匹配（宿主 RoundTripAsync），异步乱序输出安全。
+        java.util.concurrent.ExecutorService proxyPool = java.util.concurrent.Executors.newFixedThreadPool(4);
         String line;
         while ((line = in.readLine()) != null) {
             if (line.isBlank()) continue;
             String out;
+            long id;
+            boolean async;
+            final JSONObject req;
             try {
-                JSONObject req = new JSONObject(line);
+                req = new JSONObject(line);
                 String op = req.optString("op");
                 if ("exit".equals(op)) break;
-                long id = req.optLong("id", -1);
-                try {
-                    Object result = switch (op) {
-                        case "load" -> load(req.optString("site"), req.optString("className"), req.optString("ext"), req.optJSONArray("jars"));
-                        case "call" -> call(req.optString("site"), req.optString("method"), req.optJSONArray("args"));
-                        case "ping" -> "pong";
-                        default -> throw new IllegalArgumentException("unknown op: " + op);
-                    };
-                    out = new JSONObject().put("id", id).put("ok", true)
-                            .put("result", result == null ? JSONObject.NULL : result).toString();
-                } catch (Throwable t) {
+                // 宿主回传对话框用户操作（无响应回执；线程池里回调 jar listener——
+                // 回调可能继续弹下一个框/发网络请求）
+                if ("ui-result".equals(op)) {
+                    final JSONObject freq = req;
+                    proxyPool.submit(() -> UiBridge.dispatchResult(freq));
+                    continue;
+                }
+                id = req.optLong("id", -1);
+                async = "proxy".equals(op);
+            } catch (Exception e) {
+                System.out.println(new JSONObject().put("id", -1).put("ok", false)
+                        .put("error", "bad request: " + e).toString());
+                continue;
+            }
+            final long fid = id;
+            final String fop = req.optString("op");
+            if (async) {
+                proxyPool.submit(() -> {
+                    String o;
+                    try {
+                        Object result = proxy(req.optString("site"), req.optJSONObject("query"), req.optString("outFile"));
+                        o = new JSONObject().put("id", fid).put("ok", true)
+                                .put("result", result == null ? JSONObject.NULL : result).toString();
+                    } catch (Throwable t) {
+                        Throwable c = t;
+                        while (c.getCause() != null) c = c.getCause();
+                        o = new JSONObject().put("id", fid).put("ok", false)
+                                .put("error", c.getClass().getSimpleName() + ": " + c.getMessage()).toString();
+                    }
+                    System.out.println(o);
+                });
+                continue;
+            }
+            try {
+                Object result = switch (fop) {
+                    case "load" -> loadFull(req.optString("site"), req.optString("className"), req.optString("ext"), req.optJSONArray("jars"),
+                            req.optString("shellJar", null), req.optString("rawJar", null), req.optString("realJar", null),
+                            req.optInt("guardPort", 0));
+                    case "call" -> call(req.optString("site"), req.optString("method"), req.optJSONArray("args"));
+                    case "ping" -> "pong";
+                    case "get-prefs" -> {
+                        // 网盘登录态读取：jar 的 proxyInput/do=xx 推送把 Cookie 写 SharedPreferences.DATA，
+                        // 宿主「已登录+启用中」对话框按它渲染状态（key 含 quark/uc/baidu/ali 等）
+                        org.json.JSONArray arr = new org.json.JSONArray();
+                        for (var e : android.content.SharedPreferences.DATA.entrySet()) {
+                            Object v = e.getValue();
+                            arr.put(new JSONObject().put("key", e.getKey())
+                                    .put("value", v == null ? "" : v.toString()));
+                        }
+                        yield arr.toString();
+                    }
+                    default -> {
+                        // 端口下发：桥内无 JNI（Android 走 TvBoxCompatBridge.SetProxyPort），走协议直写静态字段
+                        if ("setProxyPort".equals(fop)) {
+                            com.github.catvod.crawler.SpiderApi.setHostProxyPort(req.optInt("port"));
+                            yield "ok";
+                        }
+                        throw new IllegalArgumentException("unknown op: " + fop);
+                    }
+                };
+                out = new JSONObject().put("id", id).put("ok", true)
+                        .put("result", result == null ? JSONObject.NULL : result).toString();
+            } catch (Throwable t) {
                     Throwable c = t;
                     while (c.getCause() != null) c = c.getCause();
+                    StringBuilder sb = new StringBuilder(c.getClass().getSimpleName() + ": " + c.getMessage());
+                    for (int i = 0; i < Math.min(8, c.getStackTrace().length); i++)
+                        sb.append(" | ").append(c.getStackTrace()[i]);
                     out = new JSONObject().put("id", id).put("ok", false)
-                            .put("error", c.getClass().getSimpleName() + ": " + c.getMessage()).toString();
+                            .put("error", sb.toString()).toString();
                 }
-            } catch (Exception e) {
-                out = new JSONObject().put("id", -1).put("ok", false).put("error", "bad request: " + e).toString();
-            }
             System.out.println(out);
             System.out.flush();
         }
     }
 
     private static String load(String site, String className, String ext, org.json.JSONArray jars) throws Exception {
+        return loadFull(site, className, ext, jars, null, null, null, 0);
+    }
+
+    /** 壳框架加载：shellJar=壳 dex 转换产物；rawJar=原始 Guard jar（assets/*.so 解密引擎）；realJar=解壳产物；
+     *  guardPort=Guard QEMU 解密服务端口（0=未启用 → 解密走 unidbg 会话）。 */
+    private static String loadFull(String site, String className, String ext, org.json.JSONArray jars,
+                                   String shellJar, String rawJar, String realJar, int guardPort) throws Exception {
         synchronized (LOCK) {
             if (SPIDERS.containsKey(site)) return "loaded";
+
+            // Guard QEMU 解密通道（2026-09-24 用户拍板架构）：解密/签名/proxyInvoke 走 Guard VM
+            // 里的 ftyguard so（ARM）；就绪后 unidbg 不再预热（首次回落时才懒起，见 GuardSession）
+            if (guardPort > 0) QemuGuardChannel.setPort(guardPort);
+
+            // 壳框架模式：shellJar/rawJar/realJar 由宿主下发（Guard 源）——壳实例跑在独立 loader，
+            // DexNative 解密优先走 QEMU 通道（guardPort>0 时），unidbg 会话懒加载兜底
+            if (shellJar != null && !shellJar.isEmpty()) {
+                if (guardPort <= 0 && rawJar != null && !rawJar.isEmpty()) GuardSession.ensureSession(new File(rawJar));
+                if (realJar != null && !realJar.isEmpty()) {
+                    ClassLoader realLoader = GuardSession.setRealLoader(realJar, null);
+                    // ⚠ realLoader 的 InitOrigin/Init 也要注入：真实类的解密器（merge.Ku.N）调
+                    //   InitOrigin.context().getSharedPreferences——不注入则壳框架触碰真实类静态
+                    //   时直接 NPE（2026-09-24 实测 Ku.N 堆栈）
+                    Context realCtx = new android.app.Application();
+                    for (String holder : new String[]{
+                            "com.github.catvod.spider.InitOrigin",
+                            "com.github.catvod.spider.Init",
+                            "com.github.catvod.spider.merge.InitOrigin"}) {
+                        injectStaticContext(realLoader, holder, realCtx);
+                    }
+                }
+                URLClassLoader shellLoader = new URLClassLoader(
+                        new URL[]{new File(shellJar).toURI().toURL()}, Server.class.getClassLoader());
+                Class<?> cls = shellLoader.loadClass("com.github.catvod.spider." + className);
+                Object instance = cls.getDeclaredConstructor().newInstance();
+                try { cls.getField("siteKey").set(instance, site); } catch (Throwable ignored) { }
+                try {
+                    cls.getMethod("initApi", com.github.catvod.crawler.SpiderApi.class)
+                            .invoke(instance, new com.github.catvod.crawler.SpiderApi());
+                } catch (NoSuchMethodException ignored) { }
+
+                // ⚠ 壳框架自身的公共类（merge.InitOrigin/merge.Z 等）在 **shellLoader** 里——
+                //   不注入 Context 的话壳的静态初始化直接 NPE（merge.Ku.N，2026-09-24 实测）。
+                //   与真实类路径同一套注入序列：Application 桩 → InitOrigin/Init/merge.InitOrigin
+                //   → siteKey → initApi → init。
+                Context appContext = new android.app.Application();
+                try {
+                    Class<?> initCls = shellLoader.loadClass("com.github.catvod.spider.Init");
+                    initCls.getMethod("init", Context.class).invoke(null, appContext);
+                } catch (Throwable ignored) { }
+                for (String holder : new String[]{
+                        "com.github.catvod.spider.InitOrigin",
+                        "com.github.catvod.spider.Init",
+                        "com.github.catvod.spider.merge.InitOrigin"}) {
+                    injectStaticContext(shellLoader, holder, appContext);
+                }
+
+                // ═══════════ TVBox ProtectedInitJar 对等实现（2026-09-24）═══════════
+                // 壳 jar 的 Init 有三个**非静态**字段：
+                //   ClassLoader oOo0oOo0Oo0oO0Oo / dalvik.system.DexClassLoader oOoOoOo0oOo0o0oO
+                //   android.app.Application oOoOoOoOoOoOoO0o
+                // TVBox 的 ProtectedInitJar.init() 会拿 Init.get() 单例，把 App 与
+                // DexNative.getLoader() 返回的 DexClassLoader 分别反射注入进去；
+                // **不注入则 Init.loader()/classLoader() 返回 null，jar 内部 loadClass 全废。**
+                // 我们此前只注入了 static 上下文，漏了这一步。
+                bindInitSingleton(shellLoader, appContext, realJar);
+                try {
+                    cls.getMethod("init", Context.class, String.class)
+                            .invoke(instance, new Context(), ext == null ? "" : ext);
+                } catch (NoSuchMethodException ignored) { }
+                for (String holder : new String[]{
+                        "com.github.catvod.spider.InitOrigin",
+                        "com.github.catvod.spider.merge.InitOrigin"}) {
+                    injectStaticContext(shellLoader, holder, appContext);
+                }
+
+                SPIDERS.put(site, instance);
+                System.err.println("[srv] 壳框架已加载: " + site + " (" + className + ")");
+                return "loaded";
+            }
+
             URLClassLoader loader = loaderFor(jars);
 
             // ⚠⚠ 必须在**实例化之前**注入 TVBox 公共类的 Context/Application。
@@ -160,6 +299,78 @@ public class Server {
      * ② 静态 init(Context) / init(Context, String)。
      * 类不存在或注入失败都静默忽略（不同年代的 jar 公共类名/签名不一致，注入是**尽力而为**）。
      */
+    /**
+     * TVBox {@code ProtectedInitJar.init()} 的对等实现：把 App 与 DexClassLoader 反射注入
+     * 壳框架 {@code Init} 的**非静态**字段。
+     *
+     * <p>壳 jar 的 Init 结构（javap 实测）：
+     * <pre>
+     *   private ClassLoader                  oOo0oOo0Oo0oO0Oo;
+     *   private dalvik.system.DexClassLoader oOoOoOo0oOo0o0oO;   ← bindDexLoader 的目标
+     *   private android.app.Application      oOoOoOoOoOoOoO0o;   ← bindContext 的目标
+     *   public static Init get();  public static DexClassLoader loader();
+     * </pre>
+     * 不注入 ⇒ {@code Init.loader() / classLoader()} 返回 <b>null</b> ⇒ jar 内部 loadClass 全废。</p>
+     *
+     * @param loader  {@code Init} 所在 ClassLoader（壳 jar 的 loader）
+     * @param ctx     注入用的 Application 桩
+     * @param realJar 解壳产物（.jar），造 {@code dalvik.system.DexClassLoader} 时指向它；空则跳过 loader 注入
+     */
+    private static void bindInitSingleton(ClassLoader loader, Context ctx, String realJar) {
+        Object init;
+        Class<?> initCls;
+        try {
+            initCls = loader.loadClass("com.github.catvod.spider.Init");
+            init = initCls.getMethod("get").invoke(null);
+        } catch (Throwable t) {
+            System.err.println("[srv] Init.get() 不可用，跳过单例注入: " + t);
+            return;
+        }
+        if (init == null) {
+            System.err.println("[srv] Init.get() 返回 null，跳过单例注入");
+            return;
+        }
+
+        Object dexLoader = null;
+        if (realJar != null && !realJar.isEmpty() && new File(realJar).isFile()) {
+            try {
+                dexLoader = new dalvik.system.DexClassLoader(realJar, loader);
+            } catch (Throwable t) {
+                System.err.println("[srv] 造 DexClassLoader 失败: " + t.getMessage());
+            }
+        }
+
+        int ctxN = 0, dalN = 0;
+        for (Class<?> t = initCls; t != null && t != Object.class; t = t.getSuperclass()) {
+            for (java.lang.reflect.Field f : t.getDeclaredFields()) {
+                if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
+                try {
+                    f.setAccessible(true);
+                    if (dexLoader != null && dalvik.system.DexClassLoader.class.isAssignableFrom(f.getType())) {
+                        f.set(init, dexLoader);
+                        dalN++;
+                    } else if (Context.class.isAssignableFrom(f.getType())) {
+                        f.set(init, ctx);
+                        ctxN++;
+                    }
+                } catch (Throwable ignored) { }
+            }
+        }
+
+        // TVBox 对加固包固定调这两个（其他 fork 的壳有；本壳 jar 无此方法 → 防御性调用即可）
+        try {
+            initCls.getMethod("replaceCloudDiskNames").invoke(null);
+            System.err.println("[srv] Init.replaceCloudDiskNames() ✓");
+        } catch (Throwable ignored) { }
+        try {
+            initCls.getMethod("startGoProxy", Context.class).invoke(null, ctx);
+            System.err.println("[srv] Init.startGoProxy(ctx) ✓");
+        } catch (Throwable ignored) { }
+
+        System.err.println("[srv] Init 单例注入完成: Application×" + ctxN + "  DexClassLoader×" + dalN
+                + (dexLoader != null ? "（" + new File(realJar).getName() + "）" : "（无 realJar，跳过）"));
+    }
+
     private static void injectStaticContext(ClassLoader loader, String className, Context ctx) {
         try {
             Class<?> c = loader.loadClass(className);
@@ -250,5 +461,139 @@ public class Server {
             }
             return out;
         }
+    }
+
+    /**
+     * 回调爬虫的 {@code proxy(Map)}（TVBox {@code ApiConfig.proxyLocal} → {@code spider.proxy(param)} 语义）。
+     *
+     * <p>宿主本地 <c>/proxy?do=config|danmu|ck…</c> 的响应体必须由<b>爬虫自己</b>产生：
+     * Guard 系网盘源（csp_MDriveGuard 等）的「云盘配置」JSON、荐片的 do=ck 握手都走这里。
+     * 不转发的话爬虫拿到「missing url」文本 → 内部 Gson 解析炸
+     * （{@code Expected BEGIN_OBJECT but was STRING}，Android 真机 2026-09-24 同因同果）。</p>
+     *
+     * <p>响应体写 {@code outFile}（stdout 每行一条 JSON，body 走文件避免转义/体积问题）；
+     * result = {@code "<status>|<mime>|<len>"}。对齐 Android 端 SpiderProxyBridge.proxyToFile。</p>
+     */
+    private static String proxy(String site, org.json.JSONObject query, String outPath) throws Exception {
+        final long t0 = System.currentTimeMillis();
+        // ⚠ 绝不能持 LOCK：call(detailContent) 持锁执行中会同步回调本方法（spider 内部
+        //   HTTP 请求 do=config → 宿主 → 本 op）——同一把锁 = 死锁到 HTTP 超时，spider
+        //   拿错误文本喂 Gson 炸（Expected BEGIN_OBJECT but was STRING，2026-09-24 实测）。
+        //   SPIDERS 已是 ConcurrentHashMap：load/call 互斥照旧（LOCK），proxy 无锁读。
+        Object instance = SPIDERS.get(site);
+        if (instance == null) throw new IllegalStateException("site not loaded: " + site);
+        if (query == null) throw new IllegalArgumentException("proxy: missing query");
+
+        HashMap<String, String> param = new HashMap<>();
+        java.util.Iterator<String> keys = query.keys();
+        while (keys.hasNext()) {
+            String k = keys.next();
+            param.put(k, query.optString(k));
+        }
+
+        // ① 实例方法：沿类层次找 proxy(Map)（爬虫可能覆写成 HashMap 形参，不能硬套 Map.class）。
+        //    基类桩的 proxy 默认转 proxyLocal → null；爬虫没覆写时 rs 为 null，走 ②。
+        Object[] rs = invokeProxyMethod(instance, param);
+
+        // ② Guard 系网盘源平台分发：do=<平台> → Cloud_<平台>.proxy(Map)——
+        //    夸父(夸克)/优汐(UC)/嘟嘟(百度)/阿狸(阿里) 的登录页/扫码/启停/推送
+        //    都在各平台 Cloud 类的静态 proxy 里（真实类，可直接调）。
+        //    TVBox 语义：ApiConfig.proxyLocal 按请求 do 分发到对应平台处理器。
+        if (rs == null) {
+            String doVal = param.getOrDefault("do", "");
+            if (doVal.length() > 0 && doVal.matches("[a-zA-Z_0-9]+")) {
+                try {
+                    ClassLoader loader = instance.getClass().getClassLoader();
+                    Class<?> clz = loader.loadClass("com.github.catvod.spider.Cloud_" + doVal);
+                    java.lang.reflect.Method m = clz.getMethod("proxy", java.util.Map.class);
+                    Object r = m.invoke(null, param);
+                    if (r instanceof Object[] arr) rs = arr;
+                } catch (ClassNotFoundException ignored) {
+                } catch (Throwable t) {
+                    Throwable root = t;
+                    while (root.getCause() != null) root = root.getCause();
+                    System.err.println("[srv] Cloud_" + doVal + ".proxy 异常: "
+                            + root.getClass().getSimpleName() + ": " + root.getMessage());
+                }
+            }
+        }
+
+        // ③ Guard 系网盘源变体（Pan 家族）：无参静态 proxyInput()，返回契约与 proxy(Map) 相同
+        if (rs == null) {
+            try {
+                java.lang.reflect.Method m = instance.getClass().getMethod("proxyInput");
+                Object r = m.invoke(null);
+                if (r instanceof Object[] arr) rs = arr;
+            } catch (NoSuchMethodException ignored) {
+            } catch (Throwable t) {
+                Throwable root = t;
+                while (root.getCause() != null) root = root.getCause();
+                System.err.println("[srv] " + instance.getClass().getSimpleName()
+                        + ".proxyInput 异常: " + root.getClass().getSimpleName() + ": " + root.getMessage());
+            }
+        }
+
+        // ③ 静态回退：jar 内 com.github.catvod.spider.Proxy.proxy(Map)（TVBox JarLoader.invokeProxy
+        //    语义；荐片 do=ck 握手由它处理）
+        if (rs == null) {
+            ClassLoader loader = instance.getClass().getClassLoader();
+            try {
+                Class<?> clz = loader.loadClass("com.github.catvod.spider.Proxy");
+                java.lang.reflect.Method m = clz.getMethod("proxy", java.util.Map.class);
+                Object r = m.invoke(null, param);
+                if (!(r instanceof Object[] arr)) {
+                    throw new IllegalStateException("Proxy.proxy() 返回 "
+                            + (r == null ? "null" : r.getClass().getName()));
+                }
+                rs = arr;
+            } catch (ClassNotFoundException e) {
+                throw new IllegalStateException("该 jar 未提供 com.github.catvod.spider.Proxy");
+            }
+        }
+
+            int status = rs.length > 0 && rs[0] instanceof Number n ? n.intValue() : 200;
+            String mime = rs.length > 1 && rs[1] != null ? rs[1].toString() : "application/octet-stream";
+            long written = 0;
+            if (rs.length > 2 && rs[2] instanceof java.io.InputStream in) {
+                java.io.File f = new java.io.File(outPath);
+                java.io.File parent = f.getParentFile();
+                if (parent != null && !parent.exists()) parent.mkdirs();
+                try (java.io.FileOutputStream fout = new java.io.FileOutputStream(f)) {
+                    byte[] buf = new byte[64 * 1024];
+                    int n;
+                    while ((n = in.read(buf)) > 0) {
+                        fout.write(buf, 0, n);
+                        written += n;
+                    }
+                } finally {
+                    try { in.close(); } catch (Exception ignored) { }
+                }
+            }
+            var dt = System.currentTimeMillis() - t0;
+            System.err.println("[srv] " + site + ".proxy do=" + param.getOrDefault("do", "?")
+                    + " → " + status + " " + mime + " " + written + "B，耗时 " + dt + "ms");
+            return status + "|" + mime + "|" + written;
+    }
+
+    /** 沿类层次找名为 proxy、单 Map 形参的方法并调用；返回 Object[] 或 null（未覆写/返回空/异常）。 */
+    private static Object[] invokeProxyMethod(Object spider, HashMap<String, String> param) {
+        for (Class<?> c = spider.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+            for (java.lang.reflect.Method m : c.getDeclaredMethods()) {
+                if (!"proxy".equals(m.getName()) || m.getParameterTypes().length != 1
+                        || !java.util.Map.class.isAssignableFrom(m.getParameterTypes()[0])) continue;
+                try {
+                    m.setAccessible(true);
+                    Object r = m.invoke(spider, param);
+                    return r instanceof Object[] arr ? arr : null;
+                } catch (Throwable t) {
+                    Throwable root = t;
+                    while (root.getCause() != null) root = root.getCause();
+                    System.err.println("[srv] " + spider.getClass().getSimpleName()
+                            + ".proxy 异常: " + root.getClass().getSimpleName() + ": " + root.getMessage());
+                    return null;
+                }
+            }
+        }
+        return null;
     }
 }

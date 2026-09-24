@@ -26,6 +26,49 @@ public class Context {
     public File getNoBackupFilesDir() { return getFilesDir(); }
     public File getExternalCacheDir() { return getExternalFilesDir("cache"); }
 
+    // ═══════════════════════════════════════════════════════════════════
+    //  Guard 壳框架链路（2026-09-24 实测，缺一个就 NoSuchMethodError 断链）：
+    //    · InitOrigin.init(ctx)          → Context.getDatabasePath(String)
+    //    · Pan.showInputQRCode()         → Context.getResources()  ← 扫码登录第一步
+    //  两者原来都没实现，被 InitOrigin/壳的 try/catch 吞掉，表现为「点登入自己网盘没反应」。
+    // ═══════════════════════════════════════════════════════════════════
+
+    /** 数据库目录（真实 Android 为 /data/data/<pkg>/databases/<name>）。 */
+    public File getDatabasePath(String name) {
+        File f = new File(getDir("databases", 0), name);
+        File p = f.getParentFile();
+        if (p != null) p.mkdirs();
+        return f;
+    }
+
+    public File getDataDir() { return baseDir; }
+    public File getCodeCacheDir() { return getCacheDir(); }
+    public File getObbDir() { return getExternalFilesDir("obb"); }
+    public File[] getExternalFilesDirs(String type) { return new File[]{ getExternalFilesDir(type) }; }
+    public File[] getExternalCacheDirs() { return new File[]{ getExternalCacheDir() }; }
+    public File[] getExternalMediaDirs() { return new File[]{ getExternalFilesDir("media") }; }
+
+    public java.io.FileOutputStream openFileOutput(String name, int mode) throws java.io.FileNotFoundException {
+        return new java.io.FileOutputStream(new File(getFilesDir(), name));
+    }
+
+    public java.io.FileInputStream openFileInput(String name) throws java.io.FileNotFoundException {
+        return new java.io.FileInputStream(new File(getFilesDir(), name));
+    }
+
+    public String[] fileList() {
+        String[] r = getFilesDir().list();
+        return r == null ? new String[0] : r;
+    }
+
+    /** 资源表桩：字符串空串、尺寸 0、drawable null（详见 {@link android.content.res.Resources}）。 */
+    public android.content.res.Resources getResources() { return new android.content.res.Resources(); }
+    public android.content.res.Resources.Theme getTheme() { return new android.content.res.Resources.Theme(); }
+
+    public String getPackageResourcePath() { return ""; }
+    public String getPackageCodePath() { return ""; }
+    public int checkCallingOrSelfPermission(String permission) { return 0; }
+
     public String getPackageName() { return "com.catclaw.video"; }
     public ApplicationInfo getApplicationInfo() { return new ApplicationInfo(); }
 

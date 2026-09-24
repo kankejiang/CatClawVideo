@@ -53,14 +53,31 @@ public class SpiderApi {
     /** {@code ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE} - inlined to stay dependency-free. */
     private static final int SCREEN_ORIENTATION_SENSOR_LANDSCAPE = 6;
 
-    /** No local proxy server is hosted, so there is no address to hand out. */
-    public String getAddress(boolean local) {
-        return "";
+    /**
+     * 宿主本地 proxy（SpiderProxyServer）实际监听的端口，由宿主经桥协议下发
+     * （Server.setProxyPort；桌面端无 JNI，走 stdin/stdout）。Guard 系网盘源
+     * （csp_MDriveGuard 等）用 {@code getAddress}/{@code getPort} 拼「云盘配置」数据端点，
+     * 返回空会导致 spider 拼不出 URL → 内部 Gson 解析到错误文本炸出
+     * {@code Expected BEGIN_OBJECT but was STRING}（detailContent 整体失败，2026-09-24 实测）。
+     * 0 = proxy 未就绪。
+     */
+    public static volatile int hostProxyPort = 0;
+
+    /** 桥协议：宿主下发 proxy 端口（对齐 Android TvBoxCompatBridge.SetProxyPort）。 */
+    public static void setHostProxyPort(int port) {
+        hostProxyPort = port;
     }
 
-    /** No local proxy server is hosted, so there is no port to hand out. */
+    /** Host proxy base URL（127.0.0.1 回环；proxy 未就绪返回空串）。 */
+    public String getAddress(boolean local) {
+        int port = hostProxyPort;
+        return port > 0 ? "http://127.0.0.1:" + port : "";
+    }
+
+    /** Host proxy 端口号字符串；proxy 未就绪返回空串。 */
     public String getPort() {
-        return "";
+        int port = hostProxyPort;
+        return port > 0 ? String.valueOf(port) : "";
     }
 
     public void log(String msg) {

@@ -5,17 +5,20 @@ import android.util.AttributeSet;
 
 public class ViewGroup extends View {
 
+    /** 子视图记录（UI 桥接：AlertDialog.setView 的二维码在视图树里）。 */
+    private final java.util.List<View> children = new java.util.ArrayList<>();
+
     public ViewGroup() { super(); }
     public ViewGroup(Context c) { super(c); }
     public ViewGroup(Context c, AttributeSet attrs) { super(c, attrs); }
 
-    public void addView(View child) { }
-    public void addView(View child, int index) { }
-    public void addView(View child, LayoutParams params) { }
-    public void removeView(View view) { }
-    public void removeAllViews() { }
-    public int getChildCount() { return 0; }
-    public View getChildAt(int index) { return null; }
+    public void addView(View child) { if (child != null) children.add(child); }
+    public void addView(View child, int index) { if (child != null) children.add(Math.max(0, Math.min(index, children.size())), child); }
+    public void addView(View child, LayoutParams params) { addView(child); }
+    public void removeView(View view) { children.remove(view); }
+    public void removeAllViews() { children.clear(); }
+    public int getChildCount() { return children.size(); }
+    public View getChildAt(int index) { return index >= 0 && index < children.size() ? children.get(index) : null; }
     public void setPadding(int l, int t, int r, int b) { }
     public void setClipToPadding(boolean clip) { }
     public void setDescendantFocusability(int focusability) { }

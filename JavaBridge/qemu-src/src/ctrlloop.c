@@ -849,6 +849,12 @@ static void main_loop(void) {
                     g_torrent_reported = 0; g_play_reported = 0;
                     ctrl_report("stopped", 0, 0, 0, 0, 0, "");
                 }
+            } else if (!strncmp(cmd, "GLOAD ", 6)) {
+                // Guard 模块加载 so（jar hash 由宿主下发；实际 dlopen 在 guard 线程做——so 状态线程相关）
+                guard_on_cmd(cmd);
+            } else if (!strncmp(cmd, "UIR ", 4)) {
+                // 宿主回传对话框用户操作（seq + which），guard 线程回调 so 的 native listener
+                guard_on_cmd(cmd);
             } else if (!strncmp(cmd, "PING", 4)) {
                 ctrl_report("pong", g_task_id, g_last_st, g_last_err, g_last_done, g_last_total, "");
             }

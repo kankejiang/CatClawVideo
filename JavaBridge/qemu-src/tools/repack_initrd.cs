@@ -92,6 +92,67 @@ if (!init.Contains("BLK_DEV"))
 }
 else Console.WriteLine("跳过：BLK_DEV 已存在");
 
+// ── Guard 模块（2026-09-24）：控制口/守卫口/启动磁力支持 cmdline 覆盖 ──
+// guard VM 与 thunder VM 共用同一 initrd：QemuHostRuntime 经 -append 传
+//   ctrl=<port>（guest 控制口，双 VM 并存时各用各的）与 guardport=<port>（harness
+//   的 guard 解密服务监听口，宿主经 hostfwd 映射）。不传则行为与旧版完全一致。
+// 启动磁力也支持 cmdline 覆盖（guard VM 传 magnet=none 避免无谓的真下载）。
+//
+// ⚠ 锚点必须是 **export CTRL_PORT="18080" 那行之后**：初版锚在 PROXY_PORT 行后，
+//   结果旧的无条件 `export CTRL_PORT="18080"` 在覆盖之后执行又盖回 18080 ——
+//   guard VM 轮询 thunder 的控制口、GLOAD 永远无人取（2026-09-24 实测）。
+//   清理旧段（幂等）→ 按正确锚点重插。
+(string Old, string Repl)[] staleSegs =
+[
+    ("GP=$(getarg guardport)\r\n[ -n \"$GP\" ] && export GUARD_PORT=\"$GP\"\r\nCP=$(getarg ctrl)\r\n[ -n \"$CP\" ] && export CTRL_PORT=\"$CP\"\r\n", ""),
+    ("GP=$(getarg guardport)\n[ -n \"$GP\" ] && export GUARD_PORT=\"$GP\"\nCP=$(getarg ctrl)\n[ -n \"$CP\" ] && export CTRL_PORT=\"$CP\"\n", ""),
+];
+foreach (var (from, to) in staleSegs)
+    if (init.Contains(from)) { init = init.Replace(from, to); Console.WriteLine("已清理旧 guardport/ctrl 插入段"); }
+
+if (!init.Contains("getarg guardport"))
+{
+    const string anchCtrl = "export CTRL_PORT=\"18080\"";
+    var idxC = init.IndexOf(anchCtrl, StringComparison.Ordinal);
+    if (idxC >= 0)
+    {
+        var eolC = init.IndexOf('\n', idxC);
+        if (eolC >= 0)
+        {
+            var crC = init[eolC - 1] == '\r' ? "\r\n" : "\n";
+            var insC =
+                $"CP=$(getarg ctrl){crC}" +
+                $"[ -n \"$CP\" ] && export CTRL_PORT=\"$CP\"{crC}" +
+                $"GP=$(getarg guardport){crC}" +
+                $"[ -n \"$GP\" ] && export GUARD_PORT=\"$GP\"{crC}";
+            init = init.Insert(eolC + 1, insC);
+            Console.WriteLine("已插入: guardport/ctrl cmdline 覆盖（CTRL_PORT 行后）");
+        }
+    }
+    else Console.WriteLine("跳过（未找到 CTRL_PORT 锚点）");
+}
+else Console.WriteLine("跳过：guardport/ctrl 覆盖已存在");
+
+if (!init.Contains("getarg magnet"))
+{
+    const string anch3 = "export MAGNET=";
+    var idx3 = init.IndexOf(anch3, StringComparison.Ordinal);
+    if (idx3 >= 0)
+    {
+        var eol3 = init.IndexOf('\n', idx3);
+        if (eol3 >= 0)
+        {
+            var cr3 = init[eol3 - 1] == '\r' ? "\r\n" : "\n";
+            init = init.Insert(eol3 + 1,
+                $"MG=$(getarg magnet){cr3}" +
+                $"[ -n \"$MG\" ] && export MAGNET=\"$MG\"{cr3}");
+            Console.WriteLine("已插入: magnet cmdline 覆盖");
+        }
+    }
+    else Console.WriteLine("跳过（未找到 MAGNET 锚点）");
+}
+else Console.WriteLine("跳过：magnet 覆盖已存在");
+
 File.WriteAllText(initPath, init, new UTF8Encoding(false));
 
 // ── ④ 清单 → newc cpio → gzip ──

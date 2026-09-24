@@ -29,6 +29,27 @@ public class Build {
     /** 序列号：老 API 用（实测「瓜子」站就调它）。给固定值，别用随机。 */
     public static final String SERIAL = "catclaw0000000001";
 
+    /**
+     * ABI 字段。实测 2026-09-24：缺失会让 jar 的弹幕服务初始化直接失败 ——
+     * <code>NoSuchFieldError: android.os.Build does not have member field 'java.lang.String CPU_ABI'</code>
+     * ⇒ 抛「弹幕服务初始化失败」toast，danmaku 相关分支整体不可用。
+     * 桌面按 arm64 报（与打包的 android-arm64 产物一致）。
+     */
+    public static final String CPU_ABI = "arm64-v8a";
+
+    public static final String CPU_ABI2 = "";
+
+    public static final String[] SUPPORTED_ABIS = {"arm64-v8a", "armeabi-v7a", "armeabi"};
+
+    public static final String[] SUPPORTED_32_BIT_ABIS = {"armeabi-v7a", "armeabi"};
+
+    public static final String[] SUPPORTED_64_BIT_ABIS = {"arm64-v8a"};
+
+    /** 部分爬虫读它做设备区分。 */
+    public static final long TIME = 1700000000000L;
+
+    public static String getRadioVersion() { return RADIO; }
+
     public static final String ID = "TQ3A.230805.001";
 
     public static final String DISPLAY = "TQ3A.230805.001";
