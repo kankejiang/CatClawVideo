@@ -119,6 +119,13 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
         // 留存 parses/hosts 到解析配置仓（此前这两个键被整包丢弃，播放解析无依据）
         TvBoxConfigStore.Capture(subscriptionName, root);
 
+        // 订阅自带直播源（lives，如饭太硬）：把解密后的明文配置落盘。
+        // 直播模块（LiveSourceService）在用户未手动配置直播源时自动采用 ——
+        // 否则点播订阅里明明带了直播，直播页却还要用户再配一次（2026-09-25 用户反馈）。
+        if (root.TryGetProperty("lives", out var livesEl) &&
+            livesEl.ValueKind == JsonValueKind.Array && livesEl.GetArrayLength() > 0)
+            Live.LiveSourceService.CaptureSubscriptionConfig(jsonText);
+
         var sites = new List<VodSiteInfo>();
         if (!root.TryGetProperty("sites", out var siteArray) || siteArray.ValueKind != JsonValueKind.Array)
             return Task.FromResult(sites);

@@ -43,6 +43,33 @@ public class LiveSourceService
 
     public bool HasSource => !string.IsNullOrWhiteSpace(Prefs.ApiUrl);
 
+    // ═══════════════════ 订阅自动导入 ═══════════════════
+
+    /// <summary>点播订阅自带 lives 时的明文配置落盘位置（由 TvBoxSubscriptionManager 写入）</summary>
+    public static string CapturePath => AppPaths.Sub("live", "subscription-capture.json");
+
+    /// <summary>是否存在可自动导入的订阅直播配置</summary>
+    public static bool HasCapturedSubscription
+    {
+        get { try { return File.Exists(CapturePath); } catch { return false; } }
+    }
+
+    /// <summary>
+    /// 订阅解析侧调用：把（解密后的）明文 TVBox 配置落盘，供 <see cref="LoadAsync"/> 在
+    /// 用户未手动配置直播源时自动采用。失败静默，不影响点播订阅本身。
+    /// </summary>
+    public static void CaptureSubscriptionConfig(string jsonText)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(CapturePath)!);
+            File.WriteAllText(CapturePath, jsonText, Encoding.UTF8);
+        }
+        catch
+        {
+        }
+    }
+
     // ═══════════════════ 加载 ═══════════════════
 
     /// <summary>
@@ -54,7 +81,19 @@ public class LiveSourceService
     {
         var api = (apiOverride ?? Prefs.ApiUrl).Trim();
         if (api.Length == 0)
-            return new LiveLoadResult { Error = "未配置直播源，请先在「直播源」页填入地址" };
+        {
+            // 订阅自动导入（2026-09-25 用户反馈「饭太硬点播源里有直播源，直播页却还要配置」）：
+            // 点播订阅解析出 lives 时订阅管理器已把明文配置落盘 → 用户没手动配过直播源就直接采用，
+            // 首次进直播免配置。文件随订阅刷新而更新，不进历史（内部路径）。
+            if (HasCapturedSubscription)
+            {
+                api = CapturePath;
+                Prefs.ApiUrl = api;
+                Save();
+            }
+            else
+                return new LiveLoadResult { Error = "未配置直播源，请先在「直播源」页填入地址" };
+        }
 
         string content;
         var fromCache = false;
@@ -116,7 +155,7 @@ public class LiveSourceService
         {
             try
             {
-                if (JsonNode.Parse(content) is JsonObject root && root["lives"] is JsonArray livesArr)
+                if (ParseJsonTolerant(content) is { } root && root["lives"] is JsonArray livesArr)
                 {
                     var lives = ParseLives(livesArr);
                     if (lives.Count == 0)
@@ -181,6 +220,31 @@ public class LiveSourceService
             EpgUrl = LiveParser.ExtractLiveTextEpg(content),
             Error = directGroups.Count == 0 ? "未解析出任何频道（检查源内容格式）" : "",
         };
+    }
+
+    /// <summary>
+    /// 宽容 JSON 解析：饭太硬等明文配置常带整行 <c>//</c> 注释（官方解密通道的返回也带注释头），
+    /// System.Text.Json 不容忍 → 先原样解析，失败再剥掉「行首 //」的整行注释重试一次。
+    /// </summary>
+    private static JsonObject? ParseJsonTolerant(string content)
+    {
+        try
+        {
+            return JsonNode.Parse(content) as JsonObject;
+        }
+        catch
+        {
+            try
+            {
+                var cleaned = string.Join('\n', content.Split('\n')
+                    .Where(l => !l.TrimStart().StartsWith("//", StringComparison.Ordinal)));
+                return cleaned != content ? JsonNode.Parse(cleaned) as JsonObject : null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
     }
 
     private static List<LiveLivesEntry> ParseLives(JsonArray livesArr)

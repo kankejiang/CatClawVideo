@@ -37,7 +37,9 @@ public partial class LiveSourcePage : ContentPage
 
         LblCurrent.Text = prefs.ApiUrl.Length == 0
             ? "当前：未配置"
-            : "当前：" + Shorten(prefs.ApiUrl);
+            : prefs.ApiUrl == LiveSourceService.CapturePath
+                ? "当前：点播订阅自动导入（订阅自带直播源）"
+                : "当前：" + Shorten(prefs.ApiUrl);
         if (SourceEditor.Text.Length == 0) SourceEditor.Text = prefs.ApiUrl;
         EpgEntry.Text = prefs.EpgUrl;
         UaEntry.Text = prefs.Ua;

@@ -97,7 +97,7 @@ public partial class LivePage : ContentPage
 
     private async Task EnsureLoadedAsync()
     {
-        if (_source.Prefs.ApiUrl.Length == 0)
+        if (_source.Prefs.ApiUrl.Length == 0 && !LiveSourceService.HasCapturedSubscription)
         {
             ShowEmpty("未配置直播源。点击「配置直播源」，支持 TXT / M3U / JSON，以及含 lives 的 TVBox 订阅。");
             return;
