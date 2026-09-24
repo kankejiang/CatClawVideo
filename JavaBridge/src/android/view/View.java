@@ -40,9 +40,17 @@ public class View {
 
     public void requestLayout() { }
 
-    public boolean post(Runnable action) { if (action != null) new Thread(action).start(); return true; }
+    public boolean post(Runnable action) { return postDelayed(action, 0L); }
 
-    public boolean postDelayed(Runnable action, long delayMillis) { return true; }
+    /**
+     * ⚠ 必须真的延迟执行：爬虫用它做退避重试与"稍后再看状态"，
+     * 旧实现 {@code return true} 丢掉任务（同 {@link android.os.Handler#postDelayed}）。
+     */
+    public boolean postDelayed(Runnable action, long delayMillis) {
+        if (action == null) return false;
+        android.os.Handler.schedule(action, delayMillis);
+        return true;
+    }
 
     public android.os.Handler getHandler() { return new android.os.Handler(); }
 
