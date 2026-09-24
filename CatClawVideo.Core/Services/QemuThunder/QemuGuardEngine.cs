@@ -55,6 +55,9 @@ public sealed class QemuGuardEngine : IDisposable
     {
         _runtimeDir = runtimeDir;
         _log = log;
+        // 与 QemuThunderEngine 对齐：迅雷 VM 早就注册了这条，Guard VM 漏了 ——
+        // 实测关应用后 Guard VM（18481 那台）活了下来，迅雷 VM 没有（2026-09-25）。
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => Dispose();
     }
 
     private void Log(string m) => _log?.Invoke("[guard-vm] " + m);

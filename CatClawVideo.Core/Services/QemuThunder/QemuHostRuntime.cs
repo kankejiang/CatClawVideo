@@ -41,7 +41,7 @@ public sealed class QemuHostRuntime : IDisposable
 
     private readonly Action<string>? _log;
     private Process? _proc;
-    private IntPtr _job = IntPtr.Zero;
+    private KillOnCloseJob? _job;
     private StreamWriter? _fileLog;
     private int _filtered;
 
@@ -208,6 +208,7 @@ public sealed class QemuHostRuntime : IDisposable
 
         try
         {
+            ReapStaleVmOnOurPorts();
             OpenFileLog();
 
             var psi = new ProcessStartInfo
@@ -407,102 +408,33 @@ public sealed class QemuHostRuntime : IDisposable
         }
     }
 
-    // ── Job Object（KillOnClose）：宿主挂了 VM 不孤儿 ──
+    // ── Job Object（KillOnClose）：宿主挂了 VM 不孤儿。实现见 KillOnCloseJob（桥 JVM 共用同一份）──
     private void AssignJob(Process proc)
     {
-        if (!OperatingSystem.IsWindows()) return;
-        try
+        _job ??= KillOnCloseJob.Create();
+        if (_job is null)
+            _log?.Invoke("[qemu] KillOnClose job 创建失败：应用退出后本 VM 可能变孤儿");
+        else if (!_job.Attach(proc))
+            _log?.Invoke($"[qemu] VM pid={proc.Id} 未挂进 KillOnClose job（{_job.LastError}）：靠启动前端口回收兜底");
+    }
+
+    // ── 启动前回收上一世遗留的 VM（按 hostfwd 端口找它）──
+    // 宿主被强杀时 ProcessExit 走不到，job object 又可能因宿主已在别的 job 里而绑不上
+    // （win32=5）。遗留 VM 会一直占着 18481 这类 hostfwd 端口，下一次启动只能退化。
+    private void ReapStaleVmOnOurPorts()
+    {
+        foreach (var port in new[] { GuardPort, MediaPort })
         {
-            if (_job == IntPtr.Zero) _job = CreateKillOnCloseJob();
-            if (_job != IntPtr.Zero) AssignProcessToJobObject(_job, proc.Handle);
+            if (port <= 0) continue;
+            if (TcpListeners.ReapOwner(port, "qemu-system-aarch64"))
+                _log?.Invoke($"[qemu] 端口 {port} 被上一世遗留的 VM 占着，已回收");
         }
-        catch { /* 尽力而为；失败时退化为常规子进程 */ }
     }
-
-    private static IntPtr CreateKillOnCloseJob()
-    {
-        var job = CreateJobObjectW(IntPtr.Zero, null);
-        if (job == IntPtr.Zero) return IntPtr.Zero;
-        var info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION
-        {
-            BasicLimitInformation = new JOBOBJECT_BASIC_LIMIT_INFORMATION
-            {
-                LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-            },
-        };
-        var size = Marshal.SizeOf<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>();
-        var ptr = Marshal.AllocHGlobal(size);
-        try
-        {
-            Marshal.StructureToPtr(info, ptr, false);
-            if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, ptr, (uint)size))
-            {
-                CloseHandle(job);
-                return IntPtr.Zero;
-            }
-        }
-        finally { Marshal.FreeHGlobal(ptr); }
-        return job;
-    }
-
-    private const int JobObjectExtendedLimitInformation = 9;
-    private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct JOBOBJECT_BASIC_LIMIT_INFORMATION
-    {
-        public long PerProcessUserTimeLimit;
-        public long PerJobUserTimeLimit;
-        public uint LimitFlags;
-        public UIntPtr MinimumWorkingSetSize;
-        public UIntPtr MaximumWorkingSetSize;
-        public uint ActiveProcessLimit;
-        public UIntPtr Affinity;
-        public uint PriorityClass;
-        public uint SchedulingClass;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct IO_COUNTERS
-    {
-        public ulong ReadOperationCount;
-        public ulong WriteOperationCount;
-        public ulong OtherOperationCount;
-        public ulong ReadTransferCount;
-        public ulong WriteTransferCount;
-        public ulong OtherTransferCount;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
-    {
-        public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
-        public IO_COUNTERS IoInfo;
-        public UIntPtr ProcessMemoryLimit;
-        public UIntPtr JobMemoryLimit;
-        public UIntPtr PeakProcessMemoryUsed;
-        public UIntPtr PeakJobMemoryUsed;
-    }
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern IntPtr CreateJobObjectW(IntPtr lpJobAttributes, string? lpName);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool SetInformationJobObject(IntPtr hJob, int jobObjectInfoClass, IntPtr lpJobObjectInfo, uint cbJobObjectInfoLength);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool CloseHandle(IntPtr hObject);
 
     public void Dispose()
     {
         Stop();
-        if (_job != IntPtr.Zero)
-        {
-            try { CloseHandle(_job); } catch { }
-            _job = IntPtr.Zero;
-        }
+        _job?.Dispose();
+        _job = null;
     }
 }

@@ -66,6 +66,7 @@ public class Server {
         System.setErr(new java.io.PrintStream(new java.io.FileOutputStream(java.io.FileDescriptor.err), true, "UTF-8"));
         // data 目录：spider 的 Context 文件操作都落在 App 约定的桥工作目录
         System.setProperty("data.dir", new File("data").getAbsolutePath());
+        startParentWatchdog();
         BufferedReader in = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
         // ⚠ proxy op 必须与 call 并行：call(detailContent) 在主循环同步执行期间，spider 内部
         //   会同步发 HTTP 请求（do=config）→ 宿主 → proxy op。若在主循环排队，call 不返回
@@ -165,6 +166,44 @@ public class Server {
 
     /** 壳框架加载：shellJar=壳 dex 转换产物；rawJar=原始 Guard jar（assets/*.so 解密引擎）；realJar=解壳产物；
      *  guardPort=Guard QEMU 解密服务端口（0=未启用 → 解密走 unidbg 会话）。 */
+    /**
+     * 父进程看门狗：宿主被强杀时自行了断，不留孤儿 JVM。
+     *
+     * <p>为什么三条退出路径都要有：{@code op=exit} 只有宿主正常收尾才发得出；stdin 的 EOF
+     * 也靠不住 —— Windows 上管道写句柄会被宿主另开的子进程（QEMU VM）继承走，父进程死了
+     * 句柄还活着，{@code readLine()} 永远等不到 null；job object 在宿主自己已属于某个 job 时
+     * {@code AssignProcessToJobObject} 直接失败（实测 win32=5）。2026-09-25 一次开发会话
+     * 因此攒下 17 个 {@code java.exe}，其中一个把 {@code bridge.jar} 映射住，重打包必失败。</p>
+     */
+    private static void startParentWatchdog() {
+        long ppid;
+        try {
+            ppid = Long.parseLong(System.getProperty("catclaw.ppid", "0"));
+        } catch (Throwable t) {
+            return;
+        }
+        if (ppid <= 0L || ppid == ProcessHandle.current().pid()) return;
+        Thread t = new Thread(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(2000);
+                } catch (InterruptedException e) {
+                    return;
+                }
+                if (ProcessHandle.of(ppid).isPresent()) continue;
+                System.err.println("[srv] 宿主 pid=" + ppid + " 已消失，桥自行退出");
+                for (String name : android.content.PrefsStore.names()) {
+                    try { android.content.PrefsStore.flush(name); } catch (Throwable ignored) { }
+                }
+                // halt 而不是 exit：proxy 线程池里有非守护线程，exit 可能挂住不返回
+                Runtime.getRuntime().halt(0);
+                return;
+            }
+        }, "ppid-watchdog");
+        t.setDaemon(true);
+        t.start();
+    }
+
     private static String loadFull(String site, String className, String ext, org.json.JSONArray jars,
                                    String shellJar, String rawJar, String realJar, int guardPort) throws Exception {
         synchronized (LOCK) {

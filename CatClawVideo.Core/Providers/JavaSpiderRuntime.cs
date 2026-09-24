@@ -27,7 +27,7 @@ namespace CatClawVideo.Core.Providers;
 /// <para>认证预处理：ext global 含 username/password 而缺 token 时，自动向
 /// {server}/api/auth/login 登录注入 token（小雅 AListSh 需要）。</para>
 /// </summary>
-public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderActionRuntime
+public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderActionRuntime, IDisposable
 {
     public string Id => "jvm-dex";
 
@@ -62,6 +62,9 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     private StreamReader? _stdout;
     private readonly SemaphoreSlim _ioLock = new(1, 1);
     private int _id;
+
+    /// <summary>桥 JVM 的 KillOnClose job —— 句柄一关，内核就把 JVM 一起收走，不留孤儿。</summary>
+    private CatClawVideo.Core.Services.KillOnCloseJob? _job;
 
     private readonly ConcurrentDictionary<string, bool> _loadedSites = new();
     private readonly ConcurrentDictionary<string, string> _convertedJars = new();
@@ -118,6 +121,39 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         GuardUnpackAvailable = IsSupported
                                && Directory.Exists(Path.Combine(bridgeDir, "vendor", "dex2jar"))
                                && _unidbgReady;
+        // 正常退出先走一次优雅收尾（job 只兜崩溃/被 kill 的情况）
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => Shutdown();
+    }
+
+    /// <summary>
+    /// 收尾桥 JVM：发 <c>exit</c> 让它自己结束读循环，等不到再连子进程树一起 kill。
+    /// 幂等，可重复调用。
+    /// </summary>
+    public void Shutdown()
+    {
+        var p = _proc;
+        if (p is null) return;
+        try
+        {
+            // 收尾阶段不再有新请求进来了，直接写：拿 _stdinLock 反而可能在别的线程手里卡死
+            try { _stdin?.Write("{\"op\":\"exit\"}"); _stdin?.Flush(); } catch { }
+            if (!p.WaitForExit(1500)) p.Kill(entireProcessTree: true);
+        }
+        catch { /* 进程可能已经自己退了 */ }
+        finally
+        {
+            _proc = null;
+            try { p.StandardInput.Close(); } catch { }
+            if (!p.HasExited) { try { p.Kill(entireProcessTree: true); } catch { } }
+        }
+    }
+
+    /// <summary>收尾并释放 job：job 句柄一关，内核保证挂在其上的 JVM 不会活过本进程。</summary>
+    public void Dispose()
+    {
+        Shutdown();
+        _job?.Dispose();
+        _job = null;
     }
 
     /// <summary>探测 unidbg 解壳器是否已随包部署（缺省时 Guard 站点自动退回非 Guard 同族 jar）。</summary>
@@ -284,6 +320,10 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         // 全部栽在这上面，而它们的内容其实是好的）。JVM 21 起无法按类关闭校验，
         // 只能在 JVM 级关掉；关掉后这类畸形类可以正常加载运行。
         psi.ArgumentList.Add("-Xverify:none");
+        // 父进程 PID：桥里的看门狗按它自杀。Windows 上 job object 未必挂得进去
+        // （应用本身已在别的 job 里时 AssignProcessToJobObject 直接失败，实测 win32=5），
+        // 而 stdin 的写句柄会被其它子进程继承走 → EOF 也不可靠。两条都不靠时才不漏孤儿。
+        psi.ArgumentList.Add($"-Dcatclaw.ppid={Environment.ProcessId}");
         psi.ArgumentList.Add("-cp");
         // 绝对路径：工作目录已改为 _workDir（可写区），相对路径会解析不到 bridge.jar
         psi.ArgumentList.Add($"{Path.Combine(_bridgeDir, "bridge.jar")};{Path.Combine(_bridgeDir, "vendor", "deps", "*")};{Path.Combine(_bridgeDir, "vendor", "unidbg", "*")}");
@@ -304,6 +344,13 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
             catch { }
         });
         _proc = proc;
+        // ⚠ 必须绑 job：.NET 在 Windows 上不会随父进程退出杀掉子进程。
+        // 此前每次关应用都留下一个 java.exe（实测一次会话 17 个），其中一个把 bridge.jar
+        // 映射住，导致改完桩 build.cmd 报 FileSystemException 重打包失败（2026-09-25）。
+        _job ??= CatClawVideo.Core.Services.KillOnCloseJob.Create();
+        if (_job is { } j && j.Attach(proc)) { /* 绑上了：应用一死内核就收走 JVM */ }
+        else Log($"桥 JVM 未能绑进 KillOnClose job（{_job?.LastError}；"
+                 + "父进程被强杀时靠桥自己的 ppid 看门狗退出）");
 
         // 常驻读循环：请求-响应按 id 分发；桥主动上行的 UI 事件（ev 字段）回调 UiEvent
         _ = Task.Run(() => ReadLoopAsync(proc));
