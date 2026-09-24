@@ -168,6 +168,14 @@ public class VodItem : INotifyPropertyChanged
     /// <summary>简介</summary>
     public string? Description { get; set; }
 
+    /// <summary>
+    /// 卡片自带的 TVBox <c>action</c>（原样 JSON 文本，如 <c>{"do":2,"key":"..."}</c>）。
+    /// <para>非空说明这张卡不是影片而是**操作入口**：点击应调 <c>spider.action(json)</c>
+    /// （Guard 系网盘的「登入自己网盘」→ 原生对话框/扫码就是这么弹的），
+    /// 而不是走 detailContent → playerContent 那条兜底路。</para>
+    /// </summary>
+    public string Action { get; set; } = string.Empty;
+
     /// <summary>更新说明（如「更新至12集」「HD」）</summary>
     public string? Remarks { get; set; }
 

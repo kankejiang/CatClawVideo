@@ -27,7 +27,7 @@ namespace CatClawVideo.Core.Providers;
 /// <para>认证预处理：ext global 含 username/password 而缺 token 时，自动向
 /// {server}/api/auth/login 登录注入 token（小雅 AListSh 需要）。</para>
 /// </summary>
-public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime
+public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderActionRuntime
 {
     public string Id => "jvm-dex";
 
@@ -250,6 +250,9 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime
 
     public Task<string> PlayerContentAsync(VodSiteInfo site, string flag, string id, CancellationToken ct = default) =>
         CallAsync(site, "playerContent", new JsonArray(flag ?? "", id), ct);
+
+    public Task<string> ActionAsync(VodSiteInfo site, string actionJson, CancellationToken ct = default) =>
+        CallAsync(site, "action", new JsonArray(actionJson ?? ""), ct);
 
     // ═══════════ 进程与调用 ═══════════
 

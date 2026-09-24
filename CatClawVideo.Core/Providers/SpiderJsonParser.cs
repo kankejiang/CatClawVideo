@@ -69,6 +69,7 @@ public static class SpiderJsonParser
                         Actors = NullToEmpty(GetStr(v, "vod_actor")),
                         Director = NullToEmpty(GetStr(v, "vod_director")),
                         Description = NullToEmpty(GetStr(v, "vod_content")),
+                        Action = GetAction(v),
                         Score = GetDouble(v, "vod_score"),
                     });
                 }
@@ -185,6 +186,17 @@ public static class SpiderJsonParser
         e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? ""
         : e.TryGetProperty(name, out var v2) && v2.ValueKind == JsonValueKind.Number ? v2.GetRawText()
         : "";
+
+    /// <summary>取 <c>action</c>：TVBox 里它是**对象**（<c>{"do":2,"key":"..."}</c>），
+    /// 而爬虫的 <c>action(String)</c> 要的是 JSON 文本，所以按原样取 raw text 而非字符串值。</summary>
+    private static string GetAction(JsonElement e) =>
+        e.TryGetProperty("action", out var v) switch
+        {
+            false => "",
+            _ when v.ValueKind == JsonValueKind.Object || v.ValueKind == JsonValueKind.Array => v.GetRawText(),
+            _ when v.ValueKind == JsonValueKind.String => v.GetString() ?? "",
+            _ => "",
+        };
 
     /// <summary>
     /// 宽松取数：数字直接用；字符串尝试解析。

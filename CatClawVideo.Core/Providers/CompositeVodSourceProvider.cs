@@ -8,7 +8,7 @@ namespace CatClawVideo.Core.Providers;
 /// 聚合路由 Provider：按站点的 CanHandle 把请求路由到具体实现
 /// （MacCMS json 直连 / TVBox spider 爬虫）。HomeViewModel / WatchPage 统一注入本类。
 /// </summary>
-public class CompositeVodSourceProvider : IVodSourceProvider
+public class CompositeVodSourceProvider : IVodSourceProvider, IActionVodSourceProvider
 {
     private readonly IReadOnlyList<IVodSourceProvider> _providers;
 
@@ -24,6 +24,12 @@ public class CompositeVodSourceProvider : IVodSourceProvider
         _providers.FirstOrDefault(p => p.CanHandle(site));
 
     public bool CanHandle(VodSiteInfo site) => Route(site) != null;
+
+    /// <summary>路由到具体 Provider 的 action 能力；它不支持就返回 null（调用方自己兜底）。</summary>
+    public Task<string?> DoActionAsync(VodSiteInfo site, VodItem item, CancellationToken ct = default) =>
+        Route(site) is IActionVodSourceProvider p
+            ? p.DoActionAsync(site, item, ct)
+            : Task.FromResult<string?>(null);
 
     private IVodSourceProvider Required(VodSiteInfo site) =>
         Route(site) ?? throw new NotSupportedException($"站点 {site.Name} 没有可用的源适配器（{site.StatusNote ?? "type " + site.Type}）");

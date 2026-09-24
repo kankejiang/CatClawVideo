@@ -46,6 +46,18 @@ public interface ISpiderRuntime
 }
 
 /// <summary>
+/// 支持 TVBox <c>Spider.action(String)</c> 的运行时（对齐 <c>SourceViewModel.doAction</c>）。
+/// <para>卡片带 <see cref="VodItem.Action"/> 时它不是影片而是**操作入口**：Guard 系网盘源的
+/// 「登入自己网盘」→ jar 自己建的原生对话框与扫码二维码（<c>Pan.showInputQRCode</c>）
+/// 只能由这条路弹出——detailContent/playerContent 那条兜底路到不了它。</para>
+/// </summary>
+public interface ISpiderActionRuntime
+{
+    /// <summary>执行动作并返回协议 JSON（爬虫返回 null 时为 <c>"{}"</c>）。</summary>
+    Task<string> ActionAsync(VodSiteInfo site, string actionJson, CancellationToken ct = default);
+}
+
+/// <summary>
 /// 支持宿主本地 <c>/proxy</c> 回调的运行时（TVBox <c>ApiConfig.proxyLocal</c> 语义）。
 /// js2Proxy 拼出的 <c>http://127.0.0.1:port/proxy?...</c> 由 <see cref="Services.SpiderProxyServer"/>
 /// 接收后回调本方法，运行时把它转给 JS/Java 爬虫的 <c>proxy()</c> 拿内容。

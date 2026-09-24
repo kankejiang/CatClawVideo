@@ -19,7 +19,7 @@ namespace CatClawVideo.Maui.Platforms.Android;
 /// - searchContent(String key, boolean quick[, int pg])
 /// - playerContent(String flag, String id, List vipFlags)
 /// </summary>
-public class DexSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime
+public class DexSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderActionRuntime
 {
     public string Id => "android-dex";
     public bool IsSupported => true;
@@ -35,6 +35,8 @@ public class DexSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime
         public Java.Lang.Reflect.Method? Search2;
         public Java.Lang.Reflect.Method? Search3;
         public Java.Lang.Reflect.Method? Player;
+        /// <summary>Spider.action(String) —— 卡片是「操作入口」时用（网盘登录/扫码对话框由它弹出）</summary>
+        public Java.Lang.Reflect.Method? Action;
         /// <summary>Spider.proxy(Map) —— 宿主本地 HTTP 服务器回调用（荐片 /proxy?do=… 走这条）</summary>
         public Java.Lang.Reflect.Method? Proxy;
         /// <summary>
@@ -117,6 +119,9 @@ public class DexSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime
         return InvokeAsync(site, h => CallSafe(h, h.Player,
             new Java.Lang.String(flag), new Java.Lang.String(id), flags), ct);
     }
+
+    public Task<string> ActionAsync(VodSiteInfo site, string actionJson, CancellationToken ct = default) =>
+        InvokeAsync(site, h => CallSafe(h, h.Action, new Java.Lang.String(actionJson)), ct);
 
     // ═══════════ 装配 ═══════════
 
@@ -455,6 +460,7 @@ public class DexSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime
                     Java.Lang.Class.FromType(typeof(Java.Lang.String)),
                     Java.Lang.Class.FromType(typeof(Java.Lang.String)),
                     Java.Lang.Class.FromType(typeof(Java.Util.IList))),
+                Action = Find(cls, "action", Java.Lang.Class.FromType(typeof(Java.Lang.String))),
                 Proxy = FindByName(cls, "proxy", 1),
                 SiteKey = site.Key,
                 Loader = loader,

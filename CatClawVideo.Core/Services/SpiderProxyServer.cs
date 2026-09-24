@@ -38,6 +38,20 @@ public sealed class SpiderProxyServer : IDisposable
     /// </summary>
     public static readonly int[] CandidatePorts = [6677, 9978, 9997, 9998, 9999];
 
+    /// <summary>
+    /// 交给爬虫 <c>proxy(Map)</c> 的 do 值。TVBox <c>ApiConfig.proxyLocal</c> 的语义是「除宿主自答
+    /// （心跳 / 取流）外一律转爬虫」，这里先显式列出网盘/弹幕/解析族：<c>m3u8 / wasm / pic</c>
+    /// 仍走宿主取流，免得改道后没人做分片改写。
+    /// <para>词表来源：逆向 jar 的 <c>ProxyOrigin.proxy</c>（18 路 switch，字符串运行时解密，
+    /// 解法见 <c>JavaBridge/tools/DecodeDo.java</c>）。注意 <c>config</c> 不在其中——它是宿主
+    /// 合成配置页 URL 时自造的占位值，jar 认的是 <c>input</c>。</para>
+    /// </summary>
+    static readonly HashSet<string> SpiderProxyDo = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "js", "config", "danmu", "drive", "live", "play", "input", "quark", "ali", "UC",
+        "YCyz", "musicLrc", "yinHe", "prPic", "hmys", "bili", "dnsPic", "MixDemo", "MixWeb",
+    };
+
     /// <summary>默认 UA：部分 CDN 对空 UA 直接 403。</summary>
     private const string DefaultUserAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36";
@@ -196,7 +210,7 @@ public sealed class SpiderProxyServer : IDisposable
                         args["vodIndex"] = vid;
                 }
 
-                if (args.GetValueOrDefault("from") == "catvod" || doVal is "js" or "config" or "danmu")
+                if (args.GetValueOrDefault("from") == "catvod" || (doVal is not null && SpiderProxyDo.Contains(doVal)))
                 {
                     var handler = JsProxyHandler;
                     if (handler is null)

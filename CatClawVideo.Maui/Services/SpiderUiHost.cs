@@ -31,6 +31,13 @@ public static class SpiderUiHost
     {
         try
         {
+            // 原文留痕：「弹了但没东西」这类问题只能看 jar 到底上行了什么规格
+            // （qr.pixels 会很长，故截断）
+            var raw = ev.ToJsonString();
+            DiagLog.Write($"[spider-ui] ⬆ {raw.Length}B {(raw.Length > 900 ? raw[..900] + "…" : raw)}");
+            // 全量另存一份：日志里那行截断到 900 字符，比对「点了之后框有没有真的变」要看全文
+            try { File.WriteAllText(Core.AppPaths.Of("spider-ui-last.json"), raw); } catch { }
+
             switch (ev["ev"]?.GetValue<string>())
             {
                 case "ui-dialog":
@@ -42,9 +49,16 @@ public static class SpiderUiHost
                 case "ui-dismiss":
                     Close(ev["seq"]?.GetValue<int>() ?? 0);
                     break;
+                case "ui-rows":
+                    // jar 就地改了自定义视图的按钮文字（切「启用中/停用中」），刷新已开着的框
+                    if (Windows.TryGetValue(ev["seq"]?.GetValue<int>() ?? -1, out var host)
+                        && host is Pages.SpiderDialogPage sdp && ev["rows"] is JsonArray ra)
+                        MainThread.BeginInvokeOnMainThread(() => sdp.UpdateRows(ParseRows(ra)));
+                    break;
                 case "ui-toast":
                     var text = ev["text"]?.GetValue<string>() ?? "";
                     DiagLog.Write($"[spider-ui] toast: {text}");
+                    if (text.Length > 0) await ShowToastAsync(text).ConfigureAwait(true);
                     break;
             }
         }
@@ -79,6 +93,22 @@ public static class SpiderUiHost
             return;
         }
 
+        // 行 / 格结构（桥摊平 jar 的自定义 View 树而来）→ 两栏对话框：
+        // 网盘行是「盘名占宽 + 启用/停用占窄」，用 ActionSheet 平铺会排成 8 行、和真机差很远
+        if (ev["rows"] is JsonArray { Count: > 0 } rowArr)
+        {
+            var rows = ParseRows(rowArr);
+            if (rows.Count > 0)
+            {
+                var dlg = new Pages.SpiderDialogPage(title, message, rows,
+                    idx => _ = SendUiResultAsync(seq, idx),
+                    () => _ = SendUiResultAsync(seq, -2));   // ✕/遮罩/Back = Android BUTTON_NEGATIVE（取消）
+                Windows[seq] = dlg;
+                await Shell.Current.Navigation.PushModalAsync(dlg).ConfigureAwait(true);
+                return;
+            }
+        }
+
         // 列表选择（如「我的夸父- 未登录 / 停用中」）——ActionSheet 单层最贴 Android setItems
         if (ev["items"] is System.Text.Json.Nodes.JsonArray arr && arr.Count > 0)
         {
@@ -105,57 +135,137 @@ public static class SpiderUiHost
         }
     }
 
-    /// <summary>二维码弹窗：黑白矩阵 → 手写 BMP（零依赖）→ Image；整页模态展示，手机扫码登录。</summary>
+    /// <summary>
+    /// 二维码弹窗：整页模态展示，手机扫码登录。
+    /// <para>图优先用桥侧 <c>ImageIO</c> 出的 PNG —— 这里手搓的 24 位 BMP 在 WinUI 上解不出来,
+    /// 整页只剩一个「取消」(2026-09-24 实测)。QEMU guest 只发 pixels,故保留 BMP 兜底。</para>
+    /// </summary>
     private static async Task ShowQrAsync(int seq, string title, JsonObject qr)
     {
         var w = qr["w"]?.GetValue<int>() ?? 0;
         var h = qr["h"]?.GetValue<int>() ?? 0;
+        var pngB64 = qr["png"]?.GetValue<string>();
+        byte[]? png = null;
+        if (!string.IsNullOrEmpty(pngB64))
+        {
+            try { png = Convert.FromBase64String(pngB64!); } catch { png = null; }
+        }
         var pixels = (qr["pixels"] as System.Text.Json.Nodes.JsonArray)?
             .Select(x => x?.GetValue<int>() ?? 0).ToArray() ?? [];
-        if (w <= 0 || h <= 0 || pixels.Length != w * h)
+        if (png is null && (w <= 0 || h <= 0 || pixels.Length != w * h))
         {
             await SendUiResultAsync(seq, -2).ConfigureAwait(true);
             return;
         }
 
-        var scale = Math.Max(4, 360 / Math.Max(w, h));
-        var bmp = BuildBmp(w, h, pixels, scale);
+        var img = png ?? BuildBmp(w, h, pixels, Math.Max(4, 360 / Math.Max(w, h)));
+        var image = new Image
+        {
+            Source = ImageSource.FromStream(() => new MemoryStream(img)),
+            BackgroundColor = Colors.White,     // 二维码外留白：黑底上贴黑码扫不出来
+            HorizontalOptions = LayoutOptions.Center,
+            VerticalOptions = LayoutOptions.Center,
+            Margin = 24,
+        };
+        var cancel = new Button
+        {
+            Text = "取消",
+            TextColor = Colors.White,
+            BackgroundColor = Microsoft.Maui.Graphics.Color.FromArgb("#333333"),
+            Margin = new Thickness(24, 0, 24, 24),
+            HorizontalOptions = LayoutOptions.Center,
+        };
+        cancel.Command = new Microsoft.Maui.Controls.Command(async () =>
+        {
+            // 告诉桥「取消」（Android BUTTON_NEGATIVE），否则它一直挂着这个对话框。
+            // 先摘掉登记：桥随后上行的 ui-dismiss 会走 Close(seq)，不摘就会**再弹一次模态**，
+            // 把背后那页也弹没。
+            Windows.Remove(seq, out _);
+            await SendUiResultAsync(seq, -2).ConfigureAwait(true);
+            try { await Shell.Current.Navigation.PopModalAsync(); } catch { }
+        });
+        // 按钮必须显式放第 1 行：不写的话它和 Image 都落在 row 0，挤在屏幕正中
+        var grid = new Grid
+        {
+            RowDefinitions =
+            {
+                new RowDefinition(GridLength.Star),
+                new RowDefinition(GridLength.Auto),
+            },
+        };
+        grid.Children.Add(image);
+        grid.Add(cancel, 0, 1);
         var page = new ContentPage
         {
             Title = string.IsNullOrWhiteSpace(title) ? "扫码登录" : title,
             BackgroundColor = Colors.Black,
-            Content = new Grid
-            {
-                RowDefinitions =
-                {
-                    new RowDefinition(GridLength.Star),
-                    new RowDefinition(GridLength.Auto),
-                },
-                Children =
-                {
-                    new Image
-                    {
-                        Source = ImageSource.FromStream(() => new MemoryStream(bmp)),
-                        HorizontalOptions = LayoutOptions.Center,
-                        VerticalOptions = LayoutOptions.Center,
-                        Margin = 24,
-                    },
-                    new Button
-                    {
-                        Text = "取消",
-                        TextColor = Colors.White,
-                        BackgroundColor = Microsoft.Maui.Graphics.Color.FromArgb("#333333"),
-                        Margin = new Thickness(24, 0, 24, 24),
-                        Command = new Microsoft.Maui.Controls.Command(async () =>
-                        {
-                            try { await Shell.Current.Navigation.PopModalAsync(); } catch { }
-                        }),
-                    },
-                },
-            },
+            Content = grid,
         };
         Windows[seq] = page;
         await Shell.Current.Navigation.PushModalAsync(page).ConfigureAwait(true);
+    }
+
+    /// <summary>解析桥的 <c>rows</c>（每格 <c>{t:文本, i:条目下标}</c>）；首次渲染与后续刷新共用。</summary>
+    private static List<IReadOnlyList<(string Text, int Index)>> ParseRows(JsonArray rowArr)
+    {
+        var rows = new List<IReadOnlyList<(string Text, int Index)>>();
+        foreach (var r in rowArr)
+        {
+            if (r is not JsonArray cells) continue;
+            var line = new List<(string Text, int Index)>();
+            foreach (var c in cells)
+            {
+                if (c is not JsonObject co) continue;
+                line.Add((co["t"]?.GetValue<string>() ?? "", co["i"]?.GetValue<int>() ?? 0));
+            }
+            if (line.Count > 0) rows.Add(line);
+        }
+        return rows;
+    }
+
+    /// <summary>从 action 的返回 JSON 里取给用户看的话（TVBox 的 actionResult 用 <c>msg</c> 字段）。</summary>
+    private static string PickMsg(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json) || !json.StartsWith('{')) return "";
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            return doc.RootElement.TryGetProperty("msg", out var m) && m.ValueKind == System.Text.Json.JsonValueKind.String
+                ? m.GetString() ?? "" : "";
+        }
+        catch { return ""; }
+    }
+
+    /// <summary>
+    /// 非模态小提示：叠在当前页根 Grid 底部，淡入停留后自动消失。
+    /// <para>根布局不是 Grid（没有可叠加的容器）时退回系统弹窗 —— 早先 toast 只写日志，
+    /// 用户点「清除 Cookie」后什么反馈都看不到。</para>
+    /// </summary>
+    private static async Task ShowToastAsync(string text)
+    {
+        // 先取 Shell 当前页：Shell 应用里 Window.Page 是 Shell 本身，拿不到可叠加的根布局
+        var page = Shell.Current?.CurrentPage ?? Application.Current?.Windows?.FirstOrDefault()?.Page;
+        if (page is not ContentPage cp || cp.Content is not Grid root)
+        {
+            try { if (page is not null) await page.DisplayAlertAsync("提示", text, "好的"); } catch { }
+            return;
+        }
+        var tip = new Border
+        {
+            Content = new Label { Text = text, FontSize = 13.5, TextColor = Colors.White, Margin = new Thickness(14, 9) },
+            BackgroundColor = Color.FromArgb("#E6323232"),
+            StrokeThickness = 0,
+            StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 10 },
+            HorizontalOptions = LayoutOptions.Center,
+            VerticalOptions = LayoutOptions.End,
+            Margin = new Thickness(0, 0, 0, 42),
+            Opacity = 0,
+        };
+        root.Children.Add(tip);
+        await tip.FadeTo(1, 120);
+        await Task.Delay(1900);
+        await tip.FadeTo(0, 260);
+        root.Children.Remove(tip);
     }
 
     private static void Close(int seq)
@@ -195,7 +305,26 @@ public static class SpiderUiHost
                 .GetService<Core.Interfaces.IVodSourceProvider>();
             if (provider is null) return;
 
-            // 解析链（playerContent + danmaku 钩子）完成后 jar 若弹窗，事件即时渲染；
+            // ① 卡片自带 action（TVBox doAction 语义）：网盘的「已登录+启用中」列表与扫码二维码
+            //    只有爬虫的 action(String) 会弹出原生对话框 —— detailContent/playerContent
+            //    那条路只会走到 Pan.proxyInput() 的贴 Cookie HTML 页（2026-09-24 实测确认）。
+            if (item.Action.Length > 0 && provider is Core.Interfaces.IActionVodSourceProvider ap)
+            {
+                var wAction = WaitForDialogAsync(TimeSpan.FromSeconds(3));
+                var acted = await ap.DoActionAsync(site, item).ConfigureAwait(true);
+                if (acted is not null)
+                {
+                    // 执行成功就到此为止：jar 自己弹框（登录列表/扫码）或只回一个 toast
+                    // （「清除XX Cookie」）。往下掉会把用户丢进 jar 的贴 Cookie 推送页
+                    // ——2026-09-24 用户实测「点清除却进推送页」正是这么来的。
+                    if (await wAction.ConfigureAwait(true)) return;
+                    var msg = PickMsg(acted);
+                    if (!string.IsNullOrWhiteSpace(msg)) await ShowToastAsync(msg!);
+                    return;
+                }
+            }
+
+            // ② 解析链（playerContent + danmaku 钩子）完成后 jar 若弹窗，事件即时渲染；
             // 只留 800ms 跨进程到达缓冲——不再白等固定窗口
             var wait = WaitForDialogAsync(TimeSpan.FromMilliseconds(800));
             await provider.GetPlaySourcesAsync(site, item).ConfigureAwait(true);

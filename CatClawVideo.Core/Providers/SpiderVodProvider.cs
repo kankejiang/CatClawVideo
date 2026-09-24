@@ -10,7 +10,7 @@ namespace CatClawVideo.Core.Providers;
 ///   http 脚本走 <see cref="DrpyJsSpiderRuntime"/>（drpy2 协议）
 /// - Jar（Java/dex）→ 运行时由平台侧提供（Android DexClassLoader）；不可用时抛出明确异常
 /// </summary>
-public class SpiderVodProvider : IVodSourceProvider
+public class SpiderVodProvider : IVodSourceProvider, IActionVodSourceProvider
 {
     private readonly ISpiderRuntime? _jsRuntime;
     private readonly ISpiderRuntime? _jarRuntime;
@@ -51,6 +51,29 @@ public class SpiderVodProvider : IVodSourceProvider
 
     public bool CanHandle(VodSiteInfo site) => site.SpiderKind != VodSpiderKind.None && RuntimeFor(site) != null;
 
+    /// <summary>
+    /// 把卡片的 action 交给爬虫（TVBox doAction 语义）。
+    /// <para>返回值：<c>null</c> = 这条链路不支持/调用失败；**空串是正常结果** ——
+    /// 「清除XX Cookie」这类动作执行完只回一个 toast，爬虫本身不返 JSON。
+    /// 早先把空串折成 null，调用方误判成「没执行」而继续往下掉，于是点清除却打开了推送页。</para>
+    /// </summary>
+    public async Task<string?> DoActionAsync(VodSiteInfo site, VodItem item, CancellationToken ct = default)
+    {
+        if (item.Action.Length == 0) return null;
+        if (RuntimeFor(site) is not ISpiderActionRuntime rt) return null;
+        try
+        {
+            var json = await rt.ActionAsync(site, item.Action, ct).ConfigureAwait(false);
+            _log?.Invoke($"[动作] {site.Key}.action({item.Action}) → {json}");
+            return json ?? "";
+        }
+        catch (Exception ex)
+        {
+            _log?.Invoke($"[动作] {site.Key}.action 失败: {ex.Message}");
+            return null;
+        }
+    }
+
     public async Task<List<VodCategory>> GetCategoriesAsync(VodSiteInfo site, CancellationToken ct = default)
     {
         var rt = RuntimeFor(site) ?? throw new NotSupportedException(site.StatusNote ?? "爬虫运行时不可用");
@@ -65,7 +88,8 @@ public class SpiderVodProvider : IVodSourceProvider
         var rt = RuntimeFor(site) ?? throw new NotSupportedException(site.StatusNote ?? "爬虫运行时不可用");
         var raw = await rt.CategoryContentAsync(site, category.Id, page.ToString(), ct);
         var items = SpiderJsonParser.ParseItems(raw, site.Key);
-        _log?.Invoke($"[解析] {site.Key}.category(tid={category.Id},pg={page}) → {raw.Length}B → {items.Count} 条");
+        _log?.Invoke($"[解析] {site.Key}.category(tid={category.Id},pg={page}) → {raw.Length}B → {items.Count} 条"
+                     + $"（带 action {items.Count(i => i.Action.Length > 0)} 条）");
         return items;
     }
 

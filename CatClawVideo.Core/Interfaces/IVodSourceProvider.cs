@@ -52,6 +52,18 @@ public interface IProgressiveVodSourceProvider
 }
 
 /// <summary>
+/// 支持「操作入口」卡片的 Provider（可选能力，仅 spider 系 Provider 实现）。
+/// <para>卡片 <see cref="VodItem.Action"/> 非空时点击不是打开详情，而是把那段 JSON 交给爬虫的
+/// <c>action(String)</c>（TVBox <c>SourceViewModel.doAction</c> 语义）——Guard 系网盘源的
+/// 「登入自己网盘」原生对话框与扫码二维码只有这条路能弹出来。</para>
+/// </summary>
+public interface IActionVodSourceProvider
+{
+    /// <summary>执行卡片 action，返回爬虫给的协议 JSON；站点/爬虫不支持时返回 null。</summary>
+    Task<string?> DoActionAsync(VodSiteInfo site, VodItem item, CancellationToken ct = default);
+}
+
+/// <summary>
 /// 订阅源管理器抽象：负责拉取/解析 TVBox 与影视仓多仓订阅地址，产出统一站点列表。
 /// 基础架构阶段仅定义契约，实现随订阅源功能开发落地。
 /// </summary>
