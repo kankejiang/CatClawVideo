@@ -449,6 +449,19 @@ public final class GuardSession {
             throw new IllegalStateException("Guard 会话未就绪（壳 jar 未加载）");
     }
 
+    /**
+     * 登记「懒建会话该用哪个 raw jar」。
+     *
+     * <p>{@code guardPort>0} 时 load 会跳过 unidbg 预热（QEMU 通道优先），于是
+     * {@link #loadedJar} 一直是 null —— QEMU 一旦连不上（VM 没起来／被强杀／端口没绑），
+     * {@link #requireSession()} 的懒建兜底就因为不知道 jar 路径而直接抛
+     * 「Guard 会话未就绪（壳 jar 未加载）」，网盘 {@code Cloud_quark.init} 随之失败。
+     * 这里把路径先记下来，兜底才真的存在（2026-09-25 实测）。</p>
+     */
+    public static void noteJar(File jar) {
+        if (jar != null && jar.isFile()) loadedJar = jar;
+    }
+
     private static boolean isArm64(File f) throws Exception {
         return elfMachine(f) == 0xB7;
     }

@@ -216,7 +216,11 @@ public class Server {
             // 壳框架模式：shellJar/rawJar/realJar 由宿主下发（Guard 源）——壳实例跑在独立 loader，
             // DexNative 解密优先走 QEMU 通道（guardPort>0 时），unidbg 会话懒加载兜底
             if (shellJar != null && !shellJar.isEmpty()) {
-                if (guardPort <= 0 && rawJar != null && !rawJar.isEmpty()) GuardSession.ensureSession(new File(rawJar));
+                if (rawJar != null && !rawJar.isEmpty()) {
+                    if (guardPort <= 0) GuardSession.ensureSession(new File(rawJar));
+                    // QEMU 优先时不预热，但路径要记下：VM 连不上时 requireSession 的懒建兜底才有得建
+                    else GuardSession.noteJar(new File(rawJar));
+                }
                 if (realJar != null && !realJar.isEmpty()) {
                     ClassLoader realLoader = GuardSession.setRealLoader(realJar, null);
                     // ⚠ realLoader 的 InitOrigin/Init 也要注入：真实类的解密器（merge.Ku.N）调

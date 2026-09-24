@@ -91,6 +91,29 @@ public class ActivityThread {
     public Object getPackageInfo() { return null; }
 
     /**
+     * Guard 系爬虫的「兜底解密入口」—— 名字和签名都是它自己定的，必须一模一样。
+     *
+     * <p>字节码实测（{@code merge.Rc.KJ(String)}，2026-09-25 反编译）：
+     * <pre>
+     *   if (TextUtils.isEmpty(s)) return s;
+     *   if (cn.yq) return HideUtils.decrypt(s);                  // so 在本进程加载成功
+     *   try {
+     *       Method m = InitOrigin.i.getDeclaredMethod("decrypt", String.class);  // i = ActivityThread.class
+     *       return (String) m.invoke(null, s);                   // ← 桌面走这条
+     *   } catch (Throwable t) { t.printStackTrace(); ... }
+     * </pre>
+     * 桌面 JVM 是 x64，加载不了 ARM 的 {@code ftyguard_v8.so} ⇒ {@code cn.yq} 恒 false ⇒
+     * 只能靠这个反射。缺它时抛的 {@link NoSuchMethodException} 会让
+     * {@code Cloud_quark.init} 失败，而壳自己的错误处理器 {@code merge.OW} case1 写的是
+     * {@code "初始化失败:" + e.getCause().getMessage()} —— NoSuchMethodException 没有 cause，
+     * 于是原始异常被 NPE 吞掉，表现成「我的夸父- 未登录」且 {@code searchContent} 零结果
+     * （不发任何网络请求）。</p>
+     */
+    public static String decrypt(String s) {
+        return bridge.GuardSession.decrypt(s);
+    }
+
+    /**
      * <code>mActivities</code> 里的记录。字段名与 Android 真机一致（<code>paused</code> /
      * <code>activity</code>），且必须是 <b>public</b>：爬虫用 <code>getDeclaredField</code> 读它们。
      */
