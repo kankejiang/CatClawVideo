@@ -46,4 +46,23 @@ public final class DexNative {
     public static Object[] proxyInvoke(Object a, Object b) {
         return bridge.GuardSession.proxyInvoke(a, b);
     }
+
+    /**
+     * 弹幕本地服务。真机由 ARM so 起一个监听端口；桌面这套已经由宿主的
+     * {@code SpiderProxyServer(/proxy?do=danmu)} 承担，所以这里必须**安静返回**。
+     *
+     * <p>⚠ 旧桩根本没声明这几个方法 ⇒ 爬虫一调就 {@code NoSuchMethodError}，
+     * 而调用方是在自己的线程里调的 ⇒ <b>整条线程当场死掉</b>，
+     * 表现成「点了没反应／弹幕服务启动失败」（实测 2026-09-25，日志里 27 次）。</p>
+     */
+    public static void danmuStart() { danmuStart(false); }
+
+    public static void danmuStart(boolean auto) {
+        System.err.println("[dexnative] danmuStart(auto=" + auto + ") → 桌面由宿主 /proxy?do=danmu 承担，no-op");
+    }
+
+    /** so 侧打开授权网页。桌面交给宿主决定，这里只留痕，绝不抛。 */
+    public static void GoWeb() {
+        System.err.println("[dexnative] GoWeb() → 桌面 no-op");
+    }
 }
