@@ -156,22 +156,25 @@ public class Context {
      */
     public static class MemEditor implements SharedPreferences.Editor {
         private final String name;
-        MemEditor(String prefsName) { name = prefsName; }
+        MemEditor(String prefsName) { name = PrefsStore.normalize(prefsName); }
         private Map<String, Object> store() { return PrefsStore.store(name); }
 
+        /**
+         * 一律走 {@link PrefsStore#put}：那里会登记「本进程动过这个键」，
+         * 落盘时只盖自己动过的键 —— 多个桥 JVM 并存时才不会互相覆盖（见 PrefsStore）。
+         */
         @Override public SharedPreferences.Editor putString(String k, String v) {
-            store().put(k, v);
-            // 留痕：登录态「当场在、重启就没」这类问题，只有看见每次写了什么键、多长才能定位
+            PrefsStore.put(name, k, v);
             if (v != null && !v.isEmpty()) System.err.println("[prefs] put " + name + "." + k + " len=" + v.length());
             return this;
         }
-        @Override public SharedPreferences.Editor putStringSet(String k, java.util.Set<String> v) { store().put(k, v); return this; }
-        @Override public SharedPreferences.Editor putInt(String k, int v) { store().put(k, v); return this; }
-        @Override public SharedPreferences.Editor putLong(String k, long v) { store().put(k, v); return this; }
-        @Override public SharedPreferences.Editor putFloat(String k, float v) { store().put(k, v); return this; }
-        @Override public SharedPreferences.Editor putBoolean(String k, boolean v) { store().put(k, v); return this; }
-        @Override public SharedPreferences.Editor remove(String k) { store().remove(k); return this; }
-        @Override public SharedPreferences.Editor clear() { store().clear(); return this; }
+        @Override public SharedPreferences.Editor putStringSet(String k, java.util.Set<String> v) { PrefsStore.put(name, k, v); return this; }
+        @Override public SharedPreferences.Editor putInt(String k, int v) { PrefsStore.put(name, k, v); return this; }
+        @Override public SharedPreferences.Editor putLong(String k, long v) { PrefsStore.put(name, k, v); return this; }
+        @Override public SharedPreferences.Editor putFloat(String k, float v) { PrefsStore.put(name, k, v); return this; }
+        @Override public SharedPreferences.Editor putBoolean(String k, boolean v) { PrefsStore.put(name, k, v); return this; }
+        @Override public SharedPreferences.Editor remove(String k) { PrefsStore.remove(name, k); return this; }
+        @Override public SharedPreferences.Editor clear() { PrefsStore.clearAll(name); return this; }
         @Override public boolean commit() { return PrefsStore.flush(name); }
         @Override public void apply() { PrefsStore.flush(name); }
     }

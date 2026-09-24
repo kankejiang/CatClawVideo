@@ -29,12 +29,44 @@ public final class PrefsStore {
 
     private static final Map<String, Map<String, Object>> STORES = new ConcurrentHashMap<>();
 
+    /**
+     * 本进程**真正动过**的键。落盘时只覆盖这些键，其余以磁盘上的值为准。
+     * <p>为什么必须有：桌面可能同时跑多个桥 JVM（实测 28 秒内起 3 个，2026-09-25），
+     * 每个都在启动时读走整份 spUtils 快照。若 flush 直接整表覆盖，
+     * 任何一个 JVM 的 apply() 都会把它那份<b>旧快照</b>写回去，
+     * 把别的 JVM 刚存进去的网盘 cookie 抹成空 —— 表现就是「扫码当场已登录、重启又未登录」。</p>
+     */
+    private static final Map<String, Set<String>> DIRTY = new ConcurrentHashMap<>();
+
     private PrefsStore() { }
 
     /** 取（必要时从磁盘读入）某个 prefs 文件对应的键值表。 */
     public static Map<String, Object> store(String name) {
         String n = normalize(name);
         return STORES.computeIfAbsent(n, PrefsStore::loadFromDisk);
+    }
+
+    /** 写一个键（并登记为"本进程动过"）。 */
+    public static void put(String name, String key, Object value) {
+        store(name).put(key, value);
+        dirty(name).add(key);
+    }
+
+    /** 删一个键（同样登记，否则 flush 不会把它从盘上抹掉）。 */
+    public static void remove(String name, String key) {
+        store(name).remove(key);
+        dirty(name).add(key);
+    }
+
+    /** 清空整个 prefs：把当前所有键都登记为动过。 */
+    public static void clearAll(String name) {
+        String n = normalize(name);
+        Set<String> d = dirty(n);
+        synchronized (store(n)) { d.addAll(store(n).keySet()); store(n).clear(); }
+    }
+
+    private static Set<String> dirty(String name) {
+        return DIRTY.computeIfAbsent(normalize(name), k -> java.util.concurrent.ConcurrentHashMap.newKeySet());
     }
 
     /** 所有 prefs 合并成一张扁平表（供 QEMU guest 快照 / 宿主读登录态）。 */
@@ -48,37 +80,54 @@ public final class PrefsStore {
     public static void drop(String name) {
         String n = normalize(name);
         STORES.remove(n);
+        DIRTY.remove(n);
         File f = file(n);
         if (f.isFile()) {
             try { f.delete(); } catch (Throwable ignored) { }
         }
     }
 
-    /** 把内存里的改动写回该 prefs 的文件。 */
+    /**
+     * 把<b>本进程动过的键</b>合进磁盘现状后写回（读-改-写）。
+     * <p>没动过任何键就直接返回，绝不写文件 —— 否则空手一次 apply 就能把别的 JVM 的成果抹掉。</p>
+     */
     public static boolean flush(String name) {
         String n = normalize(name);
         Map<String, Object> m = STORES.get(n);
         if (m == null) return true;
+        Set<String> d = DIRTY.get(n);
+        if (d == null || d.isEmpty()) return true;
+        // 1) 读磁盘现状 2) 只把自己动过的键盖上去 3) 内存与磁盘对齐 4) 写文件
+        Map<String, Object> merged = loadFromDisk(n);
+        Map<String, Object> out;
+        synchronized (m) {
+            for (String k : d) {
+                Object v = m.get(k);
+                if (v == null) merged.remove(k); else merged.put(k, v);
+            }
+            out = new LinkedHashMap<>(merged);
+            m.clear();
+            m.putAll(merged);
+        }
+        d.clear();
         try {
             File f = file(n);
             File parent = f.getParentFile();
             if (parent != null && !parent.isDirectory()) parent.mkdirs();
             StringBuilder sb = new StringBuilder();
             sb.append("<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n");
-            synchronized (m) {
-                for (Map.Entry<String, Object> e : m.entrySet()) {
-                    String k = esc(e.getKey());
-                    Object v = e.getValue();
-                    if (v instanceof Integer) sb.append("    <int name=\"").append(k).append("\" value=\"").append(v).append("\" />\n");
-                    else if (v instanceof Long) sb.append("    <long name=\"").append(k).append("\" value=\"").append(v).append("\" />\n");
-                    else if (v instanceof Float) sb.append("    <float name=\"").append(k).append("\" value=\"").append(v).append("\" />\n");
-                    else if (v instanceof Boolean) sb.append("    <boolean name=\"").append(k).append("\" value=\"").append(v).append("\" />\n");
-                    else if (v instanceof Set) {
-                        sb.append("    <string-set name=\"").append(k).append("\">\n");
-                        for (Object s : (Set<?>) v) sb.append("        <item>").append(esc(String.valueOf(s))).append("</item>\n");
-                        sb.append("    </string-set>\n");
-                    } else sb.append("    <string name=\"").append(k).append("\">").append(esc(String.valueOf(v))).append("</string>\n");
-                }
+            for (Map.Entry<String, Object> e : out.entrySet()) {
+                String k = esc(e.getKey());
+                Object v = e.getValue();
+                if (v instanceof Integer) sb.append("    <int name=\"").append(k).append("\" value=\"").append(v).append("\" />\n");
+                else if (v instanceof Long) sb.append("    <long name=\"").append(k).append("\" value=\"").append(v).append("\" />\n");
+                else if (v instanceof Float) sb.append("    <float name=\"").append(k).append("\" value=\"").append(v).append("\" />\n");
+                else if (v instanceof Boolean) sb.append("    <boolean name=\"").append(k).append("\" value=\"").append(v).append("\" />\n");
+                else if (v instanceof Set) {
+                    sb.append("    <string-set name=\"").append(k).append("\">\n");
+                    for (Object s : (Set<?>) v) sb.append("        <item>").append(esc(String.valueOf(s))).append("</item>\n");
+                    sb.append("    </string-set>\n");
+                } else sb.append("    <string name=\"").append(k).append("\">").append(esc(String.valueOf(v))).append("</string>\n");
             }
             sb.append("</map>\n");
             Files.write(f.toPath(), sb.toString().getBytes(StandardCharsets.UTF_8));
