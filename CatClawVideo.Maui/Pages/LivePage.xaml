@@ -73,7 +73,7 @@
                 <Label x:Name="LblChannelInfo" FontSize="13.5" FontFamily="OpenSansSemibold" TextColor="#FFFFFF" />
                 <Label x:Name="LblClock" FontSize="12" TextColor="#B3FFFFFF" VerticalOptions="Center" />
             </HorizontalStackLayout>
-            <HorizontalStackLayout Grid.Column="1" Spacing="8">
+            <HorizontalStackLayout Grid.Column="1" Spacing="8" x:Name="ChromeActions">
                 <Border Style="{StaticResource LiveChip}" x:Name="BtnChannelList">
                     <Label Text="频道" Style="{StaticResource LiveChipText}" />
                 </Border>
@@ -129,7 +129,7 @@
         <Border x:Name="SettingsPanel" IsVisible="False" WidthRequest="330" HorizontalOptions="End"
                 BackgroundColor="#F20B0D20" StrokeThickness="0" Padding="0">
             <ScrollView>
-                <VerticalStackLayout Padding="18,16,18,20" Spacing="12">
+                <VerticalStackLayout x:Name="SettingsList" Padding="18,16,18,20" Spacing="12">
                     <Label Text="线路选择" FontSize="13" FontFamily="OpenSansSemibold" TextColor="#FFFFFF" />
                     <FlexLayout x:Name="LineList" Wrap="Wrap" Direction="Row" />
                     <Label Text="超时换源" FontSize="13" FontFamily="OpenSansSemibold" TextColor="#FFFFFF" Margin="0,6,0,0" />

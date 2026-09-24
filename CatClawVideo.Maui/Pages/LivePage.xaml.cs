@@ -45,6 +45,17 @@ public partial class LivePage : ContentPage
         BtnSettingsPanel.GestureRecognizers.Add(new TapGestureRecognizer { Command = new Command(ToggleSettings) });
         BtnClose.GestureRecognizers.Add(new TapGestureRecognizer { Command = new Command(OnCloseTapped) });
 
+#if WINDOWS
+        // Windows 系统标题栏按钮（最小化/最大化/关闭）绘制在内容之上、约占顶部 32px
+        // （同 WatchPage.NormalContentPadding 的约定）：全屏页的顶部 chips 与设置面板要避开，
+        // 否则 频道/设置/✕ 和系统按钮重合（2026-09-25 用户截图）。
+        TopChrome.Margin = new Thickness(0, 36, 0, 0);
+        SettingsList.Padding = new Thickness(18, 48, 18, 20);
+#elif ANDROID
+        // Edge-to-Edge：全屏页从 y=0 起绘，顶部 chips 避开状态栏（同 WatchPage.ApplyTopBarInset）
+        TopChrome.Margin = new Thickness(0, SafeAreaHelper.TopInset, 0, 0);
+#endif
+
         Player.StateChanged += (_, _) => MainThread.BeginInvokeOnMainThread(OnPlayerStateChanged);
         Player.MediaFailed += (_, _) => MainThread.BeginInvokeOnMainThread(() =>
         {
