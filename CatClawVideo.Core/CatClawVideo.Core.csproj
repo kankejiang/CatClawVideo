@@ -19,4 +19,10 @@
          接口（IJsRuntimeService 等）仍保留在本项目内。 -->
     <ProjectReference Include="..\..\CatClaw.Shared\src\CatClaw.Shared.Core\CatClaw.Shared.Core.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- 直播台标 / EPG-ID 字典（534 频道别名，移植自 TVBox assets/epg_data.json）；
+         通过 EpgService 的 LookupChannel(name) 查询，内嵌进程序集随包分发。 -->
+    <EmbeddedResource Include="Live\Assets\epg_data.json" LogicalName="CatClawVideo.Core.Live.epg_data.json" />
+  </ItemGroup>
 </Project>

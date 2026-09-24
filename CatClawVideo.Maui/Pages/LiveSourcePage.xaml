@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="CatClawVideo.Maui.Pages.LiveSourcePage"
+             BackgroundColor="{DynamicResource WindowBackgroundColor}"
+             NavigationPage.HasNavigationBar="False">
+
+    <!-- 隐藏 Shell 系统返回键（页面自带自定义返回，避免左上角双返回按钮，同 SourceConfigPage） -->
+    <Shell.BackButtonBehavior>
+        <BackButtonBehavior IsVisible="False" />
+    </Shell.BackButtonBehavior>
+
+    <ScrollView>
+        <VerticalStackLayout Padding="24,14,24,28" Spacing="12">
+
+            <Grid ColumnDefinitions="Auto,Auto,*" ColumnSpacing="12">
+                <Border Grid.Column="0" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
+                        StrokeShape="RoundRectangle 12" WidthRequest="38" HeightRequest="38">
+                    <Image Source="ic_back.png" WidthRequest="18" HeightRequest="18"
+                           HorizontalOptions="Center" VerticalOptions="Center" />
+                    <Border.GestureRecognizers>
+                        <TapGestureRecognizer Tapped="OnBackTapped" />
+                    </Border.GestureRecognizers>
+                </Border>
+                <Label Grid.Column="1" Text="直播源" FontSize="15" FontFamily="OpenSansSemibold"
+                       TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
+            </Grid>
+
+            <!-- 直播源地址 -->
+            <Border StrokeThickness="1" StrokeShape="RoundRectangle 16"
+                    BackgroundColor="{DynamicResource CardBackgroundColor}"
+                    Stroke="{DynamicResource DividerColor}" Padding="18">
+                <VerticalStackLayout Spacing="10">
+                    <Label Text="直播源" FontSize="15" FontFamily="OpenSansSemibold"
+                           TextColor="{DynamicResource TextPrimaryColor}" />
+                    <Label Text="支持 http(s) 直链 / 本地文件路径 / 直接粘贴内容；格式支持 TXT（组名,#genre#）、M3U、JSON 数组，以及含 lives 数组的 TVBox 订阅配置"
+                           FontSize="12" TextColor="{DynamicResource TextSecondaryColor}" />
+
+                    <Label x:Name="LblCurrent" Text="当前：未配置" FontSize="11.5"
+                           TextColor="{DynamicResource TextHintColor}" Margin="0,2,0,0" />
+
+                    <Editor x:Name="SourceEditor"
+                            Placeholder="粘贴直播源地址，或直接粘贴 TXT / M3U 文本…"
+                            PlaceholderColor="{DynamicResource TextHintColor}"
+                            TextColor="{DynamicResource TextPrimaryColor}"
+                            BackgroundColor="{DynamicResource ChipInactiveColor}"
+                            AutoSize="TextChanges" MinimumHeightRequest="70" MaximumHeightRequest="220" />
+
+                    <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="10">
+                        <Label Grid.Column="0" x:Name="LblStatus" Text="" FontSize="11.5"
+                               TextColor="{DynamicResource TextHintColor}" VerticalOptions="Center" />
+                        <Button Grid.Column="1" x:Name="BtnPickFile" Text="本地文件" FontSize="12.5"
+                                TextColor="{DynamicResource TextPrimaryColor}"
+                                BackgroundColor="{DynamicResource ChipInactiveColor}"
+                                CornerRadius="8" Padding="14,6" Clicked="OnPickFileClicked" />
+                        <Button Grid.Column="2" x:Name="BtnLoad" Text="加载并播放" FontSize="12.5"
+                                TextColor="White"
+                                BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
+                                CornerRadius="8" Padding="16,6" Clicked="OnLoadClicked" />
+                    </Grid>
+                </VerticalStackLayout>
+            </Border>
+
+            <!-- 历史 -->
+            <Border StrokeThickness="1" StrokeShape="RoundRectangle 16"
+                    BackgroundColor="{DynamicResource CardBackgroundColor}"
+                    Stroke="{DynamicResource DividerColor}" Padding="18">
+                <VerticalStackLayout Spacing="10">
+                    <Label Text="历史直播源" FontSize="15" FontFamily="OpenSansSemibold"
+                           TextColor="{DynamicResource TextPrimaryColor}" />
+                    <VerticalStackLayout x:Name="HistoryList" Spacing="4" />
+                    <Label x:Name="HistoryEmpty" Text="还没有历史记录（最多保留 30 条）"
+                           FontSize="11.5" TextColor="{DynamicResource TextHintColor}" />
+                </VerticalStackLayout>
+            </Border>
+
+            <!-- 可选：EPG / UA -->
+            <Border StrokeThickness="1" StrokeShape="RoundRectangle 16"
+                    BackgroundColor="{DynamicResource CardBackgroundColor}"
+                    Stroke="{DynamicResource DividerColor}" Padding="18">
+                <VerticalStackLayout Spacing="10">
+                    <Label Text="节目单与 UA（可选）" FontSize="15" FontFamily="OpenSansSemibold"
+                           TextColor="{DynamicResource TextPrimaryColor}" />
+                    <Label Text="EPG 地址留空则用内置默认接口；若直播源自带 x-tvg-url / url-tvg，以源内声明为准"
+                           FontSize="12" TextColor="{DynamicResource TextSecondaryColor}" />
+
+                    <Entry x:Name="EpgEntry"
+                           Placeholder="EPG 地址模板（可留空）"
+                           PlaceholderColor="{DynamicResource TextHintColor}"
+                           TextColor="{DynamicResource TextPrimaryColor}" />
+                    <Entry x:Name="UaEntry"
+                           Placeholder="拉取源 / EPG 用的 User-Agent（可留空）"
+                           PlaceholderColor="{DynamicResource TextHintColor}"
+                           TextColor="{DynamicResource TextPrimaryColor}" />
+
+                    <HorizontalStackLayout Spacing="14">
+                        <Label Text="超时换源" FontSize="12.5"
+                               TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
+                        <HorizontalStackLayout x:Name="TimeoutChips" Spacing="6" VerticalOptions="Center" />
+                    </HorizontalStackLayout>
+
+                    <Button Text="保存" FontSize="12.5" TextColor="White"
+                            BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
+                            CornerRadius="8" Padding="16,6" HorizontalOptions="Start"
+                            Clicked="OnSaveOptionsClicked" />
+                </VerticalStackLayout>
+            </Border>
+
+        </VerticalStackLayout>
+    </ScrollView>
+
+</ContentPage>

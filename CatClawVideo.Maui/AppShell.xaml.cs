@@ -24,6 +24,12 @@ public partial class AppShell : Shell
         // 源配置页（设置 → 站点与源配置）
         Routing.RegisterRoute("sourceconfig", typeof(Pages.SourceConfigPage));
 
+        // 直播间（顶栏「直播」进入；TVBox LivePlayActivity 移植）
+        Routing.RegisterRoute("live", typeof(Pages.LivePage));
+
+        // 直播源配置页（直播间空白态「配置直播源」/ 设置面板进入）
+        Routing.RegisterRoute("livesource", typeof(Pages.LiveSourcePage));
+
         // 下载设置页（下载 tab 右上角 ⚙ 进入；照搬 Motrix 设置项）
 
         // 关于页（设置 → 关于）

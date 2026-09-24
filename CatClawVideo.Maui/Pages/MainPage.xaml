@@ -73,18 +73,33 @@
 
                 </HorizontalStackLayout>
 
-                <!-- 搜索入口 -->
-                <Border x:Name="TopSearchBox" Grid.Column="2" StrokeThickness="2" Stroke="Transparent" Margin="-2"
-                        BackgroundColor="{DynamicResource ChipInactiveColor}"
-                        StrokeShape="RoundRectangle 16" Padding="12,6" VerticalOptions="Center">
-                    <HorizontalStackLayout Spacing="8">
-                        <Image Source="ic_search_gray.png" WidthRequest="14" HeightRequest="14" VerticalOptions="Center" />
-                        <Label Text="搜索影片 / 演员" FontSize="12" TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
-                    </HorizontalStackLayout>
-                    <Border.GestureRecognizers>
-                        <TapGestureRecognizer Tapped="OnSearchTapped" />
-                    </Border.GestureRecognizers>
-                </Border>
+                <!-- 搜索入口 + 直播入口（同一列，搜索框保持原尺寸与焦点反馈） -->
+                <HorizontalStackLayout Grid.Column="2" Spacing="10" VerticalOptions="Center">
+                    <Border x:Name="TopSearchBox" StrokeThickness="2" Stroke="Transparent" Margin="-2"
+                            BackgroundColor="{DynamicResource ChipInactiveColor}"
+                            StrokeShape="RoundRectangle 16" Padding="12,6" VerticalOptions="Center">
+                        <HorizontalStackLayout Spacing="8">
+                            <Image Source="ic_search_gray.png" WidthRequest="14" HeightRequest="14" VerticalOptions="Center" />
+                            <Label Text="搜索影片 / 演员" FontSize="12" TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
+                        </HorizontalStackLayout>
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnSearchTapped" />
+                        </Border.GestureRecognizers>
+                    </Border>
+
+                    <!-- 直播：TVBox 直播间的入口（全屏推入页，路由 live） -->
+                    <Border x:Name="TopLiveBox" StrokeThickness="0" Stroke="Transparent"
+                            BackgroundColor="{DynamicResource ChipInactiveColor}"
+                            StrokeShape="RoundRectangle 16" Padding="12,6" VerticalOptions="Center">
+                        <HorizontalStackLayout Spacing="6">
+                            <Ellipse WidthRequest="7" HeightRequest="7" Fill="#e53935" VerticalOptions="Center" />
+                            <Label Text="直播" FontSize="12" TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
+                        </HorizontalStackLayout>
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnLiveTapped" />
+                        </Border.GestureRecognizers>
+                    </Border>
+                </HorizontalStackLayout>
 
                 <!-- Windows 窗口拖拽区（照抄猫爪音乐 TitleBar：Window.SetTitleBar 指定元素为拖拽区）：
                      第 3 列（*）是搜索框与窗口按钮之间的空白段，正好拿来做拖拽区；

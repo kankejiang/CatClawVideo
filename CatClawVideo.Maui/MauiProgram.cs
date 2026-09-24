@@ -66,6 +66,13 @@ public static class MauiProgram
         Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
         services.AddSingleton<ISubscriptionManager, CatClawVideo.Core.Providers.TvBoxSubscriptionManager>();
 
+        // ═══════════════════════════════════════════════════
+        // 直播（TVBox LivePlayActivity 移植）：源加载 + EPG 均为进程内单例
+        //   —— 直播间与直播源配置页共用同一份偏好与已解析频道，换页不重复拉源
+        // ═══════════════════════════════════════════════════
+        services.AddSingleton<CatClawVideo.Core.Live.LiveSourceService>();
+        services.AddSingleton<CatClawVideo.Core.Live.EpgService>();
+
         // spider 运行时：JS（drpy2，Jint 纯托管，双端可用）+ jar/dex（Android DexClassLoader，仅 Android）
         services.AddSingleton<CatClawVideo.Core.Interfaces.IJsRuntimeService, CatClawVideo.Core.Services.JsRuntimeService>();
         var jsRuntime = new CatClawVideo.Core.Providers.DrpyJsSpiderRuntime(
@@ -335,6 +342,8 @@ public static class MauiProgram
         services.AddTransient<Pages.LocalMediaPage>();
         services.AddTransient<Pages.AboutPage>();
         services.AddTransient<Pages.DiagnosticLogPage>();
+        services.AddTransient<Pages.LivePage>();
+        services.AddTransient<Pages.LiveSourcePage>();
 
 #if DEBUG
         builder.Logging.AddDebug();

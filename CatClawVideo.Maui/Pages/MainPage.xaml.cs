@@ -487,6 +487,12 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
         try { await Shell.Current.GoToAsync("search"); } catch { }
     }
 
+    /// <summary>顶栏直播入口 → 直播间（未配置源时页面自身给出「配置直播源」引导）</summary>
+    private async void OnLiveTapped(object? sender, TappedEventArgs e)
+    {
+        try { await Shell.Current.GoToAsync("live"); } catch { }
+    }
+
     /// <summary>tab 切换入口（MainViewModel 事件）</summary>
     private void OnTabChanged(int index)
     {
