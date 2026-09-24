@@ -82,6 +82,13 @@ public final class PrefsStore {
             }
             sb.append("</map>\n");
             Files.write(f.toPath(), sb.toString().getBytes(StandardCharsets.UTF_8));
+            StringBuilder have = new StringBuilder();
+            synchronized (m) {
+                for (Map.Entry<String, Object> e : m.entrySet())
+                    if (e.getValue() instanceof String && !((String) e.getValue()).isEmpty())
+                        have.append(e.getKey()).append('=').append(((String) e.getValue()).length()).append(' ');
+            }
+            System.err.println("[prefs] 落盘 " + n + " " + m.size() + " 键 非空: " + (have.length() == 0 ? "(无)" : have.toString().trim()));
             return true;
         } catch (Throwable t) {
             System.err.println("[prefs] 写入失败 " + name + ": " + t);

@@ -159,7 +159,12 @@ public class Context {
         MemEditor(String prefsName) { name = prefsName; }
         private Map<String, Object> store() { return PrefsStore.store(name); }
 
-        @Override public SharedPreferences.Editor putString(String k, String v) { store().put(k, v); return this; }
+        @Override public SharedPreferences.Editor putString(String k, String v) {
+            store().put(k, v);
+            // 留痕：登录态「当场在、重启就没」这类问题，只有看见每次写了什么键、多长才能定位
+            if (v != null && !v.isEmpty()) System.err.println("[prefs] put " + name + "." + k + " len=" + v.length());
+            return this;
+        }
         @Override public SharedPreferences.Editor putStringSet(String k, java.util.Set<String> v) { store().put(k, v); return this; }
         @Override public SharedPreferences.Editor putInt(String k, int v) { store().put(k, v); return this; }
         @Override public SharedPreferences.Editor putLong(String k, long v) { store().put(k, v); return this; }
