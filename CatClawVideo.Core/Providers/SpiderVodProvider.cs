@@ -1,4 +1,4 @@
-﻿using CatClawVideo.Core.Interfaces;
+using CatClawVideo.Core.Interfaces;
 using CatClawVideo.Core.Models;
 
 namespace CatClawVideo.Core.Providers;
@@ -72,7 +72,28 @@ public class SpiderVodProvider : IVodSourceProvider
     public async Task<List<VodPlaySource>> GetPlaySourcesAsync(VodSiteInfo site, VodItem item, CancellationToken ct = default)
     {
         var rt = RuntimeFor(site) ?? throw new NotSupportedException(site.StatusNote ?? "爬虫运行时不可用");
-        var sources = SpiderJsonParser.ParsePlaySources(await rt.DetailContentAsync(site, item.Id, ct));
+
+        // ── Guard 系网盘源的配置入口卡片（登入自己网盘/排序等固定数字 id）──
+        // detailContent 需要下载云盘配置文件（饭太硬 github.tbap.top 已 403，实测白等 16s 才炸）
+        // 且其返回对这类卡片无意义（TVBox 同样忽略）——直接走 playerContent + danmaku 钩子
+        // 触发 jar 的配置 UI（弹窗事件经桥上行宿主展示），秒级完成。
+        if (IsDriveConfigEntry(site, item))
+        {
+            await TriggerDriveConfigUiAsync(rt, site, item, ct).ConfigureAwait(false);
+            return [ConfigPageSource(site, item)];
+        }
+
+        List<VodPlaySource> sources;
+        try
+        {
+            sources = SpiderJsonParser.ParsePlaySources(await rt.DetailContentAsync(site, item.Id, ct));
+        }
+        catch (Exception ex) when (IsDriveConfigEntry(site, item))
+        {
+            _log?.Invoke($"[解析] {site.Key}.detailContent 失败（网盘配置入口容错）: {ex.Message}");
+            await TriggerDriveConfigUiAsync(rt, site, item, ct).ConfigureAwait(false);
+            return [ConfigPageSource(site, item)];
+        }
         if (sources.Count == 0)
         {
             // TVBox 「二级=*」语义：detail 不带播放列表，播放时由 playerContent 解析 vod_id
@@ -83,6 +104,51 @@ public class SpiderVodProvider : IVodSourceProvider
             });
         }
         return sources;
+    }
+
+    /// <summary>
+    /// 触发 jar 的网盘配置 UI 链（TVBox 语义）：playerContent 让 jar 记录选中上下文，
+    /// 随后 GET danmaku 钩子（do=danmu&amp;url=&lt;id&gt;）→ jar proxy(Map) 弹「已登录+启用中」
+    /// 对话框/扫码二维码 → 桥 UiBridge 事件上行 → 宿主渲染（jar 解析 UI、宿主展示）。
+    /// </summary>
+    private async Task TriggerDriveConfigUiAsync(Core.Interfaces.ISpiderRuntime rt, VodSiteInfo site, VodItem item, CancellationToken ct)
+    {
+        try
+        {
+            var playJson = await rt.PlayerContentAsync(site, flag: "", id: item.Id, ct).ConfigureAwait(false);
+            var play = SpiderJsonParser.ParsePlayRequest(playJson, item.Title);
+            _log?.Invoke($"[解析] {site.Key}.playerContent(入口) → url={play.Url} danmaku={play.DanmakuUrl}");
+            if (play.DanmakuUrl is { } hook &&
+                hook.StartsWith("http://127.0.0.1:", StringComparison.OrdinalIgnoreCase))
+            {
+                using var h = new HttpRequestMessage(HttpMethod.Get, hook);
+                using var r = await Http.SendAsync(h, ct).ConfigureAwait(false);
+                _log?.Invoke($"[解析] {site.Key}.danmaku钩子 → {(int)r.StatusCode}");
+            }
+        }
+        catch (Exception ex)
+        {
+            _log?.Invoke($"[解析] {site.Key}.配置UI触发失败: {ex.Message}");
+        }
+    }
+
+    /// <summary>是否为 Guard 系网盘源的「配置入口」卡片（登入/排序等固定 id 卡片）。</summary>
+    private static bool IsDriveConfigEntry(VodSiteInfo site, VodItem item)
+        => site.Api.StartsWith("csp_", StringComparison.OrdinalIgnoreCase)
+           && site.Api.EndsWith("Guard", StringComparison.OrdinalIgnoreCase)
+           && item.Id.Length <= 4 && uint.TryParse(item.Id, out _);
+
+    /// <summary>网盘配置入口的合成线路：单集指向宿主本地 proxy 的 do=config 配置页。</summary>
+    private static VodPlaySource ConfigPageSource(VodSiteInfo site, VodItem item)
+    {
+        var url = Services.SpiderProxyServer.ActivePort > 0
+            ? $"http://127.0.0.1:{Services.SpiderProxyServer.ActivePort}/proxy?do=config&url={Uri.EscapeDataString(item.Id)}"
+            : item.Id;
+        return new VodPlaySource
+        {
+            Name = site.Name,
+            Episodes = [new VodEpisode { Name = item.Title, Url = url }],
+        };
     }
 
     public Task<PlayRequest> ResolvePlayUrlAsync(VodSiteInfo site, VodEpisode episode, CancellationToken ct = default)
@@ -107,6 +173,13 @@ public class SpiderVodProvider : IVodSourceProvider
         }
 
         // episode.Url 可能是 "线路名$id"（来自 vod_play_url 的 集$链接 拆分，此处只剩链接）
+
+        // 网盘配置入口容错：episode.Url 已是宿主本地 proxy 的 do=config 配置页地址
+        // （detailContent 失败时 GetPlaySourcesAsync 合成）——直接返回 IsHtmlPage，
+        // 绝不能进 playerContent（spider 会再炸一次）。
+        if (IsHtmlConfigPage(episode.Url ?? ""))
+            return new PlayRequest { Title = episode.Name, Url = episode.Url, IsHtmlPage = true };
+
         var json = await rt.PlayerContentAsync(site, flag: episode.Flag ?? "", id: episode.Url, ct);
         _log?.Invoke($"[解析] {site.Key}.playerContent(flag={episode.Flag},id={episode.Url}) → {json}");
         var play = SpiderJsonParser.ParsePlayRequest(json, episode.Name);

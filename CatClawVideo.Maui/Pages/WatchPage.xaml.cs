@@ -1503,6 +1503,9 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
         }
 
         _currentEpisode = episode;
+        // TVBox App.getVodInfo() 对等：记下「当前片 / 第几集」，供本地 /proxy?do=danmu 补齐
+        // vodName / vodIndex（对等 RemoteServer.normalizeDanmuParams，见 SpiderProxyServer）。
+        Core.Services.PlaybackContext.Set(Title, _currentEpisodeIndex, episode.Name);
         UpdateControlBarSubtitle(episode);
         var generation = ++_playGeneration;
         // ★ 换集立即掐灭旧画面（2026-09-17 用户反馈）：Stop 暂停旧会话 + Source=null 卸载
@@ -1522,6 +1525,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
             // ── Guard 系「云盘配置」卡片：返回的是宿主本地 proxy 的 HTML 配置页（非视频流）──
             // 用 WebView 打开让用户完成网盘登录/启停（对齐 TVBox 嗅探后渲染网页的行为）；
             // 喂给播放器只会 Source error（2026-09-24 真机实测）。
+            // 若 jar 侧弹出对话框/二维码（UiBridge 事件）会由 SpiderUiHost 自动渲染。
             if (play.IsHtmlPage)
             {
                 ShowBufferingIndeterminate(false);

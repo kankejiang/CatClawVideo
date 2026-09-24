@@ -105,9 +105,16 @@ public sealed class SpiderProxyServer : IDisposable
             return false;
         }
 
+        ActivePort = Port;
         Log?.Invoke($"[proxy] 本地代理就绪 {string.Join('、', Ports.Select(p => $"http://127.0.0.1:{p}/proxy"))}（爬虫探测可命中）");
         return true;
     }
+
+    /// <summary>
+    /// 最近一次成功 Start 的主端口（进程级静态）。Core 内其他服务（如 SpiderVodProvider 的
+    /// 网盘配置入口容错）需要拼本地 /proxy 地址时取用；0 = 未启动。
+    /// </summary>
+    public static int ActivePort { get; private set; }
 
     private async Task AcceptLoopAsync(TcpListener listener, CancellationToken ct)
     {
@@ -156,6 +163,7 @@ public sealed class SpiderProxyServer : IDisposable
                 }
 
                 var args = ParseQuery(query);
+                Log?.Invoke($"[spider-proxy] {parts[0]} {target}（来自 {client.Client.RemoteEndPoint}）");
 
                 // ① 存活探测：爬虫 drivePort() 就是靠它确认端口
                 if (args.GetValueOrDefault("do") == "ck")
@@ -173,6 +181,21 @@ public sealed class SpiderProxyServer : IDisposable
                 //      不转发的话 jar 拿到「missing url」文本 → Gson 解析炸 → 配置界面弹不出来
                 //      （真机实测：detailContent 内 Expected BEGIN_OBJECT but was STRING）。
                 var doVal = args.GetValueOrDefault("do");
+
+                // ★ TVBox RemoteServer.normalizeDanmuParams 对等（2026-09-24）：
+                //   do=danmu 时补 vodName（当前片名）/ vodIndex（当前集序号）—— 爬虫（jar）的
+                //   danmaku / proxy 处理器靠这两个键判断「现在看的是哪部、第几集」；缺了会走不进
+                //   对应分支。TVBox 的取值来源是 App.getVodInfo()（当前播放信息），桌面侧由
+                //   WatchPage 起播时写进 PlaybackContext。
+                //   规则也照抄 TVBox：只在「请求没带」且「vodIndex 不是纯数字」时才补。
+                if (string.Equals(doVal, "danmu", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!args.ContainsKey("vodName") && PlaybackContext.VodName is { Length: > 0 } vnd)
+                        args["vodName"] = vnd;
+                    if (!IsNumeric(args.GetValueOrDefault("vodIndex")) && PlaybackContext.VodIndex is { Length: > 0 } vid)
+                        args["vodIndex"] = vid;
+                }
+
                 if (args.GetValueOrDefault("from") == "catvod" || doVal is "js" or "config" or "danmu")
                 {
                     var handler = JsProxyHandler;
@@ -411,6 +434,15 @@ public sealed class SpiderProxyServer : IDisposable
                 return line[(i + 1)..].Trim();
         }
         return null;
+    }
+
+    /// <summary>是否纯数字（对齐 TVBox RemoteServer.isNumeric，用于判断 vodIndex 是否已可用）。</summary>
+    private static bool IsNumeric(string? s)
+    {
+        if (string.IsNullOrEmpty(s)) return false;
+        foreach (var c in s)
+            if (c < '0' || c > '9') return false;
+        return true;
     }
 
     private static Dictionary<string, string> ParseQuery(string query)

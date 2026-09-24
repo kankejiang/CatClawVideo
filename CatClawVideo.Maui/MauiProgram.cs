@@ -116,6 +116,14 @@ public static class MauiProgram
             }
             catch (Exception ex) { BtFileLog.Write($"[qemu] 预热失败（不影响后续懒启动）：{ex.Message}"); }
         });
+
+        // Guard 解密 VM（2026-09-24 用户拍板架构）：Guard 网盘源的解密/签名/proxyInvoke（ARM
+        // ftyguard so）跑在独立 QEMU 实例里，桥进程经 hostfwd 直连；so 弹的对话框/二维码经
+        // 控制口上行由 SpiderUiHost 渲染（jar 框架全权负责登录 UX，宿主只做 UI 接入）。
+        // 不预热（首个 Guard 站点加载时懒启动），运行时缺失自动回落 unidbg 会话。
+        var qemuGuard = new CatClawVideo.Core.Services.QemuThunder.QemuGuardEngine(
+            Path.Combine(AppContext.BaseDirectory, "ThunderRuntime"), BtFileLog.Write);
+        CatClawVideo.Core.Services.QemuThunder.GuardRuntime.Attach(qemuGuard);
 #endif
 
         // TVBox 系爬虫（ProxyOrigin 等）会把播放地址拼成 http://127.0.0.1:<port>/proxy?...
@@ -179,8 +187,16 @@ public static class MauiProgram
                 // 同时落 %APPDATA%\CatClawVideo\home-debug.log，排障 Guard 解壳/桥加载要看这段
                 System.Diagnostics.Debug.WriteLine(m);
                 DiagLog.Write(m);
-            })
+            },
+            // 桥进程启动后下发 proxy 端口：Guard 系网盘源（MDrive 等）靠 SpiderApi.getPort()
+            // 拼「云盘配置」数据端点（对齐 Android 的 TvBoxCompatBridge.SetProxyPort）
+            proxyPort: () => spiderProxy.Port)
             : new CatClawVideo.Core.Providers.NullSpiderRuntime("jvm-dex");
+
+        // 桥爬虫 UI 事件 → MAUI 对话框/二维码（对齐 TVBox：点「登入自己网盘」弹
+        // 「已登录+启用中」列表 + 扫码登录，而非回落网页）
+        if (jarRuntime is CatClawVideo.Core.Providers.JavaSpiderRuntime desktopJar)
+            CatClawVideo.Maui.Services.SpiderUiHost.Attach(desktopJar);
 
 #endif
         CatClawVideo.Core.Models.SiteRegistry.JsSpiderAvailable = jsRuntime.IsSupported || tvboxJsRuntime.IsSupported;
@@ -191,15 +207,28 @@ public static class MauiProgram
         {
             var key = query.GetValueOrDefault("siteKey");
             var site = key is null ? null : CatClawVideo.Core.Models.SiteRegistry.Find(key);
-            CatClawVideo.Core.Interfaces.ISpiderRuntime? rt = site?.SpiderKind switch
+            if (site is not null)
             {
-                CatClawVideo.Core.Models.VodSpiderKind.Jar => jarRuntime,
-                CatClawVideo.Core.Models.VodSpiderKind.Script => tvboxJsRuntime,
-                _ => null,
-            };
-            return rt is CatClawVideo.Core.Interfaces.ISpiderProxyRuntime pr
-                ? pr.ProxyAsync(query, ct)
-                : Task.FromResult<(int Status, string Mime, byte[]? Body)?>(null);
+                CatClawVideo.Core.Interfaces.ISpiderRuntime? rt = site.SpiderKind switch
+                {
+                    CatClawVideo.Core.Models.VodSpiderKind.Jar => jarRuntime,
+                    CatClawVideo.Core.Models.VodSpiderKind.Script => tvboxJsRuntime,
+                    _ => null,
+                };
+                return rt is CatClawVideo.Core.Interfaces.ISpiderProxyRuntime pr
+                    ? pr.ProxyAsync(query, ct)
+                    : Task.FromResult<(int Status, string Mime, byte[]? Body)?>(null);
+            }
+
+            // spider 自发的 proxy 请求（如 Guard 系网盘源 detailContent 内部的 do=config）
+            // 不携带 siteKey → 依次尝试各支持回调的运行时（jar → js），谁接住用谁；
+            // 都不接则回 null（调用方 502）。
+            foreach (var rt in new CatClawVideo.Core.Interfaces.ISpiderRuntime[] { jarRuntime, tvboxJsRuntime })
+            {
+                if (rt is CatClawVideo.Core.Interfaces.ISpiderProxyRuntime pr)
+                    return pr.ProxyAsync(query, ct);
+            }
+            return Task.FromResult<(int Status, string Mime, byte[]? Body)?>(null);
         };
 
         // 「源看不到」类问题的第一现场：订阅解析完/站点集合一变就记一行

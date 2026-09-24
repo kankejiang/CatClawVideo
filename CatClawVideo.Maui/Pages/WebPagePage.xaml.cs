@@ -5,6 +5,10 @@ namespace CatClawVideo.Maui.Pages;
 /// （Guard 系网盘源的「云盘配置」：登入自己网盘 / 启停网盘 / 清除 Cookie 等，
 /// 对齐 TVBox「嗅探后渲染网页」的行为——那类卡片不是视频，绝不能进播放器）。
 /// 配置完成点顶栏返回即回到观看页。
+///
+/// <para>2026-09-24 用户拍板：宿主侧登录适配（官网登录 WebView + Cookie 轮询推送）已删除——
+/// 登录 UX 全权由 jar 壳框架负责（Guard VM 里的 so 弹「已登录+启用中」对话框/扫码二维码，
+/// 经 SpiderUiHost 渲染），本页只渲染 jar 自己提供的网页（如 do=config Cookie 推送页）。</para>
 /// </summary>
 public partial class WebPagePage : ContentPage, IQueryAttributable
 {

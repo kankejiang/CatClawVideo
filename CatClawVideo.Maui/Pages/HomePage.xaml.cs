@@ -453,6 +453,16 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
     {
         if (_vm.Site is null) return;
 
+        // Guard 系网盘配置入口（登入自己网盘/排序等数字 id 卡片）：不进播放页——
+        // 直接走解析链（jar 解析 UI）弹「已登录+启用中」对话框/扫码二维码，宿主展示
+        if (item.Id.Length <= 4 && uint.TryParse(item.Id, out _) &&
+            _vm.Site.Api.StartsWith("csp_", StringComparison.OrdinalIgnoreCase) &&
+            _vm.Site.Api.EndsWith("Guard", StringComparison.OrdinalIgnoreCase))
+        {
+            _ = CatClawVideo.Maui.Services.SpiderUiHost.OpenDriveEntryAsync(_vm.Site, item);
+            return;
+        }
+
         var query = $"watch?title={Uri.EscapeDataString(item.Title)}" +
                     $"&sourceKey={Uri.EscapeDataString(item.SourceKey)}" +
                     $"&type={_vm.Site.Type}" +

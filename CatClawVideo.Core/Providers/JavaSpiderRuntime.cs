@@ -27,7 +27,7 @@ namespace CatClawVideo.Core.Providers;
 /// <para>认证预处理：ext global 含 username/password 而缺 token 时，自动向
 /// {server}/api/auth/login 登录注入 token（小雅 AListSh 需要）。</para>
 /// </summary>
-public class JavaSpiderRuntime : ISpiderRuntime
+public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime
 {
     public string Id => "jvm-dex";
 
@@ -100,11 +100,12 @@ public class JavaSpiderRuntime : ISpiderRuntime
     public bool GuardUnpackAvailable { get; }
 
     public JavaSpiderRuntime(string bridgeDir, string javaExe, Action<string>? log = null,
-        string? workDir = null)
+        string? workDir = null, Func<int>? proxyPort = null)
     {
         _bridgeDir = bridgeDir;
         _javaExe = javaExe;
         _log = log;
+        _proxyPort = proxyPort;
         // 可写目录默认落用户数据区；显式传入只是为了测试/特殊部署。
         // ⚠ 绝不回落到 bridgeDir：安装版那是 Program Files，写它就是本次故障。
         _workDir = workDir ?? AppPaths.Sub("javabridge");
@@ -135,6 +136,16 @@ public class JavaSpiderRuntime : ISpiderRuntime
     }
 
     private void Log(string m) => _log?.Invoke("[jvm] " + m);
+
+    /// <summary>宿主本地 SpiderProxyServer 主端口（懒访问器）；桥进程启动后经 setProxyPort 下发。</summary>
+    private readonly Func<int>? _proxyPort;
+
+    /// <summary>最近一次调用的站点（spider 发起的 /proxy 请求不携带 siteKey，回调时按它定位）。</summary>
+    private volatile VodSiteInfo? _lastSite;
+
+    /// <summary>Guard 源的壳框架 jar（壳 dex 转换产物）与原始 jar（含解密 so）——load 时下发桥。</summary>
+    private readonly ConcurrentDictionary<string, string> _shellJars = new();
+    private readonly ConcurrentDictionary<string, string> _rawJars = new();
 
     /// <summary>
     /// 查找系统里的 java.exe，取**版本最高**的那个。
@@ -262,6 +273,8 @@ public class JavaSpiderRuntime : ISpiderRuntime
             CreateNoWindow = true,
         };
         psi.ArgumentList.Add("-Dfile.encoding=UTF-8");
+        // TLS 握手日志（stderr → home-debug.log）：排障 spider 的出站 HTTPS 连接目标（SNI 主机名）
+        psi.ArgumentList.Add("-Djavax.net.debug=ssl:handshake");
         // ⚠️ 必须关字节码校验：dex2jar 从 OLLVM 混淆过的 dex 还原出来的类，
         // 经常**缺 StackMapTable**（`VerifyError: Expecting a stackmap frame at branch target N`），
         // 校验器直接拒绝加载 → 站点整站不可用（2026-09-15 实测：原创/糯米/海绵/厂长/光影
@@ -270,7 +283,7 @@ public class JavaSpiderRuntime : ISpiderRuntime
         psi.ArgumentList.Add("-Xverify:none");
         psi.ArgumentList.Add("-cp");
         // 绝对路径：工作目录已改为 _workDir（可写区），相对路径会解析不到 bridge.jar
-        psi.ArgumentList.Add($"{Path.Combine(_bridgeDir, "bridge.jar")};{Path.Combine(_bridgeDir, "vendor", "deps", "*")}");
+        psi.ArgumentList.Add($"{Path.Combine(_bridgeDir, "bridge.jar")};{Path.Combine(_bridgeDir, "vendor", "deps", "*")};{Path.Combine(_bridgeDir, "vendor", "unidbg", "*")}");
         psi.ArgumentList.Add("bridge.Server");
         var proc = Process.Start(psi) ?? throw new InvalidOperationException("Java 桥进程启动失败");
         Log($"桥进程已启动 pid={proc.Id}");
@@ -289,51 +302,131 @@ public class JavaSpiderRuntime : ISpiderRuntime
         });
         _proc = proc;
 
+        // 常驻读循环：请求-响应按 id 分发；桥主动上行的 UI 事件（ev 字段）回调 UiEvent
+        _ = Task.Run(() => ReadLoopAsync(proc));
+
         // 握手
         var pong = await RoundTripAsync(new JsonObject { ["id"] = 0, ["op"] = "ping" }, TimeSpan.FromSeconds(15), ct);
         if (!pong.ContainsKey("ok") || pong["ok"]?.GetValue<bool>() != true)
             throw new InvalidOperationException("Java 桥握手失败");
         Log("桥进程就绪");
+
+        // 下发宿主 proxy 端口：Guard 系网盘源靠 SpiderApi.getAddress/getPort 拼「云盘配置」
+        // 数据端点 URL，桥桩返回空会让 spider 内部 Gson 解析到错误文本直接炸（Expected
+        // BEGIN_OBJECT but was STRING → detailContent 整体失败，2026-09-24 实测）。
+        // 每次新桥进程都要重发（进程内静态字段随进程重置）。
+        var port = _proxyPort?.Invoke() ?? 0;
+        if (port > 0)
+        {
+            var pp = await RoundTripAsync(new JsonObject { ["id"] = 0, ["op"] = "setProxyPort", ["port"] = port },
+                TimeSpan.FromSeconds(10), ct);
+            Log(pp["ok"]?.GetValue<bool>() == true ? $"已下发 proxy 端口 {port}" : $"proxy 端口下发失败: {pp["error"]}");
+        }
         return proc;
+    }
+
+    /// <summary>桥上行 UI 事件（ui-dialog/ui-dismiss/ui-toast）；宿主 MAUI 层订阅渲染。</summary>
+    public Action<JsonObject>? UiEvent { get; set; }
+
+    /// <summary>响应分发表：RoundTripAsync 注册、读循环按 id 完成之。</summary>
+    private readonly ConcurrentDictionary<int, TaskCompletionSource<JsonObject>> _pendingResponses = new();
+    private readonly SemaphoreSlim _stdinLock = new(1, 1);   // 仅保护 stdin 写
+
+    /// <summary>常驻读 stdout：按 id 分发响应、按 ev 分发 UI 事件；进程退出时结束。</summary>
+    private async Task ReadLoopAsync(Process proc)
+    {
+        try
+        {
+            while (!proc.HasExited)
+            {
+                var raw = await proc.StandardOutput.ReadLineAsync();
+                if (raw == null) break;
+                var line = raw.Trim();
+                if (line.Length == 0) continue;
+                JsonObject? obj;
+                try { obj = JsonNode.Parse(line)!.AsObject(); }
+                catch { continue; }
+
+                // 桥主动上行的 UI 事件（ui-dialog / ui-dismiss / ui-toast）
+                if (obj.ContainsKey("ev"))
+                {
+                    try { UiEvent?.Invoke(obj); } catch { }
+                    continue;
+                }
+
+                var id = obj["id"]?.GetValue<int>() ?? int.MinValue;
+                if (_pendingResponses.TryRemove(id, out var tcs))
+                    _ = tcs.TrySetResult(obj);
+                else
+                    Log($"桥上行未匹配响应 id={id}: {line[..Math.Min(line.Length, 120)]}");
+            }
+        }
+        catch { }
+        Log("桥 stdout 读循环退出");
+    }
+
+    /// <summary>宿主回传对话框用户操作（which≥0=列表项，-1/-2/-3=肯定/否定/中性按钮）。</summary>
+    public async Task SendUiResultAsync(int seq, int which)
+    {
+        if (_stdin is null) return;
+        var req = new JsonObject { ["id"] = -1, ["op"] = "ui-result", ["seq"] = seq, ["which"] = which };
+        await _stdinLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await _stdin.WriteLineAsync(req.ToJsonString().AsMemory()).ConfigureAwait(false);
+            await _stdin.FlushAsync().ConfigureAwait(false);
+        }
+        finally { _stdinLock.Release(); }
+    }
+
+    /// <summary>
+    /// 读取 jar 侧 SharedPreferences（MemPrefs 全量内容）：网盘 Cookie/Token 登录态。
+    /// Guard 系网盘源的 proxyInput/do=xx 推送写它、Cloud_* 类读它——「已登录+启用中」
+    /// 对话框按它渲染状态。桥未启动返回 null。
+    /// </summary>
+    public async Task<JsonArray?> GetPrefsAsync()
+    {
+        try
+        {
+            await EnsureProcessAsync(CancellationToken.None).ConfigureAwait(false);
+            var resp = await RoundTripAsync(new JsonObject { ["id"] = Interlocked.Increment(ref _id), ["op"] = "get-prefs" },
+                TimeSpan.FromSeconds(10), CancellationToken.None).ConfigureAwait(false);
+            if (resp["ok"]?.GetValue<bool>() != true) return null;
+            return resp["result"]?.GetValue<string>() is { } s ? JsonNode.Parse(s) as JsonArray : null;
+        }
+        catch (Exception ex)
+        {
+            Log($"get-prefs 失败: {ex.Message}");
+            return null;
+        }
     }
 
     private async Task<JsonObject> RoundTripAsync(JsonObject req, TimeSpan timeout, CancellationToken ct)
     {
-        await _ioLock.WaitAsync(ct);
+        var expectId = req["id"]?.GetValue<int>()
+            ?? throw new InvalidOperationException("桥请求缺少 id");
+        var tcs = new TaskCompletionSource<JsonObject>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pendingResponses[expectId] = tcs;
         try
         {
-            var expectId = req["id"]?.GetValue<int>();
-            await _stdin!.WriteLineAsync(req.ToJsonString().AsMemory(), ct);
-            await _stdin.FlushAsync(ct);
+            // 先注册再写（响应可能在写返回前就到）——读循环按 id 完成之
+            await _stdinLock.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                await _stdin!.WriteLineAsync(req.ToJsonString().AsMemory(), ct).ConfigureAwait(false);
+                await _stdin.FlushAsync(ct).ConfigureAwait(false);
+            }
+            finally { _stdinLock.Release(); }
 
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutCts.CancelAfter(timeout);
-            try
-            {
-                while (true)
-                {
-                    var raw = await _stdout!.ReadLineAsync(timeoutCts.Token);
-                    if (raw == null)
-                        throw new InvalidOperationException("Java 桥进程已退出（可查看应用日志定位桥启动失败原因）");
-                    var resp = raw.Trim();
-                    if (resp.Length == 0) continue;
-                    JsonObject obj;
-                    try { obj = JsonNode.Parse(resp)!.AsObject(); }
-                    catch { continue; }
-                    if (expectId is int id)
-                    {
-                        if (obj["id"]?.GetValue<int>() != id) continue;
-                        return obj;
-                    }
-                    return obj;
-                }
-            }
+            try { return await tcs.Task.WaitAsync(timeoutCts.Token).ConfigureAwait(false); }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
-                throw new TimeoutException("Java 桥响应超时");
+                throw new TimeoutException($"Java 桥响应超时（{timeout.TotalSeconds:F0}s，id={expectId}）");
             }
         }
-        finally { _ioLock.Release(); }
+        finally { _pendingResponses.TryRemove(expectId, out _); }
     }
 
     private async Task<string> CallAsync(VodSiteInfo site, string method, JsonArray args, CancellationToken ct)
@@ -341,6 +434,7 @@ public class JavaSpiderRuntime : ISpiderRuntime
         await EnsureProcessAsync(ct);
         var jar = await EnsureConvertedJarAsync(site, ct);
         await EnsureSiteLoadedAsync(site, jar, ct);
+        _lastSite = site;   // spider 稍后发起的 /proxy 回调不带 siteKey，靠它定位
 
         var req = new JsonObject
         {
@@ -354,6 +448,75 @@ public class JavaSpiderRuntime : ISpiderRuntime
         if (resp["ok"]?.GetValue<bool>() != true)
             throw new InvalidOperationException($"spider {site.Key}.{method}: {resp["error"]}");
         return resp["result"]?.GetValue<string>() ?? "{}";
+    }
+
+    // ═══════════ ISpiderProxyRuntime（宿主本地 /proxy 回调 → 桥 proxy op） ═══════════
+
+    /// <summary>
+    /// 处理宿主本地 <c>/proxy?…</c> 回调：转给桥进程的 <c>proxy</c> op，由爬虫自身的
+    /// <c>proxy(Map)</c> 产生响应体（TVBox <c>ApiConfig.proxyLocal</c> 语义）。
+    /// <para>Guard 系网盘源（csp_MDriveGuard 等）在 detailContent 内部就会请求
+    /// <c>do=config</c> 端点取「云盘配置」JSON——此前桌面桥没有 proxy 通道，宿主回 502 文本，
+    /// 爬虫内 Gson 解析炸 <c>Expected BEGIN_OBJECT but was STRING</c> → 整个 detailContent 失败，
+    /// 用户点「登入自己网盘」进的是播放页而非配置页（2026-09-24 实测）。</para>
+    /// <para>响应体经临时文件回传（对齐 Android 端 SpiderProxyBridge：stdout 每行一条 JSON，
+    /// body 内联会被转义/体积问题拖垮）；无法处理返回 null（调用方回 502）。</para>
+    /// </summary>
+    public async Task<(int Status, string Mime, byte[]? Body)?> ProxyAsync(
+        IReadOnlyDictionary<string, string> query, CancellationToken ct = default)
+    {
+        // 按 siteKey 定位站点（SpiderProxyServer 分派时携带）；spider 自己发起的请求
+        // （如 detailContent 内部的 do=config）不带该参数 → 回退最近调用站点（对齐 Dex 版 _lastUsed）
+        var key = query.GetValueOrDefault("siteKey");
+        var site = string.IsNullOrEmpty(key) ? null : SiteRegistry.Find(key);
+        site ??= _lastSite;
+        if (site is null)
+        {
+            Log("proxy 回调：siteKey 缺失且无最近站点");
+            return null;
+        }
+        try
+        {
+            await EnsureProcessAsync(ct).ConfigureAwait(false);
+            var jarPath = await EnsureConvertedJarAsync(site, ct).ConfigureAwait(false);
+            await EnsureSiteLoadedAsync(site, jarPath, ct).ConfigureAwait(false);
+
+            var q = new JsonObject();
+            foreach (var kv in query) q[kv.Key] = kv.Value ?? "";
+            var outPath = Path.Combine(Path.GetTempPath(), $"spproxy-{Guid.NewGuid():N}.bin");
+            var req = new JsonObject
+            {
+                ["id"] = Interlocked.Increment(ref _id),
+                ["op"] = "proxy",
+                ["site"] = site.Key,
+                ["query"] = q,
+                ["outFile"] = outPath,
+            };
+            var resp = await RoundTripAsync(req, TimeSpan.FromSeconds(60), ct).ConfigureAwait(false);
+            if (resp["ok"]?.GetValue<bool>() != true)
+            {
+                Log($"proxy 回调失败（do={query.GetValueOrDefault("do")}）: {resp["error"]}");
+                return ((int)502, "text/plain", (byte[]?)null);
+            }
+            var head = resp["result"]?.GetValue<string>() ?? "";
+            var parts = head.Split('|');
+            if (parts.Length != 3 || !int.TryParse(parts[0], out var status))
+            {
+                Log($"proxy 回调：返回头异常 {head}");
+                return ((int)502, "text/plain", (byte[]?)null);
+            }
+            byte[]? body = null;
+            var len = long.TryParse(parts[2], out var l) ? l : 0;
+            if (len > 0 && File.Exists(outPath)) body = await File.ReadAllBytesAsync(outPath, ct).ConfigureAwait(false);
+            try { if (File.Exists(outPath)) File.Delete(outPath); } catch { }
+            Log($"proxy 回调 ok：do={query.GetValueOrDefault("do")} → {status} {parts[1]} {body?.Length ?? 0}B");
+            return (status, parts[1], body);
+        }
+        catch (Exception ex)
+        {
+            Log($"proxy 回调异常：{ex.GetType().Name}: {ex.Message}");
+            return ((int)502, "text/plain", (byte[]?)null);
+        }
     }
 
     /// <summary>
@@ -378,11 +541,77 @@ public class JavaSpiderRuntime : ISpiderRuntime
             ["ext"] = await PrepareExtAsync(site, ct),
             ["jars"] = new JsonArray(jarPath),
         };
+        // 壳框架模式（Guard 包）：className 用壳名（MyDriveGuard），壳/原始/解壳三 jar 下发——
+        // 壳框架的「已登录+启用中」对话框/扫码/网盘管理原生运行，UI 经 UiBridge 上行宿主渲染
+        if (_convertedJars.TryGetValue(site.Key, out _) &&
+            _shellJars.TryGetValue(site.Key, out var shellJar) && File.Exists(shellJar))
+        {
+            req["className"] = className.EndsWith("Guard", StringComparison.Ordinal) ? className : className + "Guard";
+            req["shellJar"] = shellJar;
+            req["rawJar"] = _rawJars.TryGetValue(site.Key, out var rj) ? rj : "";
+            req["realJar"] = jarPath;
+
+            // Guard QEMU 解密通道（2026-09-24 用户拍板架构）：解密/签名/proxyInvoke 走独立
+            // Guard VM 里的 ftyguard so（ARM）；VM 就绪后把解密服务端口下发给桥，桥的
+            // DexNative 调用直连之。VM 缺失/启动失败 → 不带 guardPort，桥回落 unidbg 会话。
+            if (!string.IsNullOrEmpty(req["rawJar"]?.GetValue<string>()) &&
+                CatClawVideo.Core.Services.QemuThunder.GuardRuntime.Engine is { } guard)
+            {
+                try
+                {
+                    var rawJarPath = req["rawJar"]!.GetValue<string>()!;
+                    var jarHash = Convert.ToHexString(
+                        SHA256.HashData(Encoding.UTF8.GetBytes(site.Jar?.Split(";md5;")[0] ?? site.Jar ?? "")))[..24].ToLowerInvariant();
+                    guard.RegisterJar(jarHash, rawJarPath);
+                    if (await guard.EnsureLoadedAsync(jarHash, ct).ConfigureAwait(false))
+                    {
+                        req["guardPort"] = CatClawVideo.Core.Services.QemuThunder.QemuGuardEngine.GuardPort;
+                        Log($"Guard QEMU 通道就绪（jar {jarHash}，端口 {req["guardPort"]}）");
+                    }
+                    else
+                    {
+                        Log("Guard QEMU 通道未就绪（桥将回落 unidbg 解密）");
+                    }
+                }
+                catch (Exception gex)
+                {
+                    Log($"Guard QEMU 通道异常（回落 unidbg）: {gex.Message}");
+                }
+            }
+        }
         var resp = await RoundTripAsync(req, TimeSpan.FromSeconds(60), ct);
         if (resp["ok"]?.GetValue<bool>() != true)
         {
             // 加载失败必须留痕：此前只 log 成功分支，导致「站点没反应」无从查因
             Log($"站点 {site.Key} 加载失败（类名 {className}，jar {Path.GetFileName(jarPath)}）: {resp["error"]}");
+            // ⚠ 壳框架模式失败（壳 dex 的 OLLVM 混淆代码在桌面 JVM 有未桩化的运行时依赖，
+            //   如 merge.Ku 的解密器 NPE）→ **自动降级**真实类模式（去 Guard 后缀 + 解壳 jar）：
+            //   壳框架的弹窗/扫码虽丢失，但站点本体恢复可用（2026-09-24 止损）。
+            if (req.ContainsKey("shellJar"))
+            {
+                _shellJars.TryRemove(site.Key, out _);
+                _rawJars.TryRemove(site.Key, out _);
+                _loadedSites.TryRemove(site.Key, out _);
+                var realName = className.EndsWith("Guard", StringComparison.Ordinal)
+                    ? className[..^"Guard".Length] : className;
+                var req2 = new JsonObject
+                {
+                    ["id"] = Interlocked.Increment(ref _id),
+                    ["op"] = "load",
+                    ["site"] = site.Key,
+                    ["className"] = realName,
+                    ["ext"] = PrepareExtAsync(site, ct).GetAwaiter().GetResult(),
+                    ["jars"] = new JsonArray(jarPath),
+                };
+                var resp2 = await RoundTripAsync(req2, TimeSpan.FromSeconds(60), ct);
+                if (resp2["ok"]?.GetValue<bool>() == true)
+                {
+                    _loadedSites[site.Key] = true;
+                    Log($"站点 {site.Key} 已降级为真实类模式加载（壳框架不可用）");
+                    return;
+                }
+                Log($"站点 {site.Key} 真实类降级也失败: {resp2["error"]}");
+            }
             throw new InvalidOperationException($"spider {site.Key} 加载失败: {resp["error"]}");
         }
         _loadedSites[site.Key] = true;
@@ -393,7 +622,21 @@ public class JavaSpiderRuntime : ISpiderRuntime
 
     private async Task<string> EnsureConvertedJarAsync(VodSiteInfo site, CancellationToken ct)
     {
-        if (_convertedJars.TryGetValue(site.Key, out var cached) && File.Exists(cached)) return cached;
+        if (_convertedJars.TryGetValue(site.Key, out var cached) && File.Exists(cached))
+        {
+            // 缓存复用：壳框架 jar 按命名规则推断（ConvertJarAsync 已转换过则文件在）
+            if (!_shellJars.ContainsKey(site.Key) && !string.IsNullOrEmpty(site.Jar))
+            {
+                var h = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(site.Jar.Split(";md5;")[0])))[..24].ToLowerInvariant();
+                var sh = Path.Combine(_convertedDir, h + "-shell.jar");
+                if (File.Exists(sh))
+                {
+                    _shellJars[site.Key] = sh;
+                    _rawJars[site.Key] = Path.Combine(_convertedDir, "raw-" + h + ".jar");
+                }
+            }
+            return cached;
+        }
 
         var jarUrl = site.Jar ?? "";
         var semi = jarUrl.IndexOf(";md5;", StringComparison.OrdinalIgnoreCase);
@@ -411,13 +654,22 @@ public class JavaSpiderRuntime : ISpiderRuntime
             // 判定依据必须是「dex 里实际存在哪个类」，不能靠「原包是否 IsGuarded」推断 ——
             // 离线导入/复用手工解好的产物时，那份 raw 已经不含 .so/.guard，IsGuarded 会误判成
             // 非 Guard 包，于是按 DouDouGuard 去加载 → 必然 ClassNotFoundException（实测踩过）。
+            // ⚠ 壳框架模式（shellJar 可用）**保留 Guard 名**：壳框架内部经 DexNative 桩取真实类，
+            //   其「已登录+启用中」对话框/扫码 UI 只在壳框架里——去掉后缀就丢了（2026-09-24）。
             if (configured.EndsWith("Guard", StringComparison.Ordinal))
             {
+                var hasShell = ok.ShellJar is not null;
                 var real = configured[..^"Guard".Length];
-                if (ok.DexSource is { } src && !JarHasClass(src, configured) && JarHasClass(src, real))
+                if (!hasShell && ok.DexSource is { } src && !JarHasClass(src, configured) && JarHasClass(src, real))
                 {
                     _nonGuardClass[site.Key] = real;
                     Log($"{site.Name}: 真实类名 {configured} → {real}");
+                }
+                if (hasShell)
+                {
+                    _shellJars[site.Key] = ok.ShellJar;
+                    if (ok.RawJar is { } rj) _rawJars[site.Key] = rj;
+                    Log($"{site.Name}: 壳框架模式（{Path.GetFileName(ok.ShellJar)}）");
                 }
             }
             _convertedJars[site.Key] = ok.Path;
@@ -450,7 +702,8 @@ public class JavaSpiderRuntime : ISpiderRuntime
     /// <para><paramref name="DexSource"/> 是**含 classes*.dex 的那份 jar**（普通包=下载原件，
     /// Guard 包=解壳产物）；调用方据此查真实类名。为 null 表示 raw 文件缺失、无法查证。</para>
     /// </summary>
-    private readonly record struct JarConversion(string Path, string? DexSource);
+    /// <summary>Path=真实类转换产物；DexSource=转换输入（解壳产物/原始 jar）；RawJar=原始 Guard jar（含解密 so，壳框架用）；ShellJar=壳 dex 转换产物（壳框架类）。</summary>
+    private readonly record struct JarConversion(string Path, string? DexSource, string? RawJar = null, string? ShellJar = null);
 
     /// <summary>
     /// 下载 → 校验 → Guard 解壳 → dex2jar 转换。
@@ -486,7 +739,10 @@ public class JavaSpiderRuntime : ISpiderRuntime
             }
             // 缓存命中也要留痕：此前静默返回，遇到「没下载没解壳却又没反应」时无从查因
             Log($"复用已转换 jar: {Path.GetFileName(outPath)}");
-            return new JarConversion(outPath, src);
+            var cachedShell = await EnsureShellJarAsync(rawPath, hash, ct).ConfigureAwait(false);
+            return new JarConversion(outPath, src,
+                File.Exists(rawPath) ? rawPath : null,
+                cachedShell);
         }
 
         if (!File.Exists(rawPath))
@@ -509,6 +765,7 @@ public class JavaSpiderRuntime : ISpiderRuntime
         }
 
         // ── Guard 加固（assets 下有 .so native 解密器 + .guard 密文）：先 unidbg 解壳 ──
+        string? shellJar = null;
         var dexSource = rawPath;
         if (IsGuarded(rawPath))
         {
@@ -521,6 +778,7 @@ public class JavaSpiderRuntime : ISpiderRuntime
             if (!File.Exists(unpacked) && !await UnpackGuardAsync(rawPath, unpacked, ct))
                 return null;
             dexSource = unpacked;
+            shellJar = await EnsureShellJarAsync(rawPath, hash, ct).ConfigureAwait(false);
         }
 
         if (requireClass is not null && !JarHasClass(dexSource, requireClass))
@@ -530,7 +788,38 @@ public class JavaSpiderRuntime : ISpiderRuntime
         }
 
         // dex2jar 转换（普通 jar 直接用原件；Guard 包用解壳后的明文 dex）
-        var psi = new ProcessStartInfo
+        await ConvertDex2JarAsync(dexSource, outPath, ct).ConfigureAwait(false);
+        Log($"jar 转换完成: {Path.GetFileName(outPath)}");
+        return new JarConversion(outPath, dexSource, rawPath, shellJar);
+    }
+
+    /// <summary>
+    /// 壳框架 jar 就绪（缓存命中直接返回）：原始 Guard jar 的壳 dex 过 dex2jar，
+    /// 并剔除 DexNative.class（桌面由桥内置替身接 unidbg）。失败返回 null（回退真实类模式）。
+    /// </summary>
+    private async Task<string?> EnsureShellJarAsync(string rawPath, string hash, CancellationToken ct)
+    {
+        if (!IsGuarded(rawPath)) return null;
+        var shellJar = Path.Combine(_convertedDir, hash + "-shell.jar");
+        if (File.Exists(shellJar)) return shellJar;
+        try
+        {
+            await ConvertDex2JarAsync(rawPath, shellJar, ct).ConfigureAwait(false);
+            StripEntry(shellJar, "com/github/catvod/spider/DexNative.class");
+            Log($"壳框架 jar 转换完成: {Path.GetFileName(shellJar)}");
+            return shellJar;
+        }
+        catch (Exception ex)
+        {
+            Log($"壳框架 jar 转换失败（回退真实类模式）: {ex.Message}");
+            try { File.Delete(shellJar); } catch { }
+            return null;
+        }
+    }
+
+    /// <summary>dex2jar 转换（共用）：dexSource（jar/dex）→ outPath。失败抛异常。</summary>
+    private async Task ConvertDex2JarAsync(string dexSource, string outPath, CancellationToken ct)
+    {        var psi = new ProcessStartInfo
         {
             FileName = _javaExe,
             // classpath 与工作目录都走绝对路径：工具在只读程序目录里，工作目录却在可写区
@@ -549,8 +838,15 @@ public class JavaSpiderRuntime : ISpiderRuntime
         await p.WaitForExitAsync(ct);
         if (p.ExitCode != 0 || !File.Exists(outPath))
             throw new InvalidOperationException($"dex2jar 转换失败: {Path.GetFileName(dexSource)}");
-        Log($"jar 转换完成: {Path.GetFileName(outPath)}");
-        return new JarConversion(outPath, dexSource);
+    }
+
+    /// <summary>从 zip 产物里剔除一个条目（壳 jar 剔除 DexNative.class——桌面由桥内置替身接 unidbg）。</summary>
+    private static void StripEntry(string jarPath, string entryName)
+    {
+        using var fs = new FileStream(jarPath, FileMode.Open, FileAccess.ReadWrite);
+        using var archive = new System.IO.Compression.ZipArchive(fs, System.IO.Compression.ZipArchiveMode.Update);
+        var e = archive.GetEntry(entryName);
+        e?.Delete();
     }
 
     /// <summary>

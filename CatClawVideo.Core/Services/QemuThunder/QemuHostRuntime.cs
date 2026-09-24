@@ -25,6 +25,15 @@ public sealed class QemuHostRuntime : IDisposable
     /// <summary>QEMU monitor 端口（0 = 未启用）。宿主用它 <c>stop</c>/<c>cont</c> 冻结/唤醒 guest。</summary>
     public int MonitorPort { get; }
 
+    /// <summary>guest 控制口覆盖（0 = initrd 默认 18080）。</summary>
+    public int CtrlPort { get; }
+
+    /// <summary>Guard 解密服务端口（0 = 未启用；guest 监听 + 宿主 hostfwd 同号）。</summary>
+    public int GuardPort { get; }
+
+    /// <summary>启动磁力覆盖（initrd 里烧死的那条；Guard VM 传 "none"）。</summary>
+    public string? MagnetOverride { get; }
+
     /// <summary>本实例使用的 initrd 文件名（多实例场景：下载引擎用独立控制口的 pkg_initrd_dl.gz）</summary>
     public string InitrdName { get; }
     public string ExePath => Path.Combine(RuntimeDir, "qemu-system-aarch64.exe");
@@ -99,15 +108,24 @@ public sealed class QemuHostRuntime : IDisposable
     /// <param name="initrdName">initrd 文件名；多实例（如下载专用引擎）传独立控制口的第二份 initrd。</param>
     /// <param name="consoleLogTag">控制台日志文件名后缀（多实例避免互相覆盖）。</param>
     /// <param name="monitorPort">monitor 监听端口（0 = 不开）。仅绑 127.0.0.1，不对外。</param>
+    /// <param name="ctrlPort">guest 控制口覆盖（0 = 用 initrd 默认 18080）。多 VM 并存时各用各的，
+    /// 经内核 cmdline <c>ctrl=</c> 下发（/init 的 getarg 覆盖）。</param>
+    /// <param name="guardPort">Guard 解密服务端口（0 = 不启用）。guest 内 harness 监听 0.0.0.0:该端口，
+    /// 宿主经第二条 hostfwd 直连（桥进程的 TCP 客户端走它）；cmdline <c>guardport=</c> 下发。</param>
+    /// <param name="magnetOverride">覆盖 initrd 里烧死的启动磁力（Guard VM 传 "none" 避免无谓真下载）。</param>
     public QemuHostRuntime(string runtimeDir, int mediaPort, Action<string>? log = null,
         string initrdName = "pkg_initrd.gz", string consoleLogTag = "", int monitorPort = 0,
         string? blockImagePath = null, long blockImageBytes = 0,
-        string? swapImagePath = null, long swapImageBytes = 0)
+        string? swapImagePath = null, long swapImageBytes = 0,
+        int ctrlPort = 0, int guardPort = 0, string? magnetOverride = null)
     {
         RuntimeDir = runtimeDir;
         MediaPort = mediaPort;
         MonitorPort = monitorPort;
         InitrdName = initrdName;
+        CtrlPort = ctrlPort;
+        GuardPort = guardPort;
+        MagnetOverride = magnetOverride;
         _log = log;
         // Debug/Release 隔离（见 AppPaths）
         ConsoleLogPath = AppPaths.LocalOf($"qemu-console{consoleLogTag}.log");
@@ -208,6 +226,9 @@ public sealed class QemuHostRuntime : IDisposable
             var memMb = SwapStore is not null ? GuestMemoryMbWithSwap : GuestMemoryMb;
             var tdataMb = SwapStore is not null ? DataDirMbWithSwap : DataDirMb;
 
+            var netdev = $"user,id=n0,hostfwd=tcp:127.0.0.1:{MediaPort}-:20080";
+            // Guard 解密服务：第二条 hostfwd（宿主与 guest 同号直连，桥进程经 127.0.0.1 调用）
+            if (GuardPort > 0) netdev += $",hostfwd=tcp:127.0.0.1:{GuardPort}-:{GuardPort}";
             var args = new List<string>
             {
                 // -m 5120：guest RAM 需容得下 /thunder-data 的 tmpfs（3500m，见 initrd 的 /init）+ 引擎开销；
@@ -230,7 +251,7 @@ public sealed class QemuHostRuntime : IDisposable
                 "-L", "share",
                 "-kernel", "pkg_kernel",
                 "-initrd", InitrdName,
-                "-netdev", $"user,id=n0,hostfwd=tcp:127.0.0.1:{MediaPort}-:20080",
+                "-netdev", netdev,
                 "-device", "virtio-net-pci,netdev=n0",
             };
 
@@ -265,6 +286,10 @@ public sealed class QemuHostRuntime : IDisposable
             var append = $"console=ttyAMA0 rdinit=/init loglevel=4 tdata={tdataMb}m";
             if (BlockStore is not null) append += $" blkdev=/dev/vd{(char)('a' + vdIndex++)}";
             if (SwapStore is not null) append += $" swapdev=/dev/vd{(char)('a' + vdIndex++)}";
+            // Guard VM 的口令与启动磁力经 cmdline 覆盖（/init 的 getarg；缺省与旧行为一致）
+            if (CtrlPort > 0) append += $" ctrl={CtrlPort}";
+            if (GuardPort > 0) append += $" guardport={GuardPort}";
+            if (!string.IsNullOrEmpty(MagnetOverride)) append += $" magnet={MagnetOverride}";
             args.Add("-append");
             args.Add(append);
             _log?.Invoke($"[qemu] guest 内存 {memMb}MB · tmpfs {tdataMb}MB · swap={(SwapStore is null ? "无" : SwapStore.CapacityBytes / 1024 / 1024 + "MB")} · {append}");

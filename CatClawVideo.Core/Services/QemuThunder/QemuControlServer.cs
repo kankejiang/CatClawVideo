@@ -23,6 +23,13 @@ public sealed class QemuControlServer : IDisposable
     /// <summary>日志回调（含每笔命令下发/上报摘要）。</summary>
     public event Action<string>? Log;
 
+    /// <summary>
+    /// 资源解析器（Guard 模块用）：guest 经 <c>/res?jar=&lt;hash&gt;&amp;name=&lt;entry&gt;</c>
+    /// 取 raw jar 条目（guard so 与壳的 assets 资源）。<c>__so__</c> 为保留名 = 挑 jar 里的
+    /// aarch64 so。返回 null 回 404。与迅雷引擎共用本服务时该钩子为 null，/res 直接 404。
+    /// </summary>
+    public Func<string, string, byte[]?>? ResolveResource { get; set; }
+
     private readonly int _port;
     private readonly object _sync = new();
     private TcpListener? _listener;
@@ -114,6 +121,27 @@ public sealed class QemuControlServer : IDisposable
                         await RespondAsync(stream, "200 OK", cmd).ConfigureAwait(false);
                         return;
                     }
+                    case "/res":
+                    {
+                        // Guard 模块的 jar 条目取用（二进制安全；so/资源可达数 MB）
+                        var args = ParseQuery(query);
+                        var jar = Get(args, "jar");
+                        var name = Get(args, "name");
+                        byte[]? data = null;
+                        try { data = ResolveResource?.Invoke(jar, name); }
+                        catch (Exception ex) { Log?.Invoke($"[qemu] /res {jar}/{name} 解析失败: {ex.Message}"); }
+                        if (data is null)
+                        {
+                            Log?.Invoke($"[宿主] /res 未命中: jar={jar} name={name}");
+                            await RespondAsync(stream, "404 Not Found", "no entry").ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            Log?.Invoke($"[宿主] /res 命中: jar={jar} name={name}（{data.Length / 1024}KB）");
+                            await RespondBytesAsync(stream, "200 OK", data).ConfigureAwait(false);
+                        }
+                        return;
+                    }
                     case "/report":
                     {
                         var args = ParseQuery(query);
@@ -151,7 +179,13 @@ public sealed class QemuControlServer : IDisposable
     private static async Task RespondAsync(NetworkStream stream, string status, string body)
     {
         var bytes = Encoding.UTF8.GetBytes(body);
-        var head = $"HTTP/1.0 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {bytes.Length}\r\nConnection: close\r\n\r\n";
+        await RespondBytesAsync(stream, status, bytes).ConfigureAwait(false);
+    }
+
+    /// <summary>二进制安全响应（/res 的 so/资源不能走 UTF-8 编码，会被替换字符损坏）。</summary>
+    private static async Task RespondBytesAsync(NetworkStream stream, string status, byte[] bytes)
+    {
+        var head = $"HTTP/1.0 {status}\r\nContent-Type: application/octet-stream\r\nContent-Length: {bytes.Length}\r\nConnection: close\r\n\r\n";
         await stream.WriteAsync(Encoding.ASCII.GetBytes(head)).ConfigureAwait(false);
         await stream.WriteAsync(bytes).ConfigureAwait(false);
         await stream.FlushAsync().ConfigureAwait(false);
