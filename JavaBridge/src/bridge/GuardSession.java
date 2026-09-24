@@ -131,12 +131,25 @@ public final class GuardSession {
 
     // ═══════════ DexNative 替身调用的实现 ═══════════
 
+    /**
+     * 每次 ARM native 调用留一行「谁调的、多长、由哪条通道服务」。
+     * <p>没有这行就没法区分三件事：爬虫**根本没调用**、QEMU 命中、静默回落 unidbg ——
+     * 三者在业务日志里长得一模一样，而结论完全相反（2026-09-25 桌面网盘登录态排障实测）。</p>
+     */
+    private static void trace(String api, int inLen, String via, int outLen) {
+        System.err.println("[guard] " + api + " " + inLen + "B → " + via + " " + outLen + "B");
+    }
+
+    private static int len(String s) { return s == null ? 0 : s.length(); }
+
     /** QEMU 通道单参调用（DECRYPT/ENCRYPT/MD5）：失败抛 RuntimeException → 调用方回落 unidbg。 */
     private static String qemuOne(String op, String s) {
         try {
             String resp = QemuGuardChannel.call(op + " " + QemuGuardChannel.b64(s), 60);
             if (!resp.startsWith("OK ")) throw new IllegalStateException("QEMU " + op + ": " + resp);
-            return QemuGuardChannel.unb64(resp.substring(3).trim());
+            String out = QemuGuardChannel.unb64(resp.substring(3).trim());
+            trace(op, len(s), "QEMU", len(out));
+            return out;
         } catch (java.io.IOException e) {
             throw new RuntimeException(e);
         }
@@ -149,6 +162,7 @@ public final class GuardSession {
                 System.err.println("[guard] QEMU decrypt 失败，回落 unidbg: " + t);
             }
         }
+        trace("DECRYPT", len(s), "unidbg", -1);
         requireSession();
         synchronized (LOCK) {
             try {
@@ -170,6 +184,7 @@ public final class GuardSession {
                 System.err.println("[guard] QEMU encrypt 失败，回落 unidbg: " + t);
             }
         }
+        trace("ENCRYPT", len(s), "unidbg", -1);
         requireSession();
         synchronized (LOCK) {
             StringObject r = (StringObject) dexNative.callStaticJniMethodObject(emulator,
@@ -189,6 +204,7 @@ public final class GuardSession {
                 System.err.println("[guard] QEMU noxSign 失败，回落 unidbg: " + t);
             }
         }
+        trace("NOXSIGN", 0, "unidbg", -1);
         requireSession();
         synchronized (LOCK) {
             StringObject r = (StringObject) dexNative.callStaticJniMethodObject(emulator,
@@ -207,6 +223,7 @@ public final class GuardSession {
                 System.err.println("[guard] QEMU md5 失败，回落 unidbg: " + t);
             }
         }
+        trace("MD5", 0, "unidbg", -1);
         requireSession();
         synchronized (LOCK) {
             StringObject r = (StringObject) dexNative.callStaticJniMethodObject(emulator,

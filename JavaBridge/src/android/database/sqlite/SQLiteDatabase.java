@@ -9,7 +9,8 @@ import android.database.Cursor;
  * {@code openDatabase(String, CursorFactory, int)}，缺它抛 NoSuchMethodError
  * （被壳的 try/catch 吞掉，表现是「初始化静默失败」）。</p>
  *
- * <p>桌面不做真 SQL：库路径记录下来，查询一律返回 null（调用方按空处理）。</p>
+ * <p>桌面不做真 SQL：库路径记录下来，查询一律返回<b>非空的零行游标</b>（见
+ * {@link android.database.EmptyCursor}——返回 null 会让爬虫在 moveToFirst() 上 NPE）。</p>
  */
 public class SQLiteDatabase {
 
@@ -54,15 +55,17 @@ public class SQLiteDatabase {
 
     public void execSQL(String sql, Object[] bindArgs) { }
 
-    public Cursor rawQuery(String sql, String[] selectionArgs) { return null; }
+    public Cursor rawQuery(String sql, String[] selectionArgs) { return new android.database.EmptyCursor(); }
 
-    public Cursor rawQuery(String sql, Object[] args) { return null; }
+    public Cursor rawQuery(String sql, Object[] args) { return new android.database.EmptyCursor(); }
+
+    public Cursor rawQueryWithBindValues(String sql, Object[] args) { return new android.database.EmptyCursor(); }
 
     public Cursor query(String table, String[] columns, String selection, String[] selectionArgs,
-                        String groupBy, String having, String orderBy) { return null; }
+                        String groupBy, String having, String orderBy) { return new android.database.EmptyCursor(); }
 
     public Cursor query(String table, String[] columns, String selection, String[] selectionArgs,
-                        String groupBy, String having, String orderBy, String limit) { return null; }
+                        String groupBy, String having, String orderBy, String limit) { return new android.database.EmptyCursor(); }
 
     public long insert(String table, String nullColumnHack, android.content.ContentValues values) { return -1; }
 
