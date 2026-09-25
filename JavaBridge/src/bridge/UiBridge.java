@@ -8,6 +8,7 @@ import org.json.JSONObject;
 
 import java.util.Iterator;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -33,6 +34,8 @@ public final class UiBridge {
     private static final AtomicInteger SEQ = new AtomicInteger(1);
     /** seq → 挂起的对话框（listeners 与 dialog 引用）。 */
     private static final Map<Integer, Pending> PENDING = new ConcurrentHashMap<>();
+    /** 在屏的二维码登录框 seq 集合：期间 SystemClock 进入慢速节拍（jar 的扫码轮询只有约 13 次预算，须拉长窗口）。 */
+    private static final Set<Integer> QR_SEQS = java.util.Collections.newSetFromMap(new ConcurrentHashMap<>());
 
     /** 一个已 show 对话框的全部回调。 */
     public static final class Pending {
@@ -75,7 +78,23 @@ public final class UiBridge {
 
     /** Dialog.show()：上行 ui-dialog 事件（spec 由 Dialog.fillSpec 组装）。 */
     public static void shown(int seq, JSONObject spec) {
-        try { spec.put("ev", "ui-dialog").put("seq", seq); emit(spec); } catch (Throwable ignored) { }
+        try {
+            // 二维码登录框在屏：进入慢速节拍，把 jar 的扫码轮询窗口从约 13 秒拉长到数分钟
+            if (spec != null && spec.has("qr") && QR_SEQS.add(seq)) {
+                android.os.SystemClock.beginLoginWindow();
+                System.err.println("[ui] 二维码登录框 #" + seq + " → 慢速节拍开启（当前窗口 " + QR_SEQS.size() + "）");
+            }
+            spec.put("ev", "ui-dialog").put("seq", seq);
+            emit(spec);
+        } catch (Throwable ignored) { }
+    }
+
+    /** 二维码框关闭（dismiss / 用户取消两条路径都走这里）：最后一个关闭时退出慢速节拍。 */
+    private static void onQrDialogClosed(int seq) {
+        if (seq > 0 && QR_SEQS.remove(seq) && QR_SEQS.isEmpty()) {
+            android.os.SystemClock.endLoginWindow();
+            System.err.println("[ui] 二维码登录框 #" + seq + " → 慢速节拍关闭");
+        }
     }
 
     /** Dialog.dismiss()/cancel()：上行关窗事件并触发 jar 的 dismiss/cancel 监听。 */
@@ -87,7 +106,10 @@ public final class UiBridge {
             if (e.getValue().dialog == d) { found = e.getKey(); p = e.getValue(); it.remove(); break; }
         }
         if (found == null) return;
-        try { emit(new JSONObject().put("ev", "ui-dismiss").put("seq", (int) found).put("cancelled", cancelled)); } catch (Throwable ignored) { }
+        try {
+            emit(new JSONObject().put("ev", "ui-dismiss").put("seq", (int) found).put("cancelled", cancelled));
+        } catch (Throwable ignored) { }
+        onQrDialogClosed(found);
         if (p != null) {
             try { if (cancelled && p.cancel != null) p.cancel.onCancel(d); } catch (Throwable ignored) { }
             try { if (p.dismiss != null) p.dismiss.onDismiss(d); } catch (Throwable ignored) { }
@@ -96,6 +118,10 @@ public final class UiBridge {
 
     /** Toast.show()：上行提示事件（宿主自行决定展示方式）。 */
     public static void toast(CharSequence text) {
+        // 诊断：CheckValidityCk 等关键提示的来源定位（打印调用栈到 stderr）
+        if (text != null && String.valueOf(text).startsWith("CheckValidity")) {
+            new Exception("[toast-src] " + text).printStackTrace();
+        }
         try { emit(new JSONObject().put("ev", "ui-toast").put("text", text == null ? "" : text.toString())); } catch (Throwable ignored) { }
     }
 
@@ -169,6 +195,7 @@ public final class UiBridge {
             } catch (Throwable ig) { }
             if (stay) return;
             try { if (p.dismiss != null) p.dismiss.onDismiss(d); } catch (Throwable ig) { }
+            onQrDialogClosed(seq);
             try { emit(new JSONObject().put("ev", "ui-dismiss").put("seq", seq).put("cancelled", false)); } catch (Throwable ig) { }
         }, "ui-result-" + seq);
         t.setDaemon(true);

@@ -37,9 +37,45 @@ public class SystemClock {
     /**
      * 睡眠指定毫秒；被中断时提前结束但不抛。
      * <p>Android 的实现就是这个语义，爬虫据此做轮询退避。</p>
+     *
+     * <p><b>扫码登录窗口的节拍拉长</b>：Guard 系网盘 jar 的扫码登录循环按<b>次数</b>计重试预算
+     * （实测约 13 次、每次 sleep 1 秒 ≈ 13 秒窗口），手机解锁→开夸克 App→扫码→点授权
+     * 普遍超过 13 秒，轮询窗口一关确认永远等不到（表现为「扫了码也没用」，2026-09-25 mitm
+     * 实测定位：token/出码/轮询/换票请求全部正确，唯独窗口太短）。jar 的轮询节拍全部走本
+     * 方法——二维码框存续期间把节拍拉长 20 倍（13 次 ≈ 4.3 分钟），jar 逻辑零改动，
+     * 对夸克/UC/百度/阿里等一切走这种轮询的网盘一视同仁。开关由 <c>UiBridge</c> 按二维码
+     * 对话框的存续调用。</p>
      */
+    private static final int LOGIN_SLEEP_SCALE = 20;
+    /** 扫码登录窗口计数（>0 = 有二维码框在屏）；另设 10 分钟自愈上限防漏减。 */
+    private static volatile int loginWindows;
+    private static volatile long loginWindowStartMs;
+
+    /** 二维码登录框开始展示：进入慢速节拍（可嵌套，按计数归零退出）。 */
+    public static void beginLoginWindow() {
+        if (loginWindows == 0) loginWindowStartMs = System.currentTimeMillis();
+        loginWindows++;
+    }
+
+    /** 二维码登录框关闭：退出慢速节拍。 */
+    public static void endLoginWindow() {
+        if (loginWindows > 0) loginWindows--;
+    }
+
+    /** 扫码登录窗口是否生效（10 分钟自愈上限：漏掉 end 也不至于永久慢速）。 */
+    private static boolean loginWindowActive() {
+        return loginWindows > 0
+                && System.currentTimeMillis() - loginWindowStartMs < 10 * 60_000L;
+    }
+
+    /** 延迟类调用的统一伸缩口：登录窗口内 ×{@value LOGIN_SLEEP_SCALE}，平时原样返回。 */
+    public static long scaleDelay(long delayMillis) {
+        return loginWindowActive() ? delayMillis * LOGIN_SLEEP_SCALE : delayMillis;
+    }
+
     public static void sleep(long ms) {
         if (ms <= 0) return;
+        if (loginWindowActive()) ms *= LOGIN_SLEEP_SCALE;
         try {
             Thread.sleep(ms);
         } catch (InterruptedException e) {

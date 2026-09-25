@@ -40,7 +40,10 @@ public final class QemuGuardChannel {
 
     /** 单次调用（短连接）。失败抛 IOException —— 调用方回落 unidbg。 */
     public static String call(String line, int timeoutSec) throws IOException {
-        try (Socket s = new Socket("127.0.0.1", port)) {
+        // 连接目标可覆盖：spider 运行时整体进 QEMU guest 后，桥在 guest 里连宿主的
+    // Guard VM 要走 slirp 网关 10.0.2.2（-Dcatclaw.guard.host 覆盖，默认本机）。
+    String guardHost = System.getProperty("catclaw.guard.host", "127.0.0.1");
+    try (Socket s = new Socket(guardHost, port)) {
             s.setSoTimeout(timeoutSec * 1000);
             OutputStream os = s.getOutputStream();
             os.write((line + "\n").getBytes(StandardCharsets.UTF_8));

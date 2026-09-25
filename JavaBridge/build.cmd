@@ -18,7 +18,7 @@ if not exist build mkdir build
 dir /s /b src\*.java > sources.txt
 rem unidbg must be on the compile classpath: GuardSession uses com.github.unidbg.* to unpack
 rem the ARM .so. With only deps\ on CP you get 40 "cannot find symbol DvmObject" errors (2026-09-24).
-set CP=vendor\deps\org-json.jar;vendor\deps\gson.jar;vendor\deps\okhttp3.jar;vendor\deps\okio.jar;vendor\unidbg\*
+set CP=vendor\deps\org-json.jar;vendor\deps\gson.jar;vendor\deps\okhttp3.jar;vendor\deps\okio.jar;vendor\deps\asm-9.5.jar;vendor\unidbg\*
 "%JAVAC%" -encoding UTF-8 -cp "%CP%" -d build @sources.txt || exit /b 3
 rem Package from JavaBridge itself. The old "cd build" + "-C build ." looked for build\build\ and
 rem both jar invocations failed silently, so bridge.jar was never actually updated.

@@ -52,7 +52,7 @@ public class Server {
         String key = keyBuilder.toString();
         URLClassLoader cached = LOADERS.get(key);
         if (cached != null) return cached;
-        URLClassLoader created = new URLClassLoader(urls, Server.class.getClassLoader());
+        URLClassLoader created = new SleepPatchingLoader(urls, Server.class.getClassLoader());
         LOADERS.put(key, created);
         return created;
     }
@@ -234,7 +234,7 @@ public class Server {
                         injectStaticContext(realLoader, holder, realCtx);
                     }
                 }
-                URLClassLoader shellLoader = new URLClassLoader(
+                URLClassLoader shellLoader = new SleepPatchingLoader(
                         new URL[]{new File(shellJar).toURI().toURL()}, Server.class.getClassLoader());
                 Class<?> cls = shellLoader.loadClass("com.github.catvod.spider." + className);
                 Object instance = cls.getDeclaredConstructor().newInstance();

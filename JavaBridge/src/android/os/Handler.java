@@ -39,6 +39,10 @@ public class Handler {
     /** 供 {@link android.view.View#postDelayed} 等复用：桌面统一的"延迟执行"落点。 */
     public static ScheduledFuture<?> schedule(Runnable r, long delayMillis) {
         if (r == null) return null;
+        // 扫码登录窗口：jar 经 Handler.postDelayed 重挂轮询（网盘登录回执线程的节拍），
+        // 与 SystemClock.sleep 同一套伸缩开关——窗口内延迟 ×20，二维码轮询窗口从约 13 秒
+        // 拉长到数分钟（jar 按次数计预算，扫不完就放弃，2026-09-25 mitm 实测定位）。
+        long scaled = SystemClock.scaleDelay(Math.max(0L, delayMillis));
         ScheduledFuture<?> f = POOL.schedule(() -> {
             SCHEDULED.remove(r);
             try {
@@ -46,7 +50,7 @@ public class Handler {
             } catch (Throwable t) {
                 t.printStackTrace();
             }
-        }, Math.max(0L, delayMillis), TimeUnit.MILLISECONDS);
+        }, scaled, TimeUnit.MILLISECONDS);
         SCHEDULED.put(r, f);
         return f;
     }

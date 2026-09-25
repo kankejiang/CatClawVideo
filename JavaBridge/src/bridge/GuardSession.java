@@ -428,7 +428,7 @@ public final class GuardSession {
     }
 
     /** 带标识的 loader（避免重复创建）。 */
-    private static final class GuardLoader extends URLClassLoader {
+    private static final class GuardLoader extends bridge.SleepPatchingLoader {
         private final String key;
         GuardLoader(URL[] urls, ClassLoader parent, String key) {
             super(urls, parent);
