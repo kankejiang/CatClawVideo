@@ -4,28 +4,164 @@
              x:Class="CatClawVideo.Maui.Pages.LocalMediaPage"
              BackgroundColor="Transparent">
 
-    <ScrollView>
-        <VerticalStackLayout Padding="24,16,24,24" Spacing="12">
+    <ContentView.Resources>
+        <ResourceDictionary>
 
-            <Grid ColumnDefinitions="*,Auto">
-                <Label Grid.Column="0" Text="本地播放" FontSize="17" FontFamily="OpenSansSemibold"
-                       TextColor="{DynamicResource TextPrimaryColor}" Margin="0,8,0,0" />
-                <Button Grid.Column="1" Text="＋ 打开本地视频" FontSize="12.5" TextColor="White"
-                        BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
-                        CornerRadius="8" Padding="14,6" Clicked="OnPickFileClicked" />
-            </Grid>
+            <!-- 次级动作（与主按钮同尺寸，只是没有底色） -->
+            <Style x:Key="HeaderChip" TargetType="Border">
+                <Setter Property="BackgroundColor" Value="{DynamicResource ChipInactiveColor}" />
+                <Setter Property="StrokeThickness" Value="1" />
+                <Setter Property="Stroke" Value="{DynamicResource InputBorderColor}" />
+                <Setter Property="Padding" Value="14,8" />
+            </Style>
 
-            <Label Text="选择本地视频文件（mp4 / mkv / avi / mov / flv），走同一播放内核直接播放"
-                   FontSize="12" TextColor="{DynamicResource TextSecondaryColor}" />
+            <!-- 支持格式的小胶囊 -->
+            <Style x:Key="FormatChip" TargetType="Border">
+                <Setter Property="BackgroundColor" Value="{DynamicResource InputBackgroundColor}" />
+                <Setter Property="StrokeThickness" Value="1" />
+                <Setter Property="Stroke" Value="{DynamicResource InputBorderColor}" />
+                <Setter Property="Padding" Value="9,3" />
+            </Style>
 
-            <VerticalStackLayout x:Name="LocalList" Spacing="10" Margin="0,6,0,0" />
+            <Style x:Key="FormatChipText" TargetType="Label">
+                <Setter Property="FontSize" Value="10.5" />
+                <Setter Property="TextColor" Value="{DynamicResource ChipInactiveTextColor}" />
+            </Style>
 
-            <Label x:Name="LocalEmpty"
-                   Text="还没有添加本地视频，点击右上角「打开本地视频」"
-                   FontSize="13" HorizontalTextAlignment="Center"
-                   TextColor="{DynamicResource TextHintColor}" Padding="0,16" />
+        </ResourceDictionary>
+    </ContentView.Resources>
 
-        </VerticalStackLayout>
-    </ScrollView>
+    <Grid RowDefinitions="Auto,Auto,*" RowSpacing="12" Padding="24,14,24,24">
+
+        <!-- ── 顶栏：品牌色竖条 + 标题/副标题，右侧两个同尺寸动作 ── -->
+        <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10" VerticalOptions="Center">
+
+            <HorizontalStackLayout Grid.Column="0" Spacing="9">
+                <Border WidthRequest="3" HeightRequest="16" StrokeThickness="0"
+                        StrokeShape="RoundRectangle 2"
+                        BackgroundColor="{DynamicResource PrimaryColor}"
+                        VerticalOptions="Center" />
+                <VerticalStackLayout Spacing="2" VerticalOptions="Center">
+                    <Label Text="视频库" FontSize="17" FontFamily="OpenSansSemibold"
+                           TextColor="{DynamicResource TextPrimaryColor}" />
+                    <Label Text="本地文件与 WebDAV 网络媒体，走同一播放内核直接播放"
+                           FontSize="11" TextColor="{DynamicResource TextHintColor}" />
+                </VerticalStackLayout>
+            </HorizontalStackLayout>
+
+            <Border Grid.Column="2" Style="{StaticResource HeaderChip}"
+                    StrokeShape="RoundRectangle 10" VerticalOptions="Center">
+                <Border.GestureRecognizers>
+                    <TapGestureRecognizer Tapped="OnNetworkMediaClicked" />
+                </Border.GestureRecognizers>
+                <HorizontalStackLayout Spacing="6">
+                    <Image Source="ic_library_white.png" WidthRequest="14" HeightRequest="14"
+                           VerticalOptions="Center" Opacity="0.75" />
+                    <Label Text="网络媒体" FontSize="12.5" VerticalOptions="Center"
+                           TextColor="{DynamicResource TextPrimaryColor}" />
+                </HorizontalStackLayout>
+            </Border>
+
+            <Border Grid.Column="3" StrokeThickness="0" StrokeShape="RoundRectangle 10"
+                    Padding="14,8" BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
+                    VerticalOptions="Center">
+                <Border.GestureRecognizers>
+                    <TapGestureRecognizer Tapped="OnPickFileClicked" />
+                </Border.GestureRecognizers>
+                <HorizontalStackLayout Spacing="6">
+                    <Image Source="ic_add.png" WidthRequest="13" HeightRequest="13"
+                           VerticalOptions="Center" />
+                    <Label Text="打开本地视频" FontSize="12.5" FontFamily="OpenSansSemibold"
+                           VerticalOptions="Center" TextColor="White" />
+                </HorizontalStackLayout>
+            </Border>
+        </Grid>
+
+        <!-- ── 支持格式：从一句话换成可扫读的胶囊行 ── -->
+        <HorizontalStackLayout Grid.Row="1" Spacing="6">
+            <Border Style="{StaticResource FormatChip}" StrokeShape="RoundRectangle 6">
+                <Label Text="mp4" Style="{StaticResource FormatChipText}" />
+            </Border>
+            <Border Style="{StaticResource FormatChip}" StrokeShape="RoundRectangle 6">
+                <Label Text="mkv" Style="{StaticResource FormatChipText}" />
+            </Border>
+            <Border Style="{StaticResource FormatChip}" StrokeShape="RoundRectangle 6">
+                <Label Text="avi" Style="{StaticResource FormatChipText}" />
+            </Border>
+            <Border Style="{StaticResource FormatChip}" StrokeShape="RoundRectangle 6">
+                <Label Text="mov" Style="{StaticResource FormatChipText}" />
+            </Border>
+            <Border Style="{StaticResource FormatChip}" StrokeShape="RoundRectangle 6">
+                <Label Text="flv" Style="{StaticResource FormatChipText}" />
+            </Border>
+            <Border Style="{StaticResource FormatChip}" StrokeShape="RoundRectangle 6">
+                <Label Text="webm" Style="{StaticResource FormatChipText}" />
+            </Border>
+            <Border Style="{StaticResource FormatChip}" StrokeShape="RoundRectangle 6">
+                <Label Text="ts" Style="{StaticResource FormatChipText}" />
+            </Border>
+            <Label Text="也可以从「网络媒体」挂载 WebDAV 后直接播放"
+                   FontSize="11" TextColor="{DynamicResource TextHintColor}"
+                   VerticalOptions="Center" Margin="6,0,0,0" />
+        </HorizontalStackLayout>
+
+        <!-- ── 内容区：列表与空态互斥，空态真的居中而不是贴在标题下面 ── -->
+        <Grid Grid.Row="2">
+
+            <ScrollView>
+                <VerticalStackLayout Spacing="10">
+                    <Label x:Name="SectionHeader" IsVisible="False"
+                           Text="最近添加" FontSize="12" FontFamily="OpenSansSemibold"
+                           TextColor="{DynamicResource TextHintColor}" Margin="2,2,0,0" />
+                    <VerticalStackLayout x:Name="LocalList" Spacing="10" />
+                </VerticalStackLayout>
+            </ScrollView>
+
+            <Border x:Name="LocalEmpty"
+                    StrokeThickness="1" Stroke="{DynamicResource DividerColor}"
+                    StrokeShape="RoundRectangle 18"
+                    BackgroundColor="{DynamicResource CardBackgroundColor}"
+                    Padding="36,32" MaximumWidthRequest="460"
+                    HorizontalOptions="Center" VerticalOptions="Center">
+                <VerticalStackLayout Spacing="13">
+
+                    <Border WidthRequest="56" HeightRequest="56" StrokeThickness="1"
+                            Stroke="{DynamicResource InputBorderColor}"
+                            StrokeShape="RoundRectangle 28"
+                            BackgroundColor="{DynamicResource InputBackgroundColor}"
+                            HorizontalOptions="Center">
+                        <Image Source="ic_play.png" WidthRequest="22" HeightRequest="22"
+                               HorizontalOptions="Center" VerticalOptions="Center" Opacity="0.85" />
+                    </Border>
+
+                    <Label Text="还没有添加本地视频" FontSize="15" FontFamily="OpenSansSemibold"
+                           HorizontalTextAlignment="Center"
+                           TextColor="{DynamicResource TextPrimaryColor}" />
+
+                    <Label Text="选一个本地文件即可开始播放。列表只记本次会话，重启后需要重新添加。"
+                           FontSize="12" HorizontalTextAlignment="Center"
+                           MaximumWidthRequest="320" LineBreakMode="WordWrap"
+                           TextColor="{DynamicResource TextSecondaryColor}" />
+
+                    <Border StrokeThickness="0" StrokeShape="RoundRectangle 10"
+                            Padding="20,9" Margin="0,4,0,0"
+                            BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
+                            HorizontalOptions="Center">
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnPickFileClicked" />
+                        </Border.GestureRecognizers>
+                        <HorizontalStackLayout Spacing="6">
+                            <Image Source="ic_add.png" WidthRequest="13" HeightRequest="13"
+                                   VerticalOptions="Center" />
+                            <Label Text="打开本地视频" FontSize="13" FontFamily="OpenSansSemibold"
+                                   VerticalOptions="Center" TextColor="White" />
+                        </HorizontalStackLayout>
+                    </Border>
+
+                </VerticalStackLayout>
+            </Border>
+        </Grid>
+
+    </Grid>
 
 </ContentView>

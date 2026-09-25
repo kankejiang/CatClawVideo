@@ -56,7 +56,7 @@
                     </Border>
 
                     <Border x:Name="NavBg3" BackgroundColor="Transparent" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="22,10">
-                        <Label x:Name="NavLabel3" Text="本地" FontSize="13.5" FontFamily="OpenSansSemibold" />
+                        <Label x:Name="NavLabel3" Text="视频库" FontSize="13.5" FontFamily="OpenSansSemibold" />
                         <Border.GestureRecognizers>
                             <TapGestureRecognizer Tapped="OnTabTapped" />
                             <PointerGestureRecognizer PointerEntered="OnTabPointerEntered" PointerExited="OnTabPointerExited" />
@@ -73,7 +73,7 @@
 
                 </HorizontalStackLayout>
 
-                <!-- 搜索入口 + 直播入口（同一列，搜索框保持原尺寸与焦点反馈） -->
+                <!-- 搜索入口（直播入口已挪到首页右侧：它只在"找内容"时用，不该常驻全局导航） -->
                 <HorizontalStackLayout Grid.Column="2" Spacing="10" VerticalOptions="Center">
                     <Border x:Name="TopSearchBox" StrokeThickness="2" Stroke="Transparent" Margin="-2"
                             BackgroundColor="{DynamicResource ChipInactiveColor}"
@@ -84,19 +84,6 @@
                         </HorizontalStackLayout>
                         <Border.GestureRecognizers>
                             <TapGestureRecognizer Tapped="OnSearchTapped" />
-                        </Border.GestureRecognizers>
-                    </Border>
-
-                    <!-- 直播：TVBox 直播间的入口（全屏推入页，路由 live） -->
-                    <Border x:Name="TopLiveBox" StrokeThickness="0" Stroke="Transparent"
-                            BackgroundColor="{DynamicResource ChipInactiveColor}"
-                            StrokeShape="RoundRectangle 16" Padding="12,6" VerticalOptions="Center">
-                        <HorizontalStackLayout Spacing="6">
-                            <Ellipse WidthRequest="7" HeightRequest="7" Fill="#e53935" VerticalOptions="Center" />
-                            <Label Text="直播" FontSize="12" TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
-                        </HorizontalStackLayout>
-                        <Border.GestureRecognizers>
-                            <TapGestureRecognizer Tapped="OnLiveTapped" />
                         </Border.GestureRecognizers>
                     </Border>
                 </HorizontalStackLayout>

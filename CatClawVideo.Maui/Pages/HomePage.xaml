@@ -24,23 +24,40 @@
                    Margin="14,0,14,0" LineBreakMode="TailTruncation" MaxLines="1"
                    TextColor="{DynamicResource TextHintColor}" VerticalOptions="Center" />
 
-            <!-- 切换源（遥控器可聚焦，见 HomePage.xaml.cs 的 SwitchSiteShell 焦点环） -->
-            <Border x:Name="SwitchSiteShell" Grid.Column="2"
-                    StrokeThickness="2" Stroke="Transparent"
-                    StrokeShape="RoundRectangle 16" Padding="2" Margin="-2"
-                    HorizontalOptions="End" VerticalOptions="Center">
+            <!-- 右侧动作：直播（从全局顶栏挪来，只在"找内容"时用） + 切换源 -->
+            <HorizontalStackLayout Grid.Column="2" Spacing="8" HorizontalOptions="End" VerticalOptions="Center">
+
+                <!-- 直播：TVBox 直播间的入口（全屏推入页，路由 live） -->
                 <Border StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,6"
                         BackgroundColor="{DynamicResource ChipInactiveColor}">
                     <HorizontalStackLayout Spacing="6">
-                        <Label Text="切换源" FontSize="11.5"
+                        <Ellipse WidthRequest="7" HeightRequest="7" Fill="#e53935" VerticalOptions="Center" />
+                        <Label Text="直播" FontSize="11.5"
                                TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
-                        <Image Source="ic_refresh_white.png" WidthRequest="12" HeightRequest="12" VerticalOptions="Center" />
                     </HorizontalStackLayout>
                     <Border.GestureRecognizers>
-                        <TapGestureRecognizer Tapped="OnSwitchSiteTapped" />
+                        <TapGestureRecognizer Tapped="OnLiveTapped" />
                     </Border.GestureRecognizers>
                 </Border>
-            </Border>
+
+                <!-- 切换源（遥控器可聚焦，见 HomePage.xaml.cs 的 SwitchSiteShell 焦点环） -->
+                <Border x:Name="SwitchSiteShell"
+                        StrokeThickness="2" Stroke="Transparent"
+                        StrokeShape="RoundRectangle 16" Padding="2" Margin="-2"
+                        VerticalOptions="Center">
+                    <Border StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,6"
+                            BackgroundColor="{DynamicResource ChipInactiveColor}">
+                        <HorizontalStackLayout Spacing="6">
+                            <Label Text="切换源" FontSize="11.5"
+                                   TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
+                            <Image Source="ic_refresh_white.png" WidthRequest="12" HeightRequest="12" VerticalOptions="Center" />
+                        </HorizontalStackLayout>
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnSwitchSiteTapped" />
+                        </Border.GestureRecognizers>
+                    </Border>
+                </Border>
+            </HorizontalStackLayout>
         </Grid>
 
         <!-- 分类 chips（真数据：当前源分类目录）

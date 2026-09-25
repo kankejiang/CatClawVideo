@@ -17,7 +17,7 @@ public partial class MainViewModel : ObservableObject
         new("ic_home.png", "首页"),
         new("ic_history.png", "历史"),
         new("ic_favorite.png", "收藏"),
-        new("ic_folder_white.png", "本地"),
+        new("ic_folder_white.png", "视频库"),
         new("ic_settings.png", "设置"),
     ];
 

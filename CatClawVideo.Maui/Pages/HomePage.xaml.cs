@@ -410,6 +410,12 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
     // ═══════════════════════ 交互入口（鼠标 / 触屏 / OK 共用）═══════════════════════
 
     /// <summary>「切换源」点击 → 数据源选择弹窗（参考影视仓），选择后切换首页数据源</summary>
+    /// <summary>首页右侧直播入口 → 直播间（未配置源时页面自身给出「配置直播源」引导）</summary>
+    private async void OnLiveTapped(object? sender, TappedEventArgs e)
+    {
+        try { await Shell.Current.GoToAsync("live"); } catch { }
+    }
+
     private async void OnSwitchSiteTapped(object? sender, TappedEventArgs e)
     {
         var sites = _vm.PlayableSites;
