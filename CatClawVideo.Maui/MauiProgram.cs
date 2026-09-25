@@ -73,6 +73,15 @@ public static class MauiProgram
         services.AddSingleton<CatClawVideo.Core.Live.LiveSourceService>();
         services.AddSingleton<CatClawVideo.Core.Live.EpgService>();
 
+        // ═══════════════════════════════════════════════════
+        // 网络媒体（猫爪音乐 WebDAV 能力移植）：连接仓库 + WebDAV 客户端 + 本地流代理
+        //   —— 代理把带 Basic Auth / OpenList 重定向的远程文件变成 127.0.0.1 普通 HTTP 流，
+        //      双平台播放器统一按本地地址消费（Windows 播放器不支持自定义请求头）
+        // ═══════════════════════════════════════════════════
+        services.AddSingleton<CatClawVideo.Core.Network.WebDavProfileStore>();
+        services.AddSingleton<CatClawVideo.Core.Network.WebDavService>();
+        services.AddSingleton<CatClawVideo.Core.Network.WebDavStreamProxy>();
+
         // spider 运行时：JS（drpy2，Jint 纯托管，双端可用）+ jar/dex（Android DexClassLoader，仅 Android）
         services.AddSingleton<CatClawVideo.Core.Interfaces.IJsRuntimeService, CatClawVideo.Core.Services.JsRuntimeService>();
         var jsRuntime = new CatClawVideo.Core.Providers.DrpyJsSpiderRuntime(

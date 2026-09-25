@@ -30,6 +30,9 @@ public partial class AppShell : Shell
         // 直播源配置页（直播间空白态「配置直播源」/ 设置面板进入）
         Routing.RegisterRoute("livesource", typeof(Pages.LiveSourcePage));
 
+        // 网络媒体页（本地媒体 tab「网络媒体」进入；WebDAV 连接管理 + 远程目录浏览）
+        Routing.RegisterRoute("networkmedia", typeof(Pages.NetworkMediaPage));
+
         // 下载设置页（下载 tab 右上角 ⚙ 进入；照搬 Motrix 设置项）
 
         // 关于页（设置 → 关于）

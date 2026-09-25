@@ -62,6 +62,17 @@ public partial class App : Application
         {
             System.Diagnostics.Debug.WriteLine($"[App] Theme init failed: {ex.Message}");
         }
+
+        // WebDAV 本地流代理预热：播放历史里存的是 http://127.0.0.1:{port}/wd/... 代理 URL，
+        // 重启后直接从历史回放时代理必须已在监听。默认端口优先（跨会话尽量复用同一端口），
+        // 未配置过连接则不占端口（此时历史里也不可能有网络播放记录）。
+        try
+        {
+            var webDavProxy = MauiProgram.Services.GetRequiredService<CatClawVideo.Core.Network.WebDavStreamProxy>();
+            if (!webDavProxy.IsRunning && webDavProxy.HasProfiles)
+                webDavProxy.EnsureStarted();
+        }
+        catch { /* 代理启动失败只影响 WebDAV 回放，不阻塞启动 */ }
     }
 
     protected override Window CreateWindow(IActivationState? activationState)

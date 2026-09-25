@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="CatClawVideo.Maui.Pages.NetworkMediaPage"
+             BackgroundColor="{DynamicResource WindowBackgroundColor}"
+             NavigationPage.HasNavigationBar="False">
+
+    <!-- 隐藏 Shell 系统返回键（页面按三态自管返回，同 LiveSourcePage） -->
+    <Shell.BackButtonBehavior>
+        <BackButtonBehavior IsVisible="False" />
+    </Shell.BackButtonBehavior>
+
+    <Grid>
+        <ScrollView>
+            <VerticalStackLayout Padding="24,14,24,28" Spacing="12">
+
+            <!-- 顶栏：返回 + 标题 -->
+            <Grid ColumnDefinitions="Auto,Auto,*" ColumnSpacing="12">
+                <Border Grid.Column="0" StrokeThickness="0" BackgroundColor="{DynamicResource ChipInactiveColor}"
+                        StrokeShape="RoundRectangle 12" WidthRequest="38" HeightRequest="38">
+                    <Image Source="ic_back.png" WidthRequest="18" HeightRequest="18"
+                           HorizontalOptions="Center" VerticalOptions="Center" />
+                    <Border.GestureRecognizers>
+                        <TapGestureRecognizer Tapped="OnBackTapped" />
+                    </Border.GestureRecognizers>
+                </Border>
+                <Label Grid.Column="1" Text="网络媒体" FontSize="15" FontFamily="OpenSansSemibold"
+                       TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
+            </Grid>
+
+            <!-- ═══════════ 面板一：连接列表 ═══════════ -->
+            <VerticalStackLayout x:Name="ProfilesPanel" Spacing="12">
+                <Border StrokeThickness="1" StrokeShape="RoundRectangle 16"
+                        BackgroundColor="{DynamicResource CardBackgroundColor}"
+                        Stroke="{DynamicResource DividerColor}" Padding="18">
+                    <VerticalStackLayout Spacing="10">
+                        <Label Text="我的连接" FontSize="15" FontFamily="OpenSansSemibold"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                        <Label Text="支持 WebDAV 协议（群晖/威联通等 NAS、Alist/OpenList、坚果云等），浏览并直接播放远程视频"
+                               FontSize="12" TextColor="{DynamicResource TextSecondaryColor}" />
+                        <VerticalStackLayout x:Name="ProfileList" Spacing="8" Margin="0,4,0,0" />
+                        <Label x:Name="ProfileEmpty"
+                               Text="还没有连接，点击下方「添加连接」"
+                               FontSize="11.5" TextColor="{DynamicResource TextHintColor}" />
+                        <Button Text="＋ 添加连接" FontSize="12.5" TextColor="White"
+                                BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
+                                CornerRadius="8" Padding="16,6" HorizontalOptions="Start"
+                                Clicked="OnAddProfileClicked" />
+                    </VerticalStackLayout>
+                </Border>
+            </VerticalStackLayout>
+
+            <!-- ═══════════ 面板二：连接编辑 ═══════════ -->
+            <Border x:Name="EditorPanel" IsVisible="False" StrokeThickness="1" StrokeShape="RoundRectangle 16"
+                    BackgroundColor="{DynamicResource CardBackgroundColor}"
+                    Stroke="{DynamicResource DividerColor}" Padding="18">
+                <VerticalStackLayout Spacing="10">
+                    <Label x:Name="EditorTitle" Text="添加 WebDAV 连接" FontSize="15" FontFamily="OpenSansSemibold"
+                           TextColor="{DynamicResource TextPrimaryColor}" />
+
+                    <Grid ColumnDefinitions="86,*" ColumnSpacing="10" Padding="0,2">
+                        <Label Grid.Column="0" Text="名称" FontSize="12.5" TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
+                        <Entry Grid.Column="1" x:Name="NameEntry" Placeholder="我的 NAS（可留空自动用主机名）"
+                               PlaceholderColor="{DynamicResource TextHintColor}"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                    </Grid>
+
+                    <Grid ColumnDefinitions="86,*,12,86,84" ColumnSpacing="10" Padding="0,2">
+                        <Label Grid.Column="0" Text="主机" FontSize="12.5" TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
+                        <Entry Grid.Column="1" x:Name="HostEntry" Placeholder="192.168.1.10 或域名"
+                               PlaceholderColor="{DynamicResource TextHintColor}"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                        <Label Grid.Column="2" Text="端口" FontSize="12.5" TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
+                        <Entry Grid.Column="3" x:Name="PortEntry" Placeholder="5005" Keyboard="Numeric"
+                               PlaceholderColor="{DynamicResource TextHintColor}"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                        <HorizontalStackLayout Grid.Column="4" Spacing="6" VerticalOptions="Center">
+                            <Label Text="HTTPS" FontSize="12" TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
+                            <Switch x:Name="HttpsSwitch" VerticalOptions="Center" />
+                        </HorizontalStackLayout>
+                    </Grid>
+
+                    <Grid ColumnDefinitions="86,*,12,86,*" ColumnSpacing="10" Padding="0,2">
+                        <Label Grid.Column="0" Text="账号" FontSize="12.5" TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
+                        <Entry Grid.Column="1" x:Name="UserEntry" Placeholder="可留空（匿名）"
+                               PlaceholderColor="{DynamicResource TextHintColor}"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                        <Label Grid.Column="2" Text="密码" FontSize="12.5" TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
+                        <Entry Grid.Column="3" x:Name="PasswordEntry" IsPassword="True" Placeholder="密码 / 应用密码"
+                               PlaceholderColor="{DynamicResource TextHintColor}"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                    </Grid>
+
+                    <Grid ColumnDefinitions="86,*" ColumnSpacing="10" Padding="0,2">
+                        <Label Grid.Column="0" Text="根路径" FontSize="12.5" TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
+                        <Entry Grid.Column="1" x:Name="BasePathEntry" Text="/" Placeholder="/dav"
+                               PlaceholderColor="{DynamicResource TextHintColor}"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                    </Grid>
+                    <Label Text="标准 NAS 填 / 或 /dav；Alist / OpenList 一般填 /（会自动探测 /dav 前缀与 REST API 模式）"
+                           FontSize="11" TextColor="{DynamicResource TextHintColor}" />
+
+                    <Grid ColumnDefinitions="Auto,Auto,*" ColumnSpacing="10" Margin="0,4,0,0">
+                        <Button Grid.Column="0" Text="测试连接" FontSize="12.5"
+                                TextColor="{DynamicResource TextPrimaryColor}"
+                                BackgroundColor="{DynamicResource ChipInactiveColor}"
+                                CornerRadius="8" Padding="14,6" Clicked="OnTestClicked" />
+                        <Button Grid.Column="1" Text="保存" FontSize="12.5" TextColor="White"
+                                BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
+                                CornerRadius="8" Padding="16,6" Clicked="OnSaveClicked" />
+                        <Label Grid.Column="2" x:Name="EditorStatus" FontSize="11.5" VerticalOptions="Center"
+                               TextColor="{DynamicResource TextHintColor}" LineBreakMode="WordWrap" />
+                    </Grid>
+                </VerticalStackLayout>
+            </Border>
+
+            <!-- ═══════════ 面板三：目录浏览 ═══════════ -->
+            <VerticalStackLayout x:Name="BrowserPanel" IsVisible="False" Spacing="10">
+                <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="10">
+                    <VerticalStackLayout Grid.Column="0" Spacing="2">
+                        <Label x:Name="LblBrowserTitle" FontSize="14" FontFamily="OpenSansSemibold"
+                               TextColor="{DynamicResource TextPrimaryColor}" LineBreakMode="TailTruncation" />
+                        <Label x:Name="LblBrowserPath" FontSize="11" TextColor="{DynamicResource TextHintColor}"
+                               LineBreakMode="MiddleTruncation" />
+                    </VerticalStackLayout>
+                    <Button Grid.Column="1" Text="上级" FontSize="12"
+                            TextColor="{DynamicResource TextPrimaryColor}"
+                            BackgroundColor="{DynamicResource ChipInactiveColor}"
+                            CornerRadius="8" Padding="12,4" Clicked="OnUpClicked" />
+                    <Button Grid.Column="2" Text="切换连接" FontSize="12"
+                            TextColor="{DynamicResource TextPrimaryColor}"
+                            BackgroundColor="{DynamicResource ChipInactiveColor}"
+                            CornerRadius="8" Padding="12,4" Clicked="OnSwitchProfileClicked" />
+                </Grid>
+
+                <Border StrokeThickness="1" StrokeShape="RoundRectangle 16"
+                        BackgroundColor="{DynamicResource CardBackgroundColor}"
+                        Stroke="{DynamicResource DividerColor}" Padding="14">
+                    <VerticalStackLayout Spacing="4">
+                        <VerticalStackLayout x:Name="FileList" Spacing="2" />
+                        <Label x:Name="FileEmpty" IsVisible="False" Text="此目录为空"
+                               FontSize="12" TextColor="{DynamicResource TextHintColor}" Padding="0,10" />
+                        <Label x:Name="FileStatus" IsVisible="False" Text="加载中…"
+                               FontSize="12" TextColor="{DynamicResource TextHintColor}" Padding="0,10" />
+                    </VerticalStackLayout>
+                </Border>
+            </VerticalStackLayout>
+        </VerticalStackLayout>
+        </ScrollView>
+
+        <!-- 轻提示（浮层，不挤动内容） -->
+        <Border x:Name="ToastHost" IsVisible="False" HorizontalOptions="Center" VerticalOptions="End"
+                Margin="0,0,0,32" BackgroundColor="{DynamicResource ChipInactiveColor}" StrokeThickness="0"
+                StrokeShape="RoundRectangle 12" Padding="16,8">
+            <Label x:Name="LblToast" FontSize="12.5" TextColor="{DynamicResource TextPrimaryColor}" />
+        </Border>
+
+    </Grid>
+
+</ContentPage>
