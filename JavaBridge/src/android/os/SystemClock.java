@@ -12,16 +12,24 @@ package android.os;
  */
 public class SystemClock {
 
-    private static final long START = System.nanoTime();
+    /**
+     * 单调时钟（毫秒）。
+     *
+     * <p>⚠ 与 {@link #elapsedRealtime()} <b>必须同源</b>：爬虫会做
+     * {@code elapsedRealtime() - uptimeMillis() > 超时} 这类差值算术（二维码轮询的过期判定）。
+     * 真机上两者出自同一计时、只差睡眠部分；这里一个给 epoch 一个给"开机以来"的话，
+     * 差值直接爆成 1.79e12 ⇒ 一上来就判「已过期」⇒ 轮询一次都不发，
+     * 只剩每 7 秒重弹一次「需扫码登录」（实测 2026-09-25 03:17）。</p>
+     */
+    public static long uptimeMillis() { return System.currentTimeMillis(); }
 
-    /** 单调时钟（毫秒），Android 语义：不含深度睡眠时间。桌面用 nanoTime 起点差值近似。 */
-    public static long uptimeMillis() { return (System.nanoTime() - START) / 1_000_000L; }
+    /**
+     * 含睡眠的单调时钟（毫秒）。与 {@link #uptimeMillis()} 同给 epoch 毫秒，理由见上。
+     */
+    public static long elapsedRealtime() { return System.currentTimeMillis(); }
 
-    /** 含睡眠的单调时钟（毫秒）。 */
-    public static long elapsedRealtime() { return uptimeMillis(); }
-
-    /** 含睡眠的单调时钟（纳秒）。 */
-    public static long elapsedRealtimeNanos() { return (System.nanoTime() - START) / 1L; }
+    /** 同上，epoch 微秒量级。 */
+    public static long elapsedRealtimeNanos() { return System.currentTimeMillis() * 1_000_000L; }
 
     /** 当前线程占用的 CPU 时间（毫秒）。桌面没有 per-thread CPU 时钟，退化成墙上时间。 */
     public static long currentThreadTimeMillis() { return System.currentTimeMillis(); }
