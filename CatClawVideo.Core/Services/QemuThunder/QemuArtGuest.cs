@@ -141,12 +141,26 @@ public sealed class QemuArtGuest : IDisposable
                 {
                     // 设流必须与「检查 IsUp」互斥：两条并发探针都通了时，只能有一条拿到所有权，
                     // 另一条把连接作废重试 —— 否则两条流同时写桥、两个读循环分吃应答。
+                    bool owns;
                     lock (_ownership)
                     {
-                        if (IsUp && _w is not null && _r is not null) { try { c.Dispose(); } catch { } }
-                        else { _sock = c; _w = w; _r = r; }
+                        if (IsUp && _w is not null && _r is not null)
+                        {
+                            owns = false;
+                            try { c.Dispose(); } catch { }
+                        }
+                        else
+                        {
+                            _sock = c; _w = w; _r = r;
+                            owns = true;
+                            // ⚠ 所有权已移交 _sock，必须置空 c：否则 return 触发 finally 的
+                            //   c?.Dispose() 把桥连接杀掉 → 全部调用「Cannot access a disposed
+                            //   object」→ 站点整排「拉取失败」（2026-09-26 实测回归，原代码
+                            //   就有 c=null 这行，改并发仲裁时弄丢了）。
+                            c = null;
+                        }
                     }
-                    if (ReferenceEquals(_w, w))
+                    if (owns)
                     {
                         Log($"guest 桥就绪 127.0.0.1:{BridgePort}（探针应答 {line}）");
                         return (_w, _r);
