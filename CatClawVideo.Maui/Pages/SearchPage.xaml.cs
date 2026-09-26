@@ -1256,7 +1256,17 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
             // 逐源勾选（对位 SOURCES_FOR_SEARCH）：没勾上的台不参与本次搜索，也不会计时
             var sites = SiteRegistry.Playable
                 .Where(x => SearchSourceStore.IsSearchable(x.SubscriptionName, x.Key))
+                // ★ 按历史搜索速度调度（用户要求「快的立即显示、慢的延后搜索」）：
+                //   耗时档案由 JavaSpiderRuntime 按 searchContent 实测记录（含桥内排队）；
+                //   MacCMS/本会话没搜过的源无记录 = 0 最先（它们本就是并发 HTTP，最快）；
+                //   上轮 >8s 的慢源加 30s 惩罚沉底，不占第一批并发名额。OrderBy 稳定，同值保持注册顺序。
+                .OrderBy(x => SearchSpeedHint(x.Key))
                 .ToList();
+
+            static long SearchSpeedHint(string key) =>
+                CatClawVideo.Core.Providers.JavaSpiderRuntime.LastSearchMs(key) is { } ms
+                    ? (ms > 8000 ? ms + 30_000 : ms)
+                    : 0;
             if (sites.Count == 0)
             {
                 StatusLabel.Text = "暂无可用影片源，请先在设置中添加订阅";

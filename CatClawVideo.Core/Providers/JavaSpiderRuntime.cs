@@ -303,8 +303,27 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     public Task<string> DetailContentAsync(VodSiteInfo site, string id, CancellationToken ct = default) =>
         CallAsync(site, "detailContent", new JsonArray(id), ct);
 
-    public Task<string> SearchContentAsync(VodSiteInfo site, string keyword, string pg, CancellationToken ct = default) =>
-        CallAsync(site, "searchContent", new JsonArray(keyword, pg), ct);
+    // ── 搜索速度档案 ──
+    // 按站点记录上次 searchContent 实测耗时（含桥内排队），SearchPage 据此把快源排前、
+    // 慢源延后发起（「快的立即显示、慢的延后搜索」）；MacCMS/未搜过的源无记录 = 视为最快。
+    public static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> SearchElapsedMs =
+        new(StringComparer.Ordinal);
+
+    public static long? LastSearchMs(string siteKey) =>
+        SearchElapsedMs.TryGetValue(siteKey, out var ms) ? ms : null;
+
+    public async Task<string> SearchContentAsync(VodSiteInfo site, string keyword, string pg, CancellationToken ct = default)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            // 搜索专用 25s 短超时：搜索是全员扫描，个别慢源（实测某源 18s 且 0 结果）不该占桥 90s；
+            // 超时不重置桥——慢源只占自己那把站点锁（桥已 per-site 并行），重置会连累正在跑的其它源。
+            return await CallAsync(site, "searchContent", new JsonArray(keyword, pg), ct,
+                TimeSpan.FromSeconds(25), resetOnTimeout: false).ConfigureAwait(false);
+        }
+        finally { SearchElapsedMs[site.Key] = sw.ElapsedMilliseconds; }
+    }
 
     /// <summary>
     /// playerContent 结果直通宿主，但先做一处<b>端口改写</b>：壳把播放地址构造成它自己的
@@ -589,6 +608,10 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     /// </summary>
     private int _resetting;
 
+    /// <summary>会话级加载失败负缓存（站点键 → 失败原因）：命中直接快速失败，不反复烧桥。
+    /// 只记结构性失败（VerifyError/类不存在等）；桥重置时清空。</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _loadFailedSites = new();
+
     /// <summary>
     /// 把当前桥会话判废并后台重开：期间请求快速失败，重开后 <see cref="_loadedSites"/> 已清空，
     /// 下一次调用会在新桥（或重启后的 ART guest）上真跑。
@@ -603,6 +626,7 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
             {
                 Shutdown();
                 _loadedSites.Clear();
+                _loadFailedSites.Clear();
                 Log("爬虫引擎已重置，下一次调用会重新起桥（ART guest 约 15s）");
             }
             catch (Exception ex)
@@ -701,7 +725,8 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         }
     }
 
-    private async Task<JsonObject> RoundTripAsync(JsonObject req, TimeSpan timeout, CancellationToken ct)
+    private async Task<JsonObject> RoundTripAsync(JsonObject req, TimeSpan timeout, CancellationToken ct,
+        bool resetOnTimeout = true)
     {
         var expectId = req["id"]?.GetValue<int>()
             ?? throw new InvalidOperationException("桥请求缺少 id");
@@ -727,7 +752,7 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
             {
                 // 握手那条 ping 不触发重置：它本来就是"桥还没起来"的信号，交给连接流程自己收尾。
                 var op = req["op"]?.GetValue<string>() ?? "";
-                if (op != "ping" && op != "exit")
+                if (op != "ping" && op != "exit" && resetOnTimeout)
                     ResetBridge($"op={op} id={expectId}{InFlightTag} 在 {timeout.TotalSeconds:F0}s 内没回来");
                 throw new TimeoutException(BuildTimeoutMessage(op, timeout, expectId));
             }
@@ -751,7 +776,8 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         return $"{what} {timeout.TotalSeconds:F0}s 无响应——常见于网盘接口被限流或挂起；引擎已自动重置，请换其它线路或稍后重试（id={id}）";
     }
 
-    private async Task<string> CallAsync(VodSiteInfo site, string method, JsonArray args, CancellationToken ct)
+    private async Task<string> CallAsync(VodSiteInfo site, string method, JsonArray args, CancellationToken ct,
+        TimeSpan? timeout = null, bool resetOnTimeout = true)
     {
         await EnsureBridgeAsync(ct);
         var jar = await EnsureConvertedJarAsync(site, ct);
@@ -769,7 +795,7 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
                 ["method"] = method,
                 ["args"] = args,
             };
-            var resp = await RoundTripAsync(req, TimeSpan.FromSeconds(90), ct);
+            var resp = await RoundTripAsync(req, timeout ?? TimeSpan.FromSeconds(90), ct, resetOnTimeout);
             if (resp["ok"]?.GetValue<bool>() != true)
                 throw new InvalidOperationException($"spider {site.Key}.{method}: {resp["error"]}");
             return resp["result"]?.GetValue<string>() ?? "{}";
@@ -886,6 +912,10 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     private async Task EnsureSiteLoadedAsync(VodSiteInfo site, string jarPath, CancellationToken ct)
     {
         if (_loadedSites.TryGetValue(site.Key, out _)) return;
+        // 会话级负缓存：结构性加载失败（VerifyError 等，重试也不会好）不再反复烧桥——
+        // 实测 Wogg/Douban 每轮搜索都要白跑 5~7s 的 load。重置引擎时清空，给重试机会。
+        if (_loadFailedSites.TryGetValue(site.Key, out var failedWhy))
+            throw new InvalidOperationException($"站点 {site.Key} 此前加载失败，本轮跳过：{failedWhy}");
         var className = classNameOf(site);
         var req = new JsonObject
         {
@@ -982,9 +1012,11 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
                 }
                 Log($"站点 {site.Key} 真实类降级也失败: {resp2["error"]}");
             }
+            _loadFailedSites[site.Key] = resp["error"]?.GetValue<string>() ?? "";
             throw new InvalidOperationException($"spider {site.Key} 加载失败: {resp["error"]}");
         }
         _loadedSites[site.Key] = true;
+        _loadFailedSites.TryRemove(site.Key, out _);
         Log($"站点 {site.Key} 已加载");
     }
 

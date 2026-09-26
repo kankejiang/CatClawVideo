@@ -32,6 +32,26 @@ public class Server {
     private static final HashMap<String, URLClassLoader> LOADERS = new HashMap<>();
     private static final Object LOCK = new Object();
 
+    // ── call 并行化（搜索提速的核心，2026-09-26）──
+    // 此前主循环单线程 + synchronized(LOCK) 全局锁：一个 18s 的慢搜索把队列里所有快源堵死，
+    // 搜 20 个源 = 串行耗时之和（TVBox 本机多线程并发调不同 spider，没有这层瓶颈）。
+    // 改为：call/load 提交线程池，call 按站点加锁 —— 同站点串行（jar 实例非线程安全），
+    // 不同站点并行；loadFull 仍持全局 LOCK（load 是重活且 LOADERS 非线程安全）。
+    // 响应按 id 乱序回写（宿主 RoundTripAsync 按 id 匹配，proxy op 当年已因同一理由异步化）。
+    private static final java.util.concurrent.ConcurrentHashMap<String, Object> SITE_LOCKS =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    /** stdout 写回互斥：call/load 异步化后多线程 println 会交错破坏行协议。 */
+    private static final Object OUT_LOCK = new Object();
+    private static java.util.concurrent.ExecutorService CALL_POOL;
+
+    /** 行协议写回（唯一出口）：多线程下保证一行一条完整 JSON。 */
+    private static void emit(String line) {
+        synchronized (OUT_LOCK) {
+            System.out.println(line);
+            System.out.flush();
+        }
+    }
+
     /**
      * 懒构建：把 C# 侧传入的转换后 jar 挂到 URLClassLoader。
      *
@@ -114,6 +134,12 @@ public class Server {
         //   proxy 就轮不到 → 死锁到 HTTP 超时 → spider 拿错误文本喂 Gson 炸（2026-09-24 实测）。
         //   协议响应按 id 匹配（宿主 RoundTripAsync），异步乱序输出安全。
         java.util.concurrent.ExecutorService proxyPool = java.util.concurrent.Executors.newFixedThreadPool(4);
+        // call/load 的执行池：daemon —— op=exit 时主循环退出，未完成的调用随 JVM 一起收
+        CALL_POOL = java.util.concurrent.Executors.newFixedThreadPool(4, r -> {
+            Thread t = new Thread(r, "bridge-call");
+            t.setDaemon(true);
+            return t;
+        });
         OpWatchdog.start();   // op 挂死看门狗（>45s dump 全线程栈到 stderr）
         String line;
         while ((line = in.readLine()) != null) {
@@ -156,7 +182,36 @@ public class Server {
                         o = new JSONObject().put("id", fid).put("ok", false)
                                 .put("error", c.getClass().getSimpleName() + ": " + c.getMessage()).toString();
                     }
-                    System.out.println(o);
+                    emit(o);
+                });
+                continue;
+            }
+            if ("call".equals(fop) || "load".equals(fop)) {
+                // call/load 重活异步执行（见 SITE_LOCKS 注释）：慢源不再堵快源，
+                // 搜索/切站的多源并发真正并行。轻 op（ping/probe/prefs…）保持同步直答。
+                final JSONObject freq = req;
+                CALL_POOL.submit(() -> {
+                    OpWatchdog.begin(fid, fop);   // 主循环随后的 OP_START 清零会盖掉 begin，任务内重设
+                    String o;
+                    try {
+                        Object result = "call".equals(fop)
+                                ? call(freq.optString("site"), freq.optString("method"), freq.optJSONArray("args"))
+                                : loadFull(freq.optString("site"), freq.optString("className"), freq.optString("ext"),
+                                        freq.optJSONArray("jars"), freq.optString("shellJar", null),
+                                        freq.optString("rawJar", null), freq.optString("realJar", null),
+                                        freq.optInt("guardPort", 0));
+                        o = new JSONObject().put("id", fid).put("ok", true)
+                                .put("result", result == null ? JSONObject.NULL : result).toString();
+                    } catch (Throwable t) {
+                        Throwable c = t;
+                        while (c.getCause() != null) c = c.getCause();
+                        StringBuilder sb = new StringBuilder(c.getClass().getSimpleName() + ": " + c.getMessage());
+                        for (int i = 0; i < Math.min(8, c.getStackTrace().length); i++)
+                            sb.append(" | ").append(c.getStackTrace()[i]);
+                        o = new JSONObject().put("id", fid).put("ok", false).put("error", sb.toString()).toString();
+                    }
+                    emit(o);
+                    OP_START.set(0);   // 任务完成：清看门狗（主循环侧的清零发生在提交时，不反映真实完成）
                 });
                 continue;
             }
@@ -277,8 +332,7 @@ public class Server {
                     out = new JSONObject().put("id", id).put("ok", false)
                             .put("error", sb.toString()).toString();
                 }
-            System.out.println(out);
-            System.out.flush();
+            emit(out);
             OP_START.set(0);   // op 已完成：看门狗清零（避免误报下一轮 dump）
         }
     }
@@ -631,7 +685,7 @@ public class Server {
         //   通道，长参数（筛选 ext / 网盘 JSON id）时肉眼可见地拖慢每一次调用，已移除。
         //   需要看参数原文时在此处临时加回（必须随 initrd/gb.dex 重编才进 guest）。
         final long t0 = System.currentTimeMillis();
-        synchronized (LOCK) {
+        synchronized (SITE_LOCKS.computeIfAbsent(site, k -> new Object())) {
             Object instance = SPIDERS.get(site);
             if (instance == null) throw new IllegalStateException("site not loaded: " + site);
             Class<?> cls = instance.getClass();
