@@ -203,6 +203,21 @@ public class Server {
                         }
                         yield arr.toString();
                     }
+                    case "netstat" -> {
+                        // guest 监听端口盘点（/proc/net/tcp{,6}，st=0A 即 LISTEN）：
+                        // 诊断壳的流中转服务（6678）是否真的活着
+                        StringBuilder sb = new StringBuilder();
+                        for (String f : new String[]{"/proc/net/tcp", "/proc/net/tcp6"}) {
+                            try {
+                                for (String ln : java.nio.file.Files.readAllLines(java.nio.file.Path.of(f))) {
+                                    String[] p = ln.trim().split("\\s+");
+                                    if (p.length > 3 && "0A".equals(p[3]))
+                                        sb.append(Integer.parseInt(p[1].split(":")[1], 16)).append(' ');
+                                }
+                            } catch (Throwable ignored) { }
+                        }
+                        yield sb.toString();
+                    }
                     case "prefsput" -> {
                         // 宿主回灌 guest 偏好（guest 的 /data 是 tmpfs，VM 冷启即清，见 PrefsStore.flush
                         // 的 prefs-sync 上行）：写回 shared_prefs/<name>.xml。PrefsStore 按名惰性读盘，

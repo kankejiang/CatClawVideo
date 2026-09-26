@@ -330,8 +330,17 @@ public final class Art {
                      new java.io.InputStreamReader(c.getInputStream(), "UTF-8"))) {
             line = rd.readLine();
             if (line == null) return;
-            for (String h = rd.readLine(); h != null && h.length() > 0; h = rd.readLine()) { /* 丢掉首部 */ }
+            // 收集请求头：壳的流中转要透传 Range（视频拖动靠 206/Content-Range）
+            java.util.Map<String, String> reqHeaders = new java.util.HashMap<>();
+            for (String h = rd.readLine(); h != null && h.length() > 0; h = rd.readLine()) {
+                int c2 = h.indexOf(':');
+                if (c2 > 0) reqHeaders.put(h.substring(0, c2).trim().toLowerCase(), h.substring(c2 + 1).trim());
+            }
             out = c.getOutputStream();
+            String path = line.split(" ")[1];
+            // 壳的本地流中转（/proxy/play/<盘>/<文件>，guest 内 6678）：路径式路由，壳拿 Cookie
+            // 中转夸克直链。宿主播放器的请求经 ProxyTunnelPort hostfwd 到这，原样透传给壳服务。
+            if (path.startsWith("/proxy/play/")) { streamPassThrough(out, line, path, reqHeaders); return; }
             java.util.Map<String, String> q = query(line);
             // 非 /proxy 的（探活、壳发来的 /shutdown）给合法应答即可：壳的 adjustPort 就是在找
             // 「能正常应答的服务」，答不对它把端口记成 -1，播放地址就变成 127.0.0.1:-1。
@@ -342,6 +351,21 @@ public final class Art {
             Object sp = key == null ? null : Server.spiderOf(key);
             System.err.println("[art] proxy:" + port + " ← " + line + " → "
                     + (sp == null ? "没有对应爬虫" : "四步分派 " + sp.getClass().getSimpleName()));
+            if (sp == null && "ck".equals(q.get("do"))) {
+                // 壳的 adjustPort 探测（GET /proxy?do=ck，无 site）：真机上打给壳自己的 RemoteServer，
+                // DexNative.proxyInvoke→ProxyOrigin 是壳级服务，应答它自己的握手协议。回 404 它就判
+                // 「端口检测失败」从 9978 一路换到 9999，最后端口记 -1 → 播放地址 127.0.0.1:-1 必挂
+                // （2026-09-26 实测：双站点时单站点兜底失效，全被 404）。逐个壳实例试，谁应答用谁。
+                for (String k : SITES) {
+                    Object cand = Server.spiderOf(k);
+                    if (cand == null) continue;
+                    Object[] r = Server.jarProxy(cand, q);
+                    if (r == null) r = Server.proxyDispatch(cand, new java.util.HashMap<String, String>(q));
+                    if (r != null && r.length >= 3) { System.err.println("[art] adjustPort 探测由 " + k + " 应答"); writeResult(out, r); return; }
+                }
+                writeText(out, 200, "ok");   // 全都不接也回 200：探测要的只是「有服务应答」
+                return;
+            }
             if (sp == null) { writeText(out, 404, "no spider for site"); return; }
             // 顺序有实测依据：先问壳自带的静态 Proxy（真机 JarLoader.invokeProxy 语义），它不接才走
             // ①②③。反过来会坏 —— 内层爬虫的 proxy(Map) 见谁都回 Cookie 粘贴页，把荐片 init 里的
@@ -353,6 +377,49 @@ public final class Art {
             // 必须回话：掐连接在宿主侧是 RemoteDisconnected，WebView 只会显示一片空白，
             // 用户看到的就是「点了没反应」（2026-09-26 网盘兜底页实测）。
             if (out != null) try { writeText(out, 502, String.valueOf(e.getMessage())); } catch (Throwable ignored) { }
+        }
+    }
+
+    /** 壳的本地流中转服务端口（play URL 形如 http://127.0.0.1:6678/proxy/play/...）。 */
+    static final int GUEST_STREAM_PORT = 6678;
+
+    /**
+     * 壳的流中转透传：宿主播放器的 {@code GET /proxy/play/<盘>/<文件>}（Range 拖动）原样转给
+     * guest 内壳服务（127.0.0.1:6678），响应状态/关键头/body 流式写回 —— 206/Content-Range
+     * 原生过桥，播放器 seek 语义不变。壳服务没起或挂了时回 502（宿主报「源不受支持」可定位）。
+     */
+    private static void streamPassThrough(java.io.OutputStream o, String reqLine, String path,
+            java.util.Map<String, String> reqHeaders) {
+        java.net.HttpURLConnection uc = null;
+        try {
+            java.net.URL u = new java.net.URL("http", "127.0.0.1", GUEST_STREAM_PORT, path);
+            uc = (java.net.HttpURLConnection) u.openConnection();
+            uc.setConnectTimeout(5000);
+            uc.setReadTimeout(0);                       // 流式播放不限读超时（播放器拖动会主动断开）
+            String range = reqHeaders.get("range");
+            if (range != null) uc.setRequestProperty("Range", range);
+            uc.setRequestMethod(reqLine.startsWith("HEAD") ? "HEAD" : "GET");
+            int code = uc.getResponseCode();
+            java.io.InputStream body = code >= 400 ? uc.getErrorStream() : uc.getInputStream();
+            StringBuilder h = new StringBuilder("HTTP/1.1 ").append(code).append(" \r\n");
+            for (String k : new String[]{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"}) {
+                String v = uc.getHeaderField(k);
+                if (v != null) h.append(k).append(": ").append(v).append("\r\n");
+            }
+            h.append("Connection: close\r\n\r\n");
+            o.write(h.toString().getBytes("UTF-8"));
+            if (body != null && !reqLine.startsWith("HEAD")) {
+                byte[] buf = new byte[16384];
+                int n;
+                while ((n = body.read(buf)) > 0) o.write(buf, 0, n);
+            }
+            o.flush();
+            System.err.println("[art] 流透传 " + reqLine + " → " + code + (range == null ? "" : " Range=" + range));
+        } catch (Throwable e) {
+            System.err.println("[art] 流透传失败: " + e + "  " + reqLine);
+            try { writeText(o, 502, String.valueOf(e.getMessage())); } catch (Throwable ignored) { }
+        } finally {
+            if (uc != null) try { uc.disconnect(); } catch (Throwable ignored) { }
         }
     }
 

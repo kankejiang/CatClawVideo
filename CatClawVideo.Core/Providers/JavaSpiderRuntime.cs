@@ -306,8 +306,35 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     public Task<string> SearchContentAsync(VodSiteInfo site, string keyword, string pg, CancellationToken ct = default) =>
         CallAsync(site, "searchContent", new JsonArray(keyword, pg), ct);
 
-    public Task<string> PlayerContentAsync(VodSiteInfo site, string flag, string id, CancellationToken ct = default) =>
-        CallAsync(site, "playerContent", new JsonArray(flag ?? "", id), ct);
+    /// <summary>
+    /// playerContent 结果直通宿主，但先做一处<b>端口改写</b>：壳把播放地址构造成它自己的
+    /// 本地流中转服务（<c>http://127.0.0.1:6678/proxy/play/…</c>，壳拿 Cookie 中转夸克直链）。
+    /// 壳跑在 guest 里，宿主播放器够不到 —— 改写成 <see cref="QemuArtGuest.ProxyTunnelPort"/>
+    /// （hostfwd 直达 guest 桥；guest 桥把该路径透传给壳的流服务）。danmaku 钩子同改。
+    /// </summary>
+    public async Task<string> PlayerContentAsync(VodSiteInfo site, string flag, string id, CancellationToken ct = default)
+    {
+        var raw = await CallAsync(site, "playerContent", new JsonArray(flag ?? "", id), ct).ConfigureAwait(false);
+        if (ArtGuestMode && raw.Contains("127.0.0.1:6678") && _art is { ProxyTunnelPort: > 0 } art)
+        {
+            Log($"{site.Name}: 壳流地址端口改写 6678 → {art.ProxyTunnelPort}");
+            _ = DiagnoseGuestPortsAsync(ct);
+            return raw.Replace("127.0.0.1:6678", "127.0.0.1:" + art.ProxyTunnelPort);
+        }
+        return raw;
+    }
+
+    /// <summary>guest 监听端口盘点（/proc/net/tcp）——诊断壳的流服务是否真的在听。</summary>
+    private async Task DiagnoseGuestPortsAsync(CancellationToken ct)
+    {
+        try
+        {
+            var req = new JsonObject { ["id"] = Interlocked.Increment(ref _id), ["op"] = "netstat" };
+            var resp = await RoundTripAsync(req, TimeSpan.FromSeconds(5), ct);
+            Log("guest 监听端口: " + resp["result"]?.GetValue<string>());
+        }
+        catch { }
+    }
 
     public Task<string> ActionAsync(VodSiteInfo site, string actionJson, CancellationToken ct = default) =>
         CallAsync(site, "action", new JsonArray(actionJson ?? ""), ct);
