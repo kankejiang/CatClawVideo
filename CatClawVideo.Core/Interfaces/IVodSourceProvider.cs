@@ -84,20 +84,7 @@ public interface ISubscriptionManager
     /// <para>UI 用它决定要不要让用户先选一条线路，再把选中的线路号编码回地址（见 <c>#line=N</c>）。</para>
     /// </summary>
     Task<IReadOnlyList<SubscriptionLine>> ProbeLinesAsync(string subscriptionUrl, CancellationToken ct = default);
-
-    /// <summary>
-    /// 依次加载<b>全部</b>订阅并合并站点表（多订阅并存）。
-    /// <para>此前启动恢复是「第一个成功即整体 Replace」，第二个及以后的订阅永远不生效
-    /// （2026-09-26 用户实测：加了英格里希嗷呜后仍只见饭太硬的站）。合并规则：按站点
-    /// <c>Key</c> 去重，<b>先到优先</b>（订阅列表顺序 = 优先级）；单个订阅失败不拖垮其余。</para>
-    /// </summary>
-    Task<List<VodSiteInfo>> LoadAllSubscriptionsAsync(
-        IEnumerable<SubscriptionRef> subscriptions, CancellationToken ct = default)
-        => Task.FromResult(new List<VodSiteInfo>());
 }
-
-/// <summary>订阅引用（名称 + 地址）：Core 侧不依赖 Data 层的订阅实体，调用方转换。</summary>
-public sealed record SubscriptionRef(string Name, string SourceUrl);
 
 /// <summary>多仓订阅里的一条线路（影视仓 <c>urls[]</c> 的 name/url）。</summary>
 public sealed record SubscriptionLine(string Name, string Url);

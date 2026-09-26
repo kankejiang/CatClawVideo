@@ -163,31 +163,6 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
         return (url[..i], n);
     }
 
-    /// <inheritdoc/>
-    public async Task<List<VodSiteInfo>> LoadAllSubscriptionsAsync(
-        IEnumerable<SubscriptionRef> subscriptions, CancellationToken ct = default)
-    {
-        var merged = new List<VodSiteInfo>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var sub in subscriptions)
-        {
-            try
-            {
-                var sites = await LoadSubscriptionAsync(sub.SourceUrl, ct);
-                int added = 0;
-                foreach (var s in sites)
-                    if (seen.Add(s.Key)) { merged.Add(s); added++; }
-                System.Diagnostics.Debug.WriteLine($"[订阅] {sub.Name}: +{added}/{sites.Count} 站（合并后 {merged.Count}）");
-            }
-            catch (Exception ex)
-            {
-                // 单个订阅失败不拖垮其余：它的站点缺席而已，其余订阅照常
-                System.Diagnostics.Debug.WriteLine($"[订阅] {sub.Name} 加载失败: {ex.Message}");
-            }
-        }
-        return merged;
-    }
-
     /// <summary>订阅里写的 <c>./x</c>、<c>../x</c> 都相对「这份配置自己在哪」解析。</summary>
     static string? FixRelative(string? value, string baseUrl)
     {

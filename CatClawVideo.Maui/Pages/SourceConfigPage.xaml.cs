@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using CatClawVideo.Core.Interfaces;
 using CatClawVideo.Core.Models;
 using CatClawVideo.Core.Providers;
@@ -204,14 +204,55 @@ public partial class SourceConfigPage : ContentPage
             row.Add(left, 0);
             var tail = new HorizontalStackLayout { Spacing = 12, VerticalOptions = LayoutOptions.Center };
             var captured = sub;
+            // 启用开关（单选，2026-09-26 用户定案）：一次只用一个订阅源。启用行主题色
+            // 「● 启用中」，停用行灰色「○ 停用中」，点击停用行即切换（拉取 + 整表替换）。
+            var toggle = new Label
+            {
+                Text = sub.Sub.Enabled ? "● 启用中" : "○ 停用中",
+                FontSize = 11.5,
+                TextColor = sub.Sub.Enabled ? Color.FromArgb("#2b6cb0") : Application.Current?.Resources["TextHintColor"] as Color,
+            };
+            if (!sub.Sub.Enabled)
+                toggle.GestureRecognizers.Add(new TapGestureRecognizer { Command = new Command(() => _ = EnableSubAsync(captured)) });
             var swap = new Label { Text = "换线路", FontSize = 11.5, TextColor = Color.FromArgb("#2b6cb0") };
             swap.GestureRecognizers.Add(new TapGestureRecognizer { Command = new Command(() => _ = SwitchLineAsync(captured)) });
             var del = new Label { Text = "删除", FontSize = 11.5, TextColor = Color.FromArgb("#c0392b") };
             del.GestureRecognizers.Add(new TapGestureRecognizer { Command = new Command(() => _ = DeleteSubAsync(captured)) });
+            tail.Add(toggle);
             tail.Add(swap);
             tail.Add(del);
             row.Add(tail, 1);
             SubList.Children.Add(row);
+        }
+    }
+
+    /// <summary>
+    /// 启用一条订阅（单选）：库内其余订阅全部停用，拉取本订阅站点并<b>整表替换</b>
+    /// —— 一次只用一个订阅源，站点表随启用者走（2026-09-26 用户定案）。
+    /// </summary>
+    private async Task EnableSubAsync(SubRow row)
+    {
+        // 库：目标置启用、其余停用（单选）
+        foreach (var s in _subs) s.Sub.Enabled = ReferenceEquals(s, row);
+        try
+        {
+            foreach (var s in _subs) await _db.UpdateSubscriptionAsync(s.Sub);
+        }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[源配置] 启用状态写库失败: {ex.Message}"); }
+        RebuildSubs();
+        try
+        {
+            var sites = await _subscriptionManager.LoadSubscriptionAsync(row.Url);
+            SiteRegistry.Replace(sites);
+            Core.Models.SiteCache.Save(sites);
+            _sites.Clear();
+            foreach (var s in sites) _sites.Add(BuildRow(s));
+            RebuildSites();
+            await DisplayAlertAsync("已启用订阅", $"「{row.Name}」→ {sites.Count} 个站点", "好");
+        }
+        catch (Exception ex)
+        {
+            await DisplayAlertAsync("切换失败", ex.Message, "好");
         }
     }
 
@@ -246,27 +287,32 @@ public partial class SourceConfigPage : ContentPage
             names[idx] + System.Environment.NewLine + "下次拉取这条订阅时按新线路取站点。", "好");
     }
 
-    /// <summary>删除订阅：UI 移除 + 同步删库（失败不回滚 UI，下次进入以库为准）</summary>
+    /// <summary>删除订阅：UI 移除 + 同步删库。删的是<b>启用中</b>的订阅时，自动启用剩余的
+    /// 第一个并拉取（单选语义：总得有一个启用者），否则站点表维持现状不动。</summary>
     private async Task DeleteSubAsync(SubRow row)
     {
+        bool wasEnabled = row.Sub.Enabled;
         _subs.Remove(row);
         RebuildSubs();
         try { await _db.DeleteSubscriptionAsync(row.Sub); }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[源配置] 订阅删除失败: {ex.Message}"); }
 
-        // 多订阅并存：被删订阅的站点要从仓库里退场 —— 重载剩余订阅并整体替换
+        if (!wasEnabled || _subs.Count == 0) return;   // 删停用者/删到空：站点表不动
+        var next = _subs[0];
+        foreach (var s in _subs) s.Sub.Enabled = ReferenceEquals(s, next);
+        try { foreach (var s in _subs) await _db.UpdateSubscriptionAsync(s.Sub); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[源配置] 启用状态写库失败: {ex.Message}"); }
+        RebuildSubs();
         try
         {
-            var rest = await _db.GetSubscriptionsAsync();
-            var merged = await _subscriptionManager.LoadAllSubscriptionsAsync(
-                rest.Select(s => new CatClawVideo.Core.Interfaces.SubscriptionRef(s.Name, s.SourceUrl)));
-            SiteRegistry.Replace(merged);
-            Core.Models.SiteCache.Save(merged);
+            var sites = await _subscriptionManager.LoadSubscriptionAsync(next.Url);
+            SiteRegistry.Replace(sites);
+            Core.Models.SiteCache.Save(sites);
             _sites.Clear();
-            foreach (var s in merged) _sites.Add(BuildRow(s));
+            foreach (var s in sites) _sites.Add(BuildRow(s));
             RebuildSites();
         }
-        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[源配置] 剩余订阅重载失败: {ex.Message}"); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[源配置] 自动启用下一个订阅失败: {ex.Message}"); }
     }
 
     private void RebuildSites()
@@ -369,23 +415,21 @@ public partial class SourceConfigPage : ContentPage
             }
             skipped = sites.Count - added;
 
-            // 多订阅并存（2026-09-26）：现注册表快照 + 新订阅站点按 Key 覆盖合并
-            // （重加同一订阅 = 刷新其站点；不同订阅的站点共存）。此前 Replace(sites)
-            // 会把已装订阅的站点整体顶掉。
-            var mergedTable = SiteRegistry.Sites.ToDictionary(s => s.Key, s => s, StringComparer.OrdinalIgnoreCase);
-            foreach (var s in sites) mergedTable[s.Key] = s;
-            var mergedList = mergedTable.Values.ToList();
+            // 单选启用（2026-09-26 用户定案）：新订阅自动启用、其余停用，站点表整表替换。
 
             // 写入站点仓库（首页/搜索从这里取可播站点）+ 落盘缓存（下次启动秒读）
-            SiteRegistry.Replace(mergedList);
-            Core.Models.SiteCache.Save(mergedList);
+            SiteRegistry.Replace(sites);
+            Core.Models.SiteCache.Save(sites);
 
-            // 订阅入库（按地址去重，重复添加只刷新站点）
+            // 订阅入库（按地址去重，重复添加只刷新站点）；启用状态：新加者启用、其余停用
             var name = chosenLine is null ? new Uri(url).Host : ShortHost(url) + " · " + chosenLine;
             if (await _db.FindSubscriptionAsync(url) is null)
-                await _db.AddSubscriptionAsync(new VodSubscription { Name = name, SourceUrl = url, Kind = "tvbox" });
+                await _db.AddSubscriptionAsync(new VodSubscription { Name = name, SourceUrl = url, Kind = "tvbox", Enabled = true });
             if (_subs.All(s => !string.Equals(s.Url, url, StringComparison.OrdinalIgnoreCase)))
-                _subs.Add(new SubRow(new VodSubscription { Name = name, SourceUrl = url, Kind = "tvbox" }));
+                _subs.Add(new SubRow(new VodSubscription { Name = name, SourceUrl = url, Kind = "tvbox", Enabled = true }));
+            foreach (var s in _subs) s.Sub.Enabled = string.Equals(s.Url, url, StringComparison.OrdinalIgnoreCase);
+            try { foreach (var s in _subs) await _db.UpdateSubscriptionAsync(s.Sub); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[源配置] 启用状态写库失败: {ex.Message}"); }
 
             RebuildSites();
             SubEntry.Text = "";

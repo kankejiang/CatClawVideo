@@ -469,21 +469,24 @@ public static class MauiProgram
             {
                 var database = app.Services.GetRequiredService<VideoDatabase>();
                 var subscriptionManager = app.Services.GetRequiredService<ISubscriptionManager>();
-                // 多订阅并存（2026-09-26）：此前「第一个成功即 return」，第二个及以后的订阅
-                // 永远不生效（用户加了英格里希嗷呜仍只见饭太硬的站）。现在依次加载合并。
+                // 单选启用（2026-09-26 用户定案）：一次只用一个订阅源，行内开关切换。
+                // 启用者不存在（全停用/首次）→ 兜底启用第一个，保证首次开箱有源可看。
                 var subs = await database.GetSubscriptionsAsync();
-                var merged = await subscriptionManager.LoadAllSubscriptionsAsync(
-                    subs.Select(s => new CatClawVideo.Core.Interfaces.SubscriptionRef(s.Name, s.SourceUrl)));
-                if (merged.Count > 0)
+                var active = subs.FirstOrDefault(s => s.Enabled) ?? subs.FirstOrDefault();
+                if (active is null)
                 {
-                    SiteRegistry.Replace(merged);
-                    CatClawVideo.Core.Models.SiteCache.Save(merged);   // 供下次启动秒读
-                    DiagLog.Write($"[启动] 订阅恢复成功: {subs.Count} 个订阅 → 合并 {merged.Count} 站点");
+                    DiagLog.Write("[启动] 没有任何订阅源，站点列表为空");
+                    return;
                 }
-                else
+                if (!active.Enabled)
                 {
-                    DiagLog.Write("[启动] 所有订阅均恢复失败，站点列表为空");
+                    active.Enabled = true;
+                    await database.UpdateSubscriptionAsync(active);
                 }
+                var sites = await subscriptionManager.LoadSubscriptionAsync(active.SourceUrl);
+                SiteRegistry.Replace(sites);
+                CatClawVideo.Core.Models.SiteCache.Save(sites);   // 供下次启动秒读
+                DiagLog.Write($"[启动] 订阅恢复成功: {active.Name}（启用源）→ {sites.Count} 站点");
             }
             catch (Exception ex)
             {
