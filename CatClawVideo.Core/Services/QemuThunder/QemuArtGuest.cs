@@ -99,9 +99,12 @@ public sealed class QemuArtGuest : IDisposable
                 _vm = new QemuHostRuntime(_runtimeDir, media, _log, InitrdName, consoleLogTag: "-art",
                         monitorPort: 0, ctrlPort: _dns.Port, guardPort: bridge, magnetOverride: "none")
                 {
-                    // 实测：2048MB / 2 vCPU 够 ART + 桥 + 一个源（TCG 下 -smp>4 反而更慢，见 QemuHostRuntime 注释）
+                    // 实测：2048MB 够 ART + 桥 + 一个源（TCG 下 -smp>4 反而更慢，见 QemuHostRuntime 注释）。
+                    // vCPU 2 → 4（2026-09-26）：桥已 per-site 并行（4 线程池），聚合网盘源的 detail
+                    // 里几十次 TLS 握手在 TCG 下是纯 CPU 计算，多核能让它们真并行；TCG 实测吞吐峰值
+                    // 在 2~4 vCPU（docs/qemu-tcg-tuning.md §6，>4 反而更慢），4 是上限取值。
                     GuestMemoryMb = 2048,
-                    SmpCount = 2,
+                    SmpCount = 4,
                     // ⚠ 必须是 virtio-net-device：ART initrd 只 insmod virtio_mmio+virtio_net，
                     //   用 PCI 版 guest 里没有 eth0，hostfwd 永远连不上（实测踩过）。
                     NetDevice = "virtio-net-device,netdev=n0",
