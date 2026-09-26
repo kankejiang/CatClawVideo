@@ -28,7 +28,7 @@ public final class QemuGuardChannel {
 
     private QemuGuardChannel() { }
 
-    /** 宿主 load op 下发的解密服务端口（0 = 未启用 → GuardSession 走 unidbg 会话）。 */
+    /** 宿主 load op 下发的解密服务端口（0 = 未启用 → ARM 调用直接报错，没有第二引擎）。 */
     public static void setPort(int p) {
         port = p;
         System.err.println("[guard] QEMU 解密通道端口 = " + p);

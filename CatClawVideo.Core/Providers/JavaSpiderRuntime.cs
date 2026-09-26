@@ -88,7 +88,7 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     /// 站点 → 改用替代 jar 后的类名（去掉 <c>Guard</c> 后缀）。
     /// <para>Guard 外壳的类名都带 <c>Guard</c> 后缀（<c>DouDouGuard</c> / <c>SixVGuard</c>），
     /// 而解壳出来的真实 dex 里**不带**后缀（<c>DouDou</c> / <c>SixV</c>），桥必须按真实名加载。
-    /// 无论是 unidbg 解壳还是换非 Guard 同族 jar，映射规则一致。</para>
+    /// guest 解壳与换非 Guard 同族 jar 两条路的映射规则一致。</para>
     /// </summary>
     private readonly ConcurrentDictionary<string, string> _nonGuardClass = new();
 
@@ -200,11 +200,10 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     private readonly ConcurrentDictionary<string, string> _rawJars = new();
 
     /// <summary>
-    /// 查找系统里的 java.exe，取**版本最高**的那个。
+    /// 查找系统里的 java.exe，取**版本最高**的那个（随包 <c>JavaBridge/jre</c> 存在时短路返回，见下）。
     /// <para>扫描顺序：JAVA_HOME → <c>C:\Program Files\Java\*</c> → <c>C:\Program Files\Microsoft\jdk-*</c> → PATH。
-    /// 必须取最高版本：unidbg 的解壳器 <c>vendor/unidbg/unpacker.jar</c> 是按 JDK 21 编译的（class file 65），
-    /// 落到 JDK 17 会抛 <c>UnsupportedClassVersionError</c>；而本机常见「PATH 里 17、JAVA_HOME 里 21」
-    /// 或同时装了两套 JDK 的情况，所以按目录名里的版本号排序取最大。</para>
+    /// 取最高版本是通用兜底策略：bridge.jar 是 major 61（--release 17），太老的 JDK 跑不了新字节码；
+    /// 本机常见「PATH 里 17、JAVA_HOME 里 21」或同时装两套 JDK，按目录名版本号排序取最大。</para>
     /// </summary>
     public static string? FindJavaExe()
     {
@@ -254,8 +253,8 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     /// <summary>
     /// 向上查找 JavaBridge 目录（bridge.jar 所在，App 部署目录或仓库根）。
     /// <para>⚠ 会**收集全部候选再挑能力最全**的一个：随包分发的那份只带 `bridge.jar + vendor/deps`（约 3.4MB），
-    /// 而开发机的仓库目录通常连 `vendor/dex2jar + vendor/unidbg`（Guard 解壳）一起有 —— 就近返回会把解壳能力丢掉
-    /// （2026-09-16 实测：随包副本优先后，所有 csp_*Guard 站点都报「未部署 unidbg 解壳器」解不开）。
+    /// 而开发机的仓库目录通常连 `vendor/dex2jar`（JRE 桥转换管线）一起有 —— 就近返回会把转换能力丢掉
+    /// （2026-09-16 实测：随包副本优先后，全部 jar 站点转换失败）。
     /// 并列时取最近的（OrderByDescending 稳定排序，候选按由近到远收集）。</para>
     /// </summary>
     public static string? FindBridgeDir()
@@ -768,12 +767,12 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
                     }
                     else
                     {
-                        Log("Guard QEMU 通道未就绪（桥将回落 unidbg 解密）");
+                        Log("Guard QEMU 通道未就绪（guardPort 不下发，ARM 调用将明确报错）");
                     }
                 }
                 catch (Exception gex)
                 {
-                    Log($"Guard QEMU 通道异常（回落 unidbg）: {gex.Message}");
+                    Log($"Guard QEMU 通道异常（guardPort 不下发，ARM 调用将明确报错）: {gex.Message}");
                 }
             }
         }
@@ -894,7 +893,7 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         }
 
         throw new NotSupportedException(
-            $"{site.Name} 的 spider jar 是 Guard 加固包，unidbg 解壳失败且未找到提供 {alt} 的非 Guard 替代 jar");
+            $"{site.Name} 的 spider jar 是 Guard 加固包，仅 ART guest 能解壳（当前不可用）且未找到提供 {alt} 的非 Guard 替代 jar");
     }
 
     /// <summary>
@@ -911,7 +910,7 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     /// （Guard 且解壳失败/解壳器缺失，或 <paramref name="requireClass"/> 指定的类不在其中），
     /// 由调用方决定换哪个 jar —— 用 null 而不是抛异常，是为了让「换 jar」成为正常流程而不是错误路径。</para>
     /// </summary>
-    /// <param name="downloadOnly">ART guest 模式：<b>只取原始 jar</b>，不跑 unidbg 解壳也不跑 dex2jar
+    /// <param name="downloadOnly">ART guest 模式：<b>只取原始 jar</b>，不做解壳也不做 dex2jar
     /// —— 壳在 guest 里由真 ART + arm64 so 自己解，宿主这两步纯属白费（2026-09-25 实测）。</param>
     /// <summary>下载 spider jar 到 <paramref name="rawPath"/>（订阅里常见「伪装成 jpg」的走私）。</summary>
     private async Task FetchRawJarAsync(string rawPath, string jarUrl, string? expectMd5, CancellationToken ct)
@@ -971,7 +970,7 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         if (!File.Exists(rawPath)) await FetchRawJarAsync(rawPath, jarUrl, expectMd5, ct).ConfigureAwait(false);
         if (downloadOnly) return new JarConversion(rawPath, rawPath, rawPath, null);
 
-        // ── Guard 加固（assets 下有 .so native 解密器 + .guard 密文）：先 unidbg 解壳 ──
+        // ── Guard 加固（assets 下有 .so native 解密器 + .guard 密文）：只有 ART guest 能解 ──
         string? shellJar = null;
         var dexSource = rawPath;
         if (IsGuarded(rawPath))
@@ -1001,7 +1000,7 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
 
     /// <summary>
     /// 壳框架 jar 就绪（缓存命中直接返回）：原始 Guard jar 的壳 dex 过 dex2jar，
-    /// 并剔除 DexNative.class（桌面由桥内置替身接 unidbg）。失败返回 null（回退真实类模式）。
+    /// 并剔除 DexNative.class（桌面由桥内置替身接 GuardSession）。失败返回 null（回退真实类模式）。
     /// </summary>
     private async Task<string?> EnsureShellJarAsync(string rawPath, string hash, CancellationToken ct)
     {
@@ -1035,7 +1034,7 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
             CreateNoWindow = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
-            // 同 unidbg 解壳器：批处理型 java 工具一律给「立即 EOF 的 stdin」，
+            // 与所有批处理型 java 工具一致：一律给「立即 EOF 的 stdin」，
             // 杜绝「从 GUI 宿主继承到永不 EOF 的管道 → 等 stdin 卡死」这一类问题
             RedirectStandardInput = true,
         };
@@ -1046,7 +1045,7 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
             throw new InvalidOperationException($"dex2jar 转换失败: {Path.GetFileName(dexSource)}");
     }
 
-    /// <summary>从 zip 产物里剔除一个条目（壳 jar 剔除 DexNative.class——桌面由桥内置替身接 unidbg）。</summary>
+    /// <summary>从 zip 产物里剔除一个条目（壳 jar 剔除 DexNative.class——桌面由桥内置替身接 GuardSession）。</summary>
     private static void StripEntry(string jarPath, string entryName)
     {
         using var fs = new FileStream(jarPath, FileMode.Open, FileAccess.ReadWrite);

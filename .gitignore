@@ -459,3 +459,6 @@ JavaBridge/sources.txt
 /JavaBridge/qemu-src/art/*out/
 /JavaBridge/qemu-src/art/*.lst
 /JavaBridge/qemu-src/art/_tmp/
+
+# 本地 .NET 运行时（DOTNET_ROOT 指向的私有运行时，官方 zip 解压即用，不入库）
+/.dotnet/

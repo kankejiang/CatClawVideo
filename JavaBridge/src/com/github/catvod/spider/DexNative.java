@@ -5,7 +5,7 @@ package com.github.catvod.spider;
  *
  * <p>壳框架（BaseSpiderGuard）把解密/签名/真实类获取全部委托给本类的 native 方法；
  * 桌面 JVM 无法执行 ARM so，这里把每个调用转发到 {@code bridge.GuardSession}
- * （常驻 unidbg 会话 + 解壳产物注入），壳框架因此在桌面完整运行——
+ * （转发 QEMU Guard VM + 解壳产物注入），壳框架因此在桌面完整运行——
  * 「已登录+启用中」对话框/扫码/网盘管理全部是 jar 框架自己的实现。</p>
  *
  * <p>⚠️ 加载顺序契约：壳 jar 转换时必须<b>排除</b>原 DexNative.class（转换管线负责），

@@ -8,7 +8,7 @@ namespace CatClawVideo.Core.Services;
 /// <para>用途：QEMU VM 是长命子进程。宿主被强杀（<c>taskkill /f</c>、任务管理器结束进程）时
 /// 走不到 <c>ProcessExit</c>，而 Windows 的 job object 在宿主自身已属于别的 job 时
 /// <c>AssignProcessToJobObject</c> 会直接 <c>win32=5</c> 失败（实测 2026-09-25），
-/// 于是遗留 VM 继续占着 hostfwd 端口（18481 等）—— 下一次启动只能退化到 unidbg。
+/// 于是遗留 VM 继续占着 hostfwd 端口（18481 等）—— 下一次启动 Guard 解密通道不可用。
 /// 所以启动前先按端口把遗留 VM 找出来收掉。</para>
 /// </summary>
 public static class TcpListeners

@@ -43,11 +43,10 @@ DO_DEFAULT = ["YCyz", "musicLrc", "yinHe", "quark", "prPic", "input", "danmu", "
 
 
 def start_bridge():
-    # 桥在生产里由 JavaSpiderRuntime 起，classpath 含 vendor/deps（爬虫依赖）+ vendor/unidbg
-    # （Guard 解壳器；load 带 rawJar 时会走 unidbg，缺它必 ClassNotFoundException）
+    # 桥在生产里由 JavaSpiderRuntime 起，classpath 含 vendor/deps（爬虫依赖）。
+    # Guard 解密/解壳一律在 QEMU guest/VM 里执行，桥侧没有也不需要 unidbg classpath。
     cp = ";".join([os.path.join(BRIDGE, "bridge.jar")]
-                  + glob.glob(os.path.join(BRIDGE, "vendor", "deps", "*.jar"))
-                  + glob.glob(os.path.join(BRIDGE, "vendor", "unidbg", "*.jar")))
+                  + glob.glob(os.path.join(BRIDGE, "vendor", "deps", "*.jar")))
     work = tempfile.mkdtemp(prefix="probe-do-")
     p = subprocess.Popen(
         ["java", "-Dfile.encoding=UTF-8", "-cp", cp, "bridge.Server"],
@@ -116,7 +115,7 @@ def main():
             drain(0.2)
         return None
 
-    print("══ load（壳框架模式，不带 guardPort → 桥用 unidbg/已转换 jar）══")
+    print("══ load（壳框架模式，guardPort=0 → ARM 调用直接报错，仅验证真实类路径）══")
     send({"id": 1, "op": "load", "site": SITE, "className": CLASS, "ext": EXT,
           "jars": [os.path.join(CONV, f"{HASH}-java.jar")],
           "shellJar": os.path.join(CONV, f"{HASH}-shell.jar"),

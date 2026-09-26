@@ -235,7 +235,7 @@ public class Server {
     }
 
     /** 壳框架加载：shellJar=壳 dex 转换产物；rawJar=原始 Guard jar（assets/*.so 解密引擎）；realJar=解壳产物；
-     *  guardPort=Guard QEMU 解密服务端口（0=未启用 → 解密走 unidbg 会话）。 */
+     *  guardPort=Guard QEMU 解密服务端口（0=未启用 → ARM 调用直接报错，没有第二引擎）。 */
     /**
      * 父进程看门狗：宿主被强杀时自行了断，不留孤儿 JVM。
      *

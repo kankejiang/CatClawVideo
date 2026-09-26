@@ -95,7 +95,7 @@ _Modern cross-platform video player built with .NET MAUI._
 | `CatClawVideo.Core` | 核心库：模型、接口、片源提供者（猫爪源 / MacCMS / spider 爬虫运行时）、TVBox 订阅解析 |
 | `CatClawVideo.Data` | 数据层：SQLite 数据库（订阅源、播放历史、收藏） |
 | `CatClawVideo.Maui` | MAUI 应用主体：页面、ViewModel、平台播放器 Handler |
-| `JavaBridge` | 桌面端 Java 桥（android-stub + 爬虫桩 + bridge server → `bridge.jar`），用于在桌面加载 TVBox jar 爬虫；`vendor/unidbg` 为 Guard 加固包解壳器（模拟 ARM64 跑原生解密 .so） |
+| `JavaBridge` | 桌面端 Java 桥（android-stub + 爬虫桩 + bridge server → `bridge.jar`），用于在桌面加载 TVBox jar 爬虫；Guard 加固包的解密/解壳一律在 QEMU ART guest 里执行（unidbg 离线解壳器已于 2026-09-26 退役） |
 | `samples/` | 猫爪源协议示例文件 |
 | `prototype/` | HTML 界面原型 |
 
@@ -107,7 +107,7 @@ _Modern cross-platform video player built with .NET MAUI._
 - MAUI 工作负载（`dotnet workload install maui-android`）
 - Android：API 36 平台，运行时标识 `android-arm64` / `android-x64`
 - Windows：WinAppSDK 1.7，10.0.19041.0 以上
-- JavaBridge：**JDK 21**（构建 `bridge.jar`；产物字节码为 major 65，17 起不来）；Guard 解壳器需 JDK 21（`JavaBridge\build-unidbg.cmd` 构建 `vendor\unidbg\unpacker.jar`）
+- JavaBridge：**JDK 21**（构建 `bridge.jar`；产物字节码为 major 61，`--release 17`，兼容 QEMU guest 的 Alpine OpenJDK 17）
 - **用户端无需装 Java**：`JavaBridge\jre\`（jlink 自 Microsoft OpenJDK 21 的精简运行时，约 62MB）随应用分发，
   `JavaSpiderRuntime.FindJavaExe()` 优先用它。重新生成见 `CatClawVideo.Maui.csproj` 里该 Content 项的注释。
 - 终端用户需要什么环境 → 见 [docs/user-runtime-requirements.md](docs/user-runtime-requirements.md)

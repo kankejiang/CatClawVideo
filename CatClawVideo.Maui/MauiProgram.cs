@@ -136,7 +136,7 @@ public static class MauiProgram
         // Guard 解密 VM（2026-09-24 用户拍板架构）：Guard 网盘源的解密/签名/proxyInvoke（ARM
         // ftyguard so）跑在独立 QEMU 实例里，桥进程经 hostfwd 直连；so 弹的对话框/二维码经
         // 控制口上行由 SpiderUiHost 渲染（jar 框架全权负责登录 UX，宿主只做 UI 接入）。
-        // 不预热（首个 Guard 站点加载时懒启动），运行时缺失自动回落 unidbg 会话。
+        // 不预热（首个 Guard 站点加载时懒启动），运行时缺失则 Guard 解密通道不可用（ARM 调用明确报错）。
         var qemuGuard = new CatClawVideo.Core.Services.QemuThunder.QemuGuardEngine(
             Path.Combine(AppContext.BaseDirectory, "ThunderRuntime"), BtFileLog.Write);
         CatClawVideo.Core.Services.QemuThunder.GuardRuntime.Attach(qemuGuard);

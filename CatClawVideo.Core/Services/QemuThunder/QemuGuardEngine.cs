@@ -66,7 +66,7 @@ public sealed class QemuGuardEngine : IDisposable
     public void RegisterJar(string hash, string rawJarPath) => _jars[hash] = rawJarPath;
 
     /// <summary>
-    /// 确保 VM 已启动且指定 jar 的 guard so 已加载（同 hash 复用，失败返回 false——调用方回落 unidbg）。
+    /// 确保 VM 已启动且指定 jar 的 guard so 已加载（同 hash 复用，失败返回 false——调用方不下发 guardPort，ARM 调用将明确报错）。
     /// </summary>
     public async Task<bool> EnsureLoadedAsync(string jarHash, CancellationToken ct = default)
     {
@@ -117,7 +117,7 @@ public sealed class QemuGuardEngine : IDisposable
             };
             if (!vm.IsRuntimePresent)
             {
-                Log($"运行时缺失：{_runtimeDir}（Guard QEMU 通道不可用，桥将回落 unidbg）");
+                Log($"运行时缺失：{_runtimeDir}（Guard 解密通道不可用）");
                 return false;
             }
             var ctrl = new QemuControlServer(CtrlPort) { ResolveResource = ResolveResource };
@@ -192,7 +192,7 @@ public sealed class QemuGuardEngine : IDisposable
 
     /// <summary>
     /// /res 解析：<c>__so__</c> = 从注册 jar 挑 aarch64（ELF machine 0xB7）so 条目；
-    /// 其余按 zip 条目名查找（exact → assets/ 前缀 → 后缀兜底，对齐 unidbg GuardJni.readJarEntry）。
+    /// 其余按 zip 条目名查找（exact → assets/ 前缀 → 后缀兜底）。
     /// </summary>
     private byte[]? ResolveResource(string jarHash, string name)
     {
@@ -289,7 +289,7 @@ public sealed class QemuGuardEngine : IDisposable
 /// </summary>
 public static class GuardRuntime
 {
-    /// <summary>Guard 解密 VM 引擎（未装配 = Android/运行时缺失，桥自动回落 unidbg）。</summary>
+    /// <summary>Guard 解密 VM 引擎（未装配 = Android/运行时缺失，ARM 调用将明确报错）。</summary>
     public static QemuGuardEngine? Engine { get; private set; }
 
     /// <summary>装配（MauiProgram 启动时调用一次）。</summary>
