@@ -728,11 +728,27 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
                 // 握手那条 ping 不触发重置：它本来就是"桥还没起来"的信号，交给连接流程自己收尾。
                 var op = req["op"]?.GetValue<string>() ?? "";
                 if (op != "ping" && op != "exit")
-                    ResetBridge($"op={op} id={expectId} 在 {timeout.TotalSeconds:F0}s 内没回来");
-                throw new TimeoutException($"Java 桥响应超时（{timeout.TotalSeconds:F0}s，id={expectId}）");
+                    ResetBridge($"op={op} id={expectId}{InFlightTag} 在 {timeout.TotalSeconds:F0}s 内没回来");
+                throw new TimeoutException(BuildTimeoutMessage(op, timeout, expectId));
             }
         }
         finally { _pendingResponses.TryRemove(expectId, out _); }
+    }
+
+    /// <summary>正在桥上执行的调用（site.method）：超时/重置日志能直接指出卡死的是谁。
+    /// 典型现场（2026-09-26 实测）：聚合网盘源的 detailContent 串行探测阿里/夸克/UC/百度等
+    /// 网盘接口，其中一个挂死 → 桥全局锁被占 → 整桥 90s 无响应。</summary>
+    private volatile string _inFlight = "";
+
+    private string InFlightTag => _inFlight.Length > 0 ? $"（{_inFlight}）" : "";
+
+    /// <summary>超时报错要给用户出路：call 超时几乎都是爬虫内部对网盘 API 的请求挂死
+    /// （桥全局锁被占），引擎已自动重置，剩下的动作是换线路；其余 op 保持原口径。</summary>
+    private string BuildTimeoutMessage(string op, TimeSpan timeout, int id)
+    {
+        if (op != "call") return $"Java 桥响应超时（{timeout.TotalSeconds:F0}s，id={id}）";
+        var what = _inFlight.Length > 0 ? $"线路爬虫（{_inFlight}）" : "线路爬虫";
+        return $"{what} {timeout.TotalSeconds:F0}s 无响应——常见于网盘接口被限流或挂起；引擎已自动重置，请换其它线路或稍后重试（id={id}）";
     }
 
     private async Task<string> CallAsync(VodSiteInfo site, string method, JsonArray args, CancellationToken ct)
@@ -742,18 +758,23 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         await EnsureSiteLoadedAsync(site, jar, ct);
         _lastSite = site;   // spider 稍后发起的 /proxy 回调不带 siteKey，靠它定位
 
-        var req = new JsonObject
+        _inFlight = $"{site.Key}.{method}";
+        try
         {
-            ["id"] = Interlocked.Increment(ref _id),
-            ["op"] = "call",
-            ["site"] = site.Key,
-            ["method"] = method,
-            ["args"] = args,
-        };
-        var resp = await RoundTripAsync(req, TimeSpan.FromSeconds(90), ct);
-        if (resp["ok"]?.GetValue<bool>() != true)
-            throw new InvalidOperationException($"spider {site.Key}.{method}: {resp["error"]}");
-        return resp["result"]?.GetValue<string>() ?? "{}";
+            var req = new JsonObject
+            {
+                ["id"] = Interlocked.Increment(ref _id),
+                ["op"] = "call",
+                ["site"] = site.Key,
+                ["method"] = method,
+                ["args"] = args,
+            };
+            var resp = await RoundTripAsync(req, TimeSpan.FromSeconds(90), ct);
+            if (resp["ok"]?.GetValue<bool>() != true)
+                throw new InvalidOperationException($"spider {site.Key}.{method}: {resp["error"]}");
+            return resp["result"]?.GetValue<string>() ?? "{}";
+        }
+        finally { _inFlight = ""; }
     }
 
     // ═══════════ ISpiderProxyRuntime（宿主本地 /proxy 回调 → 桥 proxy op） ═══════════
