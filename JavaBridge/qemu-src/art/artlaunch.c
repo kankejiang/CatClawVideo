@@ -14,6 +14,7 @@
 #include <jni.h>
 #include <dlfcn.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -48,10 +49,11 @@ void RemoveSpecialSignalHandlerFn(int signal, chain_fn handler) {
 
 typedef jint (*create_vm_fn)(JavaVM **, void **, JavaVMInitArgs *);
 
-/* ⚠ 不要指望在这里塞一个同名 jar 去顶掉 framework 的 android.app.AlertDialog：
- * 实测（2026-09-26）把 /uishadow.jar 放在 BCP 首位、dex 也 zipalign 过，ART 仍然解析到
- * framework.jar 的那份 —— boot classpath 里的重复类不是"先到先得"。
- * 网盘系对话框要上行只能走别的机制（见 Server.java 的 probe op 输出）。 */
+/* boot classpath 支持经环境变量覆盖（2026-09-27，x86 mini guest / Android 13 适配）：
+ *   CATCLAW_BCP          —— 整条 boot classpath（':' 连接）
+ *   CATCLAW_BCP_LOCATIONS —— boot 镜像位置（Android 9 的 multi-image boot.oat 需要；
+ *                           13 的 waydroid 镜像无预编译 boot 镜像（JIT 模式），不设即可）
+ * 不设时走下面的 9 期默认（aarch64 现网行为零变化）。 */
 static const char *BCP =
     "/system/framework/core-oj.jar:/system/framework/core-libart.jar:/system/framework/conscrypt.jar"
     ":/system/framework/okhttp.jar:/system/framework/bouncycastle.jar:/system/framework/apache-xml.jar"
@@ -61,6 +63,19 @@ static const char *BCP =
     ":/system/framework/framework-oahl-backward-compatibility.jar:/system/framework/android.test.base.jar";
 
 int main(int argc, char **argv) {
+    /* Android 11+ 的 libnativeloader 需要显式初始化（正常由 AndroidRuntime::StartVM 代劳，
+     * 我们直调 JNI_CreateJavaVM 绕过了它）——不初始化的话 CreateVM 内部第一个系统库
+     * dlopen（libandroid.so）直接 abort：GetSystemNamespace 失败（2026-09-27 实测）。
+     * 初始化内部会读 /linkerconfig/ld.config.txt（init 里由 linkerconfig 预生成）。
+     * ⚠ 必须放在最前：JNI_CreateJavaVM 内部就会触发。 */
+    {
+        void *nl = dlopen("libnativeloader.so", RTLD_NOW | RTLD_GLOBAL);
+        void (*initnl)(void) = nl ? (void (*)(void)) dlsym(nl, "InitializeNativeLoader") : NULL;
+        if (initnl) { initnl(); printf("artlaunch: nativeloader 已初始化\n"); }
+        else printf("artlaunch: 无 InitializeNativeLoader（老版本跳过）\n");
+        fflush(stdout);
+    }
+
     /* 从第 3 个参数起都是 classpath 条目（':' 连接），后面才是要跑的类名与参数：
      * 用法 artlaunch <类名> <jar|dex>[:jar2...] [参数...]  —— 多 dex 必须同时进 classpath，
      * 否则 okhttp/kotlin-stdlib 之类看不到彼此（d8 分包时尤其明显）。 */
@@ -79,13 +94,18 @@ int main(int argc, char **argv) {
     /* JavaVMOption 的每个条目必须是 "-Xxxx:<值>" 一整串 —— 按 app_process 的 argv 风格把
      * 选项名和值分成两个 entry，ART 认不出来，结果就是 "Boot classpath is empty"（实测）。 */
     static char bcp_opt[2048], loc_opt[2048];
-    snprintf(bcp_opt, sizeof bcp_opt, "-Xbootclasspath:%s", BCP);
-    snprintf(loc_opt, sizeof loc_opt, "-Xbootclasspath-locations:%s", BCP);
+    const char *bcp = getenv("CATCLAW_BCP");
+    if (!bcp) bcp = BCP;
+    const char *bcp_loc = getenv("CATCLAW_BCP_LOCATIONS");
+    snprintf(bcp_opt, sizeof bcp_opt, "-Xbootclasspath:%s", bcp);
     JavaVMOption opts[8];
     int n = 0;
     opts[n++].optionString = cpopt;
     opts[n++].optionString = bcp_opt;
-    opts[n++].optionString = loc_opt;
+    if (bcp_loc) {   /* Android 9 的 boot.oat（multi-image）需要；13 无预编译镜像时不传 */
+        snprintf(loc_opt, sizeof loc_opt, "-Xbootclasspath-locations:%s", bcp_loc);
+        opts[n++].optionString = loc_opt;
+    }
 
     JavaVMInitArgs args;
     memset(&args, 0, sizeof args);
