@@ -6,6 +6,14 @@ using System.Text;
 
 namespace CatClawVideo.Core.Services.QemuThunder;
 
+/// <summary>QEMU guest 架构：决定机器型/加速后端/串口/引擎文件名。</summary>
+public enum GuestArch
+{
+    Arm64,
+    X86_64,
+}
+
+
 /// <summary>
 /// QEMU 运行时进程管理（Windows）：把 ARM64 Android 迅雷下载引擎跑在 QEMU 里。
 ///
@@ -36,7 +44,19 @@ public sealed class QemuHostRuntime : IDisposable
 
     /// <summary>本实例使用的 initrd 文件名（多实例场景：下载引擎用独立控制口的 pkg_initrd_dl.gz）</summary>
     public string InitrdName { get; }
-    public string ExePath => Path.Combine(RuntimeDir, "qemu-system-aarch64.exe");
+    public string ExePath => Path.Combine(RuntimeDir, QemuExeName);
+
+    /// <summary>guest 架构：Arm64 = 现网 aarch64 TCG 调优组合；X86_64 = WHPX 硬件虚拟化
+    /// 优先（Windows 原生虚拟化平台，不可用时 QEMU 多 -accel 自动落 TCG）——x86 mini guest。
+    /// （2026-09-27 引入，详见 QemuArtGuest 的 x86 适配注释。）</summary>
+    public GuestArch Arch { get; set; } = GuestArch.Arm64;
+
+    /// <summary>guest 内核文件名（相对 RuntimeDir；x86 mini guest 用 Debian 内核）。</summary>
+    public string KernelName { get; set; } = "pkg_kernel";
+
+    /// <summary>QEMU 引擎文件名（x86 mini guest 为 qemu-system-x86_64.exe，与 aarch64 引擎
+    /// 共享同一套 MSYS2 依赖 DLL——2026-09-27 全量 import 互扫实测重合）。</summary>
+    public string QemuExeName { get; set; } = "qemu-system-aarch64.exe";
     public string ConsoleLogPath { get; }
 
     private readonly Action<string>? _log;
@@ -180,12 +200,13 @@ public sealed class QemuHostRuntime : IDisposable
     }
 
     /// <summary>运行时文件是否齐全（缺一件就视为未部署，引擎判未就绪、静默回落）。</summary>
-    public bool IsRuntimePresent => IsPresent(RuntimeDir, InitrdName);
+    public bool IsRuntimePresent => IsPresent(RuntimeDir, InitrdName, QemuExeName, KernelName);
 
-    /// <summary>给定目录是否是一套完整的运行时（扁平布局）。</summary>
-    public static bool IsPresent(string runtimeDir, string initrdName = "pkg_initrd.gz") =>
-        File.Exists(Path.Combine(runtimeDir, "qemu-system-aarch64.exe"))
-        && File.Exists(Path.Combine(runtimeDir, "pkg_kernel"))
+    /// <summary>给定目录是否是一套完整的运行时（扁平布局）。exe/内核名可按 guest 架构覆盖。</summary>
+    public static bool IsPresent(string runtimeDir, string initrdName = "pkg_initrd.gz",
+        string qemuExeName = "qemu-system-aarch64.exe", string kernelName = "pkg_kernel") =>
+        File.Exists(Path.Combine(runtimeDir, qemuExeName))
+        && File.Exists(Path.Combine(runtimeDir, kernelName))
         && File.Exists(Path.Combine(runtimeDir, initrdName));
 
     public bool IsRunning => _proc is { HasExited: false };
@@ -264,14 +285,25 @@ public sealed class QemuHostRuntime : IDisposable
                 //   · ⚠️ 切勿引入 thread=single / -icount：实测 MTTCG 值 **4.1×**
                 //     （910 vs 221 MB/s），aarch64 + smp>1 默认已开，别关掉。
                 //   真实引擎端到端验证：该参数下引擎从本地源稳定下载 3.36GB（30~54 MB/s，err=0）。
-                "-M", "virt", "-cpu", "cortex-a76", "-m", memMb.ToString(), "-smp", SmpCount.ToString(), "-nographic",
-                "-accel", "tcg,tb-size=256,split-wx=off",
+                //
+                // 架构分支（2026-09-27，x86 mini guest）：
+                //   Arm64 = 上述 TCG 调优组合（现网行为零变化）；
+                //   X86_64 = -M q35 -cpu max + WHPX 硬件虚拟化优先（Windows 原生虚拟化平台，
+                //     接近原生速度），QEMU 多 -accel 依次尝试：whpx 不可用自动落 tcg。
+                "-M", Arch == GuestArch.X86_64 ? "q35" : "virt",
+                "-cpu", Arch == GuestArch.X86_64 ? "max" : "cortex-a76",
+                "-m", memMb.ToString(), "-smp", SmpCount.ToString(), "-nographic",
+                "-accel", Arch == GuestArch.X86_64
+                    ? "whpx"
+                    : "tcg,tb-size=256,split-wx=off",
                 "-L", "share",
-                "-kernel", "pkg_kernel",
+                "-kernel", KernelName,
                 "-initrd", InitrdName,
                 "-netdev", netdev,
                 "-device", NetDevice,
             };
+            if (Arch == GuestArch.X86_64)
+                args.AddRange(["-accel", "tcg,tb-size=256,split-wx=off"]);   // WHPX 不可用时的兜底加速后端
 
             // ── 数据面块设备（可选）──
             // guest 侧 harness 把引擎吐出的字节按文件偏移写进 /dev/vda，宿主随后**直读同一文件**
@@ -301,7 +333,9 @@ public sealed class QemuHostRuntime : IDisposable
             //   vda/vdb 取决于挂载顺序，而数据面孔是**可选的** —— 若它缺席，vda 就变成了交换区，
             //   harness 会把引擎字节按文件偏移写进交换区（后果严重）。
             var vdIndex = 0;
-            var append = $"console=ttyAMA0 rdinit=/init loglevel=4 tdata={tdataMb}m";
+            // 串口：aarch64 虚拟机是 ttyAMA0（PL011），x86 q35 是 ttyS0（16550A）
+            var consoleTty = Arch == GuestArch.X86_64 ? "console=ttyS0" : "console=ttyAMA0";
+            var append = $"{consoleTty} rdinit=/init loglevel=4 tdata={tdataMb}m";
             if (BlockStore is not null) append += $" blkdev=/dev/vd{(char)('a' + vdIndex++)}";
             if (SwapStore is not null) append += $" swapdev=/dev/vd{(char)('a' + vdIndex++)}";
             // Guard VM 的口令与启动磁力经 cmdline 覆盖（/init 的 getarg；缺省与旧行为一致）
@@ -443,7 +477,7 @@ public sealed class QemuHostRuntime : IDisposable
         foreach (var port in new[] { GuardPort, MediaPort })
         {
             if (port <= 0) continue;
-            if (TcpListeners.ReapOwner(port, "qemu-system-aarch64"))
+            if (TcpListeners.ReapOwner(port, QemuExeName.Replace(".exe", "")))
                 _log?.Invoke($"[qemu] 端口 {port} 被上一世遗留的 VM 占着，已回收");
         }
     }

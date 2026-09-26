@@ -26,6 +26,16 @@ public sealed class QemuArtGuest : IDisposable
     /// <summary>产品 initrd 名（放在 <c>ThunderRuntime</c> 目录下，与 pkg_initrd.gz 并存）。</summary>
     public const string InitrdName = "art_initrd.gz";
 
+    /// <summary>guest 架构：Arm64（现网 TCG 调优组合）或 X86_64（WHPX mini guest，2026-09-27）。
+    /// x86 模式的内核/initrd/引擎文件名由下方三个属性给出；缺省 Arm64 时现网行为零变化。</summary>
+    public GuestArch GuestArch { get; set; } = GuestArch.Arm64;
+    /// <summary>guest 内核文件名（x86 mini guest 为 Debian 6.1 vmlinuz，含 binder）。</summary>
+    public string KernelFileName { get; set; } = "pkg_kernel";
+    /// <summary>x86 模式的 initrd 文件名（aarch64 恒为 <see cref="InitrdName"/>）。</summary>
+    public string GuestInitrdName { get; set; } = InitrdName;
+    /// <summary>x86 模式的 QEMU 引擎文件名（与 aarch64 引擎共享 MSYS2 依赖 DLL）。</summary>
+    public string GuestQemuExeName { get; set; } = "qemu-system-x86_64.exe";
+
     /// <summary>guest 里 ART 桥的监听端口基准（与 Guard VM 的 18481、迅雷的 18080/18090 错开）。</summary>
     private const int PortSeed = 18600;
 
@@ -85,7 +95,13 @@ public sealed class QemuArtGuest : IDisposable
         try
         {
             if (IsUp && _w is not null && _r is not null) return (_w, _r);
-            if (!IsAvailable(_runtimeDir)) { Log("运行时不齐全，缺：" + MissingPieces(_runtimeDir)); return null; }
+            // 三件套校验按架构取文件名（x86 mini guest：Debian 内核 + x86 引擎 + art_initrd_x64.gz）
+            var qemuExe = GuestArch == GuestArch.X86_64 ? GuestQemuExeName : "qemu-system-aarch64.exe";
+            var initrdFile = GuestArch == GuestArch.X86_64 ? GuestInitrdName : InitrdName;
+            var kernelFile = KernelFileName;
+            var missing = new[] { qemuExe, kernelFile, initrdFile }
+                .Where(f => !File.Exists(Path.Combine(_runtimeDir, f))).ToList();
+            if (missing.Count > 0) { Log("运行时不齐全，缺：" + string.Join(", ", missing)); return null; }
             if (_vm is null)
             {
                 var bridge = PickFreePort(PortSeed);
@@ -96,18 +112,24 @@ public sealed class QemuArtGuest : IDisposable
                 BridgePort = bridge;
                 ProxyTunnelPort = tunnel;
                 _dns ??= new ArtDnsServer(_log);      // guest 里所有 Java 域名解析都问到这（见 ArtDnsServer 注释）
-                _vm = new QemuHostRuntime(_runtimeDir, media, _log, InitrdName, consoleLogTag: "-art",
+                _vm = new QemuHostRuntime(_runtimeDir, media, _log, initrdFile, consoleLogTag: "-art",
                         monitorPort: 0, ctrlPort: _dns.Port, guardPort: bridge, magnetOverride: "none")
                 {
+                    Arch = GuestArch,
+                    QemuExeName = qemuExe,
+                    KernelName = kernelFile,
                     // 实测：2048MB 够 ART + 桥 + 一个源（TCG 下 -smp>4 反而更慢，见 QemuHostRuntime 注释）。
                     // vCPU 2 → 4（2026-09-26）：桥已 per-site 并行（4 线程池），聚合网盘源的 detail
                     // 里几十次 TLS 握手在 TCG 下是纯 CPU 计算，多核能让它们真并行；TCG 实测吞吐峰值
                     // 在 2~4 vCPU（docs/qemu-tcg-tuning.md §6，>4 反而更慢），4 是上限取值。
                     GuestMemoryMb = 2048,
                     SmpCount = 4,
-                    // ⚠ 必须是 virtio-net-device：ART initrd 只 insmod virtio_mmio+virtio_net，
+                    // ⚠ aarch64 必须是 virtio-net-device：ART initrd 只 insmod virtio_mmio+virtio_net，
                     //   用 PCI 版 guest 里没有 eth0，hostfwd 永远连不上（实测踩过）。
-                    NetDevice = "virtio-net-device,netdev=n0",
+                    //   x86（q35）走 PCI：virtio-net-pci + Debian 内核模块链（见 mk_x86_initrd.sh）。
+                    NetDevice = GuestArch == GuestArch.X86_64
+                        ? "virtio-net-pci,netdev=n0"
+                        : "virtio-net-device,netdev=n0",
                     ProxyTunnel = tunnel > 0 ? (tunnel, GuestProxyPort) : null,
                 };
             }
