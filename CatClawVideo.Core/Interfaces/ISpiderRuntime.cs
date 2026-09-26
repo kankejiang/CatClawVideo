@@ -88,4 +88,14 @@ public interface ISpiderProxyRuntime
     /// </summary>
     Task<(int Status, string Mime, byte[]? Body)?> ProxyAsync(
         IReadOnlyDictionary<string, string> query, CancellationToken ct = default);
+
+    /// <summary>
+    /// GET 一次 danmaku 钩子并尝试从响应中提取真正的播放地址。
+    /// <para>push 型聚合站（seed 等）的 playerContent 返回的 url 是字符串化 JSON（二次解析
+    /// 输入），真机 TVBox 由壳的 danmaku 钩子链继续：壳收到 <c>do=danmu&amp;url=&lt;json&gt;</c>
+    /// 后解析网盘链接、起流服务，响应携带可播地址（302 Location / JSON url / 纯文本）。
+    /// 返回 null = 未提取到（调用方维持原判定）。</para>
+    /// </summary>
+    Task<string?> InvokeDanmakuHookAsync(VodSiteInfo site, string hookUrl, CancellationToken ct = default)
+        => Task.FromResult<string?>(null);
 }

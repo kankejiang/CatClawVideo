@@ -231,10 +231,27 @@ public class SpiderVodProvider : IVodSourceProvider, IActionVodSourceProvider
             else return play;
         }
 
+        // ── danmaku 钩子链（push 型聚合条目的播放解析入口，必须在 JSON 拦截**之前**）──
+        // seed 等站的 playerContent 返回 url=字符串化 JSON + danmaku=本地 proxy 钩子
+        // （do=danmu&url=<json>）。真机 TVBox 由壳的钩子链解析网盘链接 → 起流服务 →
+        // 响应携带可播地址。这里 GET 钩子并提取地址；提取不到才落 JSON 拦截。
+        // 另一用途（Guard 系网盘配置）：GET 幂等触发「已登录+启用中」对话框。
+        if (play.DanmakuUrl is { Length: > 0 } danmaku &&
+            danmaku.StartsWith("http://127.0.0.1:", StringComparison.OrdinalIgnoreCase) &&
+            (IsHtmlConfigPage(danmaku) || play.Url.TrimStart().StartsWith("{") ||
+             !play.Url.StartsWith("http", StringComparison.OrdinalIgnoreCase)))
+        {
+            if (rt is ISpiderProxyRuntime pr)
+            {
+                var resolved = await pr.InvokeDanmakuHookAsync(site, danmaku, ct).ConfigureAwait(false);
+                if (!string.IsNullOrEmpty(resolved)) play.Url = resolved;
+            }
+        }
+
         // playerContent 返回的 url 字段也可能是**字符串化的 JSON**（push 型聚合条目的二次解析
         // 输入，如 seed 站 url="{\"vod_pic\":...}"）—— 不是可播地址，喂播放器同样 Invalid URI
-        // （2026-09-26 实测：真机 TVBox 靠壳的 danmaku 钩子链继续处理，宿主还没有那条链，
-        //   先给可读错误定位，别让「Invalid URI」盖掉真正的问题）。
+        // （2026-09-26 实测）。danmaku 钩子链没给出可播地址时，给可读错误定位，别让
+        // 「Invalid URI」盖掉真正的问题。
         var playUrlTrimmed = play.Url.TrimStart();
         if (playUrlTrimmed.StartsWith("{") || playUrlTrimmed.StartsWith("["))
             throw new InvalidOperationException(
@@ -263,26 +280,7 @@ public class SpiderVodProvider : IVodSourceProvider, IActionVodSourceProvider
         if (IsHtmlConfigPage(play.Url))
             return new PlayRequest { Title = episode.Name, Url = play.Url, IsHtmlPage = true };
 
-        // ── Guard 系「云盘配置」卡片（csp_MyDriveGuard 等，itemId=0000 登入 / 4444 排序…）──
-        // playerContent 返回的 url 是**字面量 id**（非视频流），danmaku 字段携带本地 proxy 钩子
-        // （do=danmu&url=0000）。GET 该钩子 → 回调 jar 的 proxy(Map) → jar 在 UI 线程弹
-        // 「已登录+启用中」网盘配置对话框（TVBox 由弹幕加载隐式触发同一 URL）。
-        // 不满足上述形态但 danmaku 指向本地 proxy 的，同样请求一次（幂等钩子）。
-        if (play.DanmakuUrl is { Length: > 0 } danmaku &&
-            danmaku.StartsWith("http://127.0.0.1:", StringComparison.OrdinalIgnoreCase) &&
-            (IsHtmlConfigPage(danmaku) || !play.Url.StartsWith("http", StringComparison.OrdinalIgnoreCase)))
-        {
-            try
-            {
-                using var hook = new HttpRequestMessage(HttpMethod.Get, danmaku);
-                using var resp = await Http.SendAsync(hook, ct).ConfigureAwait(false);
-                _log?.Invoke($"[解析] {site.Key}.danmaku钩子 → {(int)resp.StatusCode}");
-            }
-            catch (System.Exception ex)
-            {
-                _log?.Invoke($"[解析] {site.Key}.danmaku钩子失败: {ex.Message}");
-            }
-        }
+        // （danmaku 钩子已在上面统一处理：提取播放地址 + 幂等触发网盘配置对话框）
 
         return await TvBoxPlayPipeline.ResolveAsync(site, play, episode.Flag ?? "", _sniffer, ct);
     }

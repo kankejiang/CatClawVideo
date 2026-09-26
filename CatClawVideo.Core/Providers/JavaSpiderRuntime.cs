@@ -336,6 +336,42 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         catch { }
     }
 
+    /// <inheritdoc/>
+    public async Task<string?> InvokeDanmakuHookAsync(VodSiteInfo site, string hookUrl, CancellationToken ct = default)
+    {
+        try
+        {
+            using var h = new HttpRequestMessage(HttpMethod.Get, hookUrl);
+            using var r = await _http.SendAsync(h, ct).ConfigureAwait(false);
+            var body = await r.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            Log($"[解析] {site.Key}.danmaku钩子 → {(int)r.StatusCode} {body.Length}B");
+            string? real = r.Headers.Location?.ToString();
+            if (string.IsNullOrEmpty(real))
+            {
+                var t = body.Trim();
+                if (t.StartsWith("http", StringComparison.OrdinalIgnoreCase)) real = t;
+                else if (t.StartsWith("{"))
+                {
+                    try { real = System.Text.Json.Nodes.JsonNode.Parse(t)?["url"]?.GetValue<string>(); }
+                    catch { }
+                }
+            }
+            if (string.IsNullOrEmpty(real)) return null;
+            // 壳的流服务在 guest 里监听 6678：它给出的地址（绝对/相对）都要换算成宿主隧道端口
+            if (!real.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                real = "http://127.0.0.1:6678" + real;
+            if (ArtGuestMode && _art is { ProxyTunnelPort: > 0 } art)
+                real = real.Replace("127.0.0.1:6678", "127.0.0.1:" + art.ProxyTunnelPort);
+            Log($"[解析] {site.Key}.danmaku钩子给出播放地址 → {real}");
+            return real;
+        }
+        catch (Exception ex)
+        {
+            Log($"[解析] {site.Key}.danmaku钩子失败: {ex.Message}");
+            return null;
+        }
+    }
+
     public Task<string> ActionAsync(VodSiteInfo site, string actionJson, CancellationToken ct = default) =>
         CallAsync(site, "action", new JsonArray(actionJson ?? ""), ct);
 
@@ -933,7 +969,10 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
             {
                 var hasShell = ok.ShellJar is not null;
                 var real = configured[..^"Guard".Length];
-                if (!hasShell && ok.DexSource is { } src && !JarHasClass(src, configured) && JarHasClass(src, real))
+                // 纯 .class jar 的类按 zip 条目名查（JarHasClass 搜 dex 字节，对它恒 false）
+                bool ClassExists(string cn) => ok.DexSource is { } src
+                    && (IsPureClassJar(src) ? JarHasClassFile(src, cn) : JarHasClass(src, cn));
+                if (!hasShell && !ClassExists(configured) && ClassExists(real))
                 {
                     _nonGuardClass[site.Key] = real;
                     Log($"{site.Name}: 真实类名 {configured} → {real}");
@@ -1195,6 +1234,20 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         if (!File.Exists(rawPath)) await FetchRawJarAsync(rawPath, jarUrl, expectMd5, ct).ConfigureAwait(false);
         if (downloadOnly) return new JarConversion(rawPath, rawPath, rawPath, null);
 
+        // ── 纯 .class jar（无 classes.dex，如 dex2jar 解壳产物）：JRE 的 URLClassLoader 直接吃
+        //    .class，不需要也不能过 dex2jar（对 .class 输入必炸，2026-09-26 seed 对照实验实测）。
+        //    类存在性按 zip 条目名查（JarHasClass 搜的是 dex 字节，纯 .class 灌不进去）。
+        if (IsPureClassJar(rawPath))
+        {
+            if (requireClass is not null && !JarHasClassFile(rawPath, requireClass))
+            {
+                Log($"跳过不含类 {requireClass} 的纯 .class jar: {Path.GetFileName(rawPath)}");
+                return null;
+            }
+            Log($"纯 .class jar 直接使用（跳过 dex2jar）: {Path.GetFileName(rawPath)}");
+            return new JarConversion(rawPath, rawPath, rawPath, null);
+        }
+
         // ── Guard 加固（assets 下有 .so native 解密器 + .guard 密文）：只有 ART guest 能解 ──
         string? shellJar = null;
         var dexSource = rawPath;
@@ -1318,6 +1371,25 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         catch { }
         return false;
     }
+    /// <summary>纯 .class jar 的类存在性：按 zip 条目名查（桥的类名解析顺序同 JarHasClass）。</summary>
+    private static bool JarHasClassFile(string jarPath, string className)
+    {
+        try
+        {
+            string[] candidates =
+            [
+                $"com/github/catvod/spider/{className}.class",
+                $"com/github/catvod/crawler/{className}.class",
+                $"{className}.class",
+            ];
+            using var zip = System.IO.Compression.ZipFile.OpenRead(jarPath);
+            foreach (var e in zip.Entries)
+                if (candidates.Contains(e.FullName, StringComparer.Ordinal)) return true;
+        }
+        catch { }
+        return false;
+    }
+
     private static bool IsGuarded(string jarPath)
     {
         try

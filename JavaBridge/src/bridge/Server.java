@@ -114,6 +114,7 @@ public class Server {
         //   proxy 就轮不到 → 死锁到 HTTP 超时 → spider 拿错误文本喂 Gson 炸（2026-09-24 实测）。
         //   协议响应按 id 匹配（宿主 RoundTripAsync），异步乱序输出安全。
         java.util.concurrent.ExecutorService proxyPool = java.util.concurrent.Executors.newFixedThreadPool(4);
+        OpWatchdog.start();   // op 挂死看门狗（>45s dump 全线程栈到 stderr）
         String line;
         while ((line = in.readLine()) != null) {
             if (line.isBlank()) continue;
@@ -141,6 +142,7 @@ public class Server {
             }
             final long fid = id;
             final String fop = req.optString("op");
+            OpWatchdog.begin(fid, fop);
             if (async) {
                 proxyPool.submit(() -> {
                     String o;
@@ -260,6 +262,7 @@ public class Server {
                 }
             System.out.println(out);
             System.out.flush();
+            OP_START.set(0);   // op 已完成：看门狗清零（避免误报下一轮 dump）
         }
     }
 
@@ -522,6 +525,39 @@ public class Server {
 
         System.err.println("[srv] Init 单例注入完成: Application×" + ctxN + "  DexClassLoader×" + dalN
                 + (dexLoader != null ? "（" + new File(realJar).getName() + "）" : "（无 realJar，跳过）"));
+    }
+
+    /** 一个 op 的处理开始时间（0=空闲）：看门狗据此发现挂死的装载/调用。 */
+    private static final java.util.concurrent.atomic.AtomicLong OP_START = new java.util.concurrent.atomic.AtomicLong(0);
+    private static final java.util.Set<Long> OP_DUMPED = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /** op 处理超时看门狗：>45s 未完成的 op 把全部线程栈 dump 到 stderr（挂死现场一次，换 id 重置）。 */
+    private static final class OpWatchdog {
+        static void begin(long id, String op) {
+            OP_DUMPED.clear();
+            OP_START.set(System.currentTimeMillis());
+        }
+
+        static void start() {
+            Thread t = new Thread(() -> {
+                while (true) {
+                    long st = OP_START.get();
+                    if (st > 0 && System.currentTimeMillis() - st > 45_000 && OP_DUMPED.add(st)) {
+                        System.err.println("[watchdog] op 已处理超 45s，全线程栈：");
+                        for (var e : Thread.getAllStackTraces().entrySet()) {
+                            if (e.getValue().length == 0) continue;
+                            StringBuilder sb = new StringBuilder("[watchdog] 「").append(e.getKey().getName()).append("」");
+                            for (StackTraceElement f : e.getValue()) sb.append("\n    at ").append(f);
+                            System.err.println(sb);
+                        }
+                        OP_START.set(System.currentTimeMillis());   // 45s 后再 dump 一轮（看现场变化）
+                    }
+                    try { Thread.sleep(5000); } catch (InterruptedException ignored) { return; }
+                }
+            }, "op-watchdog");
+            t.setDaemon(true);
+            t.start();
+        }
     }
 
     static void injectStaticContext(ClassLoader loader, String className, Object ctx) {

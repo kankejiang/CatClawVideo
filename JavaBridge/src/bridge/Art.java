@@ -351,17 +351,18 @@ public final class Art {
             Object sp = key == null ? null : Server.spiderOf(key);
             System.err.println("[art] proxy:" + port + " ← " + line + " → "
                     + (sp == null ? "没有对应爬虫" : "四步分派 " + sp.getClass().getSimpleName()));
-            if (sp == null && "ck".equals(q.get("do"))) {
-                // 壳的 adjustPort 探测（GET /proxy?do=ck，无 site）：真机上打给壳自己的 RemoteServer，
-                // DexNative.proxyInvoke→ProxyOrigin 是壳级服务，应答它自己的握手协议。回 404 它就判
-                // 「端口检测失败」从 9978 一路换到 9999，最后端口记 -1 → 播放地址 127.0.0.1:-1 必挂
-                // （2026-09-26 实测：双站点时单站点兜底失效，全被 404）。逐个壳实例试，谁应答用谁。
+            if (sp == null && ("ck".equals(q.get("do")) || "danmu".equals(q.get("do")))) {
+                // 壳的两种无 site 回调：
+                // ① do=ck —— adjustPort 探测（找「有服务应答」的端口，失败记 -1 → 播放地址必挂）
+                // ② do=danmu&url=<json> —— push 型聚合条目（seed 等）的播放解析入口：壳的
+                //    ProxyOrigin 解析 url 里的网盘链接 → 起流服务。真机上都由壳自己的服务应答；
+                //    回 404 壳就永远拿不到活。逐个壳实例试，谁应答用谁。
                 for (String k : SITES) {
                     Object cand = Server.spiderOf(k);
                     if (cand == null) continue;
                     Object[] r = Server.jarProxy(cand, q);
                     if (r == null) r = Server.proxyDispatch(cand, new java.util.HashMap<String, String>(q));
-                    if (r != null && r.length >= 3) { System.err.println("[art] adjustPort 探测由 " + k + " 应答"); writeResult(out, r); return; }
+                    if (r != null && r.length >= 3) { System.err.println("[art] " + q.get("do") + " 回调由 " + k + " 应答"); writeResult(out, r); return; }
                 }
                 writeText(out, 200, "ok");   // 全都不接也回 200：探测要的只是「有服务应答」
                 return;
