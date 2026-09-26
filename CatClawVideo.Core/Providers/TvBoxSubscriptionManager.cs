@@ -59,6 +59,11 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
 
         var contentType = resp.Content.Headers.ContentType?.MediaType ?? "";
         var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
+        // 失败时把**实际落地地址**报出来：订阅地址常被 302 到导航页/公告图（跟随重定向后
+        // RequestMessage 已是最后一跳）。用户报「无法解析这个接口」时，光说「返回的是图片」
+        // 没法定位，加上这行才知道站点本身已经不是配置了。
+        var landed = $"\n内容来自：{resp.RequestMessage?.RequestUri ?? new Uri(subscriptionUrl)}"
+            + (contentType.Length > 0 ? $"（{contentType}）" : "");
 
         // 图片响应：饭太硬等防直连源把 base64 配置隐写在图片尾部（JPEG FFD9 之后），
         // 先尝试提取隐写配置，失败再抛明确异常
@@ -68,7 +73,7 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
             var steganography = TryExtractConfigFromImage(bytes);
             if (steganography is null)
                 throw new NotSupportedException(
-                    "该订阅地址返回的是图片/二进制内容，且未在图片中找到隐藏配置。\n" +
+                    "该订阅地址返回的是图片/二进制内容，且未在图片中找到隐藏配置。" + landed + "\n" +
                     "请使用明文 TVBox json 或 MacCMS 直连地址。");
             text = steganography;
         }
@@ -84,7 +89,8 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
             var decrypted = await TryOfficialDecryptAsync(subscriptionUrl, ct);
             if (decrypted is null)
                 throw new NotSupportedException(
-                    "该订阅返回的是加密/混淆配置，且官方解密通道不可用。\n" +
+                    "该订阅返回的既不是 JSON 配置，也不是能通过官方通道解密的密文（可能是网页或被防直连处理过）。"
+                    + landed + "\n" +
                     "可改用明文 TVBox json 或 MacCMS 直连地址。");
             text = decrypted;
         }
@@ -565,6 +571,30 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
                     return trimmed;
             }
             catch { }
+        }
+
+        // 「盐前缀 + base64」形态（2026-09-26 英格里希嗷呜.top 实测）：IEND 后是
+        // 「盐（本身全是 base64 合法字符，如 Rn5dFaW951**）+ base64 配置」——盐与配置
+        // 黏连后任何 4 字节对齐都解不出（盐长 10，真起点 index 10 模 4 = 2，上面的
+        // += 4 循环永远试不到）。base64("{\"") = "eyJ"（base64("[") = "W1"），找到
+        // JSON 开头的铁打标志直接从那里解。
+        foreach (var marker in new[] { "eyJ", "W1si", "W3si" })   // {" / [{" / [ {
+        {
+            var at = clean.IndexOf(marker, StringComparison.Ordinal);
+            while (at >= 0)
+            {
+                var seg = clean[at..];
+                if (seg.Length % 4 != 0) seg += new string('=', 4 - seg.Length % 4);
+                try
+                {
+                    var decoded = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(seg));
+                    var trimmed = decoded.TrimStart('\0').TrimStart();
+                    if (trimmed.StartsWith('{') || trimmed.StartsWith('['))
+                        return trimmed;
+                }
+                catch { }
+                at = clean.IndexOf(marker, at + marker.Length, StringComparison.Ordinal);
+            }
         }
         return null;
     }
