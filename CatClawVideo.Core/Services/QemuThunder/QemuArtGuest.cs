@@ -31,7 +31,12 @@ public sealed class QemuArtGuest : IDisposable
 
     private readonly string _runtimeDir;
     private readonly Action<string>? _log;
-    private readonly object _sync = new();
+    // ⚠ 连接全程互斥（不能用 lock：里面要 await）。此前只在「创建 _vm」一小段加锁，
+    //   StartAsync 与探针循环都在锁外 —— 两个并发调用（后台预热 + 用户首次调用）会双双连上
+    //   同一 guest 桥，_stdin/_stdout 被后者覆盖、两个 ReadLoop 抢同一条流，请求应答被错分，
+    //   表现为「Java 桥响应超时（90s，id=N）」（2026-09-26 Debug 日志实锤，日志里还能看到
+    //   18600/18603 两台 VM 并存的痕迹）。整体串行后，后来者进来时前者已就绪，直接复用。
+    private readonly SemaphoreSlim _connectGate = new(1, 1);
 
     private QemuHostRuntime? _vm;
     private ArtDnsServer? _dns;   // guest 的域名解析靠它（没有 netd，bionic 自己一台服务器都拿不到）
@@ -76,7 +81,8 @@ public sealed class QemuArtGuest : IDisposable
     /// </summary>
     public async Task<(StreamWriter Stdin, StreamReader Stdout)?> ConnectAsync(CancellationToken ct = default)
     {
-        lock (_sync)
+        await _connectGate.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
             if (IsUp && _w is not null && _r is not null) return (_w, _r);
             if (!IsAvailable(_runtimeDir)) { Log("运行时不齐全，缺：" + MissingPieces(_runtimeDir)); return null; }
@@ -102,8 +108,14 @@ public sealed class QemuArtGuest : IDisposable
                     ProxyTunnel = tunnel > 0 ? (tunnel, GuestProxyPort) : null,
                 };
             }
+            if (!await _vm!.StartAsync(ct).ConfigureAwait(false)) { Log("QEMU 启动失败"); return null; }
         }
-        if (!await _vm!.StartAsync(ct).ConfigureAwait(false)) { Log("QEMU 启动失败"); return null; }
+        finally { _connectGate.Release(); }
+
+        // 探针循环不占 gate：VM 起来后等就绪可能要几分钟，握着会饿死其他等待者
+        // （此刻 IsUp 仍 false，其他 ConnectAsync 调用会重进 StartAsync —— StartAsync 对
+        //   已运行进程直接返回 true，然后同样进入探针循环，两条探针各自探测、谁先通谁设流，
+        //   仍是并发覆盖。所以真正的互斥必须在「设流」这一步，见下方 lock）。
 
         // ⚠ 不能把「TCP 连上了」当成「桥就绪」：slirp 自己就把三次握手做掉，guest 里还没 listen
         //   也一样 connect 成功（实测：1.5s 就"连上"，随后 ping 15s 超时）。
@@ -127,10 +139,20 @@ public sealed class QemuArtGuest : IDisposable
                 var line = await WaitForLineAsync(r, readCts.Token).ConfigureAwait(false);
                 if (line is not null && line.Contains("\"ok\""))
                 {
-                    lock (_sync) { _sock = c; _w = w; _r = r; }
-                    c = null;
-                    Log($"guest 桥就绪 127.0.0.1:{BridgePort}（探针应答 {line}）");
-                    return (_w, _r);
+                    // 设流必须与「检查 IsUp」互斥：两条并发探针都通了时，只能有一条拿到所有权，
+                    // 另一条把连接作废重试 —— 否则两条流同时写桥、两个读循环分吃应答。
+                    lock (_ownership)
+                    {
+                        if (IsUp && _w is not null && _r is not null) { try { c.Dispose(); } catch { } }
+                        else { _sock = c; _w = w; _r = r; }
+                    }
+                    if (ReferenceEquals(_w, w))
+                    {
+                        Log($"guest 桥就绪 127.0.0.1:{BridgePort}（探针应答 {line}）");
+                        return (_w, _r);
+                    }
+                    Log("guest 桥已被并发调用方接管，本探针让位重试");
+                    continue;
                 }
             }
             catch { /* 没通：下面重连 */ }
@@ -140,6 +162,9 @@ public sealed class QemuArtGuest : IDisposable
         Log($"等不到 guest 桥（端口 {BridgePort}，超时）");
         return null;
     }
+
+    /// <summary>桥连接的所有权（_sock/_w/_r 三个字段的写入互斥）。</summary>
+    private readonly object _ownership = new();
 
     private static async Task<string?> WaitForLineAsync(StreamReader r, CancellationToken ct)
     {

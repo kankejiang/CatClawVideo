@@ -387,35 +387,75 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     // ═══════════ 进程与调用 ═══════════
 
     /// <summary>
+    /// 后台预热桥（启动后调用）：ART guest VM 冷启动要 5~11s，此前发生在**第一次 jar 站点
+    /// 调用**上——首选站点是 jar 源时，整段冷启动直接叠进「首页首载/切站」的等待里。
+    /// 放到启动后台跑（宿主侧对迅雷 VM 已有同款预热先例），用户浏览首页的时间里 VM 就绪。
+    /// <para>幂等：桥已就绪时零开销直接返回；失败静默（首次真实调用仍会懒启动重试）。
+    /// ⚠ 限时 75s：预热与用户调用在 <see cref="_bridgeGate"/> 上互斥，guest 冷启动最坏要
+    /// 数分钟（226MB initrd 解压 + ART 起 VM），不限时的话一次卡住的预热会把用户的第一次
+    /// 调用也堵在队列里到天荒地老（2026-09-26 实测：预热占道 243s，用户点播放 90s 超时）。</para>
+    /// </summary>
+    public async Task WarmUpAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(75));
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            await EnsureBridgeAsync(cts.Token).ConfigureAwait(false);
+            Log($"桥预热完成（{sw.ElapsedMilliseconds}ms，{(ArtGuestMode ? "ART guest" : "宿主 JRE")}）");
+        }
+        catch (Exception ex)
+        {
+            Log($"桥预热失败/放弃（不影响后续懒启动）: {ex.Message}");
+        }
+    }
+
+    /// <summary>起桥全程互斥：并发 EnsureBridgeAsync 会双双连桥、覆盖 _stdin/_stdout、
+    /// 起两个 ReadLoop 分吃应答 —— 请求永远等不到回包（90s 超时的根因，2026-09-26 修复）。</summary>
+    private readonly SemaphoreSlim _bridgeGate = new(1, 1);
+
+    /// <summary>桥是否已就绪（不必重连）。快路径无锁检查。</summary>
+    private bool IsBridgeReady =>
+        ArtGuestMode
+            ? (_art is { IsUp: true } && _stdin is not null)
+            : (_proc is { HasExited: false } && _stdin is not null);
+
+    /// <summary>
     /// 确保桥可用。<b>两条链路同一套行协议</b>：ART guest（QEMU 里真 ART，走 TCP）优先，
     /// 其次宿主 JRE（子进程标准流）。握手在 <see cref="HandshakeAsync"/> 里，两边共用。
     /// </summary>
     private async Task EnsureBridgeAsync(CancellationToken ct)
     {
-        if (ArtGuestMode)
+        if (IsBridgeReady) return;
+        await _bridgeGate.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            _art ??= new CatClawVideo.Core.Services.QemuThunder.QemuArtGuest(ArtRuntimeDir, _log);
-            if (_art.IsUp && _stdin is not null) return;
-            var link = await _art.ConnectAsync(ct).ConfigureAwait(false);
-            if (link is null)
+            if (IsBridgeReady) return;   // 排队期间别的调用已把桥拉起来
+            if (ArtGuestMode)
             {
-                ArtGuestMode = false;
-                Log("ART guest 起不来 → 回落宿主 JRE 桥");
+                _art ??= new CatClawVideo.Core.Services.QemuThunder.QemuArtGuest(ArtRuntimeDir, _log);
+                var link = await _art.ConnectAsync(ct).ConfigureAwait(false);
+                if (link is null)
+                {
+                    ArtGuestMode = false;
+                    Log("ART guest 起不来 → 回落宿主 JRE 桥");
+                }
+                else
+                {
+                    (_stdin, _stdout) = link.Value;
+                    Log($"桥已连上 ART guest（127.0.0.1:{_art.BridgePort}）");
+                    _ = Task.Run(ReadLoopAsync);
+                }
             }
-            else
-            {
-                (_stdin, _stdout) = link.Value;
-                Log($"桥已连上 ART guest（127.0.0.1:{_art.BridgePort}）");
-                _ = Task.Run(ReadLoopAsync);
-            }
-        }
-        else if (_proc is { HasExited: false }) return;
 
-        if (!ArtGuestMode) await StartJvmBridgeAsync(ct).ConfigureAwait(false);
-        await HandshakeAsync(ct).ConfigureAwait(false);
-        // guest 的 /data 是 tmpfs（VM 冷启即清）：把上次会话持久化的偏好（网盘 Cookie 等）
-        // 回灌进 guest，必须发生在任何 spider 代码运行之前（PrefsStore 按名惰性读盘）
-        if (ArtGuestMode) await RestoreGuestPrefsAsync(ct).ConfigureAwait(false);
+            if (!ArtGuestMode) await StartJvmBridgeAsync(ct).ConfigureAwait(false);
+            await HandshakeAsync(ct).ConfigureAwait(false);
+            // guest 的 /data 是 tmpfs（VM 冷启即清）：把上次会话持久化的偏好（网盘 Cookie 等）
+            // 回灌进 guest，必须发生在任何 spider 代码运行之前（PrefsStore 按名惰性读盘）
+            if (ArtGuestMode) await RestoreGuestPrefsAsync(ct).ConfigureAwait(false);
+        }
+        finally { _bridgeGate.Release(); }
     }
 
     /// <summary>

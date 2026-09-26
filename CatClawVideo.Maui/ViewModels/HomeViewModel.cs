@@ -34,6 +34,27 @@ public partial class HomeViewModel : ObservableObject
     /// <summary>本会话内切换失败过的站点（弹窗置灰标注；重试成功会移除）</summary>
     public HashSet<string> FailedSites { get; } = new();
 
+    // ═══════════ 会话级缓存（性能：切站/回访免网络）═══════════
+    //
+    // 此前切站 = 分类列表 + 首页条目两次串行网络请求（jar 源经桥每次 0.5~1.3s），
+    // 且切回刚看过的站点也要全量重拉。TVBox 首页数据本就允许驻留，这里按会话缓存：
+    //   ── 分类列表按站点缓存（LoadHome/SelectSite 共用）
+    //   ── 首页第一页条目按「站点+分类+筛选」缓存（SelectCategory 命中即秒开）
+    // 订阅变化（SiteRegistry.Changed）时整体作废。
+
+    private readonly Dictionary<string, List<VodCategory>> _catsCache = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<VodItem>> _firstPageCache = new(StringComparer.Ordinal);
+
+    /// <summary>首屏条目缓存上限（超出全部作废；会话缓存不求精准淘汰）。</summary>
+    private const int MaxFirstPageCache = 24;
+
+    private string FirstPageKey(VodSiteInfo site, VodCategory category)
+    {
+        var filter = _filter.Count == 0 ? ""
+            : string.Join(";", _filter.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => kv.Key + "=" + kv.Value));
+        return $"{site.Key}|{category.Id}|{filter}";
+    }
+
     [ObservableProperty]
     private VodSiteInfo? _currentSite;
 
@@ -63,7 +84,12 @@ public partial class HomeViewModel : ObservableObject
         _covers = covers;
         // 订阅变化后允许首页重新拉一次（常驻页，之前以 Categories.Count>0 跳过）
         SiteRegistry.Changed += () =>
-            MainThread.BeginInvokeOnMainThread(() => { if (!IsHomeLoading) _ = LoadHomeCommand.ExecuteAsync(null); });
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                _catsCache.Clear();
+                _firstPageCache.Clear();
+                if (!IsHomeLoading) _ = LoadHomeCommand.ExecuteAsync(null);
+            });
     }
 
     /// <summary>首页首载：用户首选站点优先（失败回退自动探测第一个成功者）→ 选第一个分类拉列表</summary>
@@ -71,6 +97,7 @@ public partial class HomeViewModel : ObservableObject
     public async Task LoadHomeAsync()
     {
         if (Categories.Count > 0) return; // 常驻页只拉一次
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         IsHomeLoading = true;
         HomeStatus = "正在加载影片…";
 
@@ -92,29 +119,46 @@ public partial class HomeViewModel : ObservableObject
         VodSiteInfo? usedSite = null;
         if (preferred != null)
         {
-            try
+            // 会话缓存命中直接用（回启 App/切回旧站点免一次 0.5~1.3s 的分类请求）
+            if (_catsCache.TryGetValue(preferred.Key, out var cached) && cached.Count > 0)
             {
-                cats = await _provider.GetCategoriesAsync(preferred);
-                if (cats.Count > 0) usedSite = preferred;
+                usedSite = preferred;
+                cats = cached;
             }
-            catch { }
+            else
+            {
+                try
+                {
+                    cats = await _provider.GetCategoriesAsync(preferred);
+                    if (cats.Count > 0)
+                    {
+                        usedSite = preferred;
+                        _catsCache[preferred.Key] = cats;
+                    }
+                }
+                catch { }
+            }
         }
 
-        foreach (var site in sites.Where(s => s.Key != usedSite?.Key && s.Key != preferred?.Key))
+        // 回退探测：此前是串行 foreach——首选站点失效时（订阅里的死源很常见），
+        // 每个死站都要吃满自身超时（MacCMS 20s、jar 源最长 90s），首页等于冻住。
+        // 改为并发探测（带并发上限与整体超时），第一个出分类的站点即胜出。
+        if (usedSite == null)
         {
-            if (usedSite != null) break;
-            try
+            var win = await ProbeSitesAsync(sites.Where(s => s.Key != preferred?.Key));
+            if (win is { } w)
             {
-                cats = await _provider.GetCategoriesAsync(site);
-                if (cats.Count > 0) { usedSite = site; break; }
+                usedSite = w.Site;
+                cats = w.Cats;
+                _catsCache[w.Site.Key] = w.Cats;
             }
-            catch { }
         }
 
         if (usedSite == null)
         {
             HomeStatus = "订阅站点均拉取失败，请检查网络或在源配置中更换订阅";
             IsHomeLoading = false;
+            DiagLog.Write($"[home] 首载失败（候选 {sites.Count} 站，耗时 {sw.ElapsedMilliseconds}ms）");
             return;
         }
 
@@ -124,7 +168,51 @@ public partial class HomeViewModel : ObservableObject
         Categories.Clear();
         foreach (var c in cats) Categories.Add(c);
 
+        DiagLog.Write($"[home] 首载 site={usedSite.Name} 分类={cats.Count} 耗时={sw.ElapsedMilliseconds}ms");
         await SelectCategoryAsync(cats[0]);
+    }
+
+    /// <summary>
+    /// 并发探测候选站点，返回第一个能出分类的站点。
+    /// <para>并发上限 <see cref="ProbeConcurrency"/>（jar 源的桥内 load 有全局锁，放太多只会排队）；
+    /// 整体超时 <see cref="ProbeTimeoutSeconds"/>：胜者产生或超时即收摊，其余探测随之取消，
+    /// 不让死站把首页拖满自身超时。</para>
+    /// </summary>
+    private const int ProbeConcurrency = 4;
+    private const int ProbeTimeoutSeconds = 15;
+
+    private async Task<(VodSiteInfo Site, List<VodCategory> Cats)?> ProbeSitesAsync(IEnumerable<VodSiteInfo> candidates)
+    {
+        var list = candidates.ToList();
+        if (list.Count == 0) return null;
+        DiagLog.Write($"[home] 回退并发探测 {list.Count} 站（并发 {ProbeConcurrency}，超时 {ProbeTimeoutSeconds}s）");
+
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(ProbeTimeoutSeconds));
+        using var gate = new SemaphoreSlim(ProbeConcurrency);
+
+        async Task<(VodSiteInfo Site, List<VodCategory> Cats)?> ProbeOne(VodSiteInfo site)
+        {
+            try
+            {
+                await gate.WaitAsync(timeoutCts.Token).ConfigureAwait(false);
+                try
+                {
+                    var cats = await _provider.GetCategoriesAsync(site, timeoutCts.Token).ConfigureAwait(false);
+                    return cats.Count > 0 ? (site, cats) : null;
+                }
+                finally { gate.Release(); }
+            }
+            catch { return null; }
+        }
+
+        var tasks = list.Select(ProbeOne).ToList();
+        while (tasks.Count > 0)
+        {
+            var done = await Task.WhenAny(tasks).ConfigureAwait(false);
+            tasks.Remove(done);
+            if (await done.ConfigureAwait(false) is { } win) return win;   // using 收摊时取消其余探测
+        }
+        return null;
     }
 
     /// <summary>
@@ -146,30 +234,41 @@ public partial class HomeViewModel : ObservableObject
 
         IsHomeLoading = true;
         HomeStatus = $"正在切换到「{site.Name}」…";
+        var sw = System.Diagnostics.Stopwatch.StartNew();
 
         List<VodCategory> cats;
-        try
+        if (_catsCache.TryGetValue(site.Key, out var cached) && cached.Count > 0)
         {
-            cats = await _provider.GetCategoriesAsync(site);
-            if (cats.Count == 0)
+            // 会话缓存：切回本会话看过的站点免整轮网络（分类+首页两跳串行）
+            cats = cached;
+        }
+        else
+        {
+            try
+            {
+                cats = await _provider.GetCategoriesAsync(site);
+                if (cats.Count == 0)
+                {
+                    FailedSites.Add(site.Key);
+                    HomeStatus = $"「{site.Name}」未返回分类，该站点可能不可用";
+                    IsHomeLoading = false;
+                    return;
+                }
+                _catsCache[site.Key] = cats;
+            }
+            catch (Exception ex)
             {
                 FailedSites.Add(site.Key);
-                HomeStatus = $"「{site.Name}」未返回分类，该站点可能不可用";
+                var reason = ex is NotSupportedException ? ex.Message : $"拉取失败：{ex.Message}";
+                HomeStatus = $"「{site.Name}」不可用 · {reason}";
                 IsHomeLoading = false;
                 return;
             }
         }
-        catch (Exception ex)
-        {
-            FailedSites.Add(site.Key);
-            var reason = ex is NotSupportedException ? ex.Message : $"拉取失败：{ex.Message}";
-            HomeStatus = $"「{site.Name}」不可用 · {reason}";
-            IsHomeLoading = false;
-            return;
-        }
 
         FailedSites.Remove(site.Key);
         foreach (var c in cats) Categories.Add(c);
+        DiagLog.Write($"[site-switch] 分类就绪 site={site.Name} cats={cats.Count} 耗时={sw.ElapsedMilliseconds}ms{(_catsCache.ContainsKey(site.Key) ? "（缓存命中）" : "")}");
         await SelectCategoryAsync(cats[0]);
     }
 
@@ -192,17 +291,36 @@ public partial class HomeViewModel : ObservableObject
         IsHomeLoading = true;
         HomeStatus = $"正在加载「{category.Name}」…";
         Items.Clear();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
 
         var items = new List<VodItem>();
+        var fromCache = false;
         if (CurrentSite != null)
         {
-            try { items = await _provider.GetItemsAsync(CurrentSite, category, 1, FilterArg); }
-            catch (Exception ex) { DiagLog.Write($"[cat-select] 拉取失败: {ex.Message}"); }
+            var cacheKey = FirstPageKey(CurrentSite, category);
+            if (_firstPageCache.TryGetValue(cacheKey, out var cachedItems))
+            {
+                items = cachedItems;   // 首屏缓存命中：切分类/回访免 0.5~1.3s 的一跳
+                fromCache = true;
+            }
+            else
+            {
+                try
+                {
+                    items = await _provider.GetItemsAsync(CurrentSite, category, 1, FilterArg);
+                    if (items.Count > 0)
+                    {
+                        if (_firstPageCache.Count >= MaxFirstPageCache) _firstPageCache.Clear();
+                        _firstPageCache[cacheKey] = items;
+                    }
+                }
+                catch (Exception ex) { DiagLog.Write($"[cat-select] 拉取失败: {ex.Message}"); }
+            }
         }
 
         foreach (var it in items) Items.Add(it);
         CoverResolver.Attach(_covers, items);   // 列表先出，封面异步补齐（失败 → 占位海报）
-        DiagLog.Write($"[cat-select] 完成 cat={category.Name} items={items.Count}");
+        DiagLog.Write($"[cat-select] 完成 cat={category.Name} items={items.Count} 耗时={sw.ElapsedMilliseconds}ms{(fromCache ? "（缓存）" : "")}");
         HomeStatus = Items.Count == 0
             ? $"{CurrentSite?.Name ?? "当前源"} · {category.Name} · 暂无影片"
             : $"{CurrentSite!.Name} · {category.Name} · 已加载 {Items.Count} 部";

@@ -1,4 +1,4 @@
-﻿using System.Text;
+﻿﻿using System.Text;
 using CatClawVideo.Maui.Services;
 using CatClawVideo.Maui.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
@@ -267,6 +267,27 @@ public static class MauiProgram
 
         CatClawVideo.Core.Models.SiteRegistry.JsSpiderAvailable = jsRuntime.IsSupported || tvboxJsRuntime.IsSupported;
         CatClawVideo.Core.Models.SiteRegistry.JarSpiderAvailable = jarRuntime.IsSupported;
+
+        // ★ jar 桥预热：ART guest VM 冷启动（5~11s）此前发生在第一次 jar 站点调用上——
+        //   首选站点是 jar 源时就整段叠进「首页首载/切站」等待里。订阅就绪且存在 jar 源时，
+        //   启动后台把桥拉起来（延迟 6s 避让首屏 UI 与迅雷 VM 预热；幂等、失败无害，
+        //   Android 的 DexSpiderRuntime 不是本类型 → 自动 no-op）。
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                for (var i = 0; i < 30; i++)   // 等订阅解析出站点（最多 30s），再决定要不要预热
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(i == 0 ? 6 : 1)).ConfigureAwait(false);
+                    if (CatClawVideo.Core.Models.SiteRegistry.Sites.Count > 0) break;
+                }
+                if (!CatClawVideo.Core.Models.SiteRegistry.Playable
+                        .Any(s => s.SpiderKind == CatClawVideo.Core.Models.VodSpiderKind.Jar)) return;
+                if (jarRuntime is CatClawVideo.Core.Providers.JavaSpiderRuntime desktop)
+                    await desktop.WarmUpAsync().ConfigureAwait(false);
+            }
+            catch { /* 预热失败交给首次调用懒启动 */ }
+        });
 
         // js2Proxy 回环代理路由：按 siteKey 查站点 → 按 SpiderKind 分派 JS/Java 爬虫运行时
         spiderProxy.JsProxyHandler = (query, ct) =>

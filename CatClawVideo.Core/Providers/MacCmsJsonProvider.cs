@@ -42,7 +42,8 @@ public class MacCmsJsonProvider : IVodSourceProvider
     {
         try
         {
-            var raw = await GetJsonAsync(BuildUrl(site.Api, "ac=list"), ct);
+            // ConfigureAwait(false)：解析在调用方的 await 之后再回来，几百 KB 的 JSON 别在 UI 线程上跑
+            var raw = await GetJsonAsync(BuildUrl(site.Api, "ac=list"), ct).ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(raw)) return [];
             if (MacCmsXml.LooksLikeXml(raw)) return MacCmsXml.ParseCategories(raw);
             using var doc = JsonDocument.Parse(raw);
@@ -89,7 +90,7 @@ public class MacCmsJsonProvider : IVodSourceProvider
     {
         try
         {
-            var raw = await GetJsonAsync(BuildUrl(site.Api, query), ct);
+            var raw = await GetJsonAsync(BuildUrl(site.Api, query), ct).ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(raw)) return [];
             if (MacCmsXml.LooksLikeXml(raw)) return MacCmsXml.ParseItems(raw, site.Key);
             using var doc = JsonDocument.Parse(raw);
@@ -143,7 +144,7 @@ public class MacCmsJsonProvider : IVodSourceProvider
     {
         try
         {
-            var raw = await GetJsonAsync(BuildUrl(site.Api, $"ac=videolist&ids={Uri.EscapeDataString(item.Id)}"), ct);
+            var raw = await GetJsonAsync(BuildUrl(site.Api, $"ac=videolist&ids={Uri.EscapeDataString(item.Id)}"), ct).ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(raw)) return [];
             if (MacCmsXml.LooksLikeXml(raw)) return MacCmsXml.ParsePlaySources(raw);
             using var doc = JsonDocument.Parse(raw);
@@ -236,30 +237,19 @@ public class MacCmsJsonProvider : IVodSourceProvider
 
     private static async Task<string?> GetJsonAsync(string url, CancellationToken ct)
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            using var resp = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+            using var resp = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
             resp.EnsureSuccessStatusCode();
-            var json = await resp.Content.ReadAsStringAsync(ct);
-            try
-            {
-                System.IO.File.AppendAllText(
-                    System.IO.Path.Combine(System.IO.Path.GetTempPath(), "catclawvideo_http.log"),
-                    $"[{DateTime.Now:HH:mm:ss.fff}] {url} => {json.Length} chars{Environment.NewLine}");
-            }
-            catch { }
+            var json = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            // 一次请求只落一行（耗时+体量）：此前成功/失败各开一次文件同步写，热路径上纯浪费
+            Log($"{url} => {json.Length} chars {sw.ElapsedMilliseconds}ms");
             return json;
         }
         catch (Exception ex)
         {
-            var errText = ex.Message;
-            try
-            {
-                System.IO.File.AppendAllText(
-                    System.IO.Path.Combine(System.IO.Path.GetTempPath(), "catclawvideo_http.log"),
-                    $"[{DateTime.Now:HH:mm:ss.fff}] {url} => ERROR {errText}{Environment.NewLine}");
-            }
-            catch { }
+            Log($"{url} => ERROR {ex.Message} {sw.ElapsedMilliseconds}ms");
             return null;
         }
     }

@@ -64,6 +64,23 @@ public static class SpiderHttpBridge
     public const string DefaultUserAgent =
         "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36";
 
+    // 共享 client 池（按「是否跟随重定向」二分）：此前每个请求新建 SocketsHttpHandler +
+    // HttpClient，用完即弃 —— 连接毫无复用，JS 源一次 homeContent/categoryContent 内部
+    // 往往连发多个请求，每次都重做 TCP+TLS 握手，延迟按握手次数线性放大。
+    // 超时不再挂 client.Timeout（共享实例会互相干扰），改由每请求的 CTS 控制（见 Request）。
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<bool, HttpClient> Clients = new();
+
+    private static HttpClient ClientFor(bool allowRedirect) => Clients.GetOrAdd(allowRedirect, r =>
+        new HttpClient(new SocketsHttpHandler
+        {
+            AllowAutoRedirect = r,
+            AutomaticDecompression = DecompressionMethods.All,
+            UseCookies = false, // Cookie 由源自己管理（headers/cookie 项）
+            ConnectTimeout = TimeSpan.FromSeconds(15),
+            PooledConnectionLifetime = TimeSpan.FromMinutes(2),   // 定期换连接，跟随 DNS/远端变化
+        })
+        { Timeout = System.Threading.Timeout.InfiniteTimeSpan });
+
     /// <summary>解析 JS 传入的 options 对象（宿主已把 JsValue 转成 JSON 字符串）。</summary>
     public static SpiderReqOptions ParseOptions(string? optionsJson)
     {
@@ -122,14 +139,7 @@ public static class SpiderHttpBridge
         var result = new SpiderHttpResponse { Buffer = opt.Buffer };
         try
         {
-            using var handler = new SocketsHttpHandler
-            {
-                AllowAutoRedirect = opt.Redirect == 1,
-                AutomaticDecompression = DecompressionMethods.All,
-                UseCookies = false, // Cookie 由源自己管理（headers/cookie 项）
-                ConnectTimeout = TimeSpan.FromSeconds(Math.Min(20, Math.Max(3, opt.Timeout / 1000))),
-            };
-            using var client = new HttpClient(handler) { Timeout = TimeSpan.FromMilliseconds(Math.Max(2000, opt.Timeout)) };
+            var client = ClientFor(opt.Redirect == 1);
 
             using var req = new HttpRequestMessage(new HttpMethod(opt.Method.ToUpperInvariant()), url);
             req.Headers.TryAddWithoutValidation("User-Agent", DefaultUserAgent);
@@ -143,7 +153,10 @@ public static class SpiderHttpBridge
             if (method is "POST" or "PUT" or "PATCH")
                 req.Content = BuildContent(opt);
 
-            using var resp = client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead).GetAwaiter().GetResult();
+            // 每请求超时经 CTS：覆盖发请求 + 读体全程（client.Timeout=∞，见共享池注释）
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(Math.Max(2000, opt.Timeout)));
+            using var resp = client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token)
+                                   .GetAwaiter().GetResult();
             result.Status = (int)resp.StatusCode;
             result.Ok = resp.IsSuccessStatusCode;
             foreach (var h in resp.Headers)
@@ -151,7 +164,7 @@ public static class SpiderHttpBridge
             foreach (var h in resp.Content.Headers)
                 result.Headers.TryAdd(h.Key, string.Join(", ", h.Value));
 
-            var bytes = resp.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult();
+            var bytes = resp.Content.ReadAsByteArrayAsync(timeoutCts.Token).GetAwaiter().GetResult();
             result.ContentBytes = bytes;
             result.Buffer = opt.Buffer;
             result.Content = opt.Buffer switch

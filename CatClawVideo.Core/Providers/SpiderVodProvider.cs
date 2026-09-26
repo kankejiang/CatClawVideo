@@ -77,7 +77,7 @@ public class SpiderVodProvider : IVodSourceProvider, IActionVodSourceProvider
     public async Task<List<VodCategory>> GetCategoriesAsync(VodSiteInfo site, CancellationToken ct = default)
     {
         var rt = RuntimeFor(site) ?? throw new NotSupportedException(site.StatusNote ?? "爬虫运行时不可用");
-        var raw = await rt.HomeContentAsync(site, ct);
+        var raw = await rt.HomeContentAsync(site, ct).ConfigureAwait(false);
         var cats = SpiderJsonParser.ParseCategories(raw);
         _log?.Invoke($"[解析] {site.Key}.home → {raw.Length}B → 分类 {cats.Count} 个");
         return cats;
@@ -87,7 +87,8 @@ public class SpiderVodProvider : IVodSourceProvider, IActionVodSourceProvider
         IReadOnlyDictionary<string, string>? filter = null, CancellationToken ct = default)
     {
         var rt = RuntimeFor(site) ?? throw new NotSupportedException(site.StatusNote ?? "爬虫运行时不可用");
-        var raw = await rt.CategoryContentAsync(site, category.Id, page.ToString(), filter, ct);
+        // ConfigureAwait(false)： SpiderJsonParser 的正则解析别在 UI 线程上跑（每页几十条）
+        var raw = await rt.CategoryContentAsync(site, category.Id, page.ToString(), filter, ct).ConfigureAwait(false);
         var items = SpiderJsonParser.ParseItems(raw, site.Key);
         _log?.Invoke($"[解析] {site.Key}.category(tid={category.Id},pg={page}"
                      + (filter is { Count: > 0 } ? $",筛选={string.Join('/', filter.Select(kv => kv.Key + ":" + kv.Value))}" : "")
@@ -349,6 +350,6 @@ public class SpiderVodProvider : IVodSourceProvider, IActionVodSourceProvider
     {
         var rt = RuntimeFor(site) ?? throw new NotSupportedException(site.StatusNote ?? "爬虫运行时不可用");
         return SpiderJsonParser.ParseItems(
-            await rt.SearchContentAsync(site, keyword, "1", ct), site.Key);
+            await rt.SearchContentAsync(site, keyword, "1", ct).ConfigureAwait(false), site.Key);
     }
 }

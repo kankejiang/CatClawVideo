@@ -187,6 +187,23 @@ public class Server {
                             Class.forName("android.app.Dialog").getDeclaredMethod("fillSpec");
                             sb.append("Dialog.fillSpec=有(桩生效)");
                         } catch (Throwable e) { sb.append("Dialog.fillSpec=无(真框架)"); }
+                        // 类型身份问题只能问运行时：谁解析到的、父链里有没有 ContextWrapper。
+                        // （Rebo 的 VerifyError 说「register 是 Activity 但期望 ContextWrapper」，
+                        //  真机上 Activity 就是 ContextWrapper 的子类 —— 说明要么解析到了别的东西，
+                        //  要么这个类型压根没解析成功。）
+                        for (String n : new String[]{"android.app.Activity", "android.content.ContextWrapper",
+                                "android.app.Application$ActivityLifecycleCallbacks"}) {
+                            try {
+                                Class<?> k = Class.forName(n, false,
+                                        SPIDERS.isEmpty() ? Server.class.getClassLoader()
+                                                : SPIDERS.values().iterator().next().getClass().getClassLoader());
+                                StringBuilder chain = new StringBuilder();
+                                for (Class<?> c = k; c != null && chain.length() < 160; c = c.getSuperclass())
+                                    chain.append(c.getSimpleName()).append('>');
+                                sb.append(" | 类型 ").append(n).append(" 父链=").append(chain)
+                                  .append(" 接口数=").append(k.getInterfaces().length);
+                            } catch (Throwable e) { sb.append(" | 类型 ").append(n).append(" 解析失败 ").append(e); }
+                        }
                         try {
                             Object a = bridge.Art.app();
                             sb.append("app=").append(a.getClass().getName())
@@ -608,15 +625,13 @@ public class Server {
 
     private static String call(String site, String method, org.json.JSONArray args) throws Exception {
         // 慢调用留痕（>300ms 打 stderr → 宿主日志的 [jvm] stderr 行）：
-        // 「播放页加载很慢」要能一眼看出是爬虫自身耗时还是宿主侧排队（实测 2026-09-16 需要此数据）
+        // 「播放页加载很慢」要能一眼看出是爬虫自身耗时还是宿主侧排队（实测 2026-09-16 需要此数据）。
+        // ⚠ 曾在锁内对每个参数逐字符 hexdump（[srv] arg[i] cps=…）——那是排查「内嵌 JSON id
+        //   被引号污染」的临时手段：它对每个调用都做 O(2n) 字符串构造并占着全局锁 + stderr
+        //   通道，长参数（筛选 ext / 网盘 JSON id）时肉眼可见地拖慢每一次调用，已移除。
+        //   需要看参数原文时在此处临时加回（必须随 initrd/gb.dex 重编才进 guest）。
         final long t0 = System.currentTimeMillis();
         synchronized (LOCK) {
-            for (int i = 0; i < args.length(); i++) {
-                String a = args.optString(i);
-                StringBuilder cp = new StringBuilder();
-                a.chars().forEach(c -> cp.append(Integer.toHexString(c)).append(' '));
-                System.err.println("[srv] arg[" + i + "] len=" + a.length() + " cps=" + cp);
-            }
             Object instance = SPIDERS.get(site);
             if (instance == null) throw new IllegalStateException("site not loaded: " + site);
             Class<?> cls = instance.getClass();
