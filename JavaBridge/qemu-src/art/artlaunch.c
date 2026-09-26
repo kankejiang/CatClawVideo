@@ -114,6 +114,23 @@ int main(int argc, char **argv) {
     args.options = opts;
     args.ignoreUnrecognized = JNI_TRUE;
 
+    /* CATCLAW_JVM_EXTRA：宿主按需追加 JVM 选项（空格分隔，如
+     * "-Xnoimage-dex2oat -Xnodex2oat"——13 无预编译 boot 镜像时 ART 会现场调 dex2oat
+     * 生成 boot 镜像，而那个镜像要求 linker namespace 与 apex 元数据一致，极简 rootfs
+     * 里配不齐 → 两个选项都传，走纯 interpreter+JIT，原生 CPU 上开销可接受）。 */
+    {
+        const char *extra = getenv("CATCLAW_JVM_EXTRA");
+        if (extra) {
+            char *dup = strdup(extra);
+            for (char *tok = strtok(dup, " "); tok != NULL && n < 12; tok = strtok(NULL, " ")) {
+                opts[n].optionString = tok;
+                printf("artlaunch: 附加 JVM 选项 %s\n", tok);
+                n++;
+            }
+            fflush(stdout);
+        }
+    }
+
     JavaVM *vm = NULL;
     JNIEnv *env = NULL;
     jint rc = create(&vm, (void **) &env, &args);
