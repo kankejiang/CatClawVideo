@@ -630,6 +630,11 @@ public class Server {
             if (dt > 300) {
                 System.err.println("[srv] " + site + "." + method + " 耗时 " + dt + "ms，结果 " + out.length() + " 字节");
             }
+            // 诊断：playerContent/detailContent 的应答原文（排查「宿主解析不出播放地址」类问题 ——
+            // 3671B 这类非标准形态光看字节数猜不出来，2026-09-26 seed 站实测）
+            if (("playerContent".equals(method) || "detailContent".equals(method)) && out.length() > 2 && out.length() < 40000) {
+                System.err.println("[srv-resp] " + site + "." + method + " ← " + out);
+            }
             return out;
         }
     }

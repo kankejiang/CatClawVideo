@@ -216,9 +216,31 @@ public class SpiderVodProvider : IVodSourceProvider, IActionVodSourceProvider
             // 爬虫明确给了失败原因（网盘「容量不足」这类）时**不要**拿剧集 id 兜底：
             // 网盘文件的 id 是一整段 JSON,喂给播放器只会 MalformedURLException,
             // 把真正该告诉用户的原因盖成「Source error」。
-            if (play.Message.Length == 0) play.Url = episode.Url;
+            if (play.Message.Length == 0)
+            {
+                // episode.Url 有可能根本不是 URL：push/网盘聚合站（seed 等）的 vod_id 是**内嵌
+                // JSON**（{"vod_pic":...,"vod_id":"..."}），detailContent 解析失败后拿它兜底喂播放器
+                // 只会「Invalid URI: The URI scheme is not valid」，盖掉真正的原因（2026-09-26 实测）。
+                // 给可读错误：站点内部没给出播放地址，问题在站点的 detail 链路。
+                var u = (episode.Url ?? "").TrimStart();
+                if (u.StartsWith("{") || u.StartsWith("["))
+                    throw new InvalidOperationException(
+                        $"{site.Key} 的条目数据是内嵌 JSON 而非播放地址（detailContent 解析失败，未返回播放内容）");
+                play.Url = episode.Url;
+            }
             else return play;
         }
+
+        // playerContent 返回的 url 字段也可能是**字符串化的 JSON**（push 型聚合条目的二次解析
+        // 输入，如 seed 站 url="{\"vod_pic\":...}"）—— 不是可播地址，喂播放器同样 Invalid URI
+        // （2026-09-26 实测：真机 TVBox 靠壳的 danmaku 钩子链继续处理，宿主还没有那条链，
+        //   先给可读错误定位，别让「Invalid URI」盖掉真正的问题）。
+        var playUrlTrimmed = play.Url.TrimStart();
+        if (playUrlTrimmed.StartsWith("{") || playUrlTrimmed.StartsWith("["))
+            throw new InvalidOperationException(
+                $"{site.Key} 返回的播放地址是内嵌 JSON 而非视频地址（该条目需经站点的网盘解析链二次处理，"
+                + $"其 detailContent 在 guest 里解析失败"
+                + (play.Message.Length > 0 ? $"：{play.Message}" : "，无错误信息") + "）");
 
         // 荐片私有地址（tvbox-xg: / ftp…gbl.114s）：交宿主 P2P 引擎转成本地 http 地址
         var jp = TryResolveJianpian(play, episode);
