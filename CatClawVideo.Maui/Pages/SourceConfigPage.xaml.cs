@@ -205,15 +205,17 @@ public partial class SourceConfigPage : ContentPage
             var tail = new HorizontalStackLayout { Spacing = 12, VerticalOptions = LayoutOptions.Center };
             var captured = sub;
             // 启用开关（单选，2026-09-26 用户定案）：一次只用一个订阅源。启用行主题色
-            // 「● 启用中」，停用行灰色「○ 停用中」，点击停用行即切换（拉取 + 整表替换）。
+            // 「● 启用中」（点击=停用，站点表清空），停用行灰色「○ 停用中」（点击=启用）。
             var toggle = new Label
             {
                 Text = sub.Sub.Enabled ? "● 启用中" : "○ 停用中",
                 FontSize = 11.5,
                 TextColor = sub.Sub.Enabled ? Color.FromArgb("#2b6cb0") : Application.Current?.Resources["TextHintColor"] as Color,
             };
-            if (!sub.Sub.Enabled)
-                toggle.GestureRecognizers.Add(new TapGestureRecognizer { Command = new Command(() => _ = EnableSubAsync(captured)) });
+            toggle.GestureRecognizers.Add(new TapGestureRecognizer
+            {
+                Command = new Command(() => _ = sub.Sub.Enabled ? DisableSubAsync(captured) : EnableSubAsync(captured))
+            });
             var swap = new Label { Text = "换线路", FontSize = 11.5, TextColor = Color.FromArgb("#2b6cb0") };
             swap.GestureRecognizers.Add(new TapGestureRecognizer { Command = new Command(() => _ = SwitchLineAsync(captured)) });
             var del = new Label { Text = "删除", FontSize = 11.5, TextColor = Color.FromArgb("#c0392b") };
@@ -224,6 +226,23 @@ public partial class SourceConfigPage : ContentPage
             row.Add(tail, 1);
             SubList.Children.Add(row);
         }
+    }
+
+    /// <summary>
+    /// 停用一条订阅：写库后<b>清空站点表</b>（无启用者 = 没有站点，首页回引导态；
+    /// 要看内容就再启用一条 —— 启用状态完全由开关控制）。
+    /// </summary>
+    private async Task DisableSubAsync(SubRow row)
+    {
+        row.Sub.Enabled = false;
+        try { await _db.UpdateSubscriptionAsync(row.Sub); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[源配置] 停用状态写库失败: {ex.Message}"); }
+        RebuildSubs();
+        SiteRegistry.Replace([]);
+        Core.Models.SiteCache.Save([]);
+        _sites.Clear();
+        RebuildSites();
+        await DisplayAlertAsync("已停用订阅", $"「{row.Name}」已停用，站点列表已清空。\n要恢复观看请启用任一订阅。", "好");
     }
 
     /// <summary>

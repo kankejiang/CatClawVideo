@@ -470,18 +470,14 @@ public static class MauiProgram
                 var database = app.Services.GetRequiredService<VideoDatabase>();
                 var subscriptionManager = app.Services.GetRequiredService<ISubscriptionManager>();
                 // 单选启用（2026-09-26 用户定案）：一次只用一个订阅源，行内开关切换。
-                // 启用者不存在（全停用/首次）→ 兜底启用第一个，保证首次开箱有源可看。
-                var subs = await database.GetSubscriptionsAsync();
-                var active = subs.FirstOrDefault(s => s.Enabled) ?? subs.FirstOrDefault();
+                               var subs = await database.GetSubscriptionsAsync();
+                // 全停是合法状态（用户主动停用）：尊重之，站点表空 → 首页回引导态
+                var active = subs.FirstOrDefault(s => s.Enabled);
                 if (active is null)
                 {
-                    DiagLog.Write("[启动] 没有任何订阅源，站点列表为空");
+                    SiteRegistry.Replace([]);
+                    DiagLog.Write("[启动] 没有启用中的订阅源（可在订阅管理页启用），站点列表为空");
                     return;
-                }
-                if (!active.Enabled)
-                {
-                    active.Enabled = true;
-                    await database.UpdateSubscriptionAsync(active);
                 }
                 var sites = await subscriptionManager.LoadSubscriptionAsync(active.SourceUrl);
                 SiteRegistry.Replace(sites);
