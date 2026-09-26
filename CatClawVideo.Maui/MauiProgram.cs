@@ -470,7 +470,7 @@ public static class MauiProgram
                 var database = app.Services.GetRequiredService<VideoDatabase>();
                 var subscriptionManager = app.Services.GetRequiredService<ISubscriptionManager>();
                 // 单选启用（2026-09-26 用户定案）：一次只用一个订阅源，行内开关切换。
-                               var subs = await database.GetSubscriptionsAsync();
+                               var subs = await database.GetAllSubscriptionsAsync();
                 // 全停是合法状态（用户主动停用）：尊重之，站点表空 → 首页回引导态
                 var active = subs.FirstOrDefault(s => s.Enabled);
                 if (active is null)

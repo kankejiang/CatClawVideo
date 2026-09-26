@@ -182,7 +182,10 @@ public partial class SourceConfigPage : ContentPage
     {
         try
         {
-            var subs = await _db.GetSubscriptionsAsync();
+            // 必须 GetAll（含停用行）：开关要能看到/重新启用停用的订阅。
+            // GetSubscriptionsAsync 带 Where(Enabled) 过滤——全部停用后列表会整块消失
+            //（2026-09-26 用户实测「点停用后订阅源没了」）。
+            var subs = await _db.GetAllSubscriptionsAsync();
             _subs.Clear();
             foreach (var s in subs) _subs.Add(new SubRow(s));
             RebuildSubs();
