@@ -300,8 +300,36 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         return new JsonArray(tid, pg, map);
     }
 
-    public Task<string> DetailContentAsync(VodSiteInfo site, string id, CancellationToken ct = default) =>
-        CallAsync(site, "detailContent", new JsonArray(id), ct);
+    // detailContent 会话级缓存：聚合网盘源的 detail 要串行探测多个网盘（实测玩偶 71~90s+），
+    // 重进详情页/重试绝不该再付一遍。键 = site|vodId；成功结果才缓存，上限 40 条超出清空。
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _detailCache =
+        new(StringComparer.Ordinal);
+
+    public async Task<string> DetailContentAsync(VodSiteInfo site, string id, CancellationToken ct = default)
+    {
+        var key = site.Key + "|" + id;
+        if (_detailCache.TryGetValue(key, out var hit)) return hit;
+        var raw = await CallAsync(site, "detailContent", new JsonArray(id), ct).ConfigureAwait(false);
+        if (_detailCache.Count >= 40) _detailCache.Clear();
+        _detailCache[key] = raw;
+        return raw;
+    }
+
+    /// <summary>桥生死探针（超时处置前用）：call 异步化后 ping 能穿透慢 call——
+    /// ping 得通说明桥活着、只是该调用慢，此时杀桥重置（15s 起桥 + 全站重载）是双输。</summary>
+    private async Task<bool> PingBridgeAliveAsync(TimeSpan timeout)
+    {
+        try
+        {
+            var resp = await RoundTripAsync(new JsonObject
+            {
+                ["id"] = Interlocked.Increment(ref _id),
+                ["op"] = "ping",
+            }, timeout, CancellationToken.None, resetOnTimeout: false).ConfigureAwait(false);
+            return resp["ok"]?.GetValue<bool>() == true;
+        }
+        catch { return false; }
+    }
 
     // ── 搜索速度档案 ──
     // 按站点记录上次 searchContent 实测耗时（含桥内排队），SearchPage 据此把快源排前、
@@ -753,7 +781,15 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
                 // 握手那条 ping 不触发重置：它本来就是"桥还没起来"的信号，交给连接流程自己收尾。
                 var op = req["op"]?.GetValue<string>() ?? "";
                 if (op != "ping" && op != "exit" && resetOnTimeout)
-                    ResetBridge($"op={op} id={expectId}{InFlightTag} 在 {timeout.TotalSeconds:F0}s 内没回来");
+                {
+                    // 先探桥生死再决定重置：call 已异步化（CALL_POOL），ping 能穿透慢 call——
+                    // ping 得通说明桥活着、只是该调用慢（实测聚合网盘源 detailContent 71s 才完成），
+                    // 杀桥重置（15s 起桥 + 全站重载）纯属双输；探针也无应答才是真死，走重置。
+                    if (await PingBridgeAliveAsync(TimeSpan.FromSeconds(4)).ConfigureAwait(false))
+                        throw new TimeoutException(
+                            $"线路爬虫（{InFlightTag}）{timeout.TotalSeconds:F0}s 无响应，但桥仍存活——该线路服务端极慢，建议换线路（id={expectId}）");
+                    ResetBridge($"op={op} id={expectId}{InFlightTag} 在 {timeout.TotalSeconds:F0}s 内没回来且探针无应答");
+                }
                 throw new TimeoutException(BuildTimeoutMessage(op, timeout, expectId));
             }
         }
