@@ -207,6 +207,12 @@ public partial class HomeViewModel : ObservableObject
             ? $"{CurrentSite?.Name ?? "当前源"} · {category.Name} · 暂无影片"
             : $"{CurrentSite!.Name} · {category.Name} · 已加载 {Items.Count} 部";
         IsHomeLoading = false;
+
+        // 首屏填充保底：第一页条目太少（内容不满一屏）时滚动条不出现，
+        // RemainingItemsThresholdReached 永远不触发 → 无限滚动死锁（2026-09-26 发行版实测：
+        // 15 条无滚动条，卡死在第一页）。这里主动补载到可滚动，交给滚动接管。
+        if (HasMoreItems && Items.Count < MinFillCount)
+            await LoadMoreAsync();
     }
 
     // ═══════════════════ 分类筛选器（对位 TVBox GridFilterDialog）═══════════════════
@@ -255,7 +261,12 @@ public partial class HomeViewModel : ObservableObject
         await SelectCategoryAsync(_currentCategory!);
     }
 
-    /// <summary>滚动到底自动加载下一页（CollectionView RemainingItemsThresholdReached）</summary>
+    /// <summary>
+    /// 滚动到底自动加载下一页（CollectionView RemainingItemsThresholdReached）。
+    /// <para><b>首屏填充模式</b>：累计条目不足 <see cref="MinFillCount"/>（内容不满一屏 →
+    /// 滚动条不出现 → 阈值触发永远不来）时，一次调用内连续拉页直到可滚动或加载完 ——
+    /// 滚动触发时条目通常已够，循环即退化为原来的单页行为。</para>
+    /// </summary>
     [RelayCommand(CanExecute = nameof(CanLoadMore))]
     public async Task LoadMoreAsync()
     {
@@ -265,22 +276,28 @@ public partial class HomeViewModel : ObservableObject
         LoadMoreCommand.NotifyCanExecuteChanged();
         try
         {
-            var next = _currentPage + 1;
-            HomeStatus = $"{CurrentSite.Name} · {_currentCategory.Name} · 加载第 {next} 页…";
-            var items = await _provider.GetItemsAsync(CurrentSite, _currentCategory, next, FilterArg);
-
-            DiagLog.Write($"[loadmore] 第 {next} 页取到 {items.Count} 条（现有 {Items.Count} 条）");
-            if (items.Count == 0)
+            while (true)
             {
-                HasMoreItems = false;
-                HomeStatus = $"{CurrentSite.Name} · {_currentCategory.Name} · 已全部加载（{Items.Count} 部）";
-                return;
-            }
+                var next = _currentPage + 1;
+                HomeStatus = $"{CurrentSite.Name} · {_currentCategory.Name} · 加载第 {next} 页…";
+                var items = await _provider.GetItemsAsync(CurrentSite, _currentCategory, next, FilterArg);
 
-            _currentPage = next;
-            foreach (var it in items) Items.Add(it);
-            CoverResolver.Attach(_covers, items);   // 追加页同样补封面
-            HomeStatus = $"{CurrentSite.Name} · {_currentCategory.Name} · 已加载 {Items.Count} 部";
+                DiagLog.Write($"[loadmore] 第 {next} 页取到 {items.Count} 条（现有 {Items.Count} 条）");
+                if (items.Count == 0)
+                {
+                    HasMoreItems = false;
+                    HomeStatus = $"{CurrentSite.Name} · {_currentCategory.Name} · 已全部加载（{Items.Count} 部）";
+                    return;
+                }
+
+                _currentPage = next;
+                foreach (var it in items) Items.Add(it);
+                CoverResolver.Attach(_covers, items);   // 追加页同样补封面
+                HomeStatus = $"{CurrentSite.Name} · {_currentCategory.Name} · 已加载 {Items.Count} 部";
+
+                // 条目够滚动（≥ MinFill）或本就是滚动触发的单页请求 → 停，交还滚动接管
+                if (Items.Count >= MinFillCount) return;
+            }
         }
         catch
         {
@@ -292,6 +309,9 @@ public partial class HomeViewModel : ObservableObject
             LoadMoreCommand.NotifyCanExecuteChanged();
         }
     }
+
+    /// <summary>首屏填充阈值：低于它视为「内容不满一屏」，滚动条出不来（按最宽网格 8 列 × 3 行 + 余量）。</summary>
+    private const int MinFillCount = 30;
 
     private bool CanLoadMore() => !_loadingMore && HasMoreItems && !IsHomeLoading;
 }
