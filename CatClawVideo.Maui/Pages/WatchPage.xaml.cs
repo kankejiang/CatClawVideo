@@ -1066,6 +1066,11 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
         TopBarTitle.Text = _item.Title;
         ControlBar.Title = _item.Title;
 
+        // ★ 跨源并行预取：聚合网盘源的选集解析很慢（实测玩偶 71~90s，jar 内部串行探测多网盘），
+        //   当前源在解析的同时让其它候选源也在后台解析（结果落 detail 缓存）——当前源超时/
+        //   用户换源时，其它源已就绪，秒开。全程静默，不影响当前源路径；同一部片只预取一轮。
+        StartCrossSourcePrefetch(_item.Title);
+
         // 徽章：清晰度 / 年份 / 分类（无则隐藏）
         SetBadge(RemarksBadge, RemarksBadgeLabel, _item.Remarks);
         SetBadge(YearBadge, YearBadgeLabel, _item.Year);
@@ -2215,6 +2220,58 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
             DiagLog.Write($"[换源] 失败：{ex.GetType().Name}: {ex.Message}");
         }
         finally { _autoSwitching = false; }
+    }
+
+    // ═══════════ 跨源并行预取（多线路同时解析） ═══════════
+    //
+    // 聚合网盘源的选集解析是慢大头（实测玩偶 detailContent 71~90s+：jar 内部串行探测
+    // 夸克/UC/阿里/百度），而其它候选源的解析与它毫无依赖——完全可以同时跑。
+    // 播放页打开即后台预取：其它可播站点搜同片名 → 命中即解析选集（结果落
+    // JavaSpiderRuntime 的 detail 缓存）。当前源超时/用户换源时，其它源已就绪，秒开。
+
+    private static readonly SemaphoreSlim PrefetchGate = new(2);   // 与当前源操作共享桥（4 槽），预取最多占 2
+    private static readonly HashSet<string> PrefetchedTitles = new(StringComparer.Ordinal);
+    private static readonly object PrefetchSync = new();
+
+    private void StartCrossSourcePrefetch(string title)
+    {
+        var norm = Core.Services.TitleNormalizer.ForSearchQuery(title);
+        if (norm.Length < 2) return;
+        lock (PrefetchSync)
+        {
+            if (!PrefetchedTitles.Add(norm)) return;   // 同一部片只预取一轮
+        }
+        var currentKey = _site?.Key;
+        var candidates = SiteRegistry.Playable
+            .Where(x => x.Key != currentKey && x.Searchable)
+            // 快源先跑（搜索速度档案）：慢源延后，避免占住预取名额
+            .OrderBy(x => CatClawVideo.Core.Providers.JavaSpiderRuntime.LastSearchMs(x.Key) is { } ms
+                ? (ms > 8000 ? ms + 30_000 : ms) : 0)
+            .Take(8)
+            .ToList();
+        if (candidates.Count == 0) return;
+        DiagLog.Write($"[prefetch] 《{norm}》跨源并行预取启动：{candidates.Count} 站");
+        _ = Task.Run(async () =>
+        {
+            var tasks = candidates.Select(async site =>
+            {
+                await PrefetchGate.WaitAsync().ConfigureAwait(false);
+                try
+                {
+                    var sw = System.Diagnostics.Stopwatch.StartNew();
+                    var hits = await _provider.SearchAsync(site, norm).ConfigureAwait(false);
+                    var match = hits.FirstOrDefault(h => Core.Services.TitleNormalizer.Matches(h.Title, norm));
+                    if (match is null) return;
+                    var srcs = await _provider.GetPlaySourcesAsync(site, match).ConfigureAwait(false);
+                    var eps = srcs.Sum(s => s.Episodes.Count);
+                    DiagLog.Write($"[prefetch] {site.Name}《{match.Title}》就绪：{eps} 集，{sw.ElapsedMilliseconds}ms（换源/换线路可秒开）");
+                }
+                catch { /* 预取失败静默：超时/无结果都不影响当前源 */ }
+                finally { PrefetchGate.Release(); }
+            });
+            await Task.WhenAll(tasks).ConfigureAwait(false);
+            DiagLog.Write($"[prefetch] 《{norm}》跨源预取全部完成");
+        });
     }
 
     // ═══════════════════════ 换源（跨站点搜索同名片） ═══════════════════════
