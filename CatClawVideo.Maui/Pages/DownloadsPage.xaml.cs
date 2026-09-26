@@ -142,6 +142,42 @@ public partial class DownloadsPage : ContentView, ITabView
     }
 
     /// <summary>⚙ 下载设置：并发任务数（复刻音乐版并发槽位；用 ActionSheet 简化面板）</summary>
+    /// <summary>
+    /// 从剪贴板读一条链接建任务。
+    /// <para>为什么用剪贴板而不是输入框：要下的链接几乎总是从别处（详情页「分享/复制」、浏览器、
+    /// 站内复制）来的，MAUI 也没有现成的输入弹层；剪贴板一步到位，且与 TVBox 的
+    /// <c>PushActivity</c>「读剪贴板一键推送」是同一个思路。</para>
+    /// </summary>
+    /// <summary>本页是 tab 里的 ContentView，提示框要走宿主 Page。</summary>
+    async Task SayAsync(string msg)
+    {
+        VisualElement? v = this;
+        while (v is not null and not Page) v = v.Parent as VisualElement;
+        if (v is Page page) await page.DisplayAlertAsync("下载", msg, "好");
+    }
+
+    private async void OnPasteDownloadTapped(object? sender, TappedEventArgs e)
+    {
+        string? text = null;
+        try { text = await Clipboard.Default.GetTextAsync(); }
+        catch { /* 无剪贴板权限/平台不支持时按空处理 */ }
+        var url = (text ?? "").Trim();
+        if (url.Length == 0)
+        {
+            await SayAsync("剪贴板是空的。请先在播放页「分享/复制」拿到直链或磁力链接。");
+            return;
+        }
+        if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase) &&
+            !url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase) &&
+            !url.StartsWith("ed2k://", StringComparison.OrdinalIgnoreCase))
+        {
+            await SayAsync("剪贴板内容不像下载链接（需要 http/https、magnet: 或 ed2k://）。");
+            return;
+        }
+        _vm.AddUrlDownload(url);
+        _vm.RefreshStats();
+    }
+
     private async void OnSettingsTapped(object? sender, EventArgs e)
     {
         var choice = await AlertActionAsync("同时下载任务数",

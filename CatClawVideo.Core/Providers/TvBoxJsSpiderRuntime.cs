@@ -24,7 +24,7 @@ namespace CatClawVideo.Core.Providers;
 /// <para>⚠ 所有调用必须在线程池线程上执行（<see cref="CallAsync"/> 内 Task.Run 包裹），
 /// 装配期 lock 块内用 GetAwaiter().GetResult()——UI 线程进入会 sync-over-async 死锁（Drpy 同款教训）。</para>
 /// </summary>
-public class TvBoxJsSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime
+public class TvBoxJsSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderLiveRuntime
 {
     public string Id => "jint-tvbox-js";
     public bool IsSupported => true;
@@ -59,7 +59,7 @@ public class TvBoxJsSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime
         _cacheDir = cacheDir;
         _proxyPort = proxyPort;
         _log = log;
-        _local = new SpiderLocalStore(cacheDir);
+        _local = SpiderLocalStore.For(cacheDir);
         Directory.CreateDirectory(cacheDir);
     }
 
@@ -70,8 +70,18 @@ public class TvBoxJsSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime
     public Task<string> HomeContentAsync(VodSiteInfo site, CancellationToken ct = default) =>
         CallAsync(site, "__SPIDER__.home(true)", ct);
 
-    public Task<string> CategoryContentAsync(VodSiteInfo site, string tid, string pg, CancellationToken ct = default) =>
-        CallAsync(site, $"__SPIDER__.category({JsStr(tid)}, {JsStr(pg)}, false, {{}})", ct);
+    public Task<string> CategoryContentAsync(VodSiteInfo site, string tid, string pg,
+        IReadOnlyDictionary<string, string>? filter = null, CancellationToken ct = default)
+    {
+        var has = filter is { Count: > 0 };
+        return CallAsync(site,
+            $"__SPIDER__.category({JsStr(tid)}, {JsStr(pg)}, {(has ? "true" : "false")}, {SpiderJsUtil.ObjectLiteral(filter)})",
+            ct);
+    }
+
+    /// <summary>spider 型直播源（JS）：TVBox 的 JS 契约里方法名是 <c>live(url)</c>。</summary>
+    public Task<string> LiveContentAsync(VodSiteInfo site, string url, CancellationToken ct = default) =>
+        CallAsync(site, $"__SPIDER__.live({SpiderJsUtil.Str(url)})", ct);
 
     public Task<string> DetailContentAsync(VodSiteInfo site, string id, CancellationToken ct = default) =>
         CallAsync(site, $"__SPIDER__.detail({JsStr(id)})", ct);

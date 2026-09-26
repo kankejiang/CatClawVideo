@@ -15,10 +15,21 @@
     <Grid RowDefinitions="Auto,*" Padding="0">
         <Grid RowDefinitions="Auto,Auto,Auto" Padding="24,14,24,10" RowSpacing="10" Grid.Row="0">
 
-            <!-- 顶栏：仅标题（新建下载入口已移除；返回按钮此前也已移除） -->
-            <Grid Grid.Row="0" ColumnDefinitions="*">
+            <!-- 顶栏：标题 + 新建下载入口（此前被摘掉，导致整条下载链没有任何创建口） -->
+            <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
                 <Label Grid.Column="0" Text="下载管理" FontSize="17" FontFamily="OpenSansSemibold"
                        TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
+                <Border Grid.Column="1" StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,6"
+                        BackgroundColor="{DynamicResource ChipInactiveColor}" VerticalOptions="Center">
+                    <HorizontalStackLayout Spacing="6">
+                        <Label Text="＋" FontSize="14" TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
+                        <Label Text="粘贴链接新建" FontSize="11.5"
+                               TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
+                    </HorizontalStackLayout>
+                    <Border.GestureRecognizers>
+                        <TapGestureRecognizer Tapped="OnPasteDownloadTapped" />
+                    </Border.GestureRecognizers>
+                </Border>
             </Grid>
 
             <!-- 统计行 -->

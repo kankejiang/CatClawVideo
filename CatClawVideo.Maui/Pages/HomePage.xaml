@@ -40,6 +40,23 @@
                     </Border.GestureRecognizers>
                 </Border>
 
+                <!-- 筛选（对位 TVBox GridFilterDialog）：站点没返回 filters 时整块隐藏 -->
+                <Border x:Name="FilterShell" IsVisible="False"
+                        StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,6"
+                        BackgroundColor="{DynamicResource ChipInactiveColor}">
+                    <HorizontalStackLayout Spacing="6">
+                        <Label x:Name="FilterLabel" Text="筛选" FontSize="11.5"
+                               TextColor="{DynamicResource TextSecondaryColor}"
+                               LineBreakMode="TailTruncation" MaxLines="1"
+                               VerticalOptions="Center" />
+                        <Label Text="▾" FontSize="10"
+                               TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
+                    </HorizontalStackLayout>
+                    <Border.GestureRecognizers>
+                        <TapGestureRecognizer Tapped="OnFilterTapped" />
+                    </Border.GestureRecognizers>
+                </Border>
+
                 <!-- 切换源（遥控器可聚焦，见 HomePage.xaml.cs 的 SwitchSiteShell 焦点环） -->
                 <Border x:Name="SwitchSiteShell"
                         StrokeThickness="2" Stroke="Transparent"

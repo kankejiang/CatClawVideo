@@ -37,8 +37,9 @@ public class CompositeVodSourceProvider : IVodSourceProvider, IActionVodSourcePr
     public Task<List<VodCategory>> GetCategoriesAsync(VodSiteInfo site, CancellationToken ct = default) =>
         Required(site).GetCategoriesAsync(site, ct);
 
-    public Task<List<VodItem>> GetItemsAsync(VodSiteInfo site, VodCategory category, int page = 1, CancellationToken ct = default) =>
-        Required(site).GetItemsAsync(site, category, page, ct);
+    public Task<List<VodItem>> GetItemsAsync(VodSiteInfo site, VodCategory category, int page = 1,
+        IReadOnlyDictionary<string, string>? filter = null, CancellationToken ct = default) =>
+        Required(site).GetItemsAsync(site, category, page, filter, ct);
 
     public async Task<List<VodPlaySource>> GetPlaySourcesAsync(VodSiteInfo site, VodItem item, CancellationToken ct = default)
     {

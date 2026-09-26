@@ -18,6 +18,7 @@ public partial class SettingsPage : ContentView, ITabView, IRemoteKeyHandler
 {
     private readonly SettingsViewModel _vm;
     private readonly IThemeService _theme;
+    private readonly CatClawVideo.Data.VideoDatabase _db;
 
     // ─────────── 焦点分层 ───────────
     private const int LayerTopNav = 0;
@@ -34,13 +35,25 @@ public partial class SettingsPage : ContentView, ITabView, IRemoteKeyHandler
     /// <summary>当前分类下的可聚焦内容行。</summary>
     private List<FocusableRow> _content = new();
 
-    private static readonly (string Key, string Title, string Glyph)[] Sections =
+    private static readonly (string Key, string Title, string Glyph)[] AllSections =
     [
         ("source", "内容源", "🧩"),
         ("play",   "播放",   "▶"),
         ("diag",   "诊断日志", "📄"),
         ("about",  "关于",   "ℹ"),
     ];
+
+    /// <summary>当前露出的分区：未开开发者模式时藏掉「诊断日志」（对位 TVBox 连按 4 次 0 才显出调试开关）。</summary>
+    private static (string Key, string Title, string Glyph)[] Sections = AllSections;
+
+    private static bool DevMode
+    {
+        get { try { return Preferences.Default.Get("dev_mode", false); } catch { return false; } }
+        set { try { Preferences.Default.Set("dev_mode", value); } catch { } }
+    }
+
+    private static void RefreshSections() =>
+        Sections = DevMode ? AllSections : [.. AllSections.Where(x => x.Key != "diag")];
 
     // ─────────── 控件引用 ───────────
     private Border? _rail;
@@ -55,11 +68,12 @@ public partial class SettingsPage : ContentView, ITabView, IRemoteKeyHandler
     private FocusableRow? _focused;
     private int _serverRowIndex = -1;
 
-    public SettingsPage(SettingsViewModel vm, IThemeService theme)
+    public SettingsPage(SettingsViewModel vm, IThemeService theme, CatClawVideo.Data.VideoDatabase db)
     {
         InitializeComponent();          // 必须：创建 XAML 中的 Root 容器
         _vm = vm;
         _theme = theme;
+        _db = db;
         BindingContext = _vm;
 
         BuildLayout();
@@ -80,6 +94,7 @@ public partial class SettingsPage : ContentView, ITabView, IRemoteKeyHandler
         };
 
         // ── 左导航 ──
+        RefreshSections();
         var railStack = new VerticalStackLayout { Spacing = 4 };
         railStack.Add(new Label
         {
@@ -298,6 +313,63 @@ public partial class SettingsPage : ContentView, ITabView, IRemoteKeyHandler
         sub.ShowArrow = true;
         sub.Activated += async (_, _) => await GoAsync("sourceconfig");
 
+        var bgRow = AddRow("▶", "后台继续播放", "切到后台或锁屏时声音不断（通知栏可控制）；分片仍走原链路", ref rows);
+        var bgSwitch = new TogglePill { IsOn = Services.BgPlayPrefs.IsOn };
+        bgSwitch.Toggled += (_, on) =>
+        {
+            Services.BgPlayPrefs.IsOn = on;
+            _ = AskNotificationPermissionAsync();
+            bgRow.ValueText = on ? "已开启" : "";
+        };
+        bgRow.Trailing = bgSwitch;
+        bgRow.Activated += (_, _) => bgSwitch.Toggle();
+
+        var dohRow = AddRow("🌐", "加密 DNS（DoH）", "解析被污染时用；流媒体分片不走它，避免拖慢起播", ref rows,
+            Services.DohPrefs.Label(Services.DohPrefs.Load()));
+        dohRow.Activated += async (_, _) =>
+        {
+            var next = Services.DohPrefs.Next(Services.DohPrefs.Load());
+            Services.DohPrefs.Save(next);
+            Core.Services.Doh.Selector = next;          // 立刻生效（解析器每次查询现读）
+            dohRow.ValueText = Services.DohPrefs.Label(next);
+            if (Core.Services.Doh.Selected is { } ep && Core.Services.Doh.Endpoints.Count > 1)
+            {
+                var names = Core.Services.Doh.Endpoints.Select(x => x.Name).ToArray();
+                var pick = await HostPage()?.DisplayActionSheetAsync("选哪个 DoH 服务商", "取消", null, names);
+                var idx = Array.IndexOf(names, pick);
+                if (idx >= 0)
+                {
+                    Services.DohPrefs.Save(idx + 1);
+                    Core.Services.Doh.Selector = idx + 1;
+                    dohRow.ValueText = Services.DohPrefs.Label(idx + 1);
+                }
+            }
+        };
+
+        var rcRow = AddRow("⇄", "局域网遥控", "同一网络里用浏览器推片进来（带 token；不开文件浏览 / 上传 / 改配置）",
+            ref rows, RemoteControlSummary());
+        rcRow.ShowArrow = true;
+        rcRow.Activated += async (_, _) => await ShowRemoteControlAsync();
+
+        // 配置包（对位 TVBox BackupDialog 的 bak_*.json）：换机迁移用。放在源分区，
+        // 因为它带走的第一等重要东西就是订阅列表。
+        var expRow = AddRow("⇧", "导出配置包", "订阅 + 设置 + 直播/搜索源偏好打成一个 json（刻意不含站点账号口令）", ref rows);
+        expRow.ShowArrow = true;
+        expRow.Activated += async (_, _) => await ExportBundleAsync();
+
+        var impRow = AddRow("⇩", "导入配置包", "合并式：只补没有的订阅、按名覆盖设置项，不清空现有数据", ref rows);
+        impRow.ShowArrow = true;
+        impRow.Activated += async (_, _) => await ImportBundleAsync();
+
+        // 订阅壁纸（对位 TVBox 设置页「下载壁纸 / 还原」）：地址由订阅的 wallpaper 字段给
+        var wpRow = AddRow("🖼", "设为桌面壁纸", "取订阅里的 wallpaper；会说明这张来自哪个订阅", ref rows);
+        wpRow.ShowArrow = true;
+        wpRow.Activated += async (_, _) => await ApplyWallpaperAsync();
+
+        var wpBack = AddRow("↩", "还原桌面壁纸", "清回系统默认壁纸", ref rows);
+        wpBack.ShowArrow = true;
+        wpBack.Activated += async (_, _) => await RestoreWallpaperAsync();
+
         var status = AddRow("◎", "站点状态", "", ref rows);
         _serverRowIndex = rows - 1;
         RefreshSiteStatus();
@@ -332,9 +404,58 @@ public partial class SettingsPage : ContentView, ITabView, IRemoteKeyHandler
         cache.IncreaseCommand = new Command(() => ShiftCache(+1));
 
         AddRow("▭", "小窗尺寸（21:9 手机横屏）", "", ref rows, "58% 宽 · 可展开全宽");
-        AddRow("▣", "默认画面比例", "", ref rows, "保持比例（AspectFit）");
-        AddRow("⏩", "默认倍速", "", ref rows, "1.0×");
+
+        // ↓ 下面三行原本是「只有文案、没有命令」的装饰行（parity 盘点里的自家收尾项），
+        //   现在接成真开关：点一下轮一档，值存 Preferences，播放页起播时读。
+        var aspectRow = AddRow("▣", "默认画面比例", "变形拉伸只在片源比例与屏幕差太多时用", ref rows,
+            Services.AspectPrefs.Label(Services.AspectPrefs.Load()));
+        aspectRow.Activated += (_, _) =>
+        {
+            var next = Services.AspectPrefs.Next(Services.AspectPrefs.Load());
+            Services.AspectPrefs.Save(next);
+            aspectRow.ValueText = Services.AspectPrefs.Label(next);
+        };
+
+        var speedRow = AddRow("⏩", "默认倍速", "每次起播的初始倍速，播放中仍可临时调", ref rows,
+            Services.SpeedPrefs.Label(Services.SpeedPrefs.Load()));
+        speedRow.Activated += (_, _) =>
+        {
+            var next = Services.SpeedPrefs.Next(Services.SpeedPrefs.Load());
+            Services.SpeedPrefs.Save(next);
+            speedRow.ValueText = Services.SpeedPrefs.Label(next);
+        };
+
+        var decRow = AddRow("⚙", "解码模式", "花屏/绿屏/无声时换一档试试（对位 TVBox 的硬解/软解切换）", ref rows,
+            Services.DecoderModePrefs.Label(Services.DecoderModePrefs.Load()));
+        decRow.Activated += (_, _) =>
+        {
+            var next = Services.DecoderModePrefs.Next(Services.DecoderModePrefs.Load());
+            Services.DecoderModePrefs.Save(next);
+            decRow.ValueText = Services.DecoderModePrefs.Label(next);
+        };
+
+        var histRow = AddRow("🕮", "历史条数上限", "超过就按「最早看过」删；同一部剧本来就合并成一条", ref rows,
+            Services.HistoryCap.Label(Services.HistoryCap.Load()));
+        histRow.Activated += (_, _) =>
+        {
+            var next = Services.HistoryCap.Next(Services.HistoryCap.Load());
+            Services.HistoryCap.Save(next);
+            histRow.ValueText = Services.HistoryCap.Label(next);
+        };
+
         AddRow("◉", "电视遥控焦点样式", "", ref rows, "白色描边 + 放大");
+
+        // m3u8 去广告：移植 TVBox 的 M3u8.purify，默认关（与 TVBox HawkConfig.M3U8_PURIFY 一致）。
+        // 放在播放区而不是源区，是因为它改变的是「拿到播放列表之后怎么处理」。
+        var purifyRow = AddRow("✂", "m3u8 去广告", "清洗点播列表：删广告段与少数派路径；疑似误删会整体回退原文", ref rows);
+        var purifySwitch = new TogglePill { IsOn = CatClawVideo.Core.Services.M3u8Purifier.Enabled };
+        purifySwitch.Toggled += (_, on) =>
+        {
+            CatClawVideo.Core.Services.M3u8Purifier.Enabled = on;
+            try { Preferences.Default.Set("m3u8_purify", on); } catch { }
+        };
+        purifyRow.Trailing = purifySwitch;
+        purifyRow.Activated += (_, _) => purifySwitch.Toggle();
     }
 
     private static long ReadCacheGb()
@@ -364,6 +485,176 @@ public partial class SettingsPage : ContentView, ITabView, IRemoteKeyHandler
             DiagLog.Write($"[缓存] 上限改为 {gb}GB");
         }
         catch { }
+    }
+
+    // ─────────── 局域网遥控 ───────────
+
+    /// <summary>本机能拿到的局域网 IPv4 地址（遥控要用它，回环地址没意义所以排除）。</summary>
+    static string FirstLanAddress()
+    {
+        try
+        {
+            foreach (var a in System.Net.Dns.GetHostAddresses(System.Net.Dns.GetHostName()))
+            {
+                if (a.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork) continue;
+                if (System.Net.IPAddress.IsLoopback(a)) continue;
+                if (a.ToString().StartsWith("169.254.", StringComparison.Ordinal)) continue;   // APIPA：没网时也有地址
+                return a.ToString();
+            }
+        }
+        catch { }
+        return "127.0.0.1";
+    }
+
+    static string RemoteControlSummary()
+    {
+        var port = Core.Services.SpiderProxyServer.ActivePort;
+        return port == 0 ? "代理未启动" : "端口 " + port;
+    }
+
+    private async Task ShowRemoteControlAsync()
+    {
+        var port = Core.Services.SpiderProxyServer.ActivePort;
+        var token = Core.Services.RemoteControlHub.Token;
+        if (port == 0)
+        {
+            if (HostPage() is { } p0)
+                await p0.DisplayAlertAsync("局域网遥控", "本机代理还没起来（遥控与它同端口），稍后再试。", "好");
+            return;
+        }
+        var ip = FirstLanAddress();
+        var text = "遥控网页：http://" + ip + ":" + port + "/rc/?token=" + token
+            + Environment.NewLine + Environment.NewLine
+            + "探测：http://" + ip + ":" + port + "/rc/ping"
+            + Environment.NewLine + Environment.NewLine
+            + "推一条待播：http://" + ip + ":" + port + "/rc/push?token=" + token
+            + "&url=<播放地址>&name=<片名>"
+            + Environment.NewLine + Environment.NewLine
+            + "当前播放：http://" + ip + ":" + port + "/rc/media?token=" + token
+            + Environment.NewLine + Environment.NewLine
+            + "口令：" + token
+            + Environment.NewLine + "（TVBox 的遥控是全程无鉴权的，这里除 ping 外都要带口令）";
+        if (HostPage() is not { } page) return;
+        var copy = await page.DisplayAlertAsync("局域网遥控", text, "复制网页地址", "关闭");
+        if (copy)
+        {
+            try { await Clipboard.Default.SetTextAsync("http://" + ip + ":" + port + "/rc/?token=" + token); } catch { }
+        }
+    }
+
+    /// <summary>Android 13+ 通知权限：没给的话前台服务照样跑，但通知栏没有控制条 —— 用户体验差一档。</summary>
+    private static async Task AskNotificationPermissionAsync()
+    {
+#if ANDROID
+        try
+        {
+            var status = await Microsoft.Maui.ApplicationModel.Permissions
+                .CheckStatusAsync<Microsoft.Maui.ApplicationModel.Permissions.PostNotifications>();
+            if (status != Microsoft.Maui.ApplicationModel.PermissionStatus.Denied) return;
+            await Microsoft.Maui.ApplicationModel.Permissions
+                .RequestAsync<Microsoft.Maui.ApplicationModel.Permissions.PostNotifications>();
+        }
+        catch (Exception ex) { BtFileLog.Write($"[后台播放] 通知权限请求异常：{ex.Message}"); }
+#endif
+    }
+
+    // ─────────── 订阅壁纸（对位 TVBox「下载壁纸 / 还原」）───────────
+
+    private static readonly HttpClient WallpaperHttp = new() { Timeout = TimeSpan.FromSeconds(25) };
+
+    // SettingsPage 是 ContentView，DisplayAlert* 不在它身上 → 沿父链找宿主页（见 HostPage()）
+    private Task ShowWallpaperAsync(string message) =>
+        HostPage() is { } page ? page.DisplayAlertAsync("订阅壁纸", message, "好") : Task.CompletedTask;
+
+    private async Task ApplyWallpaperAsync()
+    {
+        if (!CatClawVideo.Maui.Services.WallpaperService.Supported)
+        {
+            await ShowWallpaperAsync("当前平台没有系统壁纸接口，设不了桌面壁纸。");
+            return;
+        }
+        var found = CatClawVideo.Core.Providers.TvBoxConfigStore.AnyWallpaper();
+        if (found is null)
+        {
+            await ShowWallpaperAsync("已加载的订阅里没有 wallpaper 字段。\n这个地址由订阅自身提供，换一条带该字段的订阅再试。");
+            return;
+        }
+        // 多订阅并存时壁纸不唯一，所以必须把来源订阅一起报出来
+        var msg = await CatClawVideo.Maui.Services.WallpaperService.ApplyAsync(found.Value.Url, WallpaperHttp);
+        await ShowWallpaperAsync($"来源「{found.Value.Key}」\n{msg}");
+    }
+
+    private Task RestoreWallpaperAsync() =>
+        ShowWallpaperAsync(CatClawVideo.Maui.Services.WallpaperService.Restore());
+
+    // ─────────── 配置包导出 / 导入 ───────────
+
+    private async Task ExportBundleAsync()
+    {
+        var page = HostPage();
+        try
+        {
+            var json = await Services.SettingsBackup.ExportAsync(_db);
+            var path = Core.AppPaths.Sub("backups", Services.SettingsBackup.FileName);
+            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
+            await File.WriteAllTextAsync(path, json);
+            try
+            {
+                await Microsoft.Maui.ApplicationModel.DataTransfer.Share.RequestAsync(
+                    new Microsoft.Maui.ApplicationModel.DataTransfer.ShareFileRequest
+                    {
+                        Title = "配置包",
+                        File = new Microsoft.Maui.ApplicationModel.DataTransfer.ShareFile(path),
+                    });
+                return;
+            }
+            catch
+            {
+                // 桌面端没有可用的分享通道 —— 不报错，退回到「告诉你文件在哪」
+            }
+            if (page is not null)
+                await page.DisplayAlertAsync("配置包已生成", path, "好");
+        }
+        catch (Exception ex)
+        {
+            if (page is not null) await page.DisplayAlertAsync("导出失败", ex.Message, "好");
+        }
+    }
+
+    private async Task ImportBundleAsync()
+    {
+        var page = HostPage();
+        try
+        {
+            var picked = await Microsoft.Maui.Storage.FilePicker.PickAsync(
+                new Microsoft.Maui.Storage.PickOptions
+                {
+                    PickerTitle = "选择配置包 json",
+                    FileTypes = new Microsoft.Maui.Storage.FilePickerFileType(new Dictionary<DevicePlatform, IEnumerable<string>>
+                    {
+                        [DevicePlatform.WinUI] = new[] { ".json" },
+                        [DevicePlatform.Android] = new[] { "*/*" },
+                    }),
+                });
+            if (picked is null) return;
+            string text;
+            await using (var stream = await picked.OpenReadAsync())
+            using (var reader = new System.IO.StreamReader(stream))
+                text = await reader.ReadToEndAsync();
+
+            if (page is null) return;
+            if (!await page.DisplayAlertAsync("导入配置包",
+                    "合并式导入：新增缺失的订阅、按名覆盖同名设置项，不会清空现有数据。继续？", "导入", "取消"))
+                return;
+
+            var r = await Services.SettingsBackup.ImportAsync(_db, text);
+            await page.DisplayAlertAsync("导入完成",
+                r.Summary + System.Environment.NewLine + "新订阅要重新进入「源配置」页才会拉取站点。", "好");
+        }
+        catch (Exception ex)
+        {
+            if (page is not null) await page.DisplayAlertAsync("导入失败", ex.Message, "好");
+        }
     }
 
     // ─────────── 诊断日志 ───────────
@@ -397,6 +688,17 @@ public partial class SettingsPage : ContentView, ITabView, IRemoteKeyHandler
 
     // ─────────── 关于 ───────────
 
+    private static DateTime _aboutTapAt;
+    private static int _aboutTaps;
+
+    /// <summary>本页是 ContentView（tab 内容），弹窗得找承载它的 Page。</summary>
+    ContentPage? HostPage()
+    {
+        for (VisualElement? v = this; v is not null; v = v.Parent as VisualElement)
+            if (v is ContentPage page) return page;
+        return null;
+    }
+
     private void BuildAboutSection()
     {
         int rows = 0;
@@ -404,7 +706,27 @@ public partial class SettingsPage : ContentView, ITabView, IRemoteKeyHandler
         var row = AddRow("ℹ", "猫爪影视", "开源协议 · 免责声明 · 检查更新", ref rows);
         try { row.ValueText = $"v{AppInfo.Current?.VersionString ?? "0.0.0"}"; } catch { }
         row.ShowArrow = true;
-        row.Activated += async (_, _) => await GoAsync("about");
+        row.Activated += async (_, _) =>
+        {
+            // 连点 4 次「关于」（相邻两次间隔 ≤2s）= 开 / 关开发者模式。
+            // TVBox 用的是遥控器连按 4 次「0」，触屏没有 0 键可连按，版本号行是最接近的落点。
+            var now = DateTime.UtcNow;
+            _aboutTaps = (now - _aboutTapAt).TotalSeconds <= 2 ? _aboutTaps + 1 : 1;
+            _aboutTapAt = now;
+            if (_aboutTaps < 4)
+            {
+                await GoAsync("about");
+                return;
+            }
+            _aboutTaps = 0;
+            DevMode = !DevMode;
+            RefreshSections();
+            if (HostPage() is { } host)
+                await host.DisplayAlertAsync("开发者模式",
+                    DevMode ? "已开启。「诊断日志」分区会在下次进入设置页时出现。"
+                            : "已关闭。「诊断日志」分区会在下次进入设置页时隐藏。",
+                    "好");
+        };
     }
 
     // ═══════════════════════ 行工厂 ═══════════════════════

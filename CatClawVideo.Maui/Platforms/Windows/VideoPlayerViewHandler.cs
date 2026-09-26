@@ -1,4 +1,5 @@
 using CatClawVideo.Maui.Controls;
+using TrackLang = CatClawVideo.Maui.Services.TrackLang;
 using Microsoft.Maui.Handlers;
 using MediaPlayer = global::Windows.Media.Playback.MediaPlayer;
 using MediaPlaybackSession = global::Windows.Media.Playback.MediaPlaybackSession;
@@ -74,6 +75,7 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
         var impl = (IVideoPlayerImplementation)this;
         impl.SetVolume(VirtualView.Volume);
         impl.SetAspect(VirtualView.Aspect);
+        _decoderMode = VirtualView.DecoderMode;   // 要在首次 SetSource 前就位（解码器创建期决定）
         impl.KeepScreenOn(VirtualView.ShouldKeepScreenOn);
         if (!string.IsNullOrEmpty(VirtualView.Source))
             impl.SetSource(VirtualView.Source, VirtualView.Headers);
@@ -105,6 +107,9 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
     {
         var view = VirtualView;
         if (view == null || _mediaPlayer == null) return;
+        _mediaUrl = url;
+        _mediaHeaders = headers;
+        _subtitlePathAdded = null;   // 新源上没有我们那条轨
 
         try
         {
@@ -112,6 +117,17 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
             if (string.IsNullOrEmpty(url))
             {
                 PlatformView.Source = null;
+                return;
+            }
+
+            // 强制硬解 = 绕开 FFmpeg，整条流交给 Media Foundation（系统解码器）。
+            // 表现差异是真实的：H265/AC3 这类系统没解码器的轨道会失败，而某些 FFmpeg 会花屏的
+            // 硬解友好流在这条路上反而顺。
+            if (_decoderMode == VideoDecoderMode.Hardware)
+            {
+                PlatformView.Source = global::Windows.Media.Core.MediaSource.CreateFromUri(new Uri(url));
+                ReapplySpeed();
+                Maui.Services.BtFileLog.Write("[player] 解码模式=强制硬解 → 走系统 MF（不建 FFmpeg 源）");
                 return;
             }
 
@@ -165,6 +181,10 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
             //   avformat_seek_file 的通用二分搜索（用 Cluster 时间戳 + avio seek 探测），
             //   无索引也能 seek —— ffmpeg CLI 实测同一条流 seek 成功（Range 57MB 处）。
             config.General.FastSeek = true;
+            // 强制软解：视频也交给 FFmpeg（默认只把音频交给 FFmpeg、视频走系统 D3D11 硬解）。
+            // 用于「硬解花屏/绿屏但软解正常」那类源。
+            if (_decoderMode == VideoDecoderMode.Software)
+                config.Video.VideoDecoderMode = FFmpegInteropX.VideoDecoderMode.ForceFFmpegSoftwareDecoder;
             // ★ 绝不能对 CreateFromUri 设超时：数据供给被引擎节流，初始化就是要几十秒；
             //   超时放弃的实例仍在后台解码，但 Source 已换成别的——表现为黑屏。等它完成即可。
             var interop = await FFmpegInteropX.FFmpegMediaSource.CreateFromUriAsync(url, config)
@@ -211,10 +231,227 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
     private void CloseInterop()
     {
         _sourceGen++;
+        _subtitlePathAdded = null;   // 新源上没有我们那条轨了
         var old = _interop;
         _interop = null;
         try { PlatformView.Source = null; } catch { }
         try { old?.Dispose(); } catch { }
+    }
+
+    /// <summary>我们加进去的那条外挂字幕轨的名字。</summary>
+    private const string SubtitleLabel = "CatClawExt";
+
+    /// <summary>当前已挂到 interop 上的外挂字幕路径（null = 没挂）。</summary>
+    private string? _subtitlePathAdded;
+
+    private string? _mediaUrl;
+    private IReadOnlyDictionary<string, string>? _mediaHeaders;
+
+    /// <summary>
+    /// 外挂字幕（Windows 路）。三处与 Android 不同，都是被实测逼出来的：
+    /// <list type="bullet">
+    ///   <item><description>偏移走原生 <c>SetSubtitleDelay</c>，<b>不重建源</b>、不打断播放；</description></item>
+    ///   <item><description>新加的轨必须重挂 <c>MediaPlaybackItem</c> 才会出现在播放器里；</description></item>
+    ///   <item><description><b>关闭只能重开一次不带字幕的源</b> —— FFmpegInteropX 2.1 的 .NET 投影里
+    ///   <c>SubtitleTracks</c> / <c>IsDisabled</c> 都不存在（实测 dll 元数据），拿不到「按轨隐藏」，
+    ///   而 WinRT 的 <c>MediaPlaybackItem.TimedTextTracks</c> 在本工程引用的投影版本上也没有。
+    ///   代价是重开一次源：直链秒级，磁力流较慢，所以只在真的从「有」变「无」时才付。</description></item>
+    /// </list>
+    /// </summary>
+    void IVideoPlayerImplementation.SetExternalSubtitle(string? path, string? mime, double offsetSeconds)
+    {
+        var want = string.IsNullOrEmpty(path) ? null : path;
+
+        if (want is null)
+        {
+            if (_subtitlePathAdded is null) return;   // 本来就没有 → 不折腾源
+            _subtitlePathAdded = null;
+            ReopenCurrentSource();
+            return;
+        }
+
+        if (_subtitlePathAdded != want)
+        {
+            _subtitlePathAdded = want;
+            _ = AddSubtitleAndReattachAsync(want, offsetSeconds);
+            return;
+        }
+        // 同一条字幕，只是偏移变了
+        TrySetDelay(offsetSeconds);
+    }
+
+    async System.Threading.Tasks.Task AddSubtitleAndReattachAsync(string path, double offsetSeconds)
+    {
+        if (VirtualView == null) return;
+        try
+        {
+            if (_interop is null)
+            {
+                Maui.Services.BtFileLog.Write("[player] 字幕：FFmpeg 源尚未就绪，本次忽略（换源后 View 层会补挂）");
+                return;
+            }
+            var session = _mediaPlayer?.PlaybackSession;
+            var resume = session?.Position ?? TimeSpan.Zero;
+
+            var file = await global::Windows.Storage.StorageFile.GetFileFromPathAsync(path);
+            using var stream = await file.OpenAsync(global::Windows.Storage.FileAccessMode.Read);
+            await _interop.AddExternalSubtitleAsync(stream, SubtitleLabel);
+            TrySetDelay(offsetSeconds);
+
+            PlatformView.Source = _interop.CreateMediaPlaybackItem();
+            if (session is not null) session.Position = resume;
+            ReapplySpeed();
+            Maui.Services.BtFileLog.Write($"[player] 外挂字幕已挂载（偏移 {offsetSeconds:0.##}s）");
+        }
+        catch (Exception ex)
+        {
+            _subtitlePathAdded = null;
+            Maui.Services.BtFileLog.Write($"[player] 字幕失败：{ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    void TrySetDelay(double seconds)
+    {
+        try { _interop?.SetSubtitleDelay(TimeSpan.FromSeconds(seconds)); }
+        catch (Exception ex) { Maui.Services.BtFileLog.Write($"[player] 字幕延迟设置失败：{ex.Message}"); }
+    }
+
+    /// <summary>当前解码模式（创建期生效，改动会重开一次源）。</summary>
+    private VideoDecoderMode _decoderMode = VideoDecoderMode.Auto;
+
+    void IVideoPlayerImplementation.SetDecoderMode(VideoDecoderMode mode)
+    {
+        if (_decoderMode == mode) return;
+        _decoderMode = mode;
+        ReopenCurrentSource();
+    }
+
+    /// <summary>用同一地址与请求头重开一次源（换字幕形态时用）。</summary>
+    void ReopenCurrentSource()
+    {
+        if (string.IsNullOrEmpty(_mediaUrl)) return;
+        ((IVideoPlayerImplementation)this).SetSource(_mediaUrl, _mediaHeaders);
+    }
+
+    // ═══════════════════ 轨道枚举与切换 ═══════════════════
+    // WinRT 侧三类轨道是三个互不相干的集合，选择机制也不同：
+    //   音/视频轨 → MediaPlayback(Audio|Video)TrackList.SelectedIndex（-1 表示交给系统自动选）
+    //   字幕轨    → 藏在 TimedMetadataTracks 里，按 Kind 过滤，用 SetPresentationMode(序号, 模式)
+    // 注意 AudioTrack/VideoTrack 上**没有** IsSelected（那是 StreamDescriptor 上的），只能问集合的 SelectedIndex。
+
+    IReadOnlyList<VideoTrackInfo> IVideoPlayerImplementation.GetTracks(VideoTrackKind kind)
+    {
+        var list = new List<VideoTrackInfo>();
+        try
+        {
+            if (PlatformView.Source is not global::Windows.Media.Playback.MediaPlaybackItem item) return list;
+            // 三类集合的索引器都是 IReadOnlyList<T> 的显式实现，转成接口才有 [i]；
+            // 但 SelectedIndex / GetPresentationMode 在集合本身上，所以每个分支都要 owner+views 两个变量。
+
+            if (kind == VideoTrackKind.Audio)
+            {
+                var owner = item.AudioTracks;
+                var views = (global::System.Collections.Generic.IReadOnlyList<global::Windows.Media.Core.AudioTrack>)owner;
+                for (var i = 0; i < views.Count; i++)
+                {
+                    var t = views[i];
+                    var ep = t.GetEncodingProperties();
+                    list.Add(new VideoTrackInfo(i.ToString(),
+                        Describe(i, t.Label, t.Language,
+                            ep.ChannelCount > 0 ? TrackLang.Channels((int)ep.ChannelCount) : null,
+                            Kbps(ep.Bitrate)),
+                        owner.SelectedIndex == i));
+                }
+            }
+            else if (kind == VideoTrackKind.Video)
+            {
+                var owner = item.VideoTracks;
+                var views = (global::System.Collections.Generic.IReadOnlyList<global::Windows.Media.Core.VideoTrack>)owner;
+                for (var i = 0; i < views.Count; i++)
+                {
+                    var t = views[i];
+                    var ep = t.GetEncodingProperties();
+                    list.Add(new VideoTrackInfo(i.ToString(),
+                        Describe(i, t.Label, t.Language,
+                            ep.Width > 0 ? ep.Width + "×" + ep.Height : null, Kbps(ep.Bitrate)),
+                        owner.SelectedIndex == i));
+                }
+            }
+            else
+            {
+                var owner = item.TimedMetadataTracks;
+                var views = (global::System.Collections.Generic.IReadOnlyList<global::Windows.Media.Core.TimedMetadataTrack>)owner;
+                for (var i = 0; i < views.Count; i++)
+                {
+                    var t = views[i];
+                    if (!IsSubtitleKind(t.TimedMetadataKind)) continue;
+                    var mode = owner.GetPresentationMode((uint)i);
+                    list.Add(new VideoTrackInfo(i.ToString(),
+                        Describe(i, t.Label, t.Language, null,
+                            t.TimedMetadataKind == global::Windows.Media.Core.TimedMetadataKind.Caption
+                                ? "听障字幕" : null),
+                        mode == global::Windows.Media.Playback.TimedMetadataTrackPresentationMode.PlatformPresented ||
+                        mode == global::Windows.Media.Playback.TimedMetadataTrackPresentationMode.ApplicationPresented));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Maui.Services.BtFileLog.Write($"[player] 取轨道列表失败：{ex.GetType().Name}: {ex.Message}");
+        }
+        return list;
+    }
+
+    /// <summary>字幕三形态（内嵌字幕 / 听障字幕 / 图片字幕）都算「可切换的字幕轨」。</summary>
+    static bool IsSubtitleKind(global::Windows.Media.Core.TimedMetadataKind k) =>
+        k == global::Windows.Media.Core.TimedMetadataKind.Subtitle ||
+        k == global::Windows.Media.Core.TimedMetadataKind.Caption ||
+        k == global::Windows.Media.Core.TimedMetadataKind.ImageSubtitle;
+
+    static string? Kbps(uint bitrate) => bitrate > 0 ? bitrate / 1000 + " kbps" : null;
+
+    static string Describe(int index, string? label, string? language, string? extra, string? extra2)
+    {
+        var bits = new List<string>();
+        var name = !string.IsNullOrWhiteSpace(label) ? label : language;
+        if (!string.IsNullOrWhiteSpace(name)) bits.Add(TrackLang.NameOrSelf(name!.Trim()));
+        if (!string.IsNullOrWhiteSpace(extra)) bits.Add(extra!);
+        if (!string.IsNullOrWhiteSpace(extra2)) bits.Add(extra2!);
+        return bits.Count > 0 ? string.Join(" · ", bits) : "轨道 " + (index + 1);
+    }
+
+    void IVideoPlayerImplementation.SelectTrack(VideoTrackKind kind, string? id)
+    {
+        try
+        {
+            if (PlatformView.Source is not global::Windows.Media.Playback.MediaPlaybackItem item) return;
+
+            if (kind == VideoTrackKind.Subtitle)
+            {
+                var tracks = item.TimedMetadataTracks;
+                var views = (global::System.Collections.Generic.IReadOnlyList<global::Windows.Media.Core.TimedMetadataTrack>)tracks;
+                int? pick = int.TryParse(id, out var p) ? p : null;
+                for (var i = 0; i < views.Count; i++)
+                {
+                    if (!IsSubtitleKind(views[i].TimedMetadataKind)) continue;
+                    // 一次只放行一条：字幕叠字幕比看不到更糟
+                    tracks.SetPresentationMode((uint)i, pick.HasValue && pick.Value == i
+                        ? global::Windows.Media.Playback.TimedMetadataTrackPresentationMode.PlatformPresented
+                        : global::Windows.Media.Playback.TimedMetadataTrackPresentationMode.Disabled);
+                }
+                return;
+            }
+
+            // 音/视频轨：空 id = 交回系统自动选（SelectedIndex 允许 -1）
+            if (kind == VideoTrackKind.Audio)
+                item.AudioTracks.SelectedIndex = int.TryParse(id, out var a) ? a : -1;
+            else
+                item.VideoTracks.SelectedIndex = int.TryParse(id, out var v) ? v : -1;
+        }
+        catch (Exception ex)
+        {
+            Maui.Services.BtFileLog.Write($"[player] 切换轨道失败：{ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     void IVideoPlayerImplementation.Play() => _mediaPlayer?.Play();

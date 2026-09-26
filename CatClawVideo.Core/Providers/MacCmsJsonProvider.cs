@@ -8,20 +8,23 @@ namespace CatClawVideo.Core.Providers;
 /// MacCMS JSON 资源站适配器（苹果 CMS V10 标准 json 接口）：
 /// 分类 ac=list / 列表·详情·搜索 ac=videolist（t=分类 ids=指定 wd=关键词 pg=页）。
 /// 播放地址：vod_play_from 与 vod_play_url 按 $$$ 对齐拆线路，线路内 集$直链 以 # 分隔。
-/// 直链多为 m3u8/mp4（可带 302 跳转），html 页面类直链交给播放器直试（嗅探后续版本）。
+/// 直链多为 m3u8/mp4（可带 302 跳转）；明显是网页的地址（VIP 站 / .html / /play/）走嗅探链。
+/// <b>type 0 与 type 1 同一套查询</b>，只是响应体是 XML —— 由 <see cref="MacCmsXml"/> 分流处理。
 /// </summary>
 public class MacCmsJsonProvider : IVodSourceProvider
 {
-    public MacCmsJsonProvider() { }
+    /// <summary>嗅探器（可选）：网页型直链靠它拿直链；null 时这类地址原样交给播放器。</summary>
+    private readonly IWebSniffer? _sniffer;
+
+    public MacCmsJsonProvider(IWebSniffer? sniffer = null) => _sniffer = sniffer;
 
     private static readonly HttpClient Http = CreateHttp();
 
     /// <summary>带浏览器 UA + 20s 超时（量子源偶发慢响应，15s 会误超时）</summary>
     private static HttpClient CreateHttp()
     {
-        var client = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0");
-        return client;
+        // 站点 api 取列表这一跳也走 DoH（TVBox 的 OkGo 是全局挂的）；UA 照旧
+        return Services.Doh.NewClient(20, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0");
     }
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
@@ -29,7 +32,8 @@ public class MacCmsJsonProvider : IVodSourceProvider
     public string Name => "MacCMS JSON 源";
 
     public bool CanHandle(VodSiteInfo site) =>
-        site.Type == 1 || site.Api.Contains("api.php/provide/vod", StringComparison.OrdinalIgnoreCase);
+        (site.Type == 0 || site.Type == 1) ||
+        site.Api.Contains("api.php/provide/vod", StringComparison.OrdinalIgnoreCase);
 
     private static string BuildUrl(string api, string query) =>
         api.TrimEnd('/') + (api.Contains('?') ? "&" : "?") + query;
@@ -40,6 +44,7 @@ public class MacCmsJsonProvider : IVodSourceProvider
         {
             var raw = await GetJsonAsync(BuildUrl(site.Api, "ac=list"), ct);
             if (string.IsNullOrWhiteSpace(raw)) return [];
+            if (MacCmsXml.LooksLikeXml(raw)) return MacCmsXml.ParseCategories(raw);
             using var doc = JsonDocument.Parse(raw);
             if (!doc.RootElement.TryGetProperty("class", out var cats) || cats.ValueKind != JsonValueKind.Array)
                 return [];
@@ -56,11 +61,21 @@ public class MacCmsJsonProvider : IVodSourceProvider
         catch { return []; }
     }
 
-    public async Task<List<VodItem>> GetItemsAsync(VodSiteInfo site, VodCategory category, int page = 1, CancellationToken ct = default)
+    public async Task<List<VodItem>> GetItemsAsync(VodSiteInfo site, VodCategory category, int page = 1,
+        IReadOnlyDictionary<string, string>? filter = null, CancellationToken ct = default)
     {
         var query = category.Id.Length > 0
             ? $"ac=videolist&t={Uri.EscapeDataString(category.Id)}&pg={page}"
             : $"ac=videolist&pg={page}";
+        // MacCMS 的筛选就是普通查询参数（area/year/lang/vodclass…），直接拼上去；
+        // 站点没声明 filters 时这里恒空，行为与改动前一致。
+        if (filter is { Count: > 0 })
+        {
+            foreach (var (k, v) in filter)
+                if (k.Length > 0 && v.Length > 0) query += $"&{Uri.EscapeDataString(k)}={Uri.EscapeDataString(v)}";
+            // TVBox 同时再传一个 f=<筛选JSON>（SourceViewModel:487-489），不少 CMS 变体只认这个
+            query += "&f=" + Uri.EscapeDataString(JsonSerializer.Serialize(new Dictionary<string, string>(filter)));
+        }
         return await FetchItemsAsync(site, query, ct);
     }
 
@@ -76,6 +91,7 @@ public class MacCmsJsonProvider : IVodSourceProvider
         {
             var raw = await GetJsonAsync(BuildUrl(site.Api, query), ct);
             if (string.IsNullOrWhiteSpace(raw)) return [];
+            if (MacCmsXml.LooksLikeXml(raw)) return MacCmsXml.ParseItems(raw, site.Key);
             using var doc = JsonDocument.Parse(raw);
             if (!doc.RootElement.TryGetProperty("list", out var list) || list.ValueKind != JsonValueKind.Array)
             {
@@ -129,6 +145,7 @@ public class MacCmsJsonProvider : IVodSourceProvider
         {
             var raw = await GetJsonAsync(BuildUrl(site.Api, $"ac=videolist&ids={Uri.EscapeDataString(item.Id)}"), ct);
             if (string.IsNullOrWhiteSpace(raw)) return [];
+            if (MacCmsXml.LooksLikeXml(raw)) return MacCmsXml.ParsePlaySources(raw);
             using var doc = JsonDocument.Parse(raw);
             if (!doc.RootElement.TryGetProperty("list", out var list) || list.ValueKind != JsonValueKind.Array ||
                 list.GetArrayLength() == 0)
@@ -186,13 +203,24 @@ public class MacCmsJsonProvider : IVodSourceProvider
             return new PlayRequest { Title = display, Url = opened.Url };
         }
 
-        // MacCMS 直链源：集地址即播放地址（m3u8/mp4 或 302 跳转直链），页面嗅探随后续版本
-        return new PlayRequest
+        // MacCMS 直链源：集地址即播放地址（m3u8/mp4 或 302 跳转直链）。
+        var play = new PlayRequest
         {
             Title = episode.Name,
             Url = url,
             Referer = site.Api,
         };
+
+        // 只有「明显是网页」的直链才改道嗅探：CMS 系的 302 直链常常没有扩展名，一律嗅探会把
+        // 本来能播的源弄挂；TVBox 对 type=1 源也是直链直播，嗅探只由 parse/jx 触发。
+        var looksLikePage = !TvBoxParseEngine.IsVideoFormat(url) &&
+                            (TvBoxParseEngine.IsVipUrl(url) ||
+                             url.Contains(".html", StringComparison.OrdinalIgnoreCase) ||
+                             url.Contains("/play/", StringComparison.OrdinalIgnoreCase));
+        if (!looksLikePage || _sniffer is null) return play;
+
+        play.NeedsSniff = true;
+        return await TvBoxPlayPipeline.ResolveAsync(site, play, episode.Flag ?? "", _sniffer, ct);
     }
 
     private static void Log(string msg)

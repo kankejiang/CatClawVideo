@@ -46,7 +46,10 @@
                                 BackgroundColor="{DynamicResource PrimaryButtonBackgroundColor}"
                                 CornerRadius="8" Padding="16,6" Clicked="OnAddSubClicked" />
                     </Grid>
-                    <Label Text="订阅解析与站点拉取能力随 MacCMS Provider 一同上线，当前为界面骨架"
+                    <Label x:Name="HistoryLabel" Text="最近添加（点一下填回输入框）" FontSize="11"
+                           TextColor="{DynamicResource TextHintColor}" IsVisible="False" />
+                    <FlexLayout x:Name="HistoryRow" Wrap="Wrap" Direction="Row" />
+                    <Label Text="支持 TVBox 订阅地址与影视仓多仓；粘贴后可逐站点开关"
                            FontSize="11" TextColor="{DynamicResource TextHintColor}" />
                 </VerticalStackLayout>
             </Border>

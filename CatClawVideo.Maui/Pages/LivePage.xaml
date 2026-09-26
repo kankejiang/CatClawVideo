@@ -136,6 +136,8 @@
                     <FlexLayout x:Name="TimeoutList" Wrap="Wrap" Direction="Row" />
                     <Label Text="直播源（多源切换）" FontSize="13" FontFamily="OpenSansSemibold" TextColor="#FFFFFF" Margin="0,6,0,0" />
                     <FlexLayout x:Name="SourceList" Wrap="Wrap" Direction="Row" />
+                    <Label Text="遥控与显示" FontSize="13" FontFamily="OpenSansSemibold" TextColor="#FFFFFF" Margin="0,6,0,0" />
+                    <FlexLayout x:Name="PrefList" Wrap="Wrap" Direction="Row" />
                     <BoxView HeightRequest="1" Color="#1AFFFFFF" Margin="0,6" />
                     <Border Style="{StaticResource LiveChip}" Padding="14,9">
                         <Label Text="重新加载直播源" Style="{StaticResource LiveChipText}" FontSize="13" />

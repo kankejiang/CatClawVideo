@@ -55,6 +55,64 @@ public partial class SourceConfigPage : ContentPage
         _subscriptionManager = subscriptionManager;
         _db = db;
         RebuildSites();
+        RebuildHistory();
+    }
+
+    // ═══════════════════ 最近添加过的订阅地址（对位 TVBox API_HISTORY + ApiHistoryDialog）═══════════════════
+
+    const string HistoryKey = "source_history";
+    const int HistoryLimit = 10;
+
+    static List<string> LoadHistory() =>
+        (Microsoft.Maui.Storage.Preferences.Default.Get(HistoryKey, "") ?? "")
+        .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+        .Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+
+    /// <summary>成功添加后记一条：去重 + 置顶 + 截断（存的是原样地址，chip 上只显示主机名）。</summary>
+    private static void PushHistory(string url)
+    {
+        var list = LoadHistory();
+        list.RemoveAll(x => string.Equals(x, url, StringComparison.OrdinalIgnoreCase));
+        list.Insert(0, url);
+        if (list.Count > HistoryLimit) list.RemoveRange(HistoryLimit, list.Count - HistoryLimit);
+        Microsoft.Maui.Storage.Preferences.Default.Set(HistoryKey, string.Join('\n', list));
+    }
+
+    private void RebuildHistory()
+    {
+        HistoryRow.Children.Clear();
+        var list = LoadHistory();
+        HistoryLabel.IsVisible = list.Count > 0;
+        foreach (var url in list)
+        {
+            var chip = new Button
+            {
+                Text = ShortHost(url),
+                FontSize = 11.5,
+                Padding = new Thickness(10, 4),
+                CornerRadius = 8,
+                BackgroundColor = Colors.Transparent,
+                BorderWidth = 0,
+                Margin = new Thickness(0, 0, 6, 0),
+            };
+            chip.SetDynamicResource(Button.TextColorProperty, "TextSecondaryColor");
+            var captured = url;
+            // 点一下只是「填回输入框」，不直接添加 —— 换订阅是要看结果的，不该一步到位
+            chip.GestureRecognizers.Add(new TapGestureRecognizer
+            { Command = new Command(() => SubEntry.Text = captured) });
+            HistoryRow.Children.Add(chip);
+        }
+    }
+
+    static string ShortHost(string url)
+    {
+        var text = url;
+        try
+        {
+            if (Uri.TryCreate(url, UriKind.Absolute, out var u) && u.Host.Length > 0) text = u.Host;
+        }
+        catch { }
+        return text.Length > 26 ? text[..23] + "…" : text;
     }
 
     /// <summary>进入页面即聚焦订阅地址输入框（键盘/遥控直接输入，回车即添加），并从数据库加载订阅列表</summary>
@@ -144,14 +202,48 @@ public partial class SourceConfigPage : ContentPage
             left.Add(new Label { Text = sub.Name, FontSize = 13, TextColor = Application.Current?.Resources["TextPrimaryColor"] as Color });
             left.Add(new Label { Text = sub.Url, FontSize = 10.5, TextColor = Application.Current?.Resources["TextHintColor"] as Color, LineBreakMode = LineBreakMode.TailTruncation });
             row.Add(left, 0);
-            var del = new Label { Text = "删除", FontSize = 11.5, TextColor = Color.FromArgb("#c0392b"), VerticalOptions = LayoutOptions.Center };
+            var tail = new HorizontalStackLayout { Spacing = 12, VerticalOptions = LayoutOptions.Center };
             var captured = sub;
-            var tap = new TapGestureRecognizer();
-            tap.Tapped += (_, _) => _ = DeleteSubAsync(captured);
-            del.GestureRecognizers.Add(tap);
-            row.Add(del, 1);
+            var swap = new Label { Text = "换线路", FontSize = 11.5, TextColor = Color.FromArgb("#2b6cb0") };
+            swap.GestureRecognizers.Add(new TapGestureRecognizer { Command = new Command(() => _ = SwitchLineAsync(captured)) });
+            var del = new Label { Text = "删除", FontSize = 11.5, TextColor = Color.FromArgb("#c0392b") };
+            del.GestureRecognizers.Add(new TapGestureRecognizer { Command = new Command(() => _ = DeleteSubAsync(captured)) });
+            tail.Add(swap);
+            tail.Add(del);
+            row.Add(tail, 1);
             SubList.Children.Add(row);
         }
+    }
+
+    /// <summary>
+    /// 切换这条订阅用的线路（对位 TVBox 设置页的「线路选择」）。
+    /// <para>只改地址后缀与显示名并写库 —— 本会话已经并入 <c>SiteRegistry</c> 的旧线路站点
+    /// 不会凭空消失（与「再加一个订阅」的现有行为一致），所以提示里说清「下次拉取按新线路」。</para>
+    /// </summary>
+    private async Task SwitchLineAsync(SubRow row)
+    {
+        var (rawUrl, current) = TvBoxSubscriptionManager.SplitLine(row.Url);
+        var lines = await _subscriptionManager.ProbeLinesAsync(rawUrl);
+        if (lines.Count <= 1)
+        {
+            await DisplayAlertAsync("切换线路",
+                lines.Count == 1 ? "这条订阅只有一条线路，没有可切换的。" : "这条订阅不是「影视仓多仓」地址。", "好");
+            return;
+        }
+
+        var names = lines.Select(l => l.Name).ToArray();
+        var nowIdx = current >= 0 && current < names.Length ? current : 0;
+        var pick = await DisplayActionSheetAsync("选择线路（当前：" + names[nowIdx] + "）", "取消", null, names);
+        var idx = Array.IndexOf(names, pick);
+        if (idx < 0 || idx == nowIdx) return;
+
+        row.Sub.SourceUrl = rawUrl + "#line=" + idx;
+        row.Sub.Name = ShortHost(rawUrl) + " · " + names[idx];
+        RebuildSubs();
+        try { await _db.UpdateSubscriptionAsync(row.Sub); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[源配置] 线路改写失败: {ex.Message}"); }
+        await DisplayAlertAsync("已切换线路",
+            names[idx] + System.Environment.NewLine + "下次拉取这条订阅时按新线路取站点。", "好");
     }
 
     /// <summary>删除订阅：UI 移除 + 同步删库（失败不回滚 UI，下次进入以库为准）</summary>
@@ -236,6 +328,20 @@ public partial class SourceConfigPage : ContentPage
 
         try
         {
+            // 影视仓「多仓」：顶层只有 urls。先探一下，多于一条线就先问用户要哪一条，
+            // 选中结果以 #line=N 后缀写回地址（订阅表因此不用改结构，换线路也只是改这一个字符串）。
+            var repoLines = await _subscriptionManager.ProbeLinesAsync(url);
+            string? chosenLine = null;
+            if (repoLines.Count > 1)
+            {
+                var names = repoLines.Select(l => l.Name).ToArray();
+                var pick = await DisplayActionSheetAsync("这条订阅是多仓，选一条线路", "取消", null, names);
+                var li = Array.IndexOf(names, pick);
+                if (li < 0) return;         // 取消 = 什么都不添加
+                url += "#line=" + li;
+                chosenLine = names[li];
+            }
+
             var sites = await _subscriptionManager.LoadSubscriptionAsync(url);
 
             // 合并去重（按站点名）
@@ -254,7 +360,7 @@ public partial class SourceConfigPage : ContentPage
             Core.Models.SiteCache.Save(sites);
 
             // 订阅入库（按地址去重，重复添加只刷新站点）
-            var name = new Uri(url).Host;
+            var name = chosenLine is null ? new Uri(url).Host : ShortHost(url) + " · " + chosenLine;
             if (await _db.FindSubscriptionAsync(url) is null)
                 await _db.AddSubscriptionAsync(new VodSubscription { Name = name, SourceUrl = url, Kind = "tvbox" });
             if (_subs.All(s => !string.Equals(s.Url, url, StringComparison.OrdinalIgnoreCase)))
@@ -262,6 +368,8 @@ public partial class SourceConfigPage : ContentPage
 
             RebuildSites();
             SubEntry.Text = "";
+            PushHistory(url);
+            RebuildHistory();
 
             // 需要账号认证的站点（alist 类）：逐个弹窗录入凭据，无凭据无法观看
             var credSite = sites.FirstOrDefault(x => x.NeedsCredentials);

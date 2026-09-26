@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 覆盖 AppPaths.DataRoot（Android 上落在 files-path 下）与 FileSystem.CacheDirectory，
+         安装用的 apk 一律写在 cache 里。 -->
+    <cache-path name="cache" path="." />
+    <files-path name="files" path="." />
+    <external-cache-path name="extcache" path="." />
+    <external-files-path name="extfiles" path="." />
+</paths>

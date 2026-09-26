@@ -55,8 +55,22 @@ public class MainActivity : MauiAppCompatActivity
         SetupEdgeToEdge();
     }
 
+    /// <summary>
+    /// 应用是否已经退到后台。<b>页面用来分清「切后台」和「导航离开」</b>：
+    /// MAUI 在 Android 上切后台时也会触发 ContentPage.OnDisappearing，早期代码因此把播放器停了
+    /// —— 表现就是「锁屏/回桌面声音立刻没」。
+    /// </summary>
+    public static bool IsInBackground { get; private set; }
+
+    protected override void OnPause()
+    {
+        IsInBackground = true;
+        base.OnPause();
+    }
+
     protected override void OnResume()
     {
+        IsInBackground = false;
         base.OnResume();
         SetupEdgeToEdge();
         UpdateWindowChromeColor();
@@ -89,6 +103,17 @@ public class MainActivity : MauiAppCompatActivity
             Keycode.DpadRight => Services.RemoteKey.Right,
             Keycode.DpadCenter or Keycode.Enter or Keycode.NumpadEnter => Services.RemoteKey.Enter,
             Keycode.Back or Keycode.Escape => Services.RemoteKey.Back,
+            // 数字键：主板的 Digit* 与遥控小键盘的 NumPad* 都算（对位 TVBox 直播间数字换台）
+            Keycode.Num0 or Keycode.Numpad0 => Services.RemoteKey.Digit0,
+            Keycode.Num1 or Keycode.Numpad1 => Services.RemoteKey.Digit1,
+            Keycode.Num2 or Keycode.Numpad2 => Services.RemoteKey.Digit2,
+            Keycode.Num3 or Keycode.Numpad3 => Services.RemoteKey.Digit3,
+            Keycode.Num4 or Keycode.Numpad4 => Services.RemoteKey.Digit4,
+            Keycode.Num5 or Keycode.Numpad5 => Services.RemoteKey.Digit5,
+            Keycode.Num6 or Keycode.Numpad6 => Services.RemoteKey.Digit6,
+            Keycode.Num7 or Keycode.Numpad7 => Services.RemoteKey.Digit7,
+            Keycode.Num8 or Keycode.Numpad8 => Services.RemoteKey.Digit8,
+            Keycode.Num9 or Keycode.Numpad9 => Services.RemoteKey.Digit9,
             _ => null,
         };
 

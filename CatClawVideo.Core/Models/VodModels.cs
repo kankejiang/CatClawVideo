@@ -94,7 +94,34 @@ public class VodCategory
 
     /// <summary>分类名称</summary>
     public string Name { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 该分类的多维筛选器（对位 TVBox <c>homeContent</c> 的 <c>filters[type_id]</c>）。
+    /// <para>空 = 该站不提供筛选。选中项以 <c>key→v</c> 字典回传给 <c>categoryContent</c> 的第 4 参。</para>
+    /// </summary>
+    public List<VodFilterGroup> Filters { get; set; } = [];
+
+    public bool HasFilters => Filters.Count > 0;
+
+    public override string ToString() => Name;
 }
+
+/// <summary>一组筛选条件（地区 / 年份 / 类型 / 排序…），对位 TVBox <c>MovieSort.SortFilter</c>。</summary>
+public class VodFilterGroup
+{
+    /// <summary>回传给爬虫的键（如 <c>area</c> / <c>year</c>）。</summary>
+    public string Key { get; set; } = string.Empty;
+
+    /// <summary>界面显示名（如「地区」）。</summary>
+    public string Name { get; set; } = string.Empty;
+
+    public List<VodFilterValue> Values { get; set; } = [];
+}
+
+/// <summary>筛选条件里的一个候选值。</summary>
+/// <param name="Display">界面显示文字（TVBox 的 <c>n</c>）。</param>
+/// <param name="Param">回传值（TVBox 的 <c>v</c>；对象形态的 filters 里两者相同）。</param>
+public record VodFilterValue(string Display, string Param);
 
 /// <summary>影片条目（列表/搜索结果中的单部影片）</summary>
 public class VodItem : INotifyPropertyChanged

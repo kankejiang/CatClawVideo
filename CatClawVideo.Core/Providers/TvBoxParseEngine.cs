@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -36,8 +37,95 @@ public static partial class TvBoxParseEngine
         VipHosts.Any(h => url.Contains(h, StringComparison.OrdinalIgnoreCase));
 
     public static bool IsVideoFormat(string url) =>
-        !url.Contains("url=http") && !url.Contains(".js") && !url.Contains(".css") && !url.Contains(".html") &&
-        VideoUrlRegex().IsMatch(url);
+        !IsNonCandidate(url) && VideoUrlRegex().IsMatch(url);
+
+    /// <summary>
+    /// 排除项（对位 <c>PlayFragment.checkVideoFormat</c> 开头那两行 <c>url=http</c> / <c>.html</c>，
+    /// 并额外排掉 <c>.js</c> / <c>.css</c> —— 嗅探时它们是最常见的误命中）。
+    /// </summary>
+    static bool IsNonCandidate(string url) =>
+        url.Contains("url=http", StringComparison.Ordinal) ||
+        url.Contains(".js", StringComparison.Ordinal) ||
+        url.Contains(".css", StringComparison.Ordinal) ||
+        url.Contains(".html", StringComparison.Ordinal);
+
+    /// <summary>
+    /// 嗅探候选判定（对位 <c>VideoParseRuler.checkIsVideoForParse</c>）：比 <see cref="IsVideoFormat"/>
+    /// 多一层订阅下发的 host 规则 —— 通用正则不命中时，按<b>页面</b> host（不是候选 url 的 host）取规则组，
+    /// <b>组内全命中才算数（AND）、任一组命中即算数（OR）</b>；该 host 无专属规则时回落到 <c>"*"</c> 通配组。
+    /// <para>这是「非通用形态直链」（如 <c>/api/video?id=xxx</c> 这类不带扩展名的地址）能否被嗅到的关键。</para>
+    /// </summary>
+    public static bool CheckIsVideoForParse(string? pageUrl, string url, string? subscriptionKey = null)
+    {
+        if (IsNonCandidate(url)) return false;
+        if (VideoUrlRegex().IsMatch(url)) return true;
+        if (string.IsNullOrEmpty(subscriptionKey)) return false;
+
+        var host = HostOf(pageUrl);
+        if (host.Length == 0) return false;
+        var groups = TvBoxConfigStore.RuleGroupsForHost(subscriptionKey, host)
+                     ?? TvBoxConfigStore.RuleGroupsForHost(subscriptionKey, "*");
+        return MatchesAnyGroup(groups, url);
+    }
+
+    /// <summary>
+    /// 嗅探过滤（对位 <c>VideoParseRuler.isFilter</c>）：命中即「这个 URL 既不当候选、也不走广告拦截」。
+    /// <para>⚠ 与判定侧有两处刻意的不对称（TVBox 原样）：没有 <c>"*"</c> 回落；极性是<b>排除</b>。</para>
+    /// </summary>
+    public static bool IsFiltered(string? pageUrl, string url, string? subscriptionKey = null)
+    {
+        if (string.IsNullOrEmpty(subscriptionKey)) return false;
+        var host = HostOf(pageUrl);
+        if (host.Length == 0) return false;
+        return MatchesAnyGroup(TvBoxConfigStore.FilterGroupsForHost(subscriptionKey, host), url);
+    }
+
+    static bool MatchesAnyGroup(IReadOnlyList<IReadOnlyList<string>>? groups, string url)
+    {
+        if (groups is null) return false;
+        foreach (var group in groups)
+        {
+            if (group.Count == 0) continue;   // TVBox：空组直接算不命中
+            var allHit = true;
+            foreach (var pattern in group)
+            {
+                var rx = HostPattern(pattern);
+                if (rx is null || !rx.IsMatch(url))
+                {
+                    allHit = false;
+                    break;
+                }
+            }
+            if (allHit) return true;
+        }
+        return false;
+    }
+
+    /// <summary>页面 URL 的 host（不含端口）；非法 URL 回空串（对位 TVBox 的 try/catch → false）。</summary>
+    static string HostOf(string? url)
+    {
+        if (string.IsNullOrEmpty(url)) return "";
+        try { return new Uri(url).Host; } catch { return ""; }
+    }
+
+    /// <summary>过程留痕（订阅下发的正则是任意用户串，坏规则要能被看见）。</summary>
+    public static Action<string>? Log { get; set; }
+
+    /// <summary>
+    /// host 规则正则缓存。<b>必须容错</b>：这些串来自订阅（Java 正则方言），编译期不像 <c>GeneratedRegex</c>
+    /// 那样有保证，一条坏规则若直接抛，整个嗅探就废了 —— 记日志后按「不命中」处理，让它只作废自己那一组。
+    /// </summary>
+    static readonly ConcurrentDictionary<string, Regex?> HostPatternCache = new();
+
+    static Regex? HostPattern(string pattern) => HostPatternCache.GetOrAdd(pattern, p =>
+    {
+        try { return new Regex(p, RegexOptions.None, TimeSpan.FromSeconds(2)); }
+        catch (Exception ex)
+        {
+            Log?.Invoke($"[sniffer] 订阅规则正则无效，已作废「{p}」: {ex.Message}");
+            return null;
+        }
+    });
 
     private static bool IsBlackVodUrl(string input, string url) =>
         url.Contains("973973.xyz", StringComparison.OrdinalIgnoreCase) || url.Contains(".fit:", StringComparison.OrdinalIgnoreCase);

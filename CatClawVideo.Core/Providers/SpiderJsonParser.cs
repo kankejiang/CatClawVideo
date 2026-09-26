@@ -23,16 +23,74 @@ public static class SpiderJsonParser
             using var doc = JsonDocument.Parse(json);
             if (!doc.RootElement.TryGetProperty("class", out var arr) || arr.ValueKind != JsonValueKind.Array)
                 return result;
+            doc.RootElement.TryGetProperty("filters", out var filters);   // 可缺省：不少站没有筛选器
             foreach (var c in arr.EnumerateArray())
             {
                 var id = c.TryGetProperty("type_id", out var tid) ? tid.ToString() : "";
                 var name = c.TryGetProperty("type_name", out var tn) ? tn.GetString() ?? "" : "";
                 if (id.Length == 0 || name.Length == 0) continue;
-                result.Add(new VodCategory { Id = id, Name = name });
+                result.Add(new VodCategory { Id = id, Name = name, Filters = ParseFilterGroups(filters, id) });
             }
         }
         catch { }
         return result;
+    }
+
+    /// <summary>
+    /// 解析 <c>filters[分类ID]</c>（对位 TVBox <c>MovieSort.getSortMap</c> + <c>GridFilterDialog</c> 的数据面）。
+    /// <para><c>value</c> 有两种写法都要吃：<b>数组</b> <c>[{"n":"大陆","v":"大陆"}]</c>（drpy/影视仓系）
+    /// 与 <b>对象映射</b> <c>{"大陆":"大陆","2024":"2024"}</c>（jar 系）。
+    /// 另外很多站把「全部/不限」写成 <c>v=""</c> —— 那是<b>合法选项</b>，不能按空值丢掉，
+    /// 否则用户没有任何办法把筛选条件清回去。</para>
+    /// </summary>
+    static List<VodFilterGroup> ParseFilterGroups(JsonElement filters, string typeId)
+    {
+        var groups = new List<VodFilterGroup>();
+        if (filters.ValueKind != JsonValueKind.Object ||
+            !filters.TryGetProperty(typeId, out var arr) || arr.ValueKind != JsonValueKind.Array)
+            return groups;
+
+        foreach (var g in arr.EnumerateArray())
+        {
+            if (g.ValueKind != JsonValueKind.Object) continue;
+            var key = g.TryGetProperty("key", out var k) ? k.GetString() ?? "" : "";
+            if (key.Length == 0) continue;
+            var group = new VodFilterGroup
+            {
+                Key = key,
+                Name = g.TryGetProperty("name", out var nm) && !string.IsNullOrWhiteSpace(nm.GetString())
+                    ? nm.GetString()! : key,
+            };
+
+            if (g.TryGetProperty("value", out var value))
+            {
+                switch (value.ValueKind)
+                {
+                    case JsonValueKind.Array:
+                        foreach (var v in value.EnumerateArray())
+                        {
+                            if (v.ValueKind != JsonValueKind.Object) continue;
+                            var display = v.TryGetProperty("n", out var n) ? n.ToString() : "";
+                            var param = v.TryGetProperty("v", out var vv) ? vv.ToString() : display;
+                            if (display.Length == 0 && param.Length == 0) continue;
+                            group.Values.Add(new VodFilterValue(display.Length > 0 ? display : param, param));
+                        }
+                        break;
+
+                    case JsonValueKind.Object:
+                        foreach (var prop in value.EnumerateObject())
+                        {
+                            var param = prop.Value.ValueKind == JsonValueKind.Array
+                                ? string.Join(',', prop.Value.EnumerateArray().Select(x => x.ToString()))
+                                : prop.Value.ToString();
+                            group.Values.Add(new VodFilterValue(prop.Name, param));
+                        }
+                        break;
+                }
+            }
+            if (group.Values.Count > 0) groups.Add(group);
+        }
+        return groups;
     }
 
     /// <summary>categoryContent / searchContent → 影片列表（list[].vod_*）</summary>

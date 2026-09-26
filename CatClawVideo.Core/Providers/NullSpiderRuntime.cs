@@ -15,7 +15,8 @@ public class NullSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime
         new NotSupportedException("该爬虫源依赖的运行时在当前平台不可用");
 
     public Task<string> HomeContentAsync(VodSiteInfo site, CancellationToken ct = default) => throw Unsupported();
-    public Task<string> CategoryContentAsync(VodSiteInfo site, string tid, string pg, CancellationToken ct = default) => throw Unsupported();
+    public Task<string> CategoryContentAsync(VodSiteInfo site, string tid, string pg,
+        IReadOnlyDictionary<string, string>? filter = null, CancellationToken ct = default) => throw Unsupported();
     public Task<string> DetailContentAsync(VodSiteInfo site, string id, CancellationToken ct = default) => throw Unsupported();
     public Task<string> SearchContentAsync(VodSiteInfo site, string keyword, string pg, CancellationToken ct = default) => throw Unsupported();
     public Task<string> PlayerContentAsync(VodSiteInfo site, string flag, string id, CancellationToken ct = default) => throw Unsupported();

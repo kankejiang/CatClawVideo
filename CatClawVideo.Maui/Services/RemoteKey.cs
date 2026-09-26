@@ -15,6 +15,16 @@ public enum RemoteKey
     Enter,
     /// <summary>返回 / Esc。</summary>
     Back,
+    // 数字键（遥控器/键盘）。放在末尾：既有的方向键映射不受影响。
+    // 谁需要它谁自己认领（直播间=换台，主页=切 tab），不消费就回落给系统。
+    Digit0, Digit1, Digit2, Digit3, Digit4, Digit5, Digit6, Digit7, Digit8, Digit9,
+}
+
+/// <summary>把 <see cref="RemoteKey"/> 的数字档还原成 0~9；非数字键返回 -1。</summary>
+public static class RemoteKeyDigits
+{
+    public static int Of(RemoteKey key) =>
+        key >= RemoteKey.Digit0 && key <= RemoteKey.Digit9 ? (int)(key - RemoteKey.Digit0) : -1;
 }
 
 /// <summary>

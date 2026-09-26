@@ -25,13 +25,23 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
     /// </summary>
     private static HttpClient CreateHttp()
     {
-        var client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("okhttp/4.x");
-        return client;
+        // 走 Doh.NewClient：订阅地址是「最先被 DNS 污染打死」的那一跳，TVBox 正是把 OkGo 整体挂了 DoH
+        return Services.Doh.NewClient(15, "okhttp/4.x");
     }
 
-    public async Task<List<VodSiteInfo>> LoadSubscriptionAsync(string subscriptionUrl, CancellationToken ct = default)
+    /// <summary>仓库套仓库到第几层就判定为配置错误（防 urls 互相指向造成无限递归）。</summary>
+    const int MaxRepoDepth = 3;
+
+    public Task<List<VodSiteInfo>> LoadSubscriptionAsync(string subscriptionUrl, CancellationToken ct = default)
+        => LoadSubscriptionCoreAsync(subscriptionUrl, 0, ct);
+
+    private async Task<List<VodSiteInfo>> LoadSubscriptionCoreAsync(string subscriptionUrl, int depth, CancellationToken ct)
     {
+        // 地址尾部的 #line=N 是「多仓选中的第几条线」——把它剥掉再走原有链路，订阅表因此不用改结构
+        var (rawUrl, lineIndex) = SplitLine(subscriptionUrl);
+        // clan:// / file:// / 裸相对名 先换成本机或远端可用的地址（对位 ApiConfig.clanToAddress）
+        subscriptionUrl = Services.ClanScheme.Resolve(rawUrl);
+
         // 本地源文件（猫爪源生态 / 本地 TVBox json）：与远程同链路解析
         if (File.Exists(subscriptionUrl) || subscriptionUrl.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
         {
@@ -79,22 +89,123 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
             text = decrypted;
         }
 
+        // 影视仓「多仓」：顶层只有 urls、没有 sites，得先挑一条线，再拿那条线的地址去取真配置。
+        // 这一步此前没做 —— 接口注释与源配置页文案都写着「支持 urls 多仓」，
+        // 实际会在 sites 缺失那里返回 0 个站点（表现为「订阅添加成功但首页是空的」）。
+        var lines = ReadLines(text);
+        if (lines.Count > 0)
+        {
+            if (depth >= MaxRepoDepth)
+                throw new NotSupportedException($"多仓订阅嵌套超过 {MaxRepoDepth} 层，判定为配置错误。");
+            var pick = lines[Math.Clamp(lineIndex, 0, lines.Count - 1)];
+            return await LoadSubscriptionCoreAsync(ResolveRepoUrl(pick.Url, subscriptionUrl), depth + 1, ct);
+        }
+
         // 猫爪源（CatClaw Source，自建生态）：单地址即一个原生数据源（type=100，全平台可播）
         if (text.Contains(CatClawSourceDoc.ProtocolMagic, StringComparison.OrdinalIgnoreCase))
             return BuildCatClawSites(text, subscriptionUrl);
 
         var sites = await ParseConfigTextAsync(text, subscriptionName: new Uri(subscriptionUrl).Host, ct);
 
-        // 相对路径解析：小雅等站点 jar 写作 ./libs/x.jar（相对订阅源目录）
+        // 相对路径解析：小雅等站点 jar 写作 ./libs/x.jar（相对订阅源目录）。
+        // 除 ./ 之外还要认 ../（TVBox fixContentPath 两种都改，此前只认 ./ 会让上一级目录的 jar 直接 404）
         var baseUrl = subscriptionUrl[..(subscriptionUrl.LastIndexOf('/') + 1)];
         foreach (var s in sites)
         {
-            if (s.Jar is not null && s.Jar.StartsWith("./", StringComparison.Ordinal))
-                s.Jar = baseUrl + s.Jar[2..];
-            if (s.Ext is not null && s.Ext.StartsWith("./", StringComparison.Ordinal))
-                s.Ext = baseUrl + s.Ext[2..];
+            s.Jar = FixRelative(s.Jar, baseUrl);
+            s.Ext = FixRelative(s.Ext, baseUrl);
         }
         return sites;
+    }
+
+    /// <summary>
+    /// 只读顶层 urls 做线路探测。加密/隐写的多仓索引探测不到（会返回空表），
+    /// 那种情况 <see cref="LoadSubscriptionAsync"/> 仍然会解出多仓并默认取第 0 条线 —— 少一个弹窗，不是少功能。
+    /// </summary>
+    public async Task<IReadOnlyList<SubscriptionLine>> ProbeLinesAsync(string subscriptionUrl, CancellationToken ct = default)
+    {
+        try
+        {
+            var (rawUrl, _) = SplitLine(subscriptionUrl);
+            string body;
+            if (File.Exists(rawUrl) || rawUrl.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
+            {
+                var path = rawUrl.StartsWith("file://", StringComparison.OrdinalIgnoreCase)
+                    ? new Uri(rawUrl).LocalPath : rawUrl;
+                body = await File.ReadAllTextAsync(path, ct);
+            }
+            else
+            {
+                using var resp = await Http.GetAsync(rawUrl, ct);
+                if (!resp.IsSuccessStatusCode) return [];
+                body = await resp.Content.ReadAsStringAsync(ct);
+            }
+            return ReadLines(body);
+        }
+        catch
+        {
+            // 探测失败一律当「不是多仓」：让主链路去报真正的错（网络/加密/格式），这里不抢话
+            return [];
+        }
+    }
+
+    /// <summary>订阅地址尾部可带 <c>#line=N</c> 指定多仓线路（存回订阅表的就是这个字符串）。</summary>
+    public static (string Url, int LineIndex) SplitLine(string url)
+    {
+        var i = url.LastIndexOf("#line=", StringComparison.OrdinalIgnoreCase);
+        if (i <= 0 || !int.TryParse(url[(i + 6)..], out var n) || n < 0) return (url, -1);
+        return (url[..i], n);
+    }
+
+    /// <summary>订阅里写的 <c>./x</c>、<c>../x</c> 都相对「这份配置自己在哪」解析。</summary>
+    static string? FixRelative(string? value, string baseUrl)
+    {
+        if (string.IsNullOrEmpty(value)) return value;
+        if (!value.StartsWith("./", StringComparison.Ordinal) && !value.StartsWith("../", StringComparison.Ordinal))
+            return value;
+        try
+        {
+            if (Uri.TryCreate(baseUrl, UriKind.Absolute, out var basis)) return new Uri(basis, value).ToString();
+        }
+        catch { }
+        return value.StartsWith("./", StringComparison.Ordinal) ? baseUrl + value[2..] : value;
+    }
+
+    /// <summary>顶层 <c>urls[]</c>；不是多仓或形态不对时返回空表。</summary>
+    static List<SubscriptionLine> ReadLines(string json)
+    {
+        var result = new List<SubscriptionLine>();
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object
+                || !doc.RootElement.TryGetProperty("urls", out var arr)
+                || arr.ValueKind != JsonValueKind.Array) return result;
+            foreach (var e in arr.EnumerateArray())
+            {
+                if (e.ValueKind != JsonValueKind.Object) continue;
+                var u = e.TryGetProperty("url", out var uu) ? uu.GetString() ?? "" : "";
+                var n = e.TryGetProperty("name", out var nn) ? nn.GetString() ?? "" : "";
+                if (u.Trim().Length == 0) continue;
+                result.Add(new SubscriptionLine(n.Trim().Length > 0 ? n.Trim() : u.Trim(), u.Trim()));
+            }
+        }
+        catch { }
+        return result;
+    }
+
+    /// <summary>子地址可能是相对路径（相对这份仓库 json 所在目录）。</summary>
+    static string ResolveRepoUrl(string child, string repoUrl)
+    {
+        if (child.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+            || child.StartsWith("file://", StringComparison.OrdinalIgnoreCase)
+            || File.Exists(child)) return child;
+        try
+        {
+            if (Uri.TryCreate(repoUrl, UriKind.Absolute, out var repo)) return new Uri(repo, child).ToString();
+        }
+        catch { }
+        return child;
     }
 
     public Task<List<VodSiteInfo>> ParseConfigTextAsync(string jsonText, string subscriptionName, CancellationToken ct = default)
@@ -223,7 +334,7 @@ public class TvBoxSubscriptionManager : ISubscriptionManager
 
         return type switch
         {
-            0 => (VodSpiderKind.None, "xml 源 · 暂不支持"),
+            0 => (VodSpiderKind.None, "MacCMS xml · 地址不可用"),
             1 => (VodSpiderKind.None, "MacCMS json · 地址不可用"),
             _ => (VodSpiderKind.None, $"type {type} · 暂不支持"),
         };

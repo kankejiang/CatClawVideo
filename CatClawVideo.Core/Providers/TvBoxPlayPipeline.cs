@@ -69,7 +69,7 @@ public static class TvBoxPlayPipeline
                 if (result.ParseTail)
                 {
                     // 二段式：JSON 接口给出中间页 → 继续嗅探
-                    return await SniffOrThrowAsync(sniffer, result.Url, MergeHeaders(extraHeaders, result.Headers), ct);
+                    return await SniffOrThrowAsync(sniffer, result.Url, MergeHeaders(extraHeaders, result.Headers), subKey, ct);
                 }
                 return new PlayRequest
                 {
@@ -86,20 +86,21 @@ public static class TvBoxPlayPipeline
         {
             var target = rule.Url + url;
             if (target.Length == 0) target = pageUrl;
-            return await SniffOrThrowAsync(sniffer, target, MergeHeaders(extraHeaders, rule.Headers), ct);
+            return await SniffOrThrowAsync(sniffer, target, MergeHeaders(extraHeaders, rule.Headers), subKey, ct);
         }
 
         // 无规则 / JSON 失败兜底：直接嗅探待解析页
-        return await SniffOrThrowAsync(sniffer, url.Length > 0 ? url : pageUrl, extraHeaders, ct);
+        return await SniffOrThrowAsync(sniffer, url.Length > 0 ? url : pageUrl, extraHeaders, subKey, ct);
     }
 
     private static async Task<PlayRequest> SniffOrThrowAsync(
-        IWebSniffer? sniffer, string pageUrl, IReadOnlyDictionary<string, string>? headers, CancellationToken ct)
+        IWebSniffer? sniffer, string pageUrl, IReadOnlyDictionary<string, string>? headers,
+        string? subscriptionKey, CancellationToken ct)
     {
         if (sniffer is null)
             throw new NotSupportedException(
                 "该集需要网页解析（parse=1），当前平台未启用嗅探引擎，请换线路或换源。");
-        var req = await sniffer.SniffAsync(pageUrl, headers, ct);
+        var req = await sniffer.SniffAsync(pageUrl, headers, subscriptionKey, ct);
         req.Title = string.Empty;   // 调用方只取 url/headers
         return req;
     }

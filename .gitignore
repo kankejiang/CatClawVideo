@@ -451,3 +451,11 @@ JavaBridge/sources.txt
 # 出包时由 build-win-release.ps1 [1.4/2] 拷进发布目录的 ThunderRuntime。
 /CatClawVideo.Maui/ThunderRuntime/art_initrd.gz
 /JavaBridge/qemu-src/art/art_initrd.gz
+
+# ART initrd 打包的中间件（mk_art_initrd.py 每次重生成，别入库）
+/JavaBridge/qemu-src/art/gbcls/
+/JavaBridge/qemu-src/art/gbout/
+/JavaBridge/qemu-src/art/ucls/
+/JavaBridge/qemu-src/art/*out/
+/JavaBridge/qemu-src/art/*.lst
+/JavaBridge/qemu-src/art/_tmp/

@@ -73,7 +73,7 @@
                 <controls:VirtualKeyboard Grid.Row="0" x:Name="Keyboard" HeightRequest="300" />
 
                 <VerticalStackLayout Grid.Row="1" x:Name="HistorySection" Spacing="9" IsVisible="False">
-                    <Label Text="🕐 最近搜索" FontSize="11.5" FontAttributes="Bold"
+                    <Label Text="🕐 最近搜索 · 站点" FontSize="11.5" FontAttributes="Bold"
                            TextColor="{DynamicResource TextHintColor}" />
                     <FlexLayout x:Name="HistoryWords" Wrap="Wrap" JustifyContent="Start" />
                 </VerticalStackLayout>

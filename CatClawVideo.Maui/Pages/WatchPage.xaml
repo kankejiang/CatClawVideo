@@ -61,6 +61,9 @@
                                                   Aspect="AspectFit"
                                                   ShouldKeepScreenOn="True" />
 
+                        <!-- 弹幕浮层：播放器之上、控制条之下。InputTransparent，永不抢遥控器/触摸焦点 -->
+                        <controls:DanmakuOverlay x:Name="Danmaku" InputTransparent="True" />
+
                         <!-- 缓冲指示：圆环进度 + 中央百分比（解析/时长未知时自动退化为旋转弧） -->
                         <Grid x:Name="BufferingIndicator" IsVisible="False">
                             <!-- 半透明底衬：深色画面上保证百分比可读（磁力/暗景常见） -->

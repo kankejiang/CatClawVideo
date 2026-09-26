@@ -48,7 +48,12 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
         _vm.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName == nameof(HomeViewModel.SelectedCategoryId))
+            {
                 MainThread.BeginInvokeOnMainThread(UpdateChipStyles);
+                MainThread.BeginInvokeOnMainThread(UpdateFilterUi);
+            }
+            if (e.PropertyName == nameof(HomeViewModel.FilterSummary))
+                MainThread.BeginInvokeOnMainThread(UpdateFilterUi);
         };
 
         // 海报墙布局：与历史/收藏页一致，统一走 PosterLayoutHelper（固定卡片尺寸，列数自适应）
@@ -108,6 +113,55 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
     /// （把 chip 从 BindableLayout 摘出再塞进新建 Border）会重挂原生视图，
     /// Android 上切站点后 TapGestureRecognizer 整体失效（点击分类无反应，真机复现）。
     /// </summary>
+    // ═══════════════════ 分类筛选（对位 TVBox GridFilterDialog）═══════════════════
+
+    /// <summary>
+    /// 刷新「筛选」入口：站点没返回 filters 就整块隐藏；有条件时把已选项直接写在按钮上。
+    /// <para>两级动作表（选组 → 选值）而不是自绘弹层：手机与桌面都能用、不需要新的焦点层，
+    /// 且筛选本来就是低频操作。要改成 TVBox 那种一行一组的弹层面板时，只需要换这里的交互壳。</para>
+    /// </summary>
+    void UpdateFilterUi()
+    {
+        var groups = _vm.CurrentFilters;
+        FilterShell.IsVisible = groups.Count > 0;
+        var summary = _vm.FilterSummary;
+        FilterLabel.Text = string.IsNullOrEmpty(summary) ? "筛选" : summary;
+    }
+
+    /// <summary>本页是挂在 Shell 页里的 ContentView，动作表要走宿主 Page。</summary>
+    Page? HostPage()
+    {
+        VisualElement? v = this;
+        while (v is not null and not Page) v = v.Parent as VisualElement;
+        return v as Page;
+    }
+
+    private async void OnFilterTapped(object? sender, TappedEventArgs e)
+    {
+        var groups = _vm.CurrentFilters;
+        var host = HostPage();
+        if (groups.Count == 0 || host is null) return;
+
+        var names = groups.Select(g => g.Name).Append("清除全部筛选").ToArray();
+        var pick = await host.DisplayActionSheetAsync("按哪一项筛选？", "取消", null, names);
+        if (pick is null || pick == "取消") return;
+
+        if (pick == "清除全部筛选")
+        {
+            await _vm.ClearFiltersAsync();
+            return;
+        }
+        var group = groups.Find(g => g.Name == pick);
+        if (group is null) return;
+
+        var choices = group.Values.Select(v => v.Display).ToArray();
+        var value = await host.DisplayActionSheetAsync($"{group.Name} · 选一个", "取消", "不限", choices);
+        if (value is null || value == "取消") return;
+
+        if (value == "不限") await _vm.SetFilterAsync(group.Key, null);
+        else await _vm.SetFilterAsync(group.Key, Array.Find(group.Values.ToArray(), v => v.Display == value));
+    }
+
     private void RebuildChipShells()
     {
         _ = Dispatcher.DispatchDelayed(TimeSpan.FromMilliseconds(30), () =>

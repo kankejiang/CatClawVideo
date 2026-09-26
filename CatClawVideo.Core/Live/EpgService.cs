@@ -121,6 +121,9 @@ public class EpgService
             try
             {
                 using var req = new HttpRequestMessage(HttpMethod.Get, url);
+                // EPG 站点常见「非浏览器 UA 直接 403/返空」，这里不带源级 UA 可借用，
+                // 所以按 TVBox 的做法随机挑一条浏览器 UA（对位 EpgNameFuzzyMatch 的 UA.random()）
+                req.Headers.TryAddWithoutValidation("User-Agent", Services.UserAgents.Random());
                 using var resp = await Http.SendAsync(req, ct);
                 if (!resp.IsSuccessStatusCode) continue;
                 var body = await resp.Content.ReadAsStringAsync(ct);
@@ -339,11 +342,7 @@ public class EpgService
 
     private static HttpClient CreateClient()
     {
-        var handler = new HttpClientHandler
-        {
-            AllowAutoRedirect = true,
-            AutomaticDecompression = DecompressionMethods.All,
-        };
-        return new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) };
+        // EPG 站点常按 UA 差别响应、也常在污染名单里 → 一并走 DoH（见 Doh 的说明）
+        return Services.Doh.NewClient(15);
     }
 }

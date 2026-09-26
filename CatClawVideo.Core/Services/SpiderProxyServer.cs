@@ -31,12 +31,20 @@ namespace CatClawVideo.Core.Services;
 public sealed class SpiderProxyServer : IDisposable
 {
     /// <summary>
-    /// 各代爬虫探测的端口（实测：<c>ProxyOrigin</c> 族在 <b>6677–6999</b> 逐端口探、
-    /// 荐片 <c>csp_JPJGuard</c> 走 <b>9978 / 9997–9999</b>；Android 侧注释的「9978…9999 整段反代」即此）。
-    /// 一个监听器只能占一个端口，所以这里把已知的候选端口**全部**监听上，
-    /// 谁先探到谁用；改写后的分片地址用「请求进来的那个端口」拼，保证可达。
+    /// 各代爬虫探测的端口（实测：荐片 <c>csp_JPJGuard</c> 走 <b>9978 / 9997–9999</b>；
+    /// Android 侧注释的「9978…9999 整段反代」即此）。一个监听器只能占一个端口，
+    /// 这里把已知候选端口**全部**监听上，谁先探到谁用；改写后的分片地址用「请求进来的那个端口」拼，保证可达。
+    /// <para><b>6677–6999 必须让给爬虫自己 —— 那是 Guard 网盘 jar 自己起的 drive 服务。</b>
+    /// 真机 2026-09-26 实证：<c>ss -ltnp</c> 显示 <c>*:6677</c> 由 jar 侧监听（我们的代理只绑
+    /// <c>127.0.0.1</c> 的 9978/9997/9998/9999）。以前把 6677 放进候选端口，jar 的 drive 服务绑不上，
+    /// 而它 <c>playerContent</c> 返回的 <c>http://127.0.0.1:6677/proxy/play/&lt;盘&gt;/&lt;片&gt;/&lt;集&gt;</c>
+    /// 就落到我们这里，被「无 url 参数」分支回成 <c>400 missing url</c> → 播放器报
+    /// <c>Source error / InvalidResponseCodeException: 400</c>。让出该端口后 jar 自己应答，
+    /// 《名侦探柯南》夸父盘源即正常出画（<c>c2.qti.avc.decoder Render:119 Drop:0</c>）。
+    /// TVBox 侧同理不服务这条路径（<c>RemoteServer.isProxyRequest</c> 要求路径正好是 <c>/proxy</c>
+    /// 且 query 带 <c>do</c>/<c>go</c>），所以这不是我们少实现了什么，而是**别抢别人的端口**。</para>
     /// </summary>
-    public static readonly int[] CandidatePorts = [6677, 9978, 9997, 9998, 9999];
+    public static readonly int[] CandidatePorts = [9978, 9997, 9998, 9999];
 
     /// <summary>
     /// 交给爬虫 <c>proxy(Map)</c> 的 do 值。TVBox <c>ApiConfig.proxyLocal</c> 的语义是「除宿主自答
@@ -53,7 +61,7 @@ public sealed class SpiderProxyServer : IDisposable
     };
 
     /// <summary>默认 UA：部分 CDN 对空 UA 直接 403。</summary>
-    private const string DefaultUserAgent =
+    public const string DefaultUserAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36";
 
     private static readonly HttpClient Http = CreateClient();
@@ -78,6 +86,12 @@ public sealed class SpiderProxyServer : IDisposable
     public Func<IReadOnlyDictionary<string, string>, CancellationToken,
         Task<(int Status, string Mime, byte[]? Body)?>?>? JsProxyHandler { get; set; }
 
+    /// <summary>
+    /// <c>/cache?do=get|set|del</c> 端点背后的 KV（对位 TVBox 用 Hawk 存 <c>cache_&lt;rule&gt;_&lt;key&gt;</c>）。
+    /// 未注入时 get 回空串、set 静默丢弃——jar 侧表现为「登录态存了但重启就没了」，所以宿主必须接。
+    /// </summary>
+    public SpiderLocalStore? CacheStore { get; set; }
+
     private static HttpClient CreateClient()
     {
         var handler = new HttpClientHandler
@@ -90,14 +104,21 @@ public sealed class SpiderProxyServer : IDisposable
     }
 
     /// <summary>
-    /// 逐一把 <see cref="CandidatePorts"/> 绑上（被占的跳过，不影响其他端口）。全部失败才返回 false。
+    /// 覆盖监听端口（null = 用 <see cref="CandidatePorts"/>）。
+    /// <para>存在的理由不是测试：本机已有一个实例在听这 5 个端口时，第二个实例会一个都绑不上，
+    /// 于是爬虫探不到 <c>do=ck</c> → 拼出空端口地址 → 播放失败。给它一条可指定的出路。</para>
+    /// </summary>
+    public int[]? BindPorts { get; set; }
+
+    /// <summary>
+    /// 逐一把 <see cref="CandidatePorts"/>（或 <see cref="BindPorts"/>）绑上（被占的跳过，不影响其他端口）。全部失败才返回 false。
     /// </summary>
     public bool Start()
     {
         if (_listeners.Count > 0) return true;
         _cts ??= new CancellationTokenSource();
 
-        foreach (var port in CandidatePorts)
+        foreach (var port in BindPorts ?? CandidatePorts)
         {
             try
             {
@@ -170,7 +191,21 @@ public sealed class SpiderProxyServer : IDisposable
                 var path = q < 0 ? target : target[..q];
                 var query = q < 0 ? "" : target[(q + 1)..];
 
-                if (!path.StartsWith("/proxy", StringComparison.Ordinal))
+                // /rc = 局域网遥控（对位 TVBox RemoteServer + res/raw 前端）。
+                // 与 TVBox 的关键差别：那边全程无鉴权，这里除 ping 外一律要 token，
+                // 并且不开文件浏览 / 上传 / 改配置这三类端点。
+                if (path.StartsWith("/rc", StringComparison.Ordinal))
+                {
+                    var rcArgs = ParseQuery(query);
+                    var reply = RemoteControlHub.Handle(path, rcArgs, timeout.Token);
+                    await RespondTextAsync(stream, RcStatusLine(reply.Status), reply.Body, reply.Mime)
+                        .ConfigureAwait(false);
+                    return;
+                }
+
+                // /proxy = 播放与爬虫回环；/cache = 爬虫的跨启动 KV（TVBox CacheRequestProcess）
+                if (!path.StartsWith("/proxy", StringComparison.Ordinal) &&
+                    !path.StartsWith("/cache", StringComparison.Ordinal))
                 {
                     await RespondTextAsync(stream, "404 Not Found", "not found").ConfigureAwait(false);
                     return;
@@ -178,6 +213,13 @@ public sealed class SpiderProxyServer : IDisposable
 
                 var args = ParseQuery(query);
                 Log?.Invoke($"[spider-proxy] {parts[0]} {target}（来自 {client.Client.RemoteEndPoint}）");
+
+                // ⓪ /cache?do=get|set|del&rule=&key= —— 先于 /proxy 各分支：它按路径前缀命中，与 do/go 无关
+                if (path.StartsWith("/cache", StringComparison.Ordinal))
+                {
+                    await HandleCacheAsync(stream, args).ConfigureAwait(false);
+                    return;
+                }
 
                 // ① 存活探测：爬虫 drivePort() 就是靠它确认端口
                 if (args.GetValueOrDefault("do") == "ck")
@@ -231,6 +273,32 @@ public sealed class SpiderProxyServer : IDisposable
                     return;
                 }
 
+                // ①¾ go= 内置命名空间（对位 TVBox <c>Proxy.proxy</c>；路由优先级是 do 优先、其次 go）。
+                //     直播源的分片/密钥要一路带 ua/referer/origin/cookie，这条链此前整体缺失：
+                //     表现为 itv 类直播「第一帧能出、几秒后黑屏」——首个 m3u8 是宿主直取到的，
+                //     而列表里的 .ts 直连 CDN 就 403。
+                var goVal = args.GetValueOrDefault("go");
+                if (!string.IsNullOrEmpty(goVal))
+                {
+                    var g = await GoLiveProxy.HandleAsync(args, localPort, lines, timeout.Token)
+                        .ConfigureAwait(false);
+                    if (g is null)
+                    {
+                        await RespondTextAsync(stream, "502 Bad Gateway", $"go={goVal} 未处理").ConfigureAwait(false);
+                        return;
+                    }
+                    // Content-Length 一律按实际写出的 body 计（上游那个可能与转码后的长度不一致，
+                    // 或根本没有——分块传输时），其余响应头原样回传。
+                    var extra = new StringBuilder("Connection: close\r\n");
+                    if (g.Headers is not null)
+                        foreach (var (k, v) in g.Headers)
+                            if (!k.Equals("Content-Length", StringComparison.OrdinalIgnoreCase))
+                                extra.Append(k).Append(": ").Append(v).Append("\r\n");
+                    await RespondBytesAsync(stream, StatusText(g.Status), g.Body, g.Mime, extra.ToString())
+                        .ConfigureAwait(false);
+                    return;
+                }
+
                 var url = DecodeUrl(args.GetValueOrDefault("url"));
                 if (string.IsNullOrEmpty(url))
                 {
@@ -256,6 +324,68 @@ public sealed class SpiderProxyServer : IDisposable
         }
     }
 
+    /// <summary>
+    /// 爬虫 KV 端点（移植 TVBox <c>server/CacheRequestProcess</c>）。
+    /// <para>键格式照抄 <c>getKey</c>：<c>"cache_" + (rule 空 ? "" : rule + "_") + key</c>。
+    /// 语义要点：一律回 200（连 del/set 也是）、<c>key</c> 空回空串、get 未命中回空串、
+    /// set 的 value 缺省按空串存。jar 靠 get 的返回是否为空判断「有没有登录过」，
+    /// 所以这里<b>不能</b>用 404/400 表达未命中。</para>
+    /// </summary>
+    private async Task HandleCacheAsync(NetworkStream stream, Dictionary<string, string> args)
+    {
+        // NanoHTTPD 的 getParms() 是解码过的，我们的 ParseQuery 存的是原始值 —— 这里补上，
+        // 否则爬虫存的 cookie（大量 %3D/%26）取回来是编码态，Gson 一解析就错。
+        string Un(string k) => Uri.UnescapeDataString(args.GetValueOrDefault(k) ?? "");
+
+        var action = Un("do");
+        var key = Un("key");
+        if (key.Length == 0)
+        {
+            await RespondTextAsync(stream, "200 OK", "", "text/plain").ConfigureAwait(false);
+            return;
+        }
+
+        var cacheKey = "cache_" + (Un("rule") is { Length: > 0 } rule ? rule + "_" : "") + key;
+        var store = CacheStore;
+        if (store is null)
+        {
+            Log?.Invoke($"[cache] 未注入 KV，{action} {cacheKey} 落空");
+            await RespondTextAsync(stream, "200 OK", action == "get" ? "" : "OK", "text/plain").ConfigureAwait(false);
+            return;
+        }
+
+        switch (action)
+        {
+            case "get":
+                await RespondTextAsync(stream, "200 OK", store.CacheGet(cacheKey), "text/plain")
+                    .ConfigureAwait(false);
+                break;
+            case "set":
+                store.CacheSet(cacheKey, Un("value"));
+                await RespondTextAsync(stream, "200 OK", "OK", "text/plain").ConfigureAwait(false);
+                break;
+            case "del":
+                store.CacheDelete(cacheKey);
+                await RespondTextAsync(stream, "200 OK", "OK", "text/plain").ConfigureAwait(false);
+                break;
+            default:
+                await RespondTextAsync(stream, "200 OK", "", "text/plain").ConfigureAwait(false);
+                break;
+        }
+    }
+
+    static string StatusText(int code) => code switch
+    {
+        200 => "200 OK",
+        206 => "206 Partial Content",
+        301 => "301 Moved Permanently",
+        302 => "302 Found",
+        403 => "403 Forbidden",
+        404 => "404 Not Found",
+        500 => "500 Internal Server Error",
+        _ => code + " OK",
+    };
+
     private async Task ProxyAsync(NetworkStream clientStream, string url, Dictionary<string, string> args,
         string[] requestHeaders, int localPort, CancellationToken ct)
     {
@@ -265,7 +395,7 @@ public sealed class SpiderProxyServer : IDisposable
         req.Headers.TryAddWithoutValidation("Accept", "*/*");
 
         // Range 透传（视频分片/拖动进度必需）
-        var range = HeaderValue(requestHeaders, "Range");
+        var range = Header(requestHeaders, "Range");
         if (!string.IsNullOrEmpty(range)) req.Headers.TryAddWithoutValidation("Range", range);
 
         using var resp = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
@@ -278,6 +408,20 @@ public sealed class SpiderProxyServer : IDisposable
         if (LooksLikePlaylist(finalUrl, contentType, body))
         {
             var text = Encoding.UTF8.GetString(body);
+
+            // 先去广告再改写：清洗要在「绝对地址」形态上做（订阅 rules 的正则按 host 匹配），
+            // 且洗完 AdCount==0 时按 TVBox 语义播原文。开关默认关，见 M3u8Purifier.Enabled。
+            if (M3u8Purifier.Enabled)
+            {
+                var purifier = new M3u8Purifier(Providers.TvBoxConfigStore.AdRegexForUrl) { Log = Log };
+                var purified = purifier.Purify(finalUrl, text);
+                if (purified is not null && purifier.AdCount > 0)
+                {
+                    Log?.Invoke($"[proxy] m3u8 去广告：移除 {purifier.AdCount} 段（{finalUrl}）");
+                    text = purified;
+                }
+            }
+
             var rewritten = RewritePlaylist(text, finalUrl, args, localPort);
             await RespondBytesAsync(clientStream, "200 OK", Encoding.UTF8.GetBytes(rewritten),
                 "application/vnd.apple.mpegurl").ConfigureAwait(false);
@@ -415,6 +559,18 @@ public sealed class SpiderProxyServer : IDisposable
         return len == 0 ? null : Encoding.ASCII.GetString(buf, 0, len);
     }
 
+    /// <summary>遥控端点的状态行（401/404 这些要有名字，浏览器与脚本都会看这个）。</summary>
+    static string RcStatusLine(int status) => status switch
+    {
+        200 => "200 OK",
+        400 => "400 Bad Request",
+        401 => "401 Unauthorized",
+        404 => "404 Not Found",
+        499 => "499 Client Closed Request",
+        501 => "501 Not Implemented",
+        _ => status + " Error",
+    };
+
     private static async Task RespondTextAsync(NetworkStream stream, string status, string body,
         string contentType = "text/plain", string extraHeaders = "")
     {
@@ -438,7 +594,8 @@ public sealed class SpiderProxyServer : IDisposable
         await stream.FlushAsync().ConfigureAwait(false);
     }
 
-    private static string? HeaderValue(string[] headerLines, string name)
+    /// <summary>取原始请求头（供 <see cref="GoLiveProxy"/> 复用：它要把播放器的 Range 带下去）。</summary>
+    public static string? Header(string[] headerLines, string name)
     {
         foreach (var line in headerLines)
         {

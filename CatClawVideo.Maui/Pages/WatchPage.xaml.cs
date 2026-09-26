@@ -127,6 +127,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
         ControlBar.SeekCompleted += (_, _) => OnSeekCompleted(this, EventArgs.Empty);
         ControlBar.SeekRequested += (_, seconds) => OnSeekRequested(seconds);
         ControlBar.SpeedRequested += (_, _) => CycleSpeed();
+        ControlBar.SubtitleRequested += (_, _) => _ = ShowSubtitleSheetAsync();
         ControlBar.MuteChanged += (_, muted) => ApplyMute(muted);
 
         Player.PositionChanged += (_, _) => MainThread.BeginInvokeOnMainThread(() =>
@@ -134,6 +135,9 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
             UpdateProgress();
             TickBufferingIndicator();   // 先在「真的在播」时收起指示器（MF 会误报 Buffering）
             UpdateBufferProgress();     // 仍在缓冲：刷新百分比
+            // 弹幕钟跟真实进度走：能收到 PositionChanged 就说明在推进
+            Danmaku.SetPlaying(true);
+            Danmaku.SyncPosition(Player.Position.TotalSeconds);
         });
 
         // 首帧布局后把面板高度对齐到播放框实际高度
@@ -151,6 +155,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
         {
             _mediaOpenedUtc = DateTime.UtcNow;
             UpdateProgress();
+            ReportNowPlaying();   // 电脑端 GET /rc/media 看的就是这里
 
             // 播放历史续看：媒体就绪（时长已知）后 seek 到上次位置。
             // 刚 Open 的瞬间部分后端尚不可 seek（Windows 实测直接 Seek 会被丢弃），
@@ -244,11 +249,34 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
         pointer.PointerEntered += OnPlayerPointerEntered;
         pointer.PointerMoved += OnPlayerPointerMoved;
         pointer.PointerExited += OnPlayerPointerExited;
+        // 按住画面 = 临时 3× 快进，松手回原倍速（对位 TVBox VodController 的长按提速）
+        pointer.PointerPressed += OnScreenPressed;
+        pointer.PointerReleased += OnScreenReleased;
         ControlsOverlay.GestureRecognizers.Add(pointer);
+
+        // A-B 区间循环（对位 play_time_start / play_time_end）：越过 B 点就回到 A 点
+        Player.PositionChanged += (_, _) => MainThread.BeginInvokeOnMainThread(EnforceAbLoop);
         _speedTimer = Dispatcher.CreateTimer();
         _speedTimer.Interval = TimeSpan.FromMilliseconds(800);
         _speedTimer.IsRepeating = true;
         _speedTimer.Tick += (_, _) => UpdateSpeedBadge();
+
+        // 锁定后画面中央偏右的解锁角标：锁上时它是唯一还能点的东西
+        _unlockChip = new Border
+        {
+            IsVisible = false,
+            Padding = new Thickness(12, 7),
+            BackgroundColor = Color.FromArgb("#99000000"),
+            StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 18 },
+            HorizontalOptions = LayoutOptions.End,
+            VerticalOptions = LayoutOptions.Center,
+            Margin = new Thickness(0, 0, 14, 0),
+            ZIndex = 60,
+            Content = new Label { Text = "🔒 已锁定", FontSize = 12.5, TextColor = Colors.White },
+        };
+        _unlockChip.GestureRecognizers.Add(new TapGestureRecognizer
+        { Command = new Command(() => SetLocked(false)) });
+        ControlsOverlay.Children.Add(_unlockChip);
 
         // 控制层自动隐藏：鼠标移出播放框 / 手指离开后 3s 隐藏
         _controlsHideTimer = Dispatcher.CreateTimer();
@@ -444,6 +472,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
     private void UpdateSpeedBadge()
     {
         // 网速数据源（内置 BT）已移除：该位置改用于**倍速提示**（非 1.0 时常驻）。
+        if (DateTime.UtcNow < _badgeUntilUtc) return;   // 临时提示（A-B 标记 / 长按快进）先占着徽章
         SpeedBadge.IsVisible = _playing && Math.Abs(Player.Speed - 1.0) > 0.01;
         if (SpeedBadge.IsVisible) SpeedLabel.Text = $"{Player.Speed:0.0#}× 播放";
     }
@@ -466,6 +495,190 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
         // 非 1.0 时浮一下倍数提示，让用户确认已生效
         if (_playing && next != 1.0) ShowSpeedBadge(next);
         else HideSpeedBadge();
+    }
+
+    /// <summary>上次落地到播放器里的「默认倍速」，用来区分「用户在播放中改的」和「设置页改的默认值」。</summary>
+    private double _appliedDefaultSpeed = double.NaN;
+
+    /// <summary>
+    /// 把设置页的默认值（画面比例 / 倍速 / 解码模式）落到当前播放器上。
+    /// <para>倍速只在<b>默认值本身变了</b>时才覆盖 —— 否则用户在播放中手动调的倍速会被
+    /// 一次「去设置页看一眼再回来」冲掉。</para>
+    /// </summary>
+    void ApplyPlaybackDefaults()
+    {
+        try
+        {
+            var aspect = Services.AspectPrefs.Load();
+            if (Player.Aspect != aspect) Player.Aspect = aspect;
+
+            var mode = Services.DecoderModePrefs.Load();
+            if (Player.DecoderMode != mode) Player.DecoderMode = mode;
+
+            var speed = Services.SpeedPrefs.Load();
+            if (Math.Abs(_appliedDefaultSpeed - speed) > 0.001)
+            {
+                _appliedDefaultSpeed = speed;
+                Player.Speed = speed;
+                ControlBar.SpeedValue = speed;
+            }
+        }
+        catch (Exception ex)
+        {
+            DiagLog.Write($"[prefs] 应用播放默认值失败: {ex.Message}");
+        }
+    }
+
+    // ═══════════════════ 外挂字幕 ═══════════════════
+
+    /// <summary>
+    /// 字幕菜单（MVP 形态：用系统 action sheet 而不是自绘面板）。
+    /// <para>偏移步进 ±0.5s 与 TVBox 字幕面板一致。选文件走 <see cref="FilePicker"/> 后**复制到缓存目录**
+    /// 再交给播放器 —— Android 上 <c>FileResult.FullPath</c> 可能是 content:// 包装，播放器不认；
+    /// 而且偏移重写需要在旁边写一份临时字幕。</para>
+    /// </summary>
+    private async Task ShowSubtitleSheetAsync()
+    {
+        var file = Player.SubtitlePath;
+        var state = string.IsNullOrEmpty(file) ? "未加载字幕" : $"{System.IO.Path.GetFileName(file)}";
+        var offset = Player.SubtitleOffsetSeconds;
+        var choice = await DisplayActionSheetAsync(
+            $"字幕 · {state} · 偏移 {offset:+0.##;-0.##;0}s",
+            "取消", null,
+            "选择字幕文件…", "字幕延后 0.5s", "字幕提前 0.5s", "偏移归零", "关闭字幕",
+            "切换音轨…", "切换内嵌字幕轨…", "画面比例…", "A-B 区间循环…",
+            "屏幕方向…", "外部播放器打开…", "弹幕…", "投屏…", _locked ? "解除锁定" : "锁定画面");
+        switch (choice)
+        {
+            case "选择字幕文件…":
+                await PickSubtitleFileAsync();
+                break;
+            case "字幕延后 0.5s":
+                Player.SubtitleOffsetSeconds = offset + 0.5;
+                break;
+            case "字幕提前 0.5s":
+                Player.SubtitleOffsetSeconds = offset - 0.5;
+                break;
+            case "偏移归零":
+                Player.SubtitleOffsetSeconds = 0;
+                break;
+            case "关闭字幕":
+                Player.SubtitlePath = null;
+                break;
+            case "切换音轨…":
+                await ShowTrackSheetAsync(VideoTrackKind.Audio);
+                break;
+            case "切换内嵌字幕轨…":
+                await ShowTrackSheetAsync(VideoTrackKind.Subtitle);
+                break;
+            case "画面比例…":
+                await ShowAspectSheetAsync();
+                break;
+            case "A-B 区间循环…":
+                await ShowAbLoopSheetAsync();
+                break;
+            case "弹幕…":
+                await ShowDanmakuSheetAsync();
+                break;
+            case "投屏…":
+                await ShowCastSheetAsync();
+                break;
+            case "屏幕方向…":
+                await ShowOrientationSheetAsync();
+                break;
+            case "外部播放器打开…":
+                await ShowExternalPlayerSheetAsync();
+                break;
+            case "锁定画面":
+                SetLocked(true);
+                break;
+            case "解除锁定":
+                SetLocked(false);
+                break;
+        }
+        ControlBar.SetSubtitleOn(!string.IsNullOrEmpty(Player.SubtitlePath));
+        if (Player.SubtitleError is { Length: > 0 } err)
+            await DisplayAlertAsync("字幕", err, "好");
+    }
+
+    private async Task PickSubtitleFileAsync()
+    {
+        try
+        {
+            var picked = await FilePicker.PickAsync(new PickOptions
+            {
+                PickerTitle = "选择字幕文件",
+                FileTypes = new FilePickerFileType(new Dictionary<DevicePlatform, IEnumerable<string>>
+                {
+                    [DevicePlatform.WinUI] = new[] { ".srt", ".vtt", ".ass", ".ssa", ".ttml" },
+                    [DevicePlatform.Android] = new[] { "*/*" },
+                }),
+            });
+            if (picked is null) return;
+            if (SubtitleSupport.InferMime(picked.FileName) is null)
+            {
+                await DisplayAlertAsync("字幕", "只支持 .srt / .vtt / .ass / .ssa / .ttml", "好");
+                return;
+            }
+            var target = System.IO.Path.Combine(FileSystem.CacheDirectory, "catclaw-subtitle" + System.IO.Path.GetExtension(picked.FileName));
+            await using (var src = await picked.OpenReadAsync())
+            await using (var dst = File.Create(target))
+                await src.CopyToAsync(dst);
+            Player.SubtitlePath = target;
+        }
+        catch (Exception ex)
+        {
+            await DisplayAlertAsync("字幕", "挑选或复制字幕文件失败：" + ex.Message, "好");
+        }
+    }
+
+    /// <summary>
+    /// 轨道选择面板（音轨 / 内嵌字幕轨）。
+    /// <para>用 action sheet 而不是自绘面板：TVBox 那边是自绘 dialog，但一次能列出的轨道通常 ≤ 5 条，
+    /// 两级 sheet 已经够用。取不到轨道时**明确说明原因**，不要给一个空列表让用户以为功能坏了。</para>
+    /// </summary>
+    private async Task ShowTrackSheetAsync(VideoTrackKind kind)
+    {
+        var title = kind == VideoTrackKind.Audio ? "音轨" : "内嵌字幕轨";
+        var tracks = Player.GetTracks(kind);
+        if (tracks.Count == 0)
+        {
+            await DisplayAlertAsync(title, "这条源没有可读到的" + title + "（源未内嵌，或播放器尚未就绪）", "好");
+            return;
+        }
+
+        var names = tracks.Select(t => (t.Active ? "✓ " : "") + t.Display).ToList();
+        // 空 id 在两端语义不同：字幕是「整类关掉」，音轨是「交回系统自动选」—— 文案要跟着变
+        var tail = kind == VideoTrackKind.Subtitle ? "全部关闭" : "自动选择";
+        names.Add(tail);
+
+        var choice = await DisplayActionSheetAsync(title, "取消", null, names.ToArray());
+        if (string.IsNullOrEmpty(choice) || choice == "取消") return;
+        var idx = names.IndexOf(choice);
+        if (idx < 0) return;
+        Player.SelectTrack(kind, idx == tracks.Count ? null : tracks[idx].Id);
+    }
+
+    /// <summary>
+    /// 把当前播放写进 <see cref="Core.Services.RemoteControlHub.CurrentMedia"/>，
+    /// 电脑端 <c>GET /rc/media</c> 就能看到（对位 TVBox RemoteServer 的 /media 取当前播放 JSON）。
+    /// </summary>
+    private void ReportNowPlaying()
+    {
+        try
+        {
+            var url = Player.Source?.ToString() ?? "";
+            Core.Services.RemoteControlHub.CurrentMedia = System.Text.Json.JsonSerializer.Serialize(
+                new Dictionary<string, string>
+                {
+                    ["title"] = _item.Title,
+                    ["site"] = Core.Models.SiteRegistry.Find(_item.SourceKey)?.Name ?? "",
+                    ["sourceKey"] = _item.SourceKey,
+                    ["url"] = url,
+                    ["position"] = ((long)Player.Position.TotalSeconds) + "",
+                });
+        }
+        catch { /* 透不出去不该影响播放 */ }
     }
 
     /// <summary>
@@ -498,6 +711,310 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
     }
 
     private void HideSpeedBadge() => SpeedBadge.IsVisible = false;
+
+    // ═══════════════════ 临时徽章 / 长按快进 / A-B 循环 ═══════════════════
+
+    private DateTime _badgeUntilUtc;
+
+    /// <summary>借用倍速徽章的位置闪一条提示。<see cref="UpdateSpeedBadge"/> 在有效期内不覆盖它。</summary>
+    private void FlashBadge(string text, int ms = 1800)
+    {
+        _badgeUntilUtc = DateTime.UtcNow.AddMilliseconds(ms);
+        SpeedLabel.Text = text;
+        SpeedBadge.IsVisible = true;
+    }
+
+    private IDispatcherTimer? _pressTimer;
+    private bool _boosting;
+    private double _speedBeforeBoost = 1.0;
+
+    /// <summary>
+    /// 按住画面 450ms 起算 3× 快进（对位 TVBox <c>VodController</c> 的长按提速）。
+    /// <para>没到时长就松手 → 定时器被停掉，什么也不发生，所以普通「点一下唤出控制层」不受影响。</para>
+    /// </summary>
+    private void OnScreenPressed(object? sender, PointerEventArgs e)
+    {
+        _pressTimer ??= Dispatcher.CreateTimer();
+        _pressTimer.Interval = TimeSpan.FromMilliseconds(450);
+        _pressTimer.IsRepeating = false;
+        _pressTimer.Tick -= OnPressHoldElapsed;
+        _pressTimer.Tick += OnPressHoldElapsed;
+        _pressTimer.Stop();
+        _pressTimer.Start();
+    }
+
+    private void OnPressHoldElapsed(object? sender, EventArgs e)
+    {
+        // 进度条拖动中不提速：按住 slider 是「找位置」，不是 TVBox 那种「按住画面快进」
+        if (!_playing || _boosting || _seeking || _locked) return;
+        _boosting = true;
+        _speedBeforeBoost = Player.Speed;
+        Player.Speed = 3.0;
+        FlashBadge("3× 快进中（松手恢复）", 60_000);
+    }
+
+    private void OnScreenReleased(object? sender, PointerEventArgs e)
+    {
+        _pressTimer?.Stop();
+        if (!_boosting) return;
+        _boosting = false;
+        Player.Speed = _speedBeforeBoost;
+        UpdateSpeedBadge();
+    }
+
+    private TimeSpan? _loopA;
+    private TimeSpan? _loopB;
+    private bool _loopSeeking;
+
+    /// <summary>位置越过 B 点就回跳 A 点。Seek 有延迟，用 <c>_loopSeeking</c> 挡住同一圈的重复触发。</summary>
+    private void EnforceAbLoop()
+    {
+        if (_loopA is not { } a || _loopB is not { } b || b <= a || _loopSeeking) return;
+        if (Player.Position < b) return;
+        _loopSeeking = true;
+        try { Player.Seek(a); } catch { }
+        FlashBadge("A-B 循环 · " + FormatTime(a) + " → " + FormatTime(b), 2000);
+        Dispatcher.StartTimer(TimeSpan.FromMilliseconds(700), () => { _loopSeeking = false; return false; });
+    }
+
+    /// <summary>
+    /// 用外部播放器打开当前这条流（对位 TVBox 的 PLAY_TYPE 10–14）。
+    /// <para>请求头是这里的重点：MX/Kodi 能把头拼在 URI 上、Reex 收 JSON extra，
+    /// <c>VLC 收不了头</c> —— 所以推给 VLC 时明确说明「403 不是唤起失败」。</para>
+    /// </summary>
+    // ═══════════════ 弹幕（对位 TVBox player/danmu 的装载面）═══════════════
+
+    private static readonly HttpClient DanmuHttp = new() { Timeout = TimeSpan.FromSeconds(20) };
+    private string? _danmuUrl;
+
+    /// <summary>
+    /// 载入本集弹幕。<b>只在开关已开时发这个请求</b>：Guard 系网盘源的 <c>danmaku</c> 字段指向本地
+    /// <c>do=danmu</c> 宿主钩子，GET 它会回调 jar 弹「云盘配置」对话框（见 SpiderVodProvider），
+    /// 默认关 = 不会因为渲染弹幕而二次弹窗。
+    /// </summary>
+    private async Task LoadDanmakuAsync(string? url)
+    {
+        _danmuUrl = url;
+        Danmaku.SetCues([]);
+        if (!Danmaku.IsOn || string.IsNullOrWhiteSpace(url)) return;
+        try
+        {
+            var cues = await CatClawVideo.Core.Services.DanmuParser.LoadAsync(url, DanmuHttp);
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                Danmaku.SetCues(cues);
+                Danmaku.SyncPosition(Player.Position.TotalSeconds);
+            });
+        }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[弹幕] 载入失败: {ex.Message}"); }
+    }
+
+    private async Task ShowDanmakuSheetAsync()
+    {
+        var on = Danmaku.IsOn;
+        var choice = await DisplayActionSheetAsync(
+            $"弹幕 · {(on ? "开" : "关")} · 密度 {Danmaku.Density:P0} · 字号 {Danmaku.FontScale:0.#}x",
+            "取消", null,
+            on ? "关闭弹幕" : "开启弹幕", "重新载入本集弹幕",
+            "密度 25%", "密度 50%", "密度 75%", "密度 100%", "字号 0.8x", "字号 1.2x");
+        switch (choice)
+        {
+            case "关闭弹幕":
+            case "开启弹幕":
+                Danmaku.IsOn = !on;
+                await LoadDanmakuAsync(_danmuUrl);
+                break;
+            case "重新载入本集弹幕":
+                await LoadDanmakuAsync(_danmuUrl);
+                break;
+            case "密度 25%": Danmaku.Density = 0.25; break;
+            case "密度 50%": Danmaku.Density = 0.5; break;
+            case "密度 75%": Danmaku.Density = 0.75; break;
+            case "密度 100%": Danmaku.Density = 1.0; break;
+            case "字号 0.8x": Danmaku.FontScale = 0.8; break;
+            case "字号 1.2x": Danmaku.FontScale = 1.2; break;
+        }
+        Preferences.Default.Set("catclaw.danmu_density", Danmaku.Density);
+        Preferences.Default.Set("catclaw.danmu_fontscale", Danmaku.FontScale);
+    }
+
+    // ═══════════════ DLNA 投屏（对位 osc/dlna/DLNACastManager.cast）═══════════════
+
+    private static readonly HttpClient CastHttp = new() { Timeout = TimeSpan.FromSeconds(10) };
+
+    /// <summary>
+    /// 发现 → 列设备 → 投。地址一律先过 <see cref="CatClawVideo.Core.Services.Dlna.BuildCastUrl"/>
+    /// 挂到本机内置代理，这样防盗链源在接收端也拉得动（TVBox 用转发服务实现同一件事）。
+    /// </summary>
+    private async Task ShowCastSheetAsync()
+    {
+        var raw = Player.Source?.ToString() ?? "";
+        if (raw.Length == 0)
+        {
+            await DisplayAlert("投屏", "还没有可投的地址，先起播再试。", "好");
+            return;
+        }
+
+#if ANDROID
+        // 不加组播锁 = 一条 SSDP 应答都收不到，而且不报错，只是「搜不到设备」
+        Platforms.Android.WifiMulticast.Acquire();
+#endif
+        var devices = new List<CatClawVideo.Core.Services.DlnaDevice>();
+        foreach (var loc in await CatClawVideo.Core.Services.Dlna.SearchLansAsync())
+        {
+            var d = await CatClawVideo.Core.Services.Dlna.FetchDeviceAsync(loc, CastHttp);
+            if (d is not null && !devices.Any(x => x.Udn == d.Udn)) devices.Add(d);
+        }
+#if ANDROID
+        Platforms.Android.WifiMulticast.Release();
+#endif
+        if (devices.Count == 0)
+        {
+            await DisplayAlert("投屏", "没找到 DLNA 接收端。\n确认电视与本设备在同一局域网、且已开启 DLNA / 多屏互动。", "好");
+            return;
+        }
+
+        var names = devices.Select(d => d.Name).ToArray();
+        var choice = await DisplayActionSheetAsync("投屏到", "取消", null, names);
+        int idx = Array.IndexOf(names, choice);
+        if (idx < 0) return;
+
+        var baseHint = CatClawVideo.Core.Services.Dlna.LocalLanIp() is { } ip &&
+                       CatClawVideo.Core.Services.SpiderProxyServer.ActivePort > 0
+            ? $"http://{ip}:{CatClawVideo.Core.Services.SpiderProxyServer.ActivePort}" : "";
+        var target = new CatClawVideo.Core.Services.DlnaCastTarget(
+            baseHint.Length > 0 ? CatClawVideo.Core.Services.Dlna.BuildCastUrl(raw, Player.Headers, baseHint) : raw,
+            Title, Player.Headers, (long)Player.Position.TotalMilliseconds);
+        var (ok, err) = await CatClawVideo.Core.Services.Dlna.CastAsync(devices[idx], target, CastHttp);
+        await DisplayAlert(ok ? "已投屏" : "投屏失败", ok ? devices[idx].Name : err, "好");
+    }
+
+    private async Task ShowExternalPlayerSheetAsync()
+    {
+        if (!Services.ExternalPlayerService.Supported)
+        {
+            await DisplayAlertAsync("外部播放器",
+                "桌面端做不到：系统只肯收一个 URI，传不出 Referer/UA，防盗链源交出去必然 403。", "好");
+            return;
+        }
+        var url = Player.Source?.ToString();
+        if (string.IsNullOrEmpty(url))
+        {
+            await DisplayAlertAsync("外部播放器", "现在没有在播的地址。", "好");
+            return;
+        }
+        var players = Services.ExternalPlayerService.Detect();
+        if (players.Count == 0)
+        {
+            await DisplayAlertAsync("外部播放器",
+                "没检测到 MX Player / Reex / Kodi / VLC 中任何一个。" + System.Environment.NewLine
+                + "（装了却没认出来，通常是系统没授权查询已装应用）", "好");
+            return;
+        }
+        var names = players.Select(p => p.Display).ToArray();
+        var choice = await DisplayActionSheetAsync("用哪个播放器打开", "取消", null, names);
+        var idx = Array.IndexOf(names, choice);
+        if (idx < 0) return;
+
+        var ok = Services.ExternalPlayerService.Launch(players[idx].Id, url, _item.Title,
+            Player.SubtitlePath, Player.Headers, (long)Player.Position.TotalMilliseconds);
+        if (!ok)
+        {
+            await DisplayAlertAsync("外部播放器", "唤起失败（诊断日志里有「外播」那一行）。", "好");
+            return;
+        }
+        if (players[idx].Id == "vlc" && Player.Headers is { Count: > 0 })
+            await DisplayAlertAsync("外部播放器",
+                "已交给 VLC，但它没有接收请求头的入口 —— 防盗链源报 403 不是唤起失败，换 MX/Kodi 才有头。", "好");
+    }
+
+    private Border? _unlockChip;
+    private bool _locked;
+
+    /// <summary>
+    /// 播放器锁（对位 <c>play_lock</c>）：锁上后控件层不再出现，方向键与长按快进全部吃掉，
+    /// 只留一枚解锁角标。收口在 <see cref="SetControlsVisible"/>，所以不用去改每条显隐路径。
+    /// </summary>
+    private void SetLocked(bool on)
+    {
+        _locked = on;
+        if (on)
+        {
+            _controlsHideTimer?.Stop();
+            FlashBadge("已锁定：点右下角解锁", 2400);
+        }
+        else ShowControls();
+        SetControlsVisible(!on);
+    }
+
+    /// <summary>屏幕方向（对位 <c>landscape_portrait</c>）。桌面端没有设备方向可锁，直接说明。</summary>
+    private async Task ShowOrientationSheetAsync()
+    {
+#if ANDROID
+        if (Application.Current is not App app) return;
+        var names = new[]
+        {
+            (app.ManualLandscape ? "✓ " : "") + "锁定横屏",
+            (!app.ManualLandscape ? "✓ " : "") + "跟随系统旋转",
+        };
+        var choice = await DisplayActionSheetAsync("屏幕方向", "取消", null, names);
+        var idx = Array.IndexOf(names, choice);
+        if (idx < 0) return;
+        if (idx == 0) app.ForceLandscape();
+        else app.ReleaseLandscape();
+#else
+        await DisplayAlertAsync("屏幕方向", "桌面端请直接用全屏（控制条「全屏」按钮）；设备方向锁定只在手机上有效。", "好");
+#endif
+    }
+
+    /// <summary>画面比例（对位 PLAY_SCALE 面板）。持久化到与设置页同一个键，别造第二份状态。</summary>
+    private async Task ShowAspectSheetAsync()
+    {
+        var table = new (VideoAspect Aspect, string Name)[]
+        {
+            (VideoAspect.AspectFit, "等比适配（保留黑边）"),
+            (VideoAspect.AspectFill, "等比填满（裁掉边缘）"),
+            (VideoAspect.Fill, "拉伸填满（会变形）"),
+        };
+        var names = table.Select(t => (t.Aspect == Player.Aspect ? "✓ " : "") + t.Name).ToArray();
+        var choice = await DisplayActionSheetAsync("画面比例", "取消", null, names);
+        var idx = Array.IndexOf(names, choice);
+        if (idx < 0) return;
+        Player.Aspect = table[idx].Aspect;
+        Services.AspectPrefs.Save(table[idx].Aspect);
+        FlashBadge(table[idx].Name);
+    }
+
+    /// <summary>A-B 区间循环的设置面板（标记 / 改点 / 停止 / 清除）。</summary>
+    private async Task ShowAbLoopSheetAsync()
+    {
+        var pos = Player.Position;
+        var labels = new List<string>
+        {
+            (_loopA is null ? "标记 A 点 · " : "把 A 点改到 · ") + FormatTime(pos),
+            (_loopB is null ? "标记 B 点 · " : "把 B 点改到 · ") + FormatTime(pos),
+        };
+        if (_loopA is not null && _loopB is not null) labels.Add("停止循环（保留标记）");
+        if (_loopA is not null || _loopB is not null) labels.Add("清除 A/B 标记");
+
+        var head = _loopA is { } pa && _loopB is { } pb
+            ? $"A-B 循环 · {FormatTime(pa)} → {FormatTime(pb)}"
+            : "A-B 区间循环";
+        var choice = await DisplayActionSheetAsync(head, "取消", null, labels.ToArray());
+        if (string.IsNullOrEmpty(choice) || choice == "取消") return;
+
+        if (choice.StartsWith("标记 A") || choice.StartsWith("把 A")) _loopA = pos;
+        else if (choice.StartsWith("标记 B") || choice.StartsWith("把 B")) _loopB = pos;
+        else if (choice == "停止循环（保留标记）") _loopB = null;
+        else { _loopA = null; _loopB = null; }
+
+        // B 必须晚于 A，否则循环条件永远成立、每帧都在 Seek
+        if (_loopA is { } aa && _loopB is { } bb && bb <= aa)
+        {
+            _loopB = null;
+            FlashBadge("B 点必须晚于 A 点", 2400);
+        }
+    }
 
     private static string FormatSpeed(long bps) =>
         bps >= 1048576 ? $"{bps / 1048576.0:F1} MB/s"
@@ -561,19 +1078,6 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
         DescToggle.IsVisible = false;
         DescLabel.MaxLines = 2;
         DescLabel.Text = _descFull.Length > 0 ? _descFull : "暂无简介";
-
-        // 简介排版诊断（临时）：记录原始/清洗后文本的不可见字符分布，定位空隙根因后移除
-        try
-        {
-            var dir = CatClawVideo.Core.AppPaths.DataRoot;
-            Directory.CreateDirectory(dir);
-            var rawDesc = _item.Description ?? "";
-            var odd = string.Concat(rawDesc.Where(c => c == '\n' || c == '\r' || c == '\u00a0' || c == '\u3000' || c == '\u200b' || c == '\ufeff')
-                .Select(c => $"U+{(int)c:X4} "));
-            File.WriteAllText(System.IO.Path.Combine(dir, "desc-debug.log"),
-                $"[{DateTime.Now:HH:mm:ss}] 原始长度={rawDesc.Length} 清洗后长度={DescLabel.Text.Length} 特殊字符=[{odd}]\n");
-        }
-        catch { }
 
         // 回显收藏状态（收藏表查重）
         _ = LoadFavoriteStateAsync();
@@ -662,6 +1166,8 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
         // 接管方向键（本页是整窗推送页，键盘栈顶只它一个消费者）
         RemoteKeyRouter.Push(this);
 
+        ApplyPlaybackDefaults();
+
 #if WINDOWS
         HookEscKey(attach: true);
         // 顶栏拖拽区（SetTitleBar 指定元素；延迟到 Handler 就绪后再挂）
@@ -695,16 +1201,23 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
             return false;
         });
 #endif
-        if (_isFullscreen) SetFullscreen(false);
-        EpisodesOverlay.IsVisible = false;   // 离开页面：浮层复位（页面实例可能被复用）
-        Player.Pause();
-        _playing = false;
-        UpdatePlayIcon();
-        _speedTimer?.Stop();
-        SpeedBadge.IsVisible = false;
+        // 切后台 + 开了「后台继续播放」→ 什么都不敢动，让声音继续（对位 TVBox MusicPlaybackService）。
+        // 导航离开（回主页/返回）仍然照旧停：那时 IsInBackground 是 false。
+        var keepPlaying = Services.BgPlayPrefs.ShouldKeepPlaying();
+        if (!keepPlaying)
+        {
+            if (_isFullscreen) SetFullscreen(false);
+            EpisodesOverlay.IsVisible = false;   // 离开页面：浮层复位（页面实例可能被复用）
+            Player.Pause();
+            _playing = false;
+            UpdatePlayIcon();
+            _speedTimer?.Stop();
+            SpeedBadge.IsVisible = false;
+        }
 
-        // 播放历史落库（观看页会话收尾）
-        try { _playback.EndSession(Player.Position.TotalSeconds, Player.Duration.TotalSeconds); }
+        // 播放历史落库（观看页会话收尾）。后台继续放时**不能**收尾：
+        // 那会把「此刻位置」写进历史，用户回来看到的是切后台前的进度而不是实际看到的进度。
+        try { if (!keepPlaying) _playback.EndSession(Player.Position.TotalSeconds, Player.Duration.TotalSeconds); }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[Watch] 历史记录失败: {ex.Message}"); }
 
         // 退出播放页 = 本次播放结束：通知磁力引擎收尾。
@@ -713,7 +1226,8 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
         // 地址不匹配（非磁力播放 / 已被别的页面接管）时引擎内部会自行忽略。
         try
         {
-            (MagnetEngines.Thunder as IPlaybackSessionLease)?.ReleasePlaybackSession(_resolvedPlay?.Url);
+            if (!keepPlaying)
+                (MagnetEngines.Thunder as IPlaybackSessionLease)?.ReleasePlaybackSession(_resolvedPlay?.Url);
         }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[Watch] 磁力会话收尾失败: {ex.Message}"); }
     }
@@ -1237,6 +1751,12 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
 
     public bool Handle(RemoteKey key)
     {
+        // 锁定中：按键只用于解锁，别的都不生效（否则看不见控件还在盲操作）
+        if (_locked)
+        {
+            if (key == RemoteKey.Back || key == RemoteKey.Enter) SetLocked(false);
+            return true;
+        }
         switch (key)
         {
             case RemoteKey.Left:
@@ -1558,6 +2078,14 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
                     ? PlayRequestHeaders(play)
                     : null);
             Player.Source = play.Url;
+            // 只记键名不记值：Cookie / token 进日志等于把网盘凭据落盘。
+            // 有这条才能区分「源没给头」与「给了但被并成非法 UA」（真机 400 那次两者都可能）。
+            var urlBrief = play.Url.Length > 110 ? play.Url[..110] : play.Url;
+            var headerKeys = Player.Headers is { Count: > 0 } hdr
+                ? "[" + string.Join(",", hdr.Keys) + "]"
+                : "[无]";
+            CatClawVideo.Core.Providers.CatClawLog.Write($"[播放] {urlBrief} … 头={headerKeys}");
+            _ = LoadDanmakuAsync(play.DanmakuUrl);
             Player.Play();
             _playing = true;
 
@@ -1643,7 +2171,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
         _autoSwitching = true;
         try
         {
-            var title = CleanTitleForMatch(_item.Title);
+            var title = Core.Services.TitleNormalizer.ForSearchQuery(_item.Title);
             if (title.Length < 2) return;
 
             DiagLog.Write($"[换源] 磁力站起播失败，开始跨站搜索：{title}");
@@ -1657,7 +2185,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
                 try { hits = await _provider.SearchAsync(site, title); }
                 catch { continue; }
 
-                var match = hits.FirstOrDefault(h => TitlesMatch(h.Title, title));
+                var match = hits.FirstOrDefault(h => Core.Services.TitleNormalizer.Matches(h.Title, title));
                 if (match is null) continue;
 
                 // 必须确认有非磁力剧集，否则换过去还是播不了
@@ -1718,7 +2246,11 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
             // 为什么不自建搜索 + 选站点弹窗：搜索页本来就有跨站并行搜索、站点筛选条、
             // 结果分站显示、点结果即进观看页 —— 一套能力重写一遍只会更差，
             // 而且用户对那个界面已经熟（2026-09-19 用户明确要求「还不如直接跳转搜索页」）。
-            await Shell.Current.GoToAsync($"search?q={Uri.EscapeDataString(title)}");
+            // 查询词清洗过再带过去：年份/括号备注/更新集数都会让跨站搜索一条不中。
+            // 清洗后太短就退回原标题（别把「2012」这种纯数字片名搜成空）。
+            var q = Core.Services.TitleNormalizer.ForSearchQuery(title);
+            if (q.Length < 2) q = title;
+            await Shell.Current.GoToAsync($"search?q={Uri.EscapeDataString(q)}");
         }
         catch (Exception ex)
         {
@@ -1728,28 +2260,6 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
         {
             _switchingSource = false;
         }
-    }
-
-    /// <summary>标题清洗：去括号备注/年份/更新集数等，只留正题名（自动换源的标题匹配用）</summary>
-    private static string CleanTitleForMatch(string raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw)) return "";
-        var s = raw.Trim();
-        int cut = s.IndexOfAny(['(', '（', '【']);
-        if (cut > 1) s = s[..cut];
-        s = System.Text.RegularExpressions.Regex.Replace(s, @"\b(19|20)\d{2}\b", "").Trim();
-        s = System.Text.RegularExpressions.Regex.Replace(s, @"更新至.*$|第.*季$|[4kK][hl]?$", "").Trim();
-        return s.Trim(' ', '-', '—', '·', '｜', '|');
-    }
-
-    /// <summary>标题匹配：去空白/标点后忽略大小写互含</summary>
-    private static bool TitlesMatch(string a, string b)
-    {
-        static string Norm(string s) => new(s.Where(char.IsLetterOrDigit).ToArray());
-        var na = Norm(a); var nb = Norm(b);
-        if (na.Length < 2 || nb.Length < 2) return false;
-        return na.Contains(nb, StringComparison.OrdinalIgnoreCase)
-            || nb.Contains(na, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>把异常消息压成一行可读原因（VerifyError 之类自带多行字节码 dump，不能整段进提示）</summary>
@@ -2366,6 +2876,9 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
     /// </summary>
     private void SetControlsVisible(bool on)
     {
+        // 锁定中：控件层一律不出现，只留那枚「解锁」角标（对位 TVBox play_lock）
+        if (_unlockChip is not null) _unlockChip.IsVisible = _locked;
+        if (_locked) on = false;
         ControlBar.IsVisible = on;
         // 中央大键与控件条播放键互斥：播放中不显示中央键（否则出现两个「暂停」）
         CenterPlayButton.IsVisible = on && !_playing;

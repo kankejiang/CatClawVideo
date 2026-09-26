@@ -14,7 +14,8 @@ public class WindowsWebSniffer : IWebSniffer
 {
     private const int TimeoutSeconds = 20;
 
-    public async Task<PlayRequest> SniffAsync(string pageUrl, IReadOnlyDictionary<string, string>? extraHeaders, CancellationToken ct)
+    public async Task<PlayRequest> SniffAsync(string pageUrl, IReadOnlyDictionary<string, string>? extraHeaders,
+        string? subscriptionKey, CancellationToken ct)
     {
         var tcs = new TaskCompletionSource<PlayRequest>(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -63,7 +64,11 @@ public class WindowsWebSniffer : IWebSniffer
                     }
                     var url = e.Request.Uri;
                     if (url.EndsWith("/favicon.ico", StringComparison.Ordinal)) return;
-                    if (TvBoxParseEngine.IsVideoFormat(url) && Interlocked.Increment(ref found) == 1)
+                    // 订阅 rules 的 filter 命中 → 不作候选（对照 TVBox checkIsVideo 的 isFilter 分支）
+                    if (TvBoxParseEngine.IsFiltered(pageUrl, url, subscriptionKey)) return;
+                    // 通用正则 + 订阅下发的 per-host 规则
+                    if (TvBoxParseEngine.CheckIsVideoForParse(pageUrl, url, subscriptionKey) &&
+                        Interlocked.Increment(ref found) == 1)
                     {
                         var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                         foreach (var h in e.Request.Headers)

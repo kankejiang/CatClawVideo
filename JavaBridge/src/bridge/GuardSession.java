@@ -1,55 +1,36 @@
 package bridge;
 
-import com.github.unidbg.AndroidEmulator;
-import com.github.unidbg.Module;
-import com.github.unidbg.linux.android.AndroidEmulatorBuilder;
-import com.github.unidbg.linux.android.AndroidResolver;
-import com.github.unidbg.linux.android.dvm.DalvikModule;
-import com.github.unidbg.linux.android.dvm.DvmClass;
-import com.github.unidbg.linux.android.dvm.DvmObject;
-import com.github.unidbg.linux.android.dvm.StringObject;
-import com.github.unidbg.linux.android.dvm.VM;
-
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.net.URL;
 import java.net.URLClassLoader;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.Enumeration;
 import java.util.List;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipFile;
 
 /**
  * Guard 壳框架的桌面运行会话（桥进程内常驻）。
  *
- * <p><b>架构（2026-09-24 与用户对齐）</b>：TVBox 客户端只提供 Activity，网盘管理对话框/
- * 扫码/凭据管理全部在 jar 的壳框架（{@code BaseSpiderGuard} + {@code DexNative}）里实现，
- * 所有 Guard 源共用、客户端与源作者均零适配。桌面桥此前跑不了壳框架（{@code DexNative}
- * 是 ARM native），本类把它接起来：</p>
+ * <p><b>架构（2026-09-25 定案，覆盖 2026-09-24 的"双路"版）</b>：TVBox 客户端只提供 Activity，
+ * 网盘管理对话框/扫码/凭据管理全部在 jar 的壳框架（{@code BaseSpiderGuard} + {@code DexNative}）里实现，
+ * 所有 Guard 源共用、客户端与源作者均零适配。{@code DexNative} 是 ARM native，
+ * **一律在 QEMU guest 里执行**（用性能换兼容性），桥这边只剩转发与注入：</p>
  * <ul>
- *   <li><b>解密</b>：{@code decrypt/encrypt/noxSign/native_ting_md5/calcResult} → 常驻
- *       unidbg 会话调 {@code ftyguard*.so}（解壳已验证同一调用模式：JNI_OnLoad +
- *       callStaticJniMethodObject）。</li>
- *   <li><b>真实类注入</b>：{@code getLoader} 不走 so（解壳产物已预转换）——直接返回
- *       桥预建的解壳 jar ClassLoader；{@code getSpider} 从中实例化真实类（去 Guard 后缀）。</li>
+ *   <li><b>解密/签名/计算</b>：{@code decrypt/encrypt/noxSign/native_ting_md5/calcResult/proxyInvoke}
+ *       → {@link QemuGuardChannel} → Guard VM 里的 ftyguard so。</li>
+ *   <li><b>真实类注入</b>：{@code getLoader} 不进 ARM ——直接返回桥预建的解壳 jar ClassLoader；
+ *       {@code getSpider} 从中实例化真实类（去 Guard 后缀）。</li>
  *   <li><b>UI</b>：壳框架调 AlertDialog/Bitmap → 宿主桩（android.app.* 桥接版）→
  *       UiBridge 事件上行 → 宿主渲染。</li>
  * </ul>
  *
- * <p>线程模型：unidbg 调用串行（{@code LOCK}）；调用方多为 spider 请求线程。</p>
+ * <p><b>unidbg 已经不是运行时的执行路径</b>：它自建一套 Android 桩环境，结果可以"看着对而语义不同"，
+ * 而 guest/unidbg 两条通道在日志里只差一个词，会被静默换引擎骗过去（实测同一条
+ * {@code DECRYPT 10232B} 两种都出现过）。unidbg 现在只剩离线解壳器 {@code bridge.GuardUnpacker}
+ * （{@code vendor/unidbg/unpacker.jar}，由宿主单独起进程跑），那是"把壳卸掉"的离线工具，
+ * 不参与播放路径。</p>
  */
 public final class GuardSession {
-
-    private static final Object LOCK = new Object();
-    private static volatile AndroidEmulator emulator;
-    private static volatile VM vm;
-    private static volatile DvmClass dexNative;
-    private static volatile String loadedSoKey;   // 防重复加载（同 jar 复用会话）
-    private static volatile File loadedJar;
 
     /** 解壳 jar（真实类）的 ClassLoader——由宿主经 op 注入。 */
     private static volatile URLClassLoader realLoader;
@@ -58,206 +39,76 @@ public final class GuardSession {
 
     private GuardSession() { }
 
-    // ═══════════ 会话 ═══════════
+    // ═══════════ DexNative 替身调用的实现（全部转发进 guest）═══════════
 
-    /**
-     * 确保常驻会话就绪（同 jar 复用）。jar = 原始 Guard jar（含 assets/*.so）。
-     * 复刻 GuardUnpacker.emulate 的加载序列，但**不关闭** emulator。
-     */
-    public static void ensureSession(File jar) throws Exception {
-        synchronized (LOCK) {
-            String key = jar.getAbsolutePath() + "#" + jar.lastModified();
-            if (emulator != null && key.equals(loadedSoKey)) return;
-
-            closeSession();
-
-            Path temp = Files.createTempDirectory("guard-session-");
-            File so = extractSo(jar, temp);
-
-            AndroidEmulator emu = so.getName().startsWith("arm32") || !isArm64(so)
-                    ? AndroidEmulatorBuilder.for32Bit().setProcessName("com.catclaw.video").build()
-                    : AndroidEmulatorBuilder.for64Bit().setProcessName("com.catclaw.video").build();
-            emulator = emu;
-            emu.getMemory().setLibraryResolver(new AndroidResolver(23));
-            VM v = emu.createDalvikVM(jar);
-            vm = v;
-            GuardJni jni = new GuardJni(temp.toFile(), jar, false);
-            v.setJni(jni);
-            v.setVerbose(false);
-
-            DalvikModule dm = v.loadLibrary(so, true);
-            Module module = dm.getModule();
-            System.err.println("[guard] so 基址 = 0x" + Long.toHexString(module.base));
-            dm.callJNI_OnLoad(emu);
-
-            dexNative = v.resolveClass("com/github/catvod/spider/DexNative");
-            loadedJar = jar;
-            loadedSoKey = key;
-
-            // ⚠ 会话预热：so 的 decrypt 等函数依赖 getLoader 先跑一遍的内部初始化状态
-            //   （解壳序列同款：getLoader 触发解密后壳调 DexClassLoader.loadClass 必然抛
-            //   良性异常——产物/状态此时已就位，吞掉继续）。
-            try {
-                DvmObject<?> ctxObj = v.resolveClass("android/content/Context").newObject(null);
-                dexNative.callStaticJniMethodObject(emulator,
-                        "getLoader(Ljava/lang/Object;)Ljava/lang/Object;", ctxObj);
-            } catch (Throwable t) {
-                System.err.println("[guard] 预热 getLoader 良性异常（状态已就位）: " + t);
-            }
-
-            System.err.println("[guard] 常驻会话就绪");
-        }
-    }
-
-    /** 重新打开解壳时的良性异常（壳写完产物后调 DexClassLoader.loadClass 必然失败）。 */
-    private static Object callGetLoader(Object ctx) {
-        try {
-            DvmObject<?> ctxObj = vm.resolveClass("android/content/Context").newObject(null);
-            return dexNative.callStaticJniMethodObject(emulator,
-                    "getLoader(Ljava/lang/Object;)Ljava/lang/Object;", ctxObj);
-        } catch (Throwable t) {
-            System.err.println("[guard] getLoader 异常（良性，忽略）: " + t);
-            return null;
-        }
-    }
-
-    public static void closeSession() {
-        try { if (emulator != null) emulator.close(); } catch (Throwable ignored) { }
-        emulator = null;
-        vm = null;
-        dexNative = null;
-        loadedSoKey = null;
-    }
-
-    // ═══════════ DexNative 替身调用的实现 ═══════════
-
-    /**
-     * 每次 ARM native 调用留一行「谁调的、多长、由哪条通道服务」。
-     * <p>没有这行就没法区分三件事：爬虫**根本没调用**、QEMU 命中、静默回落 unidbg ——
-     * 三者在业务日志里长得一模一样，而结论完全相反（2026-09-25 桌面网盘登录态排障实测）。</p>
-     */
+    /** 每次 ARM native 调用留一行「谁调的、多长、由哪条通道服务」，用来判定到底是谁在服务。 */
     private static void trace(String api, int inLen, String via, int outLen) {
         System.err.println("[guard] " + api + " " + inLen + "B → " + via + " " + outLen + "B");
     }
 
     private static int len(String s) { return s == null ? 0 : s.length(); }
 
-    /** QEMU 通道单参调用（DECRYPT/ENCRYPT/MD5）：失败抛 RuntimeException → 调用方回落 unidbg。 */
+    /** guest 是唯一 ARM 执行器：通道没启用就没有可执行的实现，直接报，不猜。 */
+    private static void requireGuest(String api) {
+        if (!QemuGuardChannel.enabled())
+            throw new IllegalStateException("ARM native " + api + " 只能由 QEMU guest 执行，但 Guard 解密服务端口未启用"
+                    + "（Guard VM 没起来或 rawJar 缺失）");
+    }
+
+    /** guest 调用失败就地抛 —— 运行时已经没有第二个 ARM 引擎可换。 */
+    private static IllegalStateException guestFailed(String api, Throwable t) {
+        return new IllegalStateException("ARM native " + api + " 在 QEMU guest 里执行失败: " + t, t);
+    }
+
+    /** 单参 guest 调用（DECRYPT/ENCRYPT/MD5）。 */
     private static String qemuOne(String op, String s) {
+        requireGuest(op);
         try {
             String resp = QemuGuardChannel.call(op + " " + QemuGuardChannel.b64(s), 60);
-            if (!resp.startsWith("OK ")) throw new IllegalStateException("QEMU " + op + ": " + resp);
+            if (!resp.startsWith("OK ")) throw new IllegalStateException(resp);
             String out = QemuGuardChannel.unb64(resp.substring(3).trim());
             trace(op, len(s), "QEMU", len(out));
             return out;
-        } catch (java.io.IOException e) {
-            throw new RuntimeException(e);
+        } catch (Throwable t) {
+            throw guestFailed(op, t);
         }
     }
 
-    public static String decrypt(String s) {
-        if (QemuGuardChannel.enabled()) {
-            try { return qemuOne("DECRYPT", s); }
-            catch (Throwable t) {
-                System.err.println("[guard] QEMU decrypt 失败，回落 unidbg: " + t);
-            }
-        }
-        trace("DECRYPT", len(s), "unidbg", -1);
-        requireSession();
-        synchronized (LOCK) {
-            try {
-                StringObject r = (StringObject) dexNative.callStaticJniMethodObject(emulator,
-                        "decrypt(Ljava/lang/String;)Ljava/lang/String;", new StringObject(vm, s == null ? "" : s));
-                return r == null ? "" : r.getValue();
-            } catch (Throwable t) {
-                System.err.println("[guard] decrypt 异常: 入参=" + (s == null ? "null" : s.substring(0, Math.min(s.length(), 40)))
-                        + " / " + t);
-                throw t instanceof RuntimeException re ? re : new RuntimeException(t);
-            }
-        }
-    }
+    public static String decrypt(String s) { return qemuOne("DECRYPT", s); }
 
-    public static String encrypt(String s) {
-        if (QemuGuardChannel.enabled()) {
-            try { return qemuOne("ENCRYPT", s); }
-            catch (Throwable t) {
-                System.err.println("[guard] QEMU encrypt 失败，回落 unidbg: " + t);
-            }
-        }
-        trace("ENCRYPT", len(s), "unidbg", -1);
-        requireSession();
-        synchronized (LOCK) {
-            StringObject r = (StringObject) dexNative.callStaticJniMethodObject(emulator,
-                    "encrypt(Ljava/lang/String;)Ljava/lang/String;", new StringObject(vm, s == null ? "" : s));
-            return r == null ? "" : r.getValue();
-        }
-    }
+    public static String encrypt(String s) { return qemuOne("ENCRYPT", s); }
+
+    public static String md5(String s) { return qemuOne("MD5", s); }
 
     public static String noxSign(String a, String b, String c) {
-        if (QemuGuardChannel.enabled()) {
-            try {
-                String resp = QemuGuardChannel.call("NOXSIGN " + QemuGuardChannel.b64(a) + " "
-                        + QemuGuardChannel.b64(b) + " " + QemuGuardChannel.b64(c), 60);
-                if (resp.startsWith("OK ")) return QemuGuardChannel.unb64(resp.substring(3).trim());
-                throw new IllegalStateException(resp);
-            } catch (Throwable t) {
-                System.err.println("[guard] QEMU noxSign 失败，回落 unidbg: " + t);
-            }
-        }
-        trace("NOXSIGN", 0, "unidbg", -1);
-        requireSession();
-        synchronized (LOCK) {
-            StringObject r = (StringObject) dexNative.callStaticJniMethodObject(emulator,
-                    "noxSign(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
-                    new StringObject(vm, a == null ? "" : a),
-                    new StringObject(vm, b == null ? "" : b),
-                    new StringObject(vm, c == null ? "" : c));
-            return r == null ? "" : r.getValue();
-        }
-    }
-
-    public static String md5(String s) {
-        if (QemuGuardChannel.enabled()) {
-            try { return qemuOne("MD5", s); }
-            catch (Throwable t) {
-                System.err.println("[guard] QEMU md5 失败，回落 unidbg: " + t);
-            }
-        }
-        trace("MD5", 0, "unidbg", -1);
-        requireSession();
-        synchronized (LOCK) {
-            StringObject r = (StringObject) dexNative.callStaticJniMethodObject(emulator,
-                    "native_ting_md5(Ljava/lang/String;)Ljava/lang/String;", new StringObject(vm, s == null ? "" : s));
-            return r == null ? "" : r.getValue();
+        requireGuest("NOXSIGN");
+        try {
+            String resp = QemuGuardChannel.call("NOXSIGN " + QemuGuardChannel.b64(a) + " "
+                    + QemuGuardChannel.b64(b) + " " + QemuGuardChannel.b64(c), 60);
+            if (!resp.startsWith("OK ")) throw new IllegalStateException(resp);
+            String out = QemuGuardChannel.unb64(resp.substring(3).trim());
+            trace("NOXSIGN", len(a), "QEMU", len(out));
+            return out;
+        } catch (Throwable t) {
+            throw guestFailed("NOXSIGN", t);
         }
     }
 
     public static int[] calcResult(int[] input) {
-        if (QemuGuardChannel.enabled()) {
-            try {
-                java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(4 * (input == null ? 0 : input.length));
-                if (input != null) for (int v : input) buf.putInt(v);
-                String resp = QemuGuardChannel.call("CALC "
-                        + Base64.getEncoder().encodeToString(buf.array()), 60);
-                if (resp.startsWith("OK ")) {
-                    byte[] out = Base64.getDecoder().decode(resp.substring(3).trim());
-                    java.nio.ByteBuffer rb = java.nio.ByteBuffer.wrap(out);
-                    int[] r2 = new int[out.length / 4];
-                    for (int i = 0; i < r2.length; i++) r2[i] = rb.getInt();
-                    return r2;
-                }
-                throw new IllegalStateException(resp);
-            } catch (Throwable t) {
-                System.err.println("[guard] QEMU calcResult 失败，回落 unidbg: " + t);
-            }
-        }
-        requireSession();
-        synchronized (LOCK) {
-            com.github.unidbg.linux.android.dvm.array.IntArray arr =
-                    new com.github.unidbg.linux.android.dvm.array.IntArray(vm, input == null ? new int[0] : input);
-            DvmObject<?> r = dexNative.callStaticJniMethodObject(emulator,
-                    "calcResult([I)[I", arr);
-            return r == null ? input : (int[]) r.getValue();
+        requireGuest("CALC");
+        try {
+            java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(4 * (input == null ? 0 : input.length));
+            if (input != null) for (int v : input) buf.putInt(v);
+            String resp = QemuGuardChannel.call("CALC " + Base64.getEncoder().encodeToString(buf.array()), 60);
+            if (!resp.startsWith("OK ")) throw new IllegalStateException(resp);
+            byte[] out = Base64.getDecoder().decode(resp.substring(3).trim());
+            java.nio.ByteBuffer rb = java.nio.ByteBuffer.wrap(out);
+            int[] r = new int[out.length / 4];
+            for (int i = 0; i < r.length; i++) r[i] = rb.getInt();
+            trace("CALC", input == null ? 0 : input.length * 4, "QEMU", out.length);
+            return r;
+        } catch (Throwable t) {
+            throw guestFailed("CALC", t);
         }
     }
 
@@ -437,60 +288,4 @@ public final class GuardSession {
         String key() { return key; }
     }
 
-    // ═══════════ 工具 ═══════════
-
-    private static void requireSession() {
-        if (emulator == null && loadedJar != null) {
-            // QEMU 通道失败后的懒建兜底会话（load 时 guardPort>0 跳过了 unidbg 预热）
-            try { ensureSession(loadedJar); }
-            catch (Throwable t) { throw new IllegalStateException("Guard 会话懒建失败: " + t); }
-        }
-        if (emulator == null || dexNative == null)
-            throw new IllegalStateException("Guard 会话未就绪（壳 jar 未加载）");
-    }
-
-    /**
-     * 登记「懒建会话该用哪个 raw jar」。
-     *
-     * <p>{@code guardPort>0} 时 load 会跳过 unidbg 预热（QEMU 通道优先），于是
-     * {@link #loadedJar} 一直是 null —— QEMU 一旦连不上（VM 没起来／被强杀／端口没绑），
-     * {@link #requireSession()} 的懒建兜底就因为不知道 jar 路径而直接抛
-     * 「Guard 会话未就绪（壳 jar 未加载）」，网盘 {@code Cloud_quark.init} 随之失败。
-     * 这里把路径先记下来，兜底才真的存在（2026-09-25 实测）。</p>
-     */
-    public static void noteJar(File jar) {
-        if (jar != null && jar.isFile()) loadedJar = jar;
-    }
-
-    private static boolean isArm64(File f) throws Exception {
-        return elfMachine(f) == 0xB7;
-    }
-
-    private static int elfMachine(File f) throws Exception {
-        byte[] h = Files.readAllBytes(f.toPath());
-        if (h.length < 20 || h[0] != 0x7F || h[1] != 'E' || h[2] != 'L' || h[3] != 'F') return -1;
-        return (h[18] & 0xFF) | ((h[19] & 0xFF) << 8);
-    }
-
-    private static File extractSo(File jar, Path temp) throws Exception {
-        File arm64 = null, arm32 = null, any = null;
-        try (ZipFile zip = new ZipFile(jar)) {
-            Enumeration<? extends ZipEntry> en = zip.entries();
-            while (en.hasMoreElements()) {
-                ZipEntry e = en.nextElement();
-                String n = e.getName();
-                if (!n.toLowerCase().endsWith(".so")) continue;
-                File f = new File(temp.toFile(), n.replace('/', '_'));
-                Files.copy(zip.getInputStream(e), f.toPath(),
-                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-                int m = elfMachine(f);
-                if (m == 0xB7) { if (arm64 == null) arm64 = f; }
-                else if (m == 0x28) { if (arm32 == null) arm32 = f; }
-                else if (any == null) any = f;
-            }
-        }
-        File chosen = arm64 != null ? arm64 : (arm32 != null ? arm32 : any);
-        if (chosen == null) throw new IllegalStateException("jar 内没有 .so（非 Guard 包？）");
-        return chosen;
-    }
 }

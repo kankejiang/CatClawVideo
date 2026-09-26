@@ -148,6 +148,31 @@ public static class MauiProgram
         // 「Invalid URI: Invalid port specified.」→ 播放页「播放失败：加载失败」。
         // 必须早于任何播放地址解析，故放启动最前；监听失败不影响其他能力（Start 返回 false 只记日志）。
         var spiderProxy = new CatClawVideo.Core.Services.SpiderProxyServer { Log = BtFileLog.Write };
+        // /cache?do=get|set|del —— jar/JS 爬虫的跨启动 KV（对位 TVBox CacheRequestProcess + Hawk）。
+        // 不接的话爬虫的 set 静默丢失，表现为「登录/配置存了，重启又没了」。
+        spiderProxy.CacheStore = CatClawVideo.Core.Services.SpiderLocalStore
+            .For(CatClawVideo.Core.AppPaths.LocalSub("spider-kv"));
+        // m3u8 去广告：默认关（与 TVBox HawkConfig.M3U8_PURIFY 一致），设置页可开
+        CatClawVideo.Core.Services.M3u8Purifier.Enabled = Preferences.Default.Get("m3u8_purify", false);
+        CatClawVideo.Maui.Services.HistoryCap.Load();   // 播放历史条数上限（Data 层不读 Preferences，靠这里回填）
+        // DoH：Core 不碰 Preferences，所以这里回填选择并在变化时存回去
+        CatClawVideo.Core.Services.Doh.Selector = CatClawVideo.Maui.Services.DohPrefs.Load();
+        CatClawVideo.Core.Services.Doh.Changed = () => CatClawVideo.Maui.Services.DohPrefs.Save(
+            CatClawVideo.Core.Services.Doh.Selector);
+        // 局域网遥控（对位 TVBox RemoteServer）：token 持久化 —— 换一次就要在手机上重抄一次太难用。
+        var rcToken = Preferences.Default.Get("rc_token", "");
+        if (rcToken.Length == 0)
+        {
+            rcToken = Guid.NewGuid().ToString("N")[..16];
+            Preferences.Default.Set("rc_token", rcToken);
+        }
+        CatClawVideo.Core.Services.RemoteControlHub.Token = rcToken;
+        try { CatClawVideo.Core.Services.RemoteControlHub.DeviceName = "猫爪影视 · " + DeviceInfo.Current.Name; }
+        catch { }
+        CatClawVideo.Core.Services.GoLiveProxy.Log = m => { System.Diagnostics.Debug.WriteLine(m); DiagLog.Write(m); };
+        // 订阅 rules 里的正则是任意用户串，编译失败的要能被看见（作废该组，不影响其余判定）
+        CatClawVideo.Core.Providers.TvBoxParseEngine.Log = m => { System.Diagnostics.Debug.WriteLine(m); DiagLog.Write(m); };
+        CatClawVideo.Core.Providers.TvBoxConfigStore.Log = m => { System.Diagnostics.Debug.WriteLine(m); DiagLog.Write(m); };
         spiderProxy.Start();
         services.AddSingleton(spiderProxy);
 
@@ -215,6 +240,31 @@ public static class MauiProgram
             CatClawVideo.Maui.Services.SpiderUiHost.Attach(desktopJar);
 
 #endif
+        // spider 型直播源（TVBox LivePlayActivity 的 liveContent 链）：Core.Live 不依赖爬虫层，
+        // 由这里在运行时都造好之后把取列表的口子注进去。
+        CatClawVideo.Core.Live.LiveSpiderBridge.Fetcher = async (entry, ct) =>
+        {
+            var target = entry.Url.Length > 0 ? entry.Url : entry.Api;
+            if (target.Length == 0) return null;
+            var isJs = target.Contains(".js", StringComparison.OrdinalIgnoreCase);
+            var site = new CatClawVideo.Core.Models.VodSiteInfo
+            {
+                Key = "live#" + (entry.Name.Length > 0 ? entry.Name : target),
+                Name = entry.Name,
+                Api = target,
+                Type = 3,
+                Jar = entry.Jar.Length > 0 ? entry.Jar : null,
+                SubscriptionName = "live",
+                SpiderKind = isJs ? CatClawVideo.Core.Models.VodSpiderKind.Script
+                                  : CatClawVideo.Core.Models.VodSpiderKind.Jar,
+            };
+            var rt = isJs ? (object)tvboxJsRuntime : jarRuntime;
+            if (rt is not CatClawVideo.Core.Interfaces.ISpiderLiveRuntime live) return null;
+            var txt = await live.LiveContentAsync(site, target, ct);
+            // 运行时把「无结果」规范成 "{}"，这里当空处理让上层给出「未返回频道列表」
+            return string.IsNullOrWhiteSpace(txt) || txt.Length < 3 ? "" : txt;
+        };
+
         CatClawVideo.Core.Models.SiteRegistry.JsSpiderAvailable = jsRuntime.IsSupported || tvboxJsRuntime.IsSupported;
         CatClawVideo.Core.Models.SiteRegistry.JarSpiderAvailable = jarRuntime.IsSupported;
 
@@ -272,11 +322,38 @@ public static class MauiProgram
         var vodProvider = new CatClawVideo.Core.Providers.CompositeVodSourceProvider(            new IVodSourceProvider[]
             {
                 new CatClawVideo.Core.Providers.CatClawSourceProvider(),
-                new CatClawVideo.Core.Providers.MacCmsJsonProvider(),
+                new CatClawVideo.Core.Providers.MacCmsJsonProvider(sniffer),
                 new CatClawVideo.Core.Providers.SpiderVodProvider(jsRuntime, jarRuntime, sniffer, log: BtFileLog.Write,
                     tvboxJsRuntime: tvboxJsRuntime),
             });
         services.AddSingleton<IVodSourceProvider>(vodProvider);
+
+        // /rc/search 的处理器：跨源搜一遍再回 json（对位 TVBox /action?do=search）。
+        // 限制站点数是因为这是给电脑浏览器用的，等 40 个站不如先出前几个站的结果。
+        CatClawVideo.Core.Services.RemoteControlHub.SearchHandler = async (text, ct) =>
+        {
+            var hits = new List<Dictionary<string, string>>();
+            foreach (var site in CatClawVideo.Core.Models.SiteRegistry.Playable
+                         .Where(x => x.Searchable).Take(8).ToList())
+            {
+                try
+                {
+                    var items = await vodProvider.SearchAsync(site, text, ct).ConfigureAwait(false);
+                    foreach (var it in items.Take(15))
+                        hits.Add(new Dictionary<string, string>
+                        {
+                            ["site"] = site.Name,
+                            ["siteName"] = site.Name,
+                            ["sourceKey"] = site.Key,
+                            ["name"] = it.Title,
+                            ["id"] = it.Id,
+                            ["cover"] = it.Cover ?? "",
+                        });
+                }
+                catch { /* 单站失败不该拖垮整个搜索 */ }
+            }
+            return System.Text.Json.JsonSerializer.Serialize(hits);
+        };
 
         // ═══════════════════════════════════════════════════
         // 封面获取与兜底

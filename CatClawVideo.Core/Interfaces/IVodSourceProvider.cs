@@ -20,8 +20,12 @@ public interface IVodSourceProvider
     /// <summary>获取站点分类列表</summary>
     Task<List<VodCategory>> GetCategoriesAsync(VodSiteInfo site, CancellationToken ct = default);
 
-    /// <summary>按分类分页获取影片列表（page 从 1 开始）</summary>
-    Task<List<VodItem>> GetItemsAsync(VodSiteInfo site, VodCategory category, int page = 1, CancellationToken ct = default);
+    /// <summary>
+    /// 按分类分页获取影片列表（page 从 1 开始）。
+    /// <paramref name="filter"/> = 分类筛选条件（键取 <c>VodFilterGroup.Key</c>），null/空 = 不筛选。
+    /// </summary>
+    Task<List<VodItem>> GetItemsAsync(VodSiteInfo site, VodCategory category, int page = 1,
+        IReadOnlyDictionary<string, string>? filter = null, CancellationToken ct = default);
 
     /// <summary>获取影片详情的播放线路与剧集</summary>
     Task<List<VodPlaySource>> GetPlaySourcesAsync(VodSiteInfo site, VodItem item, CancellationToken ct = default);
@@ -74,4 +78,13 @@ public interface ISubscriptionManager
 
     /// <summary>解析原始 JSON 文本为站点列表（用于导入本地配置文件）</summary>
     Task<List<VodSiteInfo>> ParseConfigTextAsync(string jsonText, string subscriptionName, CancellationToken ct = default);
+
+    /// <summary>
+    /// 探测这个地址是不是「影视仓多仓」（顶层只有 urls）。是就返回线路清单，不是返回空表。
+    /// <para>UI 用它决定要不要让用户先选一条线路，再把选中的线路号编码回地址（见 <c>#line=N</c>）。</para>
+    /// </summary>
+    Task<IReadOnlyList<SubscriptionLine>> ProbeLinesAsync(string subscriptionUrl, CancellationToken ct = default);
 }
+
+/// <summary>多仓订阅里的一条线路（影视仓 <c>urls[]</c> 的 name/url）。</summary>
+public sealed record SubscriptionLine(string Name, string Url);

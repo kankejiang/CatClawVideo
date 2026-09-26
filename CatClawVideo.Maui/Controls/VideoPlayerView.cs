@@ -31,6 +31,37 @@ public enum VideoPlayerState
 }
 
 /// <summary>
+/// 解码模式（对位 TVBox 的 <c>IJK_CODEC</c>「ijk硬解/ijk软解」与 <c>PLAY_TYPE</c> 内核选择）。
+/// <para>为什么值得暴露给用户：某些源的 H.265/AC3 在设备硬解上会花屏或无声，而软解能放；
+/// 反过来低端机软解会卡成幻灯片。TVBox 是靠换内核解决，我们两端各只有一个内核，
+/// 所以抓手是「同内核内切换硬/软解码器」。</para>
+/// </summary>
+public enum VideoDecoderMode
+{
+    /// <summary>自动（默认）：优先硬件，失败时平台自行回落。</summary>
+    Auto,
+    /// <summary>强制硬件解码。</summary>
+    Hardware,
+    /// <summary>强制软件解码（兼容优先，功耗高）。</summary>
+    Software,
+}
+
+/// <summary>轨道类别（对位 TVBox 播放面板的 音轨 / 字幕 / 视频轨 三个入口）。</summary>
+public enum VideoTrackKind { Audio, Subtitle, Video }
+
+/// <summary>
+/// 一条可切换轨道的中间表示。
+/// <para><b>为什么要自己造一层</b>：两端轨道模型根本不同 —— Android 是 Media3 的
+/// <c>Tracks.TrackGroup/Track</c>（按 group+track 两级索引选），Windows 是 FFmpegInteropX 的
+/// <c>{Audio,Video,Subtitle}Streams</c> 集合（按流对象自身标志选）。UI 只能面对一个统一形状，
+/// 否则每加一端就要重写一遍面板。</para>
+/// </summary>
+/// <param name="Id">平台内定位用的稳定标识（Android 是 "组:轨"，Windows 是流下标）。</param>
+/// <param name="Display">展示名（语言/标题/编解码，缺省时由平台层兜底成「轨道 N」）。</param>
+/// <param name="Active">当前是否被选中/显示。</param>
+public sealed record VideoTrackInfo(string Id, string Display, bool Active);
+
+/// <summary>
 /// 平台播放器实现契约（由各平台 Handler 提供并注入回 View）。
 /// View 层驱动平台实现，事件由实现层推送回 View 层。
 /// </summary>
@@ -49,6 +80,32 @@ public interface IVideoPlayerImplementation
 
     /// <summary>设置播放速率（1.0 = 常速）。平台不支持时应静默忽略。</summary>
     void SetSpeed(double speed);
+
+    /// <summary>
+    /// 外挂字幕。<paramref name="path"/> 为本地文件路径或 http 地址，<b>null = 关闭字幕</b>。
+    /// <paramref name="mime"/> 取 <c>SubtitleSupport.Mime*</c> 常量（播放器按 MIME 选解析器，
+    /// 给错值的表现是「字幕静默不显示」而不是报错）。
+    /// <paramref name="offsetSeconds"/> 是时间轴偏移：Windows 走原生延迟，
+    /// Android 无该 API 故由平台层把字幕重写一份再加载。
+    /// </summary>
+    void SetExternalSubtitle(string? path, string? mime, double offsetSeconds);
+
+    /// <summary>
+    /// 解码模式。<b>切换会重建播放器/媒体源</b>（解码器在创建期决定，运行期改不了），
+    /// 所以平台层要保住播放位置；不重建就无效的那些平台应静默忽略。
+    /// </summary>
+    void SetDecoderMode(VideoDecoderMode mode);
+
+    /// <summary>
+    /// 列出某类轨道。拿不到（未就绪/平台不支持）时返回空表，不抛 —— UI 据此把入口置灰。
+    /// </summary>
+    IReadOnlyList<VideoTrackInfo> GetTracks(VideoTrackKind kind);
+
+    /// <summary>
+    /// 选择轨道；<paramref name="id"/> 为 null = 关闭该类轨道（字幕可关，音轨/视频轨关了就无声无画，
+    /// 平台层可自行回落到「自动」）。
+    /// </summary>
+    void SelectTrack(VideoTrackKind kind, string? id);
 
     TimeSpan GetPosition();
     TimeSpan GetDuration();
@@ -142,6 +199,31 @@ public partial class VideoPlayerView : View
     {
         get => (VideoAspect)GetValue(AspectProperty);
         set => SetValue(AspectProperty, value);
+    }
+
+    /// <summary>
+    /// 解码模式（自动/强制硬解/强制软解）。改它会由平台层重建播放器或媒体源并保住位置 ——
+    /// 解码器是创建期决定的，运行期改不动。
+    /// </summary>
+    public VideoDecoderMode DecoderMode
+    {
+        get => (VideoDecoderMode)GetValue(DecoderModeProperty);
+        set => SetValue(DecoderModeProperty, value);
+    }
+
+    public static readonly BindableProperty DecoderModeProperty =
+        BindableProperty.Create(nameof(DecoderMode), typeof(VideoDecoderMode), typeof(VideoPlayerView),
+            VideoDecoderMode.Auto, propertyChanged: OnDecoderModeChanged);
+
+    /// <summary>最近一次解码模式切换的失败原因（null = 正常）。</summary>
+    public string? DecoderError { get; private set; }
+
+    private static void OnDecoderModeChanged(BindableObject bindable, object oldValue, object newValue)
+    {
+        var view = (VideoPlayerView)bindable;
+        view.DecoderError = null;
+        try { view.Implementation?.SetDecoderMode((VideoDecoderMode)newValue); }
+        catch (Exception ex) { view.DecoderError = "切换解码模式失败：" + ex.Message; }
     }
 
     /// <summary>播放期间保持屏幕常亮</summary>
@@ -258,6 +340,76 @@ public partial class VideoPlayerView : View
     public static readonly double[] SpeedPresets = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0];
     private const double MinSpeed = 0.25, MaxSpeed = 4.0;
 
+    // ═══════════════════ 外挂字幕 ═══════════════════
+
+    /// <summary>字幕文件路径或地址；<b>null = 关闭</b>。赋值后立即生效（平台层重建媒体项并保持播放位置）。</summary>
+    public string? SubtitlePath
+    {
+        get => _subtitlePath;
+        set
+        {
+            if (_subtitlePath == value) return;
+            _subtitlePath = value;
+            ApplySubtitle();
+        }
+    }
+
+    private string? _subtitlePath;
+
+    /// <summary>字幕时间轴偏移秒数（正数 = 字幕延后出现）。对位 TVBox 字幕面板的 ±0.5s 步进。</summary>
+    public double SubtitleOffsetSeconds
+    {
+        get => _subtitleOffset;
+        set
+        {
+            if (Math.Abs(value - _subtitleOffset) < 0.0005) return;
+            _subtitleOffset = Math.Clamp(value, -600, 600);
+            ApplySubtitle();
+        }
+    }
+
+    private double _subtitleOffset;
+
+    /// <summary>最近一次字幕操作的失败原因（null = 正常）。UI 用它提示而不是弹异常。</summary>
+    public string? SubtitleError { get; private set; }
+
+    void ApplySubtitle()
+    {
+        if (string.IsNullOrEmpty(_subtitlePath))
+        {
+            SubtitleError = null;
+            try { Implementation?.SetExternalSubtitle(null, null, 0); } catch { }
+            return;
+        }
+        var mime = Core.Services.SubtitleSupport.InferMime(_subtitlePath);
+        if (mime is null)
+        {
+            SubtitleError = "不支持的字幕后缀（可用 .srt / .vtt / .ass / .ssa / .ttml）";
+            return;
+        }
+        SubtitleError = null;
+        try { Implementation?.SetExternalSubtitle(_subtitlePath, mime, _subtitleOffset); }
+        catch (Exception ex) { SubtitleError = "字幕加载失败：" + ex.Message; }
+    }
+
+    // ═══════════════════ 轨道选择 ═══════════════════
+
+    /// <summary>
+    /// 列出某类轨道。未就绪或平台拿不到时返回**空表**（不抛）—— UI 据此把入口置灰，
+    /// 而不是让用户点了之后面对一个空弹窗。
+    /// </summary>
+    public IReadOnlyList<VideoTrackInfo> GetTracks(VideoTrackKind kind)
+    {
+        try { return Implementation?.GetTracks(kind) ?? Array.Empty<VideoTrackInfo>(); }
+        catch { return Array.Empty<VideoTrackInfo>(); }
+    }
+
+    /// <summary>切到指定轨道。<paramref name="id"/> 为 null = 关闭（字幕）或恢复自动（音/视频轨）。</summary>
+    public void SelectTrack(VideoTrackKind kind, string? id)
+    {
+        try { Implementation?.SelectTrack(kind, id); } catch { }
+    }
+
     // ═══════════════════ 属性变更路由 ═══════════════════
 
     private static void OnSourceChanged(BindableObject bindable, object oldValue, object newValue)
@@ -302,6 +454,9 @@ public partial class VideoPlayerView : View
         // 不补的话用户会觉得「切了一集倍速就丢了 / 静音自己解除了」。
         try { Implementation?.SetSpeed(_speed); } catch { }
         try { Implementation?.SetVolume(Volume); } catch { }
+
+        // 字幕同理：平台层的媒体项是按「一集」重建的，不补挂的话换集字幕就静默消失
+        if (!string.IsNullOrEmpty(_subtitlePath)) ApplySubtitle();
     }
 
     // ═══════════════════ 平台层回调 ═══════════════════

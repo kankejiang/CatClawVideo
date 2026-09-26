@@ -19,7 +19,7 @@ namespace CatClawVideo.Maui.Platforms.Android;
 /// - searchContent(String key, boolean quick[, int pg])
 /// - playerContent(String flag, String id, List vipFlags)
 /// </summary>
-public class DexSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderActionRuntime
+public class DexSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderActionRuntime, ISpiderLiveRuntime
 {
     public string Id => "android-dex";
     public bool IsSupported => true;
@@ -36,6 +36,8 @@ public class DexSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderActi
         public Java.Lang.Reflect.Method? Search3;
         public Java.Lang.Reflect.Method? Player;
         /// <summary>Spider.action(String) —— 卡片是「操作入口」时用（网盘登录/扫码对话框由它弹出）</summary>
+        /// <summary>Spider.liveContent(String) —— spider 型直播源（返回 txt/m3u/JSON 频道列表）</summary>
+        public Java.Lang.Reflect.Method? Live;
         public Java.Lang.Reflect.Method? Action;
         /// <summary>Spider.proxy(Map) —— 宿主本地 HTTP 服务器回调用（荐片 /proxy?do=… 走这条）</summary>
         public Java.Lang.Reflect.Method? Proxy;
@@ -96,10 +98,20 @@ public class DexSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderActi
     public Task<string> HomeContentAsync(VodSiteInfo site, CancellationToken ct = default) =>
         InvokeAsync(site, h => CallSafe(h, h.Home, new Java.Lang.Boolean(true)), ct);
 
-    public Task<string> CategoryContentAsync(VodSiteInfo site, string tid, string pg, CancellationToken ct = default) =>
-        InvokeAsync(site, h => CallSafe(h, h.Category,
+    public Task<string> CategoryContentAsync(VodSiteInfo site, string tid, string pg,
+        IReadOnlyDictionary<string, string>? filter = null, CancellationToken ct = default)
+    {
+        // 协议第 3 参 filter 是「本次是否带筛选条件」，第 4 参才是键值表；
+        // 之前恒传 false + 空 map，等于把所有站点的筛选器都关掉了。
+        var map = new HashMap();
+        var has = filter is { Count: > 0 };
+        if (has)
+            foreach (var (k, v) in filter!)
+                map.Put(new Java.Lang.String(k), new Java.Lang.String(v));
+        return InvokeAsync(site, h => CallSafe(h, h.Category,
             new Java.Lang.String(tid), new Java.Lang.String(pg),
-            new Java.Lang.Boolean(false), new HashMap()), ct);
+            new Java.Lang.Boolean(has), map), ct);
+    }
 
     public Task<string> DetailContentAsync(VodSiteInfo site, string id, CancellationToken ct = default)
     {
@@ -122,6 +134,12 @@ public class DexSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderActi
 
     public Task<string> ActionAsync(VodSiteInfo site, string actionJson, CancellationToken ct = default) =>
         InvokeAsync(site, h => CallSafe(h, h.Action, new Java.Lang.String(actionJson)), ct);
+
+    /// <summary>spider 型直播源：<c>liveContent(真实地址)</c> 返回频道列表文本。</summary>
+    public Task<string> LiveContentAsync(VodSiteInfo site, string url, CancellationToken ct = default) =>
+        InvokeAsync(site, h => h.Live is null
+            ? throw new NotSupportedException($"「{site.Key}」的爬虫未实现 liveContent")
+            : CallSafe(h, h.Live, new Java.Lang.String(url)), ct);
 
     // ═══════════ 装配 ═══════════
 
@@ -456,6 +474,7 @@ public class DexSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderActi
                 Search3 = Find(cls, "searchContent",
                     Java.Lang.Class.FromType(typeof(Java.Lang.String)), Java.Lang.Boolean.Type,
                     Java.Lang.Integer.Type),
+                Live = Find(cls, "liveContent", Java.Lang.Class.FromType(typeof(Java.Lang.String))),
                 Player = Find(cls, "playerContent",
                     Java.Lang.Class.FromType(typeof(Java.Lang.String)),
                     Java.Lang.Class.FromType(typeof(Java.Lang.String)),

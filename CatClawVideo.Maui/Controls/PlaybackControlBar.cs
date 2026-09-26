@@ -21,6 +21,9 @@ public sealed class PlaybackControlBar : ContentView
     public event EventHandler? ForwardRequested;
     public event EventHandler? SpeedRequested;
     public event EventHandler? EpisodesRequested;
+
+    /// <summary>点了「字幕」按钮（面板内容由宿主决定，控件条只负责入口与状态显示）。</summary>
+    public event EventHandler? SubtitleRequested;
     public event EventHandler? FullscreenRequested;
     public event EventHandler<bool>? MuteChanged;
     public event EventHandler? SeekStarted;
@@ -38,6 +41,7 @@ public sealed class PlaybackControlBar : ContentView
     private readonly Controls.IconButton _rewind;
     private readonly Controls.IconButton _forward;
     private readonly Controls.IconButton _speed;
+    private readonly Controls.IconButton _subtitleBtn;
     private readonly Controls.IconButton _episodes;
     private readonly Controls.IconButton _mute;
     private readonly Controls.IconButton _fullscreen;
@@ -103,6 +107,9 @@ public sealed class PlaybackControlBar : ContentView
         { Size = 38, AutoWidth = true, MinWidth = 52, IsText = true };
         _episodes = new Controls.IconButton("选集", "选集", () => EpisodesRequested?.Invoke(this, EventArgs.Empty))
         { Size = 38, AutoWidth = true, MinWidth = 50 };
+        _subtitleBtn = new Controls.IconButton("音画", "音画设置（字幕 / 音轨 / 画面比例 / A-B 循环）",
+            () => SubtitleRequested?.Invoke(this, EventArgs.Empty))
+        { Size = 38, AutoWidth = true, MinWidth = 56 };
         _mute = new Controls.IconButton("静音", "静音", ToggleMute)
         { Size = 38, AutoWidth = true, MinWidth = 66 };
         _fullscreen = new Controls.IconButton("⛶", "全屏", () => FullscreenRequested?.Invoke(this, EventArgs.Empty)) { Size = 40 };
@@ -118,7 +125,7 @@ public sealed class PlaybackControlBar : ContentView
     // ─────────── 遥控器焦点（按钮间移动） ───────────
 
     /// <summary>上行按钮的视觉顺序（进度条不参与：它是拖动条，焦点语义与按钮不同）。</summary>
-    private IconButton[] AllButtons => [_prev, _play, _next, _rewind, _forward, _speed, _episodes, _mute, _fullscreen];
+    private IconButton[] AllButtons => [_prev, _play, _next, _rewind, _forward, _speed, _episodes, _subtitleBtn, _mute, _fullscreen];
 
     /// <summary>当前**可见**的按钮 —— 隐藏的按钮不能留在焦点序列里（否则焦点会落在看不见的键上）。</summary>
     private List<IconButton> VisibleButtons => AllButtons.Where(b => b.IsVisible).ToList();
@@ -237,6 +244,13 @@ public sealed class PlaybackControlBar : ContentView
         }
     }
 
+    /// <summary>字幕按钮状态：挂了字幕就写「字幕·开」，让人一眼看出当前有没有字幕。</summary>
+    public void SetSubtitleOn(bool on)
+    {
+        _subtitleBtn.Glyph = on ? "音画·字幕" : "音画";
+        _subtitleBtn.MinWidth = on ? 88 : 56;
+    }
+
     /// <summary>全屏按钮图标（进入/退出）。</summary>
     public bool IsFullscreen
     {
@@ -324,7 +338,7 @@ public sealed class PlaybackControlBar : ContentView
         {
             Spacing = 6,
             VerticalOptions = LayoutOptions.Center,
-            Children = { _speed, _mute, _episodes },
+            Children = { _speed, _mute, _episodes, _subtitleBtn },
         };
 
         _upper = new Grid

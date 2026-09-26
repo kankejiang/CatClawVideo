@@ -180,6 +180,12 @@ public partial class HomeViewModel : ObservableObject
         if (category == null) return;
         DiagLog.Write($"[cat-select] 开始 site={(CurrentSite?.Name ?? "null")} cat={category.Name} loading={IsHomeLoading}");
         SelectedCategoryId = category.Id;
+        // 换「分类」才作废筛选条件；同一分类内重拉（改筛选/重试）要保留
+        if (_currentCategory is null || _currentCategory.Id != category.Id)
+        {
+            _filter.Clear();
+            FilterSummary = "";
+        }
         _currentCategory = category;
         _currentPage = 1;
         HasMoreItems = true;
@@ -190,7 +196,7 @@ public partial class HomeViewModel : ObservableObject
         var items = new List<VodItem>();
         if (CurrentSite != null)
         {
-            try { items = await _provider.GetItemsAsync(CurrentSite, category, 1); }
+            try { items = await _provider.GetItemsAsync(CurrentSite, category, 1, FilterArg); }
             catch (Exception ex) { DiagLog.Write($"[cat-select] 拉取失败: {ex.Message}"); }
         }
 
@@ -201,6 +207,52 @@ public partial class HomeViewModel : ObservableObject
             ? $"{CurrentSite?.Name ?? "当前源"} · {category.Name} · 暂无影片"
             : $"{CurrentSite!.Name} · {category.Name} · 已加载 {Items.Count} 部";
         IsHomeLoading = false;
+    }
+
+    // ═══════════════════ 分类筛选器（对位 TVBox GridFilterDialog）═══════════════════
+
+    /// <summary>已选筛选值：组键 → 回传值。键集随分类变化，所以换分类会清空。</summary>
+    private readonly Dictionary<string, string> _filter = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>当前分类是否提供筛选器（UI 据此显隐「筛选」入口）。</summary>
+    public bool HasFilters => _currentCategory?.HasFilters == true;
+
+    /// <summary>当前分类的筛选组定义。</summary>
+    public List<VodFilterGroup> CurrentFilters => _currentCategory?.Filters ?? [];
+
+    /// <summary>已选条件的回显文字（如「地区: 大陆 · 年份: 2024」）。</summary>
+    [ObservableProperty] string _filterSummary = "";
+
+    /// <summary>把已选条件交给 provider；空表传 null，免得爬虫收到「有对象但为空」的歧义输入。</summary>
+    IReadOnlyDictionary<string, string>? FilterArg => _filter.Count > 0 ? _filter : null;
+
+    /// <summary>设置/清除某个筛选值，然后重新拉第一页。</summary>
+    public async Task SetFilterAsync(string key, VodFilterValue? value)
+    {
+        if (_currentCategory == null || CurrentSite == null || key.Length == 0) return;
+        if (value is null) _filter.Remove(key);
+        else _filter[key] = value.Param;
+
+        var parts = new List<string>();
+        foreach (var g in _currentCategory.Filters)
+        {
+            if (!_filter.TryGetValue(g.Key, out var param)) continue;
+            var display = g.Values.Find(v => v.Param == param)?.Display ?? param;
+            parts.Add($"{g.Name}: {display}");
+        }
+        FilterSummary = string.Join(" · ", parts);
+        OnPropertyChanged(nameof(HasFilters));
+        DiagLog.Write($"[filter] site={CurrentSite.Name} cat={_currentCategory.Name} → {(_filter.Count, FilterSummary)}");
+        await SelectCategoryAsync(_currentCategory);   // 同分类 → 条件保留，只是重拉
+    }
+
+    /// <summary>清掉全部筛选条件并重拉一次（重拉一遍，而不是每组一次）。</summary>
+    public async Task ClearFiltersAsync()
+    {
+        if (_filter.Count == 0) return;
+        _filter.Clear();
+        FilterSummary = "";
+        await SelectCategoryAsync(_currentCategory!);
     }
 
     /// <summary>滚动到底自动加载下一页（CollectionView RemainingItemsThresholdReached）</summary>
@@ -215,7 +267,7 @@ public partial class HomeViewModel : ObservableObject
         {
             var next = _currentPage + 1;
             HomeStatus = $"{CurrentSite.Name} · {_currentCategory.Name} · 加载第 {next} 页…";
-            var items = await _provider.GetItemsAsync(CurrentSite, _currentCategory, next);
+            var items = await _provider.GetItemsAsync(CurrentSite, _currentCategory, next, FilterArg);
 
             DiagLog.Write($"[loadmore] 第 {next} 页取到 {items.Count} 条（现有 {Items.Count} 条）");
             if (items.Count == 0)

@@ -362,10 +362,53 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
     private void LoadHistory()
     {
         var list = GetHistory();
-        if (list.Count == 0) return;
+        foreach (var w in list) HistoryWords.Add(BuildWordChip(w, _historyChips, deletable: true));
+        // 站点勾选入口常驻这一节：没有历史记录时也得找得到它
+        HistoryWords.Add(BuildSourceChip());
+        HistorySection.IsVisible = list.Count > 0 || SiteRegistry.Playable.Any();
+    }
 
-        HistorySection.IsVisible = true;
-        foreach (var w in list) HistoryWords.Add(BuildWordChip(w, _historyChips));
+    /// <summary>
+    /// 「搜索源」入口（对位 TVBox 的 SOURCES_FOR_SEARCH 勾选框）：打开逐源勾选弹窗，
+    /// 文案当场回读排除数 —— 用户要能在搜之前就看到「这次少搜了几个台」。
+    /// </summary>
+    private Border BuildSourceChip()
+    {
+        var sites = SiteRegistry.Playable.ToList();
+        var label = new Label { FontSize = 12, TextColor = Res("TextSecondaryColor", Color.FromArgb("#BCC0DD")) };
+        var chip = new Border
+        {
+            StrokeThickness = 0,
+            StrokeShape = new RoundRectangle { CornerRadius = 14 },
+            BackgroundColor = Res("ChipInactiveColor", Color.FromArgb("#15FFFFFF")),
+            Padding = new Thickness(14, 6),
+            Margin = new Thickness(0, 0, 8, 8),
+            Content = label,
+        };
+
+        void Refresh()
+        {
+            var off = sites.Count(x => !SearchSourceStore.IsSearchable(x.SubscriptionName, x.Key));
+            label.Text = off == 0
+                ? $"⚙ 搜索源 · 全部 {sites.Count}"
+                : $"⚙ 搜索源 · 已排除 {off}（搜 {sites.Count - off}）";
+        }
+        Refresh();
+
+        chip.GestureRecognizers.Add(new TapGestureRecognizer
+        {
+            Command = new Command(async () =>
+            {
+                if (sites.Count == 0)
+                {
+                    await DisplayAlertAsync("搜索源", "还没有可搜的站点，请先在源配置里添加订阅", "好");
+                    return;
+                }
+                await Shell.Current.Navigation.PushModalAsync(new SearchSourceDialogPage(sites));
+                Refresh();
+            }),
+        });
+        return chip;
     }
 
     // ═══════════════════════ 继续观看 ═══════════════════════
@@ -640,8 +683,23 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
         catch { }
     }
 
-    /// <summary>热词 / 历史 chip（点击填入并搜索）。</summary>
-    private Border BuildWordChip(string word, List<Border> track)
+    /// <summary>只删一条历史（TVBox 是长按删；这里给一个明摆着的 ✕，比藏着长按更好找）。</summary>
+    private void RemoveHistoryWord(string word)
+    {
+        try
+        {
+            var list = GetHistory();
+            list.RemoveAll(x => string.Equals(x, word, StringComparison.OrdinalIgnoreCase));
+            Preferences.Default.Set(HistoryPrefKey, string.Join('\n', list));
+            HistoryWords.Clear();
+            _historyChips.Clear();
+            LoadHistory();
+        }
+        catch { }
+    }
+
+    /// <summary>热词 / 历史 chip（点击填入并搜索）。历史条目带 ✕ 可单删。</summary>
+    private Border BuildWordChip(string word, List<Border> track, bool deletable = false)
     {
         var chip = new Border
         {
@@ -650,12 +708,40 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
             BackgroundColor = Res("ChipInactiveColor", Color.FromArgb("#15FFFFFF")),
             Padding = new Thickness(14, 6),
             Margin = new Thickness(0, 0, 8, 8),
-            Content = new Label
-            {
-                Text = word,
-                FontSize = 12,
-                TextColor = Res("TextSecondaryColor", Color.FromArgb("#BCC0DD")),
-            },
+            Content = deletable
+                ? (View)new HorizontalStackLayout
+                {
+                    Spacing = 6,
+                    Children =
+                    {
+                        new Label
+                        {
+                            Text = word,
+                            FontSize = 12,
+                            VerticalOptions = LayoutOptions.Center,
+                            TextColor = Res("TextSecondaryColor", Color.FromArgb("#BCC0DD")),
+                        },
+                        // 用 Button 而不是再挂一个手势：Button 会吃掉点击，
+                        // 否则「删这一条」会连带触发外层 chip 的「搜这个词」
+                        new Button
+                        {
+                            Text = "✕",
+                            FontSize = 10,
+                            Padding = new Thickness(2, 0),
+                            MinimumHeightRequest = 16,
+                            HeightRequest = 18,
+                            BackgroundColor = Colors.Transparent,
+                            TextColor = Res("TextHintColor", Color.FromArgb("#7A80A8")),
+                            Command = new Command(() => RemoveHistoryWord(word)),
+                        },
+                    },
+                }
+                : new Label
+                {
+                    Text = word,
+                    FontSize = 12,
+                    TextColor = Res("TextSecondaryColor", Color.FromArgb("#BCC0DD")),
+                },
         };
         var tap = new TapGestureRecognizer();
         tap.Tapped += (_, _) =>
@@ -1003,6 +1089,25 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
         _ = DoSearchAsync(cand.Title);
     }
 
+    /// <summary>
+    /// 输入本身就是一条视频直链时，问一句要不要直接播。
+    /// <para>判定复用嗅探器的同一条规则（<see cref="Core.Providers.TvBoxParseEngine.IsVideoFormat"/>，
+    /// 即 TVBox 的 <c>DefaultConfig.isVideoFormat</c>）—— 另写一份后缀表迟早和它漂移。</para>
+    /// </summary>
+    private async Task<bool> TryDirectLinkAsync(string kw)
+    {
+        if (!kw.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+            || !Core.Providers.TvBoxParseEngine.IsVideoFormat(kw)) return false;
+
+        var play = await DisplayAlertAsync("这像一条播放直链",
+            kw.Length > 160 ? kw[..160] + "…" : kw, "直接播放", "当关键词搜索");
+        if (!play) return false;
+
+        await Shell.Current.GoToAsync(
+            $"player?title={Uri.EscapeDataString("粘贴直链")}&url={Uri.EscapeDataString(kw)}");
+        return true;
+    }
+
     /// <summary>输入态下的面板显隐：有候选显示候选，否则显示热搜/历史。</summary>
     private void ShowInputPanels(bool showCandidates)
     {
@@ -1091,6 +1196,9 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
         var kw = keyword?.Trim();
         if (string.IsNullOrEmpty(kw) || _searching) return;
 
+        // 粘贴一条直链进来（对位 TVBox 的 push_agent「粘贴即播」）：先问一句，别拿 URL 当关键词搜
+        if (await TryDirectLinkAsync(kw)) return;
+
         // ★ 纯字母/数字**绝不**直接发给站点。
         //
         // 站点（尤其爬虫源）对关键词做模糊匹配，把 `FRX` 丢过去会返回一堆风马牛不相及的结果
@@ -1145,7 +1253,10 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
 
         try
         {
-            var sites = SiteRegistry.Playable.ToList();
+            // 逐源勾选（对位 SOURCES_FOR_SEARCH）：没勾上的台不参与本次搜索，也不会计时
+            var sites = SiteRegistry.Playable
+                .Where(x => SearchSourceStore.IsSearchable(x.SubscriptionName, x.Key))
+                .ToList();
             if (sites.Count == 0)
             {
                 StatusLabel.Text = "暂无可用影片源，请先在设置中添加订阅";

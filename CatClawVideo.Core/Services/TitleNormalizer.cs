@@ -112,6 +112,47 @@ public static class TitleNormalizer
         return stripped.Length > 0 ? stripped : t;
     }
 
+    /// <summary>
+    /// 两个题名是否算同一部片（跨站搜索/换源的匹配口径）。
+    /// <para>只留字母数字再比包含：站点会加空格、标点、清晰度标注，逐字符比必然误判。
+    /// 双向包含是因为两边长度不对称 —— 查询侧被清洗过（去年份/季/括号），站点侧是原始长标题。</para>
+    /// </summary>
+    public static bool Matches(string? a, string? b)
+    {
+        static string DigitsAndLetters(string? s) =>
+            new((s ?? string.Empty).Where(char.IsLetterOrDigit).ToArray());
+        var na = DigitsAndLetters(a);
+        var nb = DigitsAndLetters(b);
+        if (na.Length < 2 || nb.Length < 2) return false;
+        return na.Contains(nb, StringComparison.OrdinalIgnoreCase)
+            || nb.Contains(na, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static readonly Regex StandaloneYear = new("(?<![0-9])(19|20)[0-9]{2}(?![0-9])", RegexOptions.Compiled);
+
+    /// <summary>
+    /// 「跨站搜索 / 换源匹配」用的题名：在 <see cref="Clean"/> 之外再去掉**独立年份**。
+    ///
+    /// <para>为什么要多这一步：站点标题里年份的写法极不统一（「XX 2023」、「XX(2023)」、「XX2023 版」），
+    /// 带着它去搜索容易一条都不中，而 <see cref="TitlesMatch"/> 式的包含比较也会因它判成不同片。
+    /// 括号里的年份 Clean 已经连带去掉了，这里补的是没括起来的那种。</para>
+    ///
+    /// <para>也要去掉末尾季标识：各站写「第2季 / 第二季 / Season 2」不一，带着它去搜索常常一条都不中，
+    /// 而 <see cref="Matches"/> 会因为数字写法不同判成两部片。去掉后拿系列基名去搜，
+    /// 命中列表里各条仍显示自己的真实季名，用户（或自动换源）照样能挑对那一季。</para>
+    /// </summary>
+    public static string ForSearchQuery(string? title)
+    {
+        var t = Clean(title);
+        if (t.Length == 0) return t;
+        t = StandaloneYear.Replace(t, " ");
+        t = Spaces.Replace(t, " ").Trim();
+        t = SeasonSuffix.Replace(t, "").Trim();
+        // 只剩「第」这类残渣的病态输入：退回 Clean 的结果，别交一个空串出去
+        if (t.Length < 2) t = Clean(title);
+        return t.Trim(' ', '-', '—', '·', '｜', '|');
+    }
+
     /// <summary>片名是否带季标识（决定「按系列聚合」还是「单片直接播」）。</summary>
     public static bool HasSeason(string? title) =>
         SeasonSuffix.IsMatch(Clean(title));

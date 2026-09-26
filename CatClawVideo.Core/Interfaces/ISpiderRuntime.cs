@@ -25,7 +25,12 @@ public interface ISpiderRuntime
     /// 分类影片列表（协议 categoryContent）。
     /// 返回 {"list":[{vod_id,vod_name,vod_pic,vod_remarks}], "page":1, "pagecount":99}
     /// </summary>
-    Task<string> CategoryContentAsync(VodSiteInfo site, string tid, string pg, CancellationToken ct = default);
+    /// <param name="filter">
+    /// 筛选条件（对位协议第 4 参 <c>HashMap&lt;String,String&gt;</c>），键取
+    /// <see cref="VodFilterGroup.Key"/>。null / 空 = 不筛选，此时第 3 参 <c>filter</c> 也传 false。
+    /// </param>
+    Task<string> CategoryContentAsync(VodSiteInfo site, string tid, string pg,
+        IReadOnlyDictionary<string, string>? filter = null, CancellationToken ct = default);
 
     /// <summary>
     /// 影片详情（协议 detailContent）。
@@ -43,6 +48,19 @@ public interface ISpiderRuntime
     /// parse=0 直链，parse=1 需嗅探网页。
     /// </summary>
     Task<string> PlayerContentAsync(VodSiteInfo site, string flag, string id, CancellationToken ct = default);
+}
+
+/// <summary>
+/// 支持 TVBox <c>Spider.liveContent(String)</c> 的运行时 —— spider 型**直播源**。
+/// <para>返回的文本与订阅里的直播 txt 完全同构（TVBox 拿 <c>TxtSubscribe.parseToJsonArray</c>
+/// 直接吃），所以本项目的 <c>LiveParser.ParseToNormalizedArray</c> 可以原样复用。
+/// 注意入参是**解码后的真实地址**（TVBox 在 <c>LivePlayActivity:2855-2905</c> 先把
+/// <c>proxy?do=live&amp;type=txt&amp;ext=&lt;b64&gt;</c> 的 ext 解回来才传给 liveContent）。</para>
+/// </summary>
+public interface ISpiderLiveRuntime
+{
+    /// <summary>取该直播 spider 的频道列表文本（无数据时返回空串）。</summary>
+    Task<string> LiveContentAsync(VodSiteInfo site, string url, CancellationToken ct = default);
 }
 
 /// <summary>

@@ -81,7 +81,8 @@ public partial class AboutPage : ContentPage
         UpdateSubtitleLabel.Text = hasUpdate
             ? $"当前版本 {Vm.Version}，建议更新以获得更好的体验"
             : $"当前版本 {Vm.Version} 已是最新，以下为该版本的更新内容";
-        UpdatePrimaryButtonText.Text = hasUpdate ? "立即下载" : "好的";
+        UpdatePrimaryButtonText.Text = hasUpdate
+            ? (Services.AppInstaller.Supported ? "下载并安装" : "立即下载") : "好的";
         UpdateSecondaryButton.IsVisible = hasUpdate;
         Grid.SetColumnSpan(UpdatePrimaryButton, hasUpdate ? 1 : 2);
 
@@ -95,11 +96,59 @@ public partial class AboutPage : ContentPage
     private async void OnUpdatePrimaryTapped(object? sender, TappedEventArgs e)
     {
         var result = _updateResult;
-        HideUpdateOverlay();
-        if (result is { HasUpdate: true })
+        if (result is not { HasUpdate: true }) { HideUpdateOverlay(); return; }
+
+        // 安卓：本机下载 + 拉起系统安装器（对位 TVBox 的应用内升级）。其它端只能交给浏览器。
+        if (!Services.AppInstaller.Supported || string.IsNullOrEmpty(result.DownloadUrl))
         {
+            HideUpdateOverlay();
             try { await Launcher.OpenAsync(new Uri(result.DownloadUrl ?? result.ReleasePageUrl)); }
             catch { }
+            return;
+        }
+
+        if (!Services.AppInstaller.HasInstallPermission())
+        {
+            var go = await DisplayAlertAsync("需要安装权限",
+                "Android 不允许应用直接装包，需要到系统页里给「猫爪影视」打开\"安装未知应用\"。现在去吗？",
+                "去设置", "算了");
+            if (go) Services.AppInstaller.OpenInstallPermissionSettings();
+            return;
+        }
+
+        var url = result.DownloadUrl!;
+        if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+        {
+            HideUpdateOverlay();
+            await DisplayAlertAsync("下载更新", "下载地址不是 http(s) 链接。", "好");
+            return;
+        }
+
+        try
+        {
+            var progress = new Progress<double>(p =>
+            {
+                MainThread.BeginInvokeOnMainThread(() => UpdatePrimaryButtonText.Text = $"下载中 {p:P0}");
+            });
+            UpdatePrimaryButton.IsEnabled = false;
+            var (bytes, hasTotal) = await Services.AppInstaller.DownloadAsync(
+                url, progress, CancellationToken.None);
+            UpdatePrimaryButtonText.Text = hasTotal ? "正在安装…" : $"已下载 {bytes / 1048576.0:F1} MB";
+
+            var (ok, message) = Services.AppInstaller.Install();
+            HideUpdateOverlay();
+            if (!ok) await DisplayAlertAsync("安装", message, "好");
+            // 成功时不弹提示：系统安装界面已经盖在上面的
+        }
+        catch (Exception ex)
+        {
+            HideUpdateOverlay();
+            await DisplayAlertAsync("下载更新", "失败：" + ex.Message, "好");
+        }
+        finally
+        {
+            UpdatePrimaryButton.IsEnabled = true;
+            UpdatePrimaryButtonText.Text = "下载并安装";
         }
     }
 

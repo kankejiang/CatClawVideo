@@ -72,8 +72,10 @@ public class CatClawSourceProvider : IVodSourceProvider
 
     // ═══════════════════ 列表 ═══════════════════
 
-    public async Task<List<VodItem>> GetItemsAsync(VodSiteInfo site, VodCategory category, int page = 1, CancellationToken ct = default)
+    public async Task<List<VodItem>> GetItemsAsync(VodSiteInfo site, VodCategory category, int page = 1,
+        IReadOnlyDictionary<string, string>? filter = null, CancellationToken ct = default)
     {
+        // 自建源（文档/声明式规则）没有「分类筛选」这一层，filter 到此为止被忽略。
         if (IsWeb(site))
         {
             var web = await LoadWebAsync(site);

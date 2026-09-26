@@ -71,6 +71,15 @@ public class LiveChannelItem
     /// <summary>是否有 catchup 配置</summary>
     public bool HasCatchup => !string.IsNullOrEmpty(CatchupSource) || !string.IsNullOrEmpty(CatchupType);
 
+    /// <summary>
+    /// 频道级 catchup 配置对象（给 <see cref="LiveCatchup"/> 用）。
+    /// <para>只有 <c>source</c> 非空才算「有配置」—— 与 TVBox <c>hasCatchupSource</c> 一致，
+    /// 光有 type 没有模板是没法拼地址的。</para>
+    /// </summary>
+    public LiveCatchup.Config? CatchupConfig => string.IsNullOrEmpty(CatchupSource)
+        ? null
+        : new LiveCatchup.Config { Type = CatchupType, Source = CatchupSource, Replace = CatchupReplace };
+
     /// <summary>当前线路地址（越界时回落到 0 并返回空串）</summary>
     public string GetUrl()
     {
@@ -177,6 +186,12 @@ public class LiveLivesEntry
     public int TimeoutSeconds { get; set; }
 
     public Dictionary<string, string> Header { get; set; } = new();
+
+    /// <summary>
+    /// 订阅级 catchup（<c>lives[]</c> 条目上的 <c>catchup</c> 对象）。
+    /// 频道自己没带 catchup-source 时回退到它 —— TVBox 的 <c>currentCatchup()</c> 就是这个优先级。
+    /// </summary>
+    public LiveCatchup.Config? Catchup { get; set; }
 
     /// <summary>是否为 spider 直播源（v1 未接入，加载时给出明确提示）</summary>
     public bool IsSpider => Type == 3 || Api.Contains(".py", StringComparison.OrdinalIgnoreCase)

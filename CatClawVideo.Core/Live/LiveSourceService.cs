@@ -23,6 +23,9 @@ public class LiveSourceService
 
     private static string SettingsPath => AppPaths.Sub("live", "settings.json");
 
+    /// <summary>直播设置文件路径（配置包按原样带走这个文件）。</summary>
+    public static string SettingsFilePath => SettingsPath;
+
     /// <summary>持久化偏好（页面直接改字段后调用 <see cref="Save"/>）。</summary>
     public LiveSourcePrefs Prefs { get; private set; }
 
@@ -51,7 +54,16 @@ public class LiveSourceService
     /// <summary>是否存在可自动导入的订阅直播配置</summary>
     public static bool HasCapturedSubscription
     {
-        get { try { return File.Exists(CapturePath); } catch { return false; } }
+        get
+        {
+            try
+            {
+                var ok = File.Exists(CapturePath);
+                if (!ok) CatClawVideo.Core.Providers.CatClawLog.Write($"[直播] 订阅 capture 不存在: {CapturePath}");
+                return ok;
+            }
+            catch { return false; }
+        }
     }
 
     /// <summary>
@@ -64,9 +76,12 @@ public class LiveSourceService
         {
             Directory.CreateDirectory(Path.GetDirectoryName(CapturePath)!);
             File.WriteAllText(CapturePath, jsonText, Encoding.UTF8);
+            CatClawVideo.Core.Providers.CatClawLog.Write($"[直播] 已捕获订阅 lives → {CapturePath}（{jsonText.Length} 字符）");
         }
-        catch
+        catch (Exception ex)
         {
+            // 原来这里无声吞掉：结果订阅里带着 lives、直播页却一直要求「配置直播源」，查不到是谁拒的
+            CatClawVideo.Core.Providers.CatClawLog.Write($"[直播] 捕获订阅 lives 失败: {ex.Message}");
         }
     }
 
@@ -79,17 +94,22 @@ public class LiveSourceService
     /// <param name="livesIndex">多源下标（-1 = 用记忆值）</param>
     public async Task<LiveLoadResult> LoadAsync(string? apiOverride = null, int livesIndex = -1, CancellationToken ct = default)
     {
-        var api = (apiOverride ?? Prefs.ApiUrl).Trim();
-        if (api.Length == 0)
+        // clan:// / file:// 形态先换成可播地址（本机那支锁在数据目录内，远端那支只是改写成 http://host/file/…）
+        var raw = (apiOverride ?? Prefs.ApiUrl).Trim();
+        var api = Services.ClanScheme.Resolve(raw);
+        // 曾经自动导入过、但那个内部 capture 文件已经不在了（重装 / 清缓存 / 订阅换地址后重建目录）：
+        // 不能拿它当「用户配置的地址」去报「地址无效」，否则订阅里明明带 lives 却再也进不去。
+        var staleCapture = api.Length > 0 && raw == CapturePath && !File.Exists(api);
+        if (api.Length == 0 || staleCapture)
         {
             // 订阅自动导入（2026-09-25 用户反馈「饭太硬点播源里有直播源，直播页却还要配置」）：
             // 点播订阅解析出 lives 时订阅管理器已把明文配置落盘 → 用户没手动配过直播源就直接采用，
             // 首次进直播免配置。文件随订阅刷新而更新，不进历史（内部路径）。
             if (HasCapturedSubscription)
             {
+                // ⚠ 只在这次加载里用，绝不写回 Prefs.ApiUrl：capture 路径是内部实现细节，
+                // 持久化它等于把「每次重估的回退」变成「用户的手动配置」，文件一丢就死在「地址无效」上。
                 api = CapturePath;
-                Prefs.ApiUrl = api;
-                Save();
             }
             else
                 return new LiveLoadResult { Error = "未配置直播源，请先在「直播源」页填入地址" };
@@ -135,6 +155,26 @@ public class LiveSourceService
 
         content = content.TrimStart('\uFEFF');
         var result = await ParseContentAsync(content, api, livesIndex, ct);
+
+        // 订阅自带多路 lives 时，TVBox 的行为是「可切源」而不是「第 0 条挂了就整页作废」。
+        // 真机实测（2026-09-26）：某订阅 8 条 lives 里第 0 条 NAS 文件已删（404）、第 1 条反代 403，
+        // 剩 6 条都是 200 —— 只取第 0 条会让用户以为「订阅里没有直播源」，反而被要求手填地址。
+        // 只在用户没有显式指定下标时自动回退，避免覆盖他手动选定的源。
+        if (!result.Ok && result.Groups.Count == 0 && result.Lives.Count > 1 && livesIndex < 0)
+        {
+            var firstError = result.Error;
+            for (int alt = 0; alt < result.Lives.Count; alt++)
+            {
+                if (alt == result.LivesIndex) continue;
+                var altResult = await ParseContentAsync(content, api, alt, ct);
+                if (!altResult.Ok && altResult.Groups.Count == 0) continue;
+                CatClawVideo.Core.Providers.CatClawLog.Write(
+                    $"[直播] 第 {result.LivesIndex + 1} 路不可用（{firstError}），已回退到第 {alt + 1} 路「{result.Lives[alt].Name}」");
+                result = altResult;
+                break;
+            }
+        }
+
         if (result.Ok || result.Groups.Count > 0)
         {
             Current = result;
@@ -166,14 +206,57 @@ public class LiveSourceService
                     var entry = lives[idx];
 
                     if (entry.IsSpider)
+                    {
+                        // spider 型直播源（对位 TVBox LivePlayActivity:2855-2905）：
+                        // 交给 liveContent 的是**真实地址**（url 优先、回退 api），不是
+                        // proxy?do=live&type=txt&ext=<b64> 那层包装 —— TVBox 在调用前已把 ext 解回。
+                        var fetch = LiveSpiderBridge.Fetcher;
+                        if (fetch is null)
+                            return new LiveLoadResult
+                            {
+                                Lives = lives, LivesIndex = idx,
+                                Error = $"「{entry.Name}」是 spider 直播源（{entry.Api}），当前平台没有可用的爬虫运行时；请改选文本源",
+                            };
+
+                        var seconds = Math.Clamp(entry.TimeoutSeconds > 0 ? entry.TimeoutSeconds : Prefs.TimeoutSeconds, 5, 30);
+                        string? txt;
+                        try
+                        {
+                            using var to = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                            to.CancelAfter(TimeSpan.FromSeconds(seconds));
+                            txt = await fetch(entry, to.Token);
+                        }
+                        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                        {
+                            return new LiveLoadResult { Lives = lives, LivesIndex = idx, Error = $"「{entry.Name}」拉取超时（{seconds}s）" };
+                        }
+                        catch (Exception ex)
+                        {
+                            return new LiveLoadResult { Lives = lives, LivesIndex = idx, Error = $"「{entry.Name}」spider 直播源失败：{ex.Message}" };
+                        }
+                        if (string.IsNullOrWhiteSpace(txt))
+                            return new LiveLoadResult
+                            {
+                                Lives = lives, LivesIndex = idx,
+                                Error = txt is null ? $"「{entry.Name}」的爬虫类型不支持 liveContent" : $"「{entry.Name}」未返回频道列表",
+                            };
+
+                        txt = txt.TrimStart('﻿');
+                        var spiderGroups = LiveParser.BuildGroups(LiveParser.ParseToNormalizedArray(txt));
+                        if (entry.Header.Count > 0) Prefs.WebHeaders = entry.Header;
+                        SetSavedLivesIndex(sourceTag, idx);
                         return new LiveLoadResult
                         {
+                            Groups = spiderGroups,
                             Lives = lives,
                             LivesIndex = idx,
-                            Error = $"「{entry.Name}」是 spider 直播源（{entry.Api}），当前版本暂未接入；请改选文本源",
+                            EpgUrl = entry.Epg.Length > 0 ? entry.Epg : LiveParser.ExtractLiveTextEpg(txt),
+                            Ua = entry.Ua,
+                            Error = spiderGroups.Count == 0 ? "该 spider 未解析出任何频道" : "",
                         };
+                    }
 
-                    var entryUrl = entry.Url.Length > 0 ? entry.Url : entry.Api;
+                    var entryUrl = Services.ClanScheme.Resolve(entry.Url.Length > 0 ? entry.Url : entry.Api);
                     if (entryUrl.Length == 0)
                         return new LiveLoadResult { Lives = lives, LivesIndex = idx, Error = $"「{entry.Name}」未提供 url" };
 
@@ -276,6 +359,17 @@ public class LiveSourceService
             if (obj["header"] is JsonObject headerObj)
             {
                 foreach (var kv in headerObj) entry.Header[kv.Key] = Str(kv.Value);
+            }
+            // 订阅级 catchup（只对 JsonObject 形态生效，与 TVBox initLiveObj 一致）
+            if (obj["catchup"] is JsonObject catchupObj)
+            {
+                entry.Catchup = new LiveCatchup.Config
+                {
+                    Type = Str(catchupObj["type"]).Trim(),
+                    Source = Str(catchupObj["source"]).Trim(),
+                    Regex = Str(catchupObj["regex"]).Trim(),
+                    Replace = Str(catchupObj["replace"]).Trim(),
+                };
             }
             list.Add(entry);
         }
@@ -413,11 +507,7 @@ public class LiveSourceService
 
     private static HttpClient CreateClient()
     {
-        var handler = new HttpClientHandler
-        {
-            AllowAutoRedirect = true,
-            AutomaticDecompression = DecompressionMethods.All,
-        };
-        return new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(25) };
+        // 直播源列表与 EPG 一样是最容易被污染名单照顾的一跳 → 走 DoH（关闭时行为不变）
+        return Services.Doh.NewClient(25);
     }
 }

@@ -17,7 +17,8 @@ public class AndroidWebSniffer : IWebSniffer
 {
     private const int TimeoutSeconds = 20;   // TVBox MSG_PARSE_TIMEOUT 口径
 
-    public async Task<PlayRequest> SniffAsync(string pageUrl, IReadOnlyDictionary<string, string>? extraHeaders, CancellationToken ct)
+    public async Task<PlayRequest> SniffAsync(string pageUrl, IReadOnlyDictionary<string, string>? extraHeaders,
+        string? subscriptionKey, CancellationToken ct)
     {
         var tcs = new TaskCompletionSource<PlayRequest>(TaskCreationOptions.RunContinuationsAsynchronously);
         // 主线程调度（MAUI Essentials）
@@ -73,7 +74,7 @@ public class AndroidWebSniffer : IWebSniffer
                     var cookie = global::Android.Webkit.CookieManager.Instance?.GetCookie(url);
                     if (!string.IsNullOrEmpty(cookie)) headers["Cookie"] = " " + cookie;
                     tcs.TrySetResult(new PlayRequest { Url = url, Headers = headers });
-                }, () => { }));
+                }, () => { }, pageUrl, subscriptionKey));
 
                 activity.AddContentView(web, new global::Android.Views.ViewGroup.LayoutParams(1, 1));
 
@@ -125,8 +126,9 @@ public class AndroidWebSniffer : IWebSniffer
         return await tcs.Task;
     }
 
-    /// <summary>拦截客户端：shouldInterceptRequest 逐请求正则（对照 SysWebClient.checkIsVideo）</summary>
-    private sealed class SniffClient(Action<string> onVideo, Action onSettled) : WebViewClient
+    /// <summary>拦截客户端：shouldInterceptRequest 逐请求判定（对照 SysWebClient.checkIsVideo）</summary>
+    private sealed class SniffClient(Action<string> onVideo, Action onSettled, string pageUrl,
+        string? subscriptionKey) : WebViewClient
     {
         private int _found;
 
@@ -141,8 +143,11 @@ public class AndroidWebSniffer : IWebSniffer
 
             if (url.EndsWith("/favicon.ico", StringComparison.Ordinal)) return null;
 
-            // 视频正则（DefaultConfig.snifferMatch → TvBoxParseEngine.IsVideoFormat）
-            if (TvBoxParseEngine.IsVideoFormat(url))
+            // 订阅 rules 的 filter 命中 → 这个 URL 既不作候选也不空响应（对照 isFilter → return null）
+            if (TvBoxParseEngine.IsFiltered(pageUrl, url, subscriptionKey)) return null;
+
+            // 通用正则（DefaultConfig.snifferMatch）+ 订阅下发的 per-host 规则
+            if (TvBoxParseEngine.CheckIsVideoForParse(pageUrl, url, subscriptionKey))
             {
                 Interlocked.Increment(ref _found);
                 onVideo(url);

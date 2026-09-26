@@ -371,6 +371,14 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
         //    （2026-09-19：加弹窗遥控支持时一并堵掉这个洞）
         bool modalUp = Shell.Current is { } shell && shell.Navigation.ModalStack.Count > 0;
 
+        // ⓪′ 数字键**先**交给路由栈：直播间要用它逐位换台（TVBox 语义）。
+        //     只有没人认领时才回落成「数字切 tab」，否则在直播间按 3 会跳走首页。
+        if (!inText && TryMapDigit(e.Key, out var digit) && RemoteKeyRouter.Handle(digit))
+        {
+            e.Handled = true;
+            return;
+        }
+
         // ① 数字键 / F1-F5 直达 tab（文本框内不拦截）
         int index = inText || modalUp ? -1 : e.Key switch
         {
@@ -414,9 +422,25 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
         e.Handled = true;
     }
 
+    /// <summary>数字键（主键盘与小键盘）→ 统一远程按键；非数字键返回 false。</summary>
+    private static bool TryMapDigit(Windows.System.VirtualKey key, out RemoteKey remote)
+    {
+        int d = key switch
+        {
+            >= Windows.System.VirtualKey.Number0 and <= Windows.System.VirtualKey.Number9
+                => (int)key - (int)Windows.System.VirtualKey.Number0,
+            >= Windows.System.VirtualKey.NumberPad0 and <= Windows.System.VirtualKey.NumberPad9
+                => (int)key - (int)Windows.System.VirtualKey.NumberPad0,
+            _ => -1,
+        };
+        remote = d < 0 ? default : RemoteKey.Digit0 + d;
+        return d >= 0;
+    }
+
     /// <summary>Windows 虚拟键 → 统一远程按键。</summary>
     private static bool TryMapRemoteKey(Windows.System.VirtualKey key, out RemoteKey remote)
     {
+        if (TryMapDigit(key, out remote)) return true;
         switch (key)
         {
             case Windows.System.VirtualKey.Up: remote = RemoteKey.Up; return true;
@@ -583,6 +607,14 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
     /// bottom margin 抵消，让内容延伸到底部系统栏上沿——去除启动时的底部大片空白。</summary>
     private void LogLayoutChain()
     {
+        // 局域网遥控的待播队列（对位 TVBox /action 的 push → 播放）：3s 轮一次，
+        // 电脑浏览器点「推到电视」后本机自动打开播放器。
+        Dispatcher.StartTimer(TimeSpan.FromSeconds(3), () =>
+        {
+            _ = TakeRemotePushesAsync();
+            return true;   // 常驻：遥控器随时可能推
+        });
+
         Dispatcher.StartTimer(TimeSpan.FromMilliseconds(2500), () =>
         {
             var nav = (ContentHost.Parent is Grid g && g.Children.Count > 0 && g.Children[0] is VisualElement v)
@@ -617,4 +649,46 @@ public partial class MainPage : ContentPage, IRemoteKeyHandler
 #else
         0;
 #endif
+    private bool _pushBusy;
+
+    /// <summary>
+    /// 取走远程推送并打开播放页。
+    /// <para>多条只播**最后一条**：在电脑上连点几下，想要的显然是最后一次的选择。</para>
+    /// </summary>
+    private async Task TakeRemotePushesAsync()
+    {
+        if (_pushBusy) return;
+        var pending = Core.Services.RemoteControlHub.TakePending();
+        if (pending.Count == 0) return;
+        _pushBusy = true;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(pending[^1]);
+            var root = doc.RootElement;
+            var name = root.TryGetProperty("name", out var n) ? n.GetString() ?? "远程推送" : "远程推送";
+            // 条目引用推的是「这部片」：进正常详情页，线路/选集/观看历史都在；
+            // 裸直链只能直接进播放器（地址会过期，但用户就是从一个链接进来的）。
+            if (root.TryGetProperty("site", out var siteEl) && siteEl.GetString() is { Length: > 0 } siteKey
+                && root.TryGetProperty("id", out var idEl) && idEl.GetString() is { Length: > 0 } itemId)
+            {
+                await Shell.Current.GoToAsync(
+                    $"watch?sourceKey={Uri.EscapeDataString(siteKey)}&itemId={Uri.EscapeDataString(itemId)}"
+                    + $"&title={Uri.EscapeDataString(name)}");
+                return;
+            }
+            var url = root.TryGetProperty("url", out var u) ? u.GetString() ?? "" : "";
+            if (url.Length == 0) return;
+            await Shell.Current.GoToAsync(
+                $"player?title={Uri.EscapeDataString(name)}&url={Uri.EscapeDataString(url)}");
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[遥控] 待播处理失败：{ex.Message}");
+        }
+        finally
+        {
+            _pushBusy = false;
+        }
+    }
+
 }

@@ -1,12 +1,14 @@
 using Android.Content;
 using Android.Views;
 using CatClawVideo.Maui.Controls;
+using TrackLang = CatClawVideo.Maui.Services.TrackLang;
 using Microsoft.Maui.Handlers;
 
 #if ANDROID
 using AndroidX.Media3.Common;
 using AndroidX.Media3.DataSource;
 using AndroidX.Media3.ExoPlayer;
+using AndroidX.Media3.ExoPlayer.MediaCodec;
 using AndroidX.Media3.ExoPlayer.Source;
 using AndroidX.Media3.UI;
 using SimpleExoPlayer = AndroidX.Media3.ExoPlayer.SimpleExoPlayer;
@@ -20,7 +22,7 @@ namespace CatClawVideo.Maui.Platforms.Android;
 /// </summary>
 public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, PlayerView>, IVideoPlayerImplementation
 {
-    private SimpleExoPlayer? _player;
+    private AndroidX.Media3.ExoPlayer.IExoPlayer? _player;
 
     /// <summary>媒体源工厂（持有引用以便换源时切换数据源工厂，实现按源自定义请求头）</summary>
     private DefaultMediaSourceFactory? _mediaSourceFactory;
@@ -60,16 +62,9 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, PlayerView>, 
         var context = Context ?? platformView.Context;
 
         // HTTP 数据源：支持自定义请求头 + 跨协议重定向（http→https 跳转常见）
-        var httpFactory = BuildHttpFactory(null);
-        _mediaSourceFactory = new DefaultMediaSourceFactory(httpFactory);
-
-        _player = new SimpleExoPlayer.Builder(context)
-            .SetMediaSourceFactory(_mediaSourceFactory)
-            .Build();
-        _player.AddListener(new PlayerListener(this));
-
-        platformView.Player = _player;
-
+        // 播放器统一由 RebuildPlayer 造（解码模式要在 builder 期决定，两处不能各写一份）
+        _decoderMode = VirtualView.DecoderMode;
+        RebuildPlayer();
         VirtualView.Implementation = this;
 
         // 应用 View 层已设置的属性（Source 可能已在 Handler 连接前赋值）
@@ -85,7 +80,12 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, PlayerView>, 
     {
         VirtualView.Implementation = null;
         platformView.Player = null;
-        try { _player?.Release(); } catch { }
+        try
+        {
+            if (_player is not null) PlayerHandoff.Detach(_player);
+            _player?.Release();
+        }
+        catch { }
         _player = null;
         base.DisconnectHandler(platformView);
     }
@@ -95,32 +95,121 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, PlayerView>, 
     void IVideoPlayerImplementation.SetSource(string? url, IReadOnlyDictionary<string, string>? headers)
     {
         if (_player == null) return;
+        _mediaUrl = url;
+        _headers = headers;
+        // 换集 = 新的媒体项，外挂字幕要重新挂（View 层会在打开后补调 ApplySubtitle）
+        _subtitleUri = null;
+        _subtitleMime = null;
+        RebuildMediaItem();
+    }
 
+    private string? _mediaUrl;
+    private IReadOnlyDictionary<string, string>? _headers;
+    private global::Android.Net.Uri? _subtitleUri;
+    private string? _subtitleMime;
+
+    /// <summary>
+    /// 按当前源 + 当前字幕重建媒体项。
+    /// <para>必须重建而不能「加一条字幕轨」：Media3 的 <c>SubtitleConfiguration</c> 是
+    /// <c>MediaItem</c> 的构造期属性，没有运行期追加 API。重建会回到 Idle，所以要把播放位置
+    /// 取出来在 <c>Prepare()</c> 后补 seek —— 否则用户点个字幕就跳回片头。</para>
+    /// </summary>
+    private void RebuildMediaItem()
+    {
+        var player = _player;
+        if (player == null) return;
         try
         {
-            _player.Stop();
-            _player.ClearMediaItems();
+            var resumeMs = Math.Max(0, player.CurrentPosition);
+            player.Stop();
+            player.ClearMediaItems();
 
-            if (string.IsNullOrEmpty(url)) return;
+            if (string.IsNullOrEmpty(_mediaUrl)) return;
 
             // 请求头按源切换（TVBox 源防盗链：Referer / User-Agent）
-            _mediaSourceFactory?.SetDataSourceFactory(BuildHttpFactory(headers));
+            _mediaSourceFactory?.SetDataSourceFactory(BuildHttpFactory(_headers));
 
             // 显式指定 HLS：DefaultMediaSourceFactory 只按 **URI 路径后缀** 推断类型，
             // 而本地反代/爬虫给出的地址常是 `/proxy?do=m3u8&url=…%2Findex.m3u8`（真正后缀在 query 里）
             // → 会被判成普通媒体文件走 ProgressiveMediaSource，
             // 报 UnrecognizedInputFormatException（无 extractor 能读 m3u8）。
-            var builder = new MediaItem.Builder().SetUri(global::Android.Net.Uri.Parse(url));
-            var mime = InferMime(url);
+            // 注：绑定把 Builder 的链式返回标成可空，所以这里逐步调用而不是串起来。
+            var builder = new MediaItem.Builder();
+            builder.SetUri(global::Android.Net.Uri.Parse(_mediaUrl));
+            var mime = InferMime(_mediaUrl);
             if (mime is not null) builder.SetMimeType(mime);
 
-            _player.SetMediaItem(builder.Build());
-            _player.Prepare();
+            if (_subtitleUri is not null && _subtitleMime is not null)
+            {
+                // SELECTION_FLAG_DEFAULT(=1)：Media3 默认**不选**任何文本轨（preferredTextLanguage 为空），
+                // 不给这个标志的表现是「字幕文件加载成功但屏幕上什么都没有」。
+                var subBuilder = new MediaItem.SubtitleConfiguration.Builder(_subtitleUri);
+                subBuilder.SetMimeType(_subtitleMime);
+                subBuilder.SetSelectionFlags(1);
+                subBuilder.SetLabel("猫爪外挂字幕");
+                if (subBuilder.Build() is MediaItem.SubtitleConfiguration sub)
+                    builder.SetSubtitleConfigurations(new List<MediaItem.SubtitleConfiguration> { sub });
+            }
+
+            player.SetMediaItem(builder.Build());
+            player.Prepare();
+            if (resumeMs > 1000) player.SeekTo(resumeMs);
         }
         catch (Exception ex)
         {
             VirtualView?.RaiseMediaFailed($"加载失败: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// 外挂字幕。Android 侧没有「运行期改字幕延迟」的公开 API，所以偏移靠
+    /// <c>SubtitleSupport.ApplyOffset</c> 把字幕文本重写一份到缓存目录再交给播放器
+    /// （Windows 侧有原生 <c>SetSubtitleDelay</c>，两端行为对齐但实现路径不同）。
+    /// </summary>
+    void IVideoPlayerImplementation.SetExternalSubtitle(string? path, string? mime, double offsetSeconds)
+    {
+        if (_player == null) return;
+        try
+        {
+            if (string.IsNullOrEmpty(path) || string.IsNullOrEmpty(mime))
+            {
+                _subtitleUri = null;
+                _subtitleMime = null;
+            }
+            else
+            {
+                _subtitleMime = mime;
+                _subtitleUri = PrepareSubtitleUri(path!, mime, offsetSeconds);
+            }
+            RebuildMediaItem();
+        }
+        catch (Exception ex)
+        {
+            // 字幕失败不该打断播放：只留痕，由 View 层的 SubtitleError 提示
+            Maui.Services.BtFileLog.Write($"[player] 字幕加载失败：{ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>把字幕准备成播放器可用的 Uri（必要时先做时间轴平移）。</summary>
+    private global::Android.Net.Uri? PrepareSubtitleUri(string path, string mime, double offsetSeconds)
+    {
+        var remote = path.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                     path.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
+
+        // 无偏移 → 直接用原文件/原地址，不产生副本
+        if (Math.Abs(offsetSeconds) < 0.0005 || !Core.Services.SubtitleSupport.SupportsOffsetRewrite(mime))
+            return remote ? global::Android.Net.Uri.Parse(path) : global::Android.Net.Uri.Parse("file://" + path);
+
+        var text = remote
+            ? new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(15) }.GetStringAsync(path).GetAwaiter().GetResult()
+            : File.Exists(path) ? File.ReadAllText(path) : null;
+        if (string.IsNullOrEmpty(text)) return null;
+
+        var shifted = Core.Services.SubtitleSupport.ApplyOffset(text, offsetSeconds);
+        var dir = Context?.CacheDir?.AbsolutePath ?? System.IO.Path.GetTempPath();
+        var file = System.IO.Path.Combine(dir, $"subtitle-{Math.Abs(offsetSeconds).ToString("0.###")}.tmp");
+        File.WriteAllText(file, shifted);
+        return global::Android.Net.Uri.Parse("file://" + file);
     }
 
     /// <summary>
@@ -150,14 +239,199 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, PlayerView>, 
         var factory = new DefaultHttpDataSource.Factory()
             .SetAllowCrossProtocolRedirects(true)
             .SetConnectTimeoutMs(10_000)
-            .SetReadTimeoutMs(20_000)
-            .SetUserAgent(UserAgent);
+            .SetReadTimeoutMs(20_000);
+        // 源自己带了 User-Agent 时**不能再设默认 UA**：Media3 对两者都用 addRequestProperty，
+        // HttpURLConnection 会把两个值并成一条 "UA1, UA2" —— 那是非法 UA 串，
+        // 夸克这类 CDN 直接回 400 Bad Request（真机 2026-09-26「夸父原1」播放失败
+        // Source error / InvalidResponseCodeException: Response code: 400 实测）。
+        bool sourceHasUa = headers is not null
+            && headers.Keys.Any(k => string.Equals(k, "User-Agent", StringComparison.OrdinalIgnoreCase));
+        if (!sourceHasUa) factory.SetUserAgent(UserAgent);
         if (headers is { Count: > 0 })
             factory.SetDefaultRequestProperties(new Dictionary<string, string>(headers));
         return factory;
     }
 
-    void IVideoPlayerImplementation.Play() => _player?.Play();
+    /// <summary>
+    /// 解码模式切换（Android 路）。解码器工厂是在 <c>SimpleExoPlayer.Builder</c> 期定下的，
+    /// 所以这里必须**重建 player**（保住位置与播放态），而不是改个属性。
+    /// </summary>
+    void IVideoPlayerImplementation.SetDecoderMode(VideoDecoderMode mode)
+    {
+        if (_decoderMode == mode) return;
+        _decoderMode = mode;
+        RebuildPlayer();
+    }
+
+    private VideoDecoderMode _decoderMode = VideoDecoderMode.Auto;
+
+    private void RebuildPlayer()
+    {
+        var context = Context;
+        if (context is null) return;
+        var resumeMs = Math.Max(0, _player?.CurrentPosition ?? 0);
+        var wasPlaying = _player?.IsPlaying == true;
+        try
+        {
+            if (PlatformView != null) PlatformView.Player = null;
+            _player?.Stop();
+            _player?.Release();
+        }
+        catch { }
+
+        _mediaSourceFactory = new DefaultMediaSourceFactory(BuildHttpFactory(_headers));
+        var builder = new ExoPlayerBuilder(context).SetMediaSourceFactory(_mediaSourceFactory);
+        if (_decoderMode != VideoDecoderMode.Auto)
+        {
+            var factory = new DefaultRenderersFactory(context);
+            // 软解直接用 Media3 自带的 PREFER_SOFTWARE（上游实现，比自研选择器可靠）；
+            // 硬解没有现成常量，只能自己按 MediaCodecInfo.HardwareAccelerated 过滤。
+            factory.SetMediaCodecSelector(_decoderMode == VideoDecoderMode.Software
+                ? IMediaCodecSelector.PreferSoftware!
+                : new HardwareOnlySelector());
+            // 绑定把 Builder.setRenderersFactory 投影成了属性（没有同名方法）
+            builder.SetRenderersFactory(factory);
+        }
+        _player = builder.Build();
+        // 交给后台播放服务借用（对位 TVBox 的 MusicPlaybackService）：换台会走这里重建，
+        // 所以 Attach 必须在这里，不能只在首次创建时做一次
+        PlayerHandoff.Attach(_player);
+        _player.AddListener(new PlayerListener(this));
+        if (PlatformView != null) PlatformView.Player = _player;
+
+        RebuildMediaItem();
+        if (resumeMs > 1000 && _player != null) _player.SeekTo(resumeMs);
+        if (wasPlaying) _player?.Play();
+        Maui.Services.BtFileLog.Write($"[player] 解码模式={_decoderMode} → 已重建 player（位置 {resumeMs / 1000}s）");
+    }
+
+    /// <summary>
+    /// 只放行硬件解码器的选择器（对位 TVBox 的「ijk硬解」档）。
+    /// <para>过滤后一条不剩时退回默认表 —— 宁可照常播，也不要「切个模式直接黑屏」。</para>
+    /// </summary>
+    private sealed class HardwareOnlySelector : Java.Lang.Object, IMediaCodecSelector
+    {
+        public System.Collections.Generic.IList<MediaCodecInfo> GetDecoderInfos(
+            string mimeType, bool includesSecureDecoders, bool appliesTunnelingModeBlacklist)
+        {
+            var all = IMediaCodecSelector.Default!.GetDecoderInfos(
+                mimeType, includesSecureDecoders, appliesTunnelingModeBlacklist);
+            var kept = new List<MediaCodecInfo>();
+            if (all is not null)
+                foreach (MediaCodecInfo? info in all)
+                    if (info is not null && info.HardwareAccelerated) kept.Add(info);
+            return kept.Count > 0 ? kept : all!;
+        }
+    }
+
+    // ═══════════════════ 轨道枚举与切换 ═══════════════════
+
+    static int TrackTypeOf(VideoTrackKind kind) => kind switch
+    {
+        VideoTrackKind.Audio => AndroidX.Media3.Common.C.TrackTypeAudio,
+        VideoTrackKind.Video => AndroidX.Media3.Common.C.TrackTypeVideo,
+        _ => AndroidX.Media3.Common.C.TrackTypeText,
+    };
+
+    /// <summary>
+    /// 取第 index 个轨道组。<c>Tracks.Groups</c> 是 Guava 的 ImmutableList，
+    /// 绑定里没有泛型索引器（Count / [i] 都不存在），只能落到非泛型 <c>System.Collections.IList</c>。
+    /// </summary>
+    static AndroidX.Media3.Common.Tracks.Group? GroupAt(
+        AndroidX.Media3.Common.Tracks tracks, int index) =>
+        tracks.Groups is System.Collections.IList groups && index >= 0 && index < groups.Count
+            ? groups[index] as AndroidX.Media3.Common.Tracks.Group
+            : null;
+
+    IReadOnlyList<VideoTrackInfo> IVideoPlayerImplementation.GetTracks(VideoTrackKind kind)
+    {
+        var list = new List<VideoTrackInfo>();
+        if (_player?.CurrentTracks is not { } tracks) return list;
+        var type = TrackTypeOf(kind);
+        if (tracks.Groups is not System.Collections.IList groups) return list;
+
+        for (var g = 0; g < groups.Count; g++)
+        {
+            if (GroupAt(tracks, g) is not { } group || group.Type != type) continue;
+            for (var t = 0; t < group.Length; t++)
+            {
+                // Media3 1.10 起 Tracks.Track 已删，组内按序号直接取 Format
+                if (group.GetTrackFormat(t) is not { } format) continue;
+                list.Add(new VideoTrackInfo(
+                    g + ":" + t,
+                    Describe(format, kind, list.Count + 1),
+                    group.IsTrackSelected(t)));
+            }
+        }
+        return list;
+    }
+
+    static string Describe(AndroidX.Media3.Common.Format f, VideoTrackKind kind, int ordinal)
+    {
+        var bits = new List<string>();
+        var name = !string.IsNullOrWhiteSpace(f.Label) ? f.Label : f.Language;
+        if (!string.IsNullOrWhiteSpace(name)) bits.Add(TrackLang.NameOrSelf(name!.Trim()));
+        if (kind == VideoTrackKind.Audio && f.ChannelCount > 0)
+            bits.Add(TrackLang.Channels(f.ChannelCount));
+        if (kind == VideoTrackKind.Video && f.Width > 0 && f.Height > 0) bits.Add(f.Width + "×" + f.Height);
+        if (f.Bitrate > 0) bits.Add(f.Bitrate / 1000 + " kbps");
+        return bits.Count > 0 ? string.Join(" · ", bits) : "轨道 " + ordinal;
+    }
+
+    void IVideoPlayerImplementation.SelectTrack(VideoTrackKind kind, string? id)
+    {
+        var player = _player;
+        if (player is null) return;
+        var type = TrackTypeOf(kind);
+        if (player.TrackSelectionParameters?.BuildUpon()?.ClearOverrides() is not { } builder) return;
+
+        if (string.IsNullOrEmpty(id))
+        {
+            // 只有字幕能整类关掉。音轨/视频轨关掉就是黑屏无声，所以空 id 对它们是「恢复自动选择」。
+            builder.SetTrackTypeDisabled(type, kind == VideoTrackKind.Subtitle);
+            player.TrackSelectionParameters = builder.Build();
+            return;
+        }
+
+        var parts = id.Split(':', 2);
+        if (parts.Length != 2 || !int.TryParse(parts[0], out var gi) || !int.TryParse(parts[1], out var ti))
+            return;
+        if (player.CurrentTracks is not { } tracks || GroupAt(tracks, gi) is not { } group) return;
+        if (group.MediaTrackGroup is not { } mediaGroup) return;
+
+        builder.SetTrackTypeDisabled(type, false);
+        // override 认的是 TrackGroup 对象 + 组内序号，不是全局扁平序号
+        builder.SetOverrideForType(new AndroidX.Media3.Common.TrackSelectionOverride(mediaGroup, ti));
+        player.TrackSelectionParameters = builder.Build();
+    }
+
+    void IVideoPlayerImplementation.Play()
+    {
+        _player?.Play();
+        MaybeStartPlaybackService();
+    }
+
+    /// <summary>
+    /// 需要后台继续放时拉起 Media3 的会话服务。
+    /// <para>刻意在「点播放」这一刻启动：Android 12+ 不许从后台启前台服务，
+    /// 等 <c>OnPause</c> 之后再启就可能直接被拒。</para>
+    /// </summary>
+    void MaybeStartPlaybackService()
+    {
+        if (!Maui.Services.BgPlayPrefs.IsOn) return;
+        try
+        {
+            var ctx = Microsoft.Maui.ApplicationModel.Platform.AppContext;
+            if (ctx is null || _player is null) return;
+            PlayerHandoff.Attach(_player);
+            var intent = new Intent(ctx, Java.Lang.Class.FromType(typeof(PlaybackService)));
+            ctx.StartForegroundService(intent);
+        }
+        catch (Exception ex)
+        {
+            Maui.Services.BtFileLog.Write($"[后台播放] 启动服务失败：{ex.GetType().Name}: {ex.Message}");
+        }
+    }
 
     void IVideoPlayerImplementation.Pause() => _player?.Pause();
 

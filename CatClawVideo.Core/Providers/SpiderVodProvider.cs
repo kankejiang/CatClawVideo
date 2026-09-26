@@ -83,12 +83,15 @@ public class SpiderVodProvider : IVodSourceProvider, IActionVodSourceProvider
         return cats;
     }
 
-    public async Task<List<VodItem>> GetItemsAsync(VodSiteInfo site, VodCategory category, int page = 1, CancellationToken ct = default)
+    public async Task<List<VodItem>> GetItemsAsync(VodSiteInfo site, VodCategory category, int page = 1,
+        IReadOnlyDictionary<string, string>? filter = null, CancellationToken ct = default)
     {
         var rt = RuntimeFor(site) ?? throw new NotSupportedException(site.StatusNote ?? "爬虫运行时不可用");
-        var raw = await rt.CategoryContentAsync(site, category.Id, page.ToString(), ct);
+        var raw = await rt.CategoryContentAsync(site, category.Id, page.ToString(), filter, ct);
         var items = SpiderJsonParser.ParseItems(raw, site.Key);
-        _log?.Invoke($"[解析] {site.Key}.category(tid={category.Id},pg={page}) → {raw.Length}B → {items.Count} 条"
+        _log?.Invoke($"[解析] {site.Key}.category(tid={category.Id},pg={page}"
+                     + (filter is { Count: > 0 } ? $",筛选={string.Join('/', filter.Select(kv => kv.Key + ":" + kv.Value))}" : "")
+                     + $") → {raw.Length}B → {items.Count} 条"
                      + $"（带 action {items.Count(i => i.Action.Length > 0)}，"
                      + $"tag={string.Join('/', items.Select(i => i.Tag).Where(t => t.Length > 0).Distinct())}）");
         return items;

@@ -197,6 +197,9 @@ public class SearchSeries
 /// </summary>
 public class VideoDatabase
 {
+    /// <summary>播放历史保留条数上限（对位 TVBox HISTORY_NUM，本仓默认放宽到 500）。
+    /// 由宿主启动时从设置里读一次写入 —— Data 层不碰 Preferences。</summary>
+    public static int MaxHistoryEntries { get; set; } = 500;
     private readonly SQLiteAsyncConnection _db;
 
     public VideoDatabase(string dbPath)
@@ -311,12 +314,13 @@ public class VideoDatabase
         else
         {
             await _db.InsertAsync(entry);
-            // 控制历史总量：超出 500 条删最旧
+            // 控制历史总量：超出上限删最旧（上限由宿主在启动时写入，见 HistoryCap）
+            var cap = MaxHistoryEntries;
             var total = await _db.Table<PlayHistoryEntry>().CountAsync();
-            if (total > 500)
+            if (total > cap)
             {
                 var oldest = await _db.Table<PlayHistoryEntry>()
-                    .OrderBy(h => h.WatchedAt).Take(total - 500).ToListAsync();
+                    .OrderBy(h => h.WatchedAt).Take(total - cap).ToListAsync();
                 foreach (var o in oldest) await _db.DeleteAsync(o);
             }
         }

@@ -63,8 +63,10 @@ public class DrpyJsSpiderRuntime : ISpiderRuntime
     public Task<string> HomeContentAsync(VodSiteInfo site, CancellationToken ct = default) =>
         CallAsync(site, "home", "1", ct);
 
-    public Task<string> CategoryContentAsync(VodSiteInfo site, string tid, string pg, CancellationToken ct = default) =>
-        CallAsync(site, "category", JsStr(tid), JsStr(pg), "0", "{}", ct);
+    public Task<string> CategoryContentAsync(VodSiteInfo site, string tid, string pg,
+        IReadOnlyDictionary<string, string>? filter = null, CancellationToken ct = default) =>
+        CallAsync(site, "category", JsStr(tid), JsStr(pg), filter is { Count: > 0 } ? "1" : "0",
+            SpiderJsUtil.ObjectLiteral(filter), ct);
 
     public Task<string> DetailContentAsync(VodSiteInfo site, string id, CancellationToken ct = default) =>
         CallAsync(site, "detail", JsStr(id), ct);

@@ -4,9 +4,37 @@
     <!-- 影视源访问（TVBox 源 / m3u8 流媒体多为 http 明文地址） -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- DLNA 投屏的 SSDP 组播接收：没有这条，MulticastLock 申请不到，表现是「搜不到设备」且不报错 -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- 订阅壁纸（对位 TVBox 设置页「下载壁纸」）：WallpaperManager.SetBitmap/Clear 需要它 -->
+    <uses-permission android:name="android.permission.SET_WALLPAPER" />
 
     <!-- 播放期间防止 CPU 休眠 -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- 后台继续播放（对位 TVBox MusicPlaybackService）：Android 14 起 mediaPlayback 类型的
+         前台服务是独立权限，且通知要 POST_NOTIFICATIONS，缺一个的表现就是「切后台就停」或「没通知栏控制」 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- 应用内更新装包（对位 TVBox 的 REQUEST_INSTALL_PACKAGES）：
+         Android 8+ 这是「特殊权限」，用户没授权时只能把系统设置页打开引导，不能静默装。 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!-- Android 11+ 的包可见性：不声明这些，GetApplicationInfo 会一律查不到，
+         表现就是「装了 MX Player 却提示没装」。外部播放器唤起（对位 PLAY_TYPE 10–14）靠这一步。 -->
+    <queries>
+        <package android:name="com.mxtech.videoplayer.pro" />
+        <package android:name="com.mxtech.videoplayer.ad" />
+        <package android:name="xyz.re.player.ex" />
+        <package android:name="org.xbmc.kodi" />
+        <package android:name="org.videolan.vlc" />
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="video/*" />
+        </intent>
+    </queries>
 
     <application
         android:name=".MainApplication"
@@ -18,6 +46,19 @@
         android:usesCleartextTraffic="true">
 
         <meta-data android:name="android.max_aspect" android:value="2.4" />
+
+    <!-- 自己声明一个 FileProvider：Android 7+ 不能用 file:// 直接把 apk 交给系统安装器
+         （FileUriExposedException 会直接抛），必须走 content:// + 临时授权。
+         authority 用 ${applicationId} 拼，debug/release 两个包名自动各一份，不会撞车。 -->
+    <provider
+        android:name="androidx.core.content.FileProvider"
+        android:authorities="${applicationId}.catclaw.fileprovider"
+        android:exported="false"
+        android:grantUriPermissions="true">
+        <meta-data
+            android:name="android.support.FILE_PROVIDER_PATHS"
+            android:resource="@xml/catclaw_file_paths" />
+    </provider>
 
     </application>
 
