@@ -446,3 +446,8 @@ JavaBridge/sources.txt
 /pkg_initrd.gz
 /APKINDEX
 /APKINDEX.tar.gz
+
+# ART guest 的 initrd：226MB 二进制、可由 qemu-src/tools/mk_art_initrd.py 再生，不入仓库；
+# 出包时由 build-win-release.ps1 [1.4/2] 拷进发布目录的 ThunderRuntime。
+/CatClawVideo.Maui/ThunderRuntime/art_initrd.gz
+/JavaBridge/qemu-src/art/art_initrd.gz

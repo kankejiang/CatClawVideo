@@ -57,15 +57,56 @@ public class Server {
         return created;
     }
 
+    /**
+     * ART 侧挑「含 dex 的那个 jar」：优先原始壳 jar（它自己会解出真 dex），其次任一入口带 dex。
+     *
+     * <p>判据是 zip 里有没有 {@code classes.dex}（或整个文件本身就是 dex）—— 纯 {@code .class}
+     * 的 java 源在 ART 里永远加载不了，那种源继续走宿主的 JVM 桥。</p>
+     */
+    private static String firstDexJar(String rawJar, String shellJar, String realJar, org.json.JSONArray jars) {
+        java.util.List<String> cand = new java.util.ArrayList<>();
+        for (String p : new String[]{rawJar, shellJar, realJar})
+            if (p != null && !p.isEmpty()) cand.add(p);
+        if (jars != null)
+            for (int i = 0; i < jars.length(); i++) {
+                String p = jars.optString(i, null);
+                if (p != null && !p.isEmpty()) cand.add(p);
+            }
+        for (String p : cand) if (hasDex(p)) return p;
+        return null;
+    }
+
+    private static boolean hasDex(String path) {
+        // http(s) 引用没法就地验货，交给 Art.materialize 取回后再说
+        if (path.startsWith("http://") || path.startsWith("https://")) return true;
+        try {
+            File f = new File(path);
+            if (!f.isFile()) return false;
+            byte[] head = new byte[3];
+            try (java.io.FileInputStream in = new java.io.FileInputStream(f)) {
+                if (in.read(head) == 3 && head[0] == 'd' && head[1] == 'e' && head[2] == 'x') return true;
+            }
+            try (java.util.zip.ZipFile z = new java.util.zip.ZipFile(f)) {
+                for (java.util.Enumeration<? extends java.util.zip.ZipEntry> e = z.entries(); e.hasMoreElements(); )
+                    if (e.nextElement().getName().endsWith(".dex")) return true;
+            }
+        } catch (Exception ignored) { }
+        return false;
+    }
+
     public static void main(String[] args) throws Exception {
-        // 把 AES/*/PKCS7Padding 别名到 PKCS5Padding（标准 JVM 不提供 PKCS7 命名，Android 提供）
-        // → 否则爬虫的接口加解密直接失败（NoSuchAlgorithmException → aes decrypt fail）。见 Pkcs7Provider。
-        Pkcs7Provider.install();
-        // 强制 stdout/stderr 为 UTF-8（JVM 默认跟随 Windows 控制台代码页 GBK，中文会坏）
-        System.setOut(new java.io.PrintStream(new java.io.FileOutputStream(java.io.FileDescriptor.out), true, "UTF-8"));
-        System.setErr(new java.io.PrintStream(new java.io.FileOutputStream(java.io.FileDescriptor.err), true, "UTF-8"));
-        // data 目录：spider 的 Context 文件操作都落在 App 约定的桥工作目录
-        System.setProperty("data.dir", new File("data").getAbsolutePath());
+        // 把 AES/*/PKCS7 别名到 PKCS5（标准 JVM 不提供 PKCS7 命名）→ 否则爬虫的接口加解密直接失败。
+        // ART 里不装：conscrypt 自带的 BC 原生就认 PKCS7Padding，我们的包装反而会盖掉真实现。
+        if (!Art.onArt()) Pkcs7Provider.install();
+        // guest 模式（QEMU 里的 ART）由 GuestMain 把标准流换成 socket，此时不能被这里覆盖回去
+        if (System.getProperty("bridge.keepStdio") == null) {
+            // 强制 stdout/stderr 为 UTF-8（JVM 默认跟随 Windows 控制台代码页 GBK，中文会坏）
+            System.setOut(new java.io.PrintStream(new java.io.FileOutputStream(java.io.FileDescriptor.out), true, "UTF-8"));
+            System.setErr(new java.io.PrintStream(new java.io.FileOutputStream(java.io.FileDescriptor.err), true, "UTF-8"));
+        }
+        // data 目录：spider 的 Context 文件操作都落在 App 约定的桥工作目录（guest 侧自己预设则不覆盖）
+        if (System.getProperty("data.dir") == null)
+            System.setProperty("data.dir", new File("data").getAbsolutePath());
         startParentWatchdog();
         BufferedReader in = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
         // ⚠ proxy op 必须与 call 并行：call(detailContent) 在主循环同步执行期间，spider 内部
@@ -124,6 +165,33 @@ public class Server {
                             req.optInt("guardPort", 0));
                     case "call" -> call(req.optString("site"), req.optString("method"), req.optJSONArray("args"));
                     case "ping" -> "pong";
+                    case "probe" -> {
+                        // 「guest 里这个类名到底是谁的」一次性问清：boot classpath 前置有没有生效、
+                        // 桥的 UI 捕获层有没有被真框架顶掉（2026-09-26 网盘对话框上不来，两种原因表现一样）。
+                        StringBuilder sb = new StringBuilder();
+                        for (String n : new String[]{"android.app.AlertDialog", "android.app.Activity",
+                                "android.app.Application", "android.widget.TextView", "android.content.Context"}) {
+                            try {
+                                Class<?> k = Class.forName(n);
+                                String loc = "?";
+                                try {
+                                    loc = String.valueOf(k.getProtectionDomain().getCodeSource().getLocation());
+                                } catch (Throwable ignored) { }
+                                sb.append(n).append('←').append(loc).append(' ');
+                            } catch (Throwable e) { sb.append(n).append("=!").append(e.getClass().getSimpleName()).append(' '); }
+                        }
+                        // 桥桩独有的成员（真框架 Dialog 没有 fillSpec）—— 前置生效与否的直接判据
+                        try {
+                            Class.forName("android.app.Dialog").getDeclaredMethod("fillSpec");
+                            sb.append("Dialog.fillSpec=有(桩生效)");
+                        } catch (Throwable e) { sb.append("Dialog.fillSpec=无(真框架)"); }
+                        try {
+                            Object a = bridge.Art.app();
+                            sb.append("app=").append(a.getClass().getName())
+                              .append(" isActivity=").append(a instanceof android.app.Activity);
+                        } catch (Throwable e) { sb.append("app=!").append(e); }
+                        yield sb.toString();
+                    }
                     case "get-prefs" -> {
                         // 网盘登录态读取：jar 的 proxyInput/do=xx 推送把 Cookie 写 SharedPreferences.DATA，
                         // 宿主「已登录+启用中」对话框按它渲染状态（key 含 quark/uc/baidu/ali 等）
@@ -139,6 +207,8 @@ public class Server {
                         // 端口下发：桥内无 JNI（Android 走 TvBoxCompatBridge.SetProxyPort），走协议直写静态字段
                         if ("setProxyPort".equals(fop)) {
                             com.github.catvod.crawler.SpiderApi.setHostProxyPort(req.optInt("port"));
+                            // guest 里 127.0.0.1 是它自己的回环，爬虫的 proxy:// 回调必须就地转发给宿主
+                            if (Art.onArt()) Art.serveProxy(req.optInt("port"));
                             yield "ok";
                         }
                         throw new IllegalArgumentException("unknown op: " + fop);
@@ -209,18 +279,25 @@ public class Server {
         synchronized (LOCK) {
             if (SPIDERS.containsKey(site)) return "loaded";
 
-            // Guard QEMU 解密通道（2026-09-24 用户拍板架构）：解密/签名/proxyInvoke 走 Guard VM
-            // 里的 ftyguard so（ARM）；就绪后 unidbg 不再预热（首次回落时才懒起，见 GuardSession）
+            // guest（QEMU 里的真 ART）：壳 jar 由 ART 直接吃，ARM native 就地执行，
+            // 既不需要 Guard 解密通道，也不需要 dex2jar 产物（2026-09-25 P3 实测 336ms 出 homeContent）。
+            if (Art.onArt()) {
+                String jar = firstDexJar(rawJar, shellJar, realJar, jars);
+                if (jar == null) throw new IllegalStateException("ART guest 只能装载 dex 型 jar（纯 class 的 java 源请留在宿主 JVM）: site=" + site);
+                SPIDERS.put(site, Art.loadSpider(site, jar, className, ext));
+                System.err.println("[srv] ART 已装载: " + site + " ← " + jar);
+                return "loaded";
+            }
+
+            // Guard QEMU 通道（2026-09-25 定案）：解密/签名/计算/proxyInvoke 一律由 Guard VM 里的
+            // ftyguard so（ARM）执行 —— 运行时已经没有 unidbg 这条备选路径，端口没下来就是没就绪。
             if (guardPort > 0) QemuGuardChannel.setPort(guardPort);
 
-            // 壳框架模式：shellJar/rawJar/realJar 由宿主下发（Guard 源）——壳实例跑在独立 loader，
-            // DexNative 解密优先走 QEMU 通道（guardPort>0 时），unidbg 会话懒加载兜底
+            // 壳框架模式：shellJar/rawJar/realJar 由宿主下发（Guard 源）——壳实例跑在独立 loader
             if (shellJar != null && !shellJar.isEmpty()) {
-                if (rawJar != null && !rawJar.isEmpty()) {
-                    if (guardPort <= 0) GuardSession.ensureSession(new File(rawJar));
-                    // QEMU 优先时不预热，但路径要记下：VM 连不上时 requireSession 的懒建兜底才有得建
-                    else GuardSession.noteJar(new File(rawJar));
-                }
+                if (rawJar != null && !rawJar.isEmpty() && guardPort <= 0)
+                    throw new IllegalStateException("Guard 源需要 QEMU guest 执行 ARM native，但宿主没下发 guardPort"
+                            + "（Guard VM 未就绪）");
                 if (realJar != null && !realJar.isEmpty()) {
                     ClassLoader realLoader = GuardSession.setRealLoader(realJar, null);
                     // ⚠ realLoader 的 InitOrigin/Init 也要注入：真实类的解密器（merge.Ku.N）调
@@ -476,8 +553,13 @@ public class Server {
                 case "homeContent" -> result = cls.getMethod("homeContent", boolean.class)
                         .invoke(instance, args != null && args.length() > 0 && args.optBoolean(0));
                 case "homeVideoContent" -> result = cls.getMethod("homeVideoContent").invoke(instance);
-                case "categoryContent" -> result = cls.getMethod("categoryContent", String.class, String.class, boolean.class, HashMap.class)
-                        .invoke(instance, args.optString(0), args.optString(1), false, new HashMap<String, String>());
+                case "categoryContent" -> {
+                    // 宿主发 [tid, pg, {筛选键→值}]：extend 非空即 filter=true（TVBox
+                    // GridFilterDialog 同一判定）。以前这里硬编码 false+空表，筛选器在桌面端整条空转。
+                    HashMap<String, String> ext = extend(args);
+                    result = cls.getMethod("categoryContent", String.class, String.class, boolean.class, HashMap.class)
+                            .invoke(instance, args.optString(0), args.optString(1), !ext.isEmpty(), ext);
+                }
                 case "detailContent" -> {
                     List<String> ids = new ArrayList<>();
                     ids.add(args.optString(0));
@@ -500,6 +582,11 @@ public class Server {
                 // jar 里由 action 建出的原生对话框/扫码（Pan.showInputQRCode）永远到不了 UI 层。
                 case "action" -> result = cls.getMethod("action", String.class)
                         .invoke(instance, args.optString(0));
+                // spider 型直播源（TVBox ApiConfig 把非本机 api 包成 proxy?do=live&type=txt&ext=<b64>
+                // → 宿主解出真实地址后交给 liveContent，回 TXT/M3U 频道表）。
+                // 缺这条时桌面端整类直播源只能报「爬虫类型不支持 liveContent」。
+                case "liveContent" -> result = cls.getMethod("liveContent", String.class)
+                        .invoke(instance, args.optString(0));
                 default -> throw new IllegalArgumentException("unknown method: " + method);
             }
             var out = result == null ? "{}" : result.toString();
@@ -509,6 +596,15 @@ public class Server {
             }
             return out;
         }
+    }
+
+    /** categoryContent 的第 3 参：宿主发的 <c>{筛选键: 值}</c> 对象 → 爬虫要的 HashMap。缺省给空表。 */
+    private static HashMap<String, String> extend(org.json.JSONArray args) {
+        HashMap<String, String> m = new HashMap<>();
+        org.json.JSONObject o = args.optJSONObject(2);
+        if (o == null) return m;
+        for (String k : o.keySet()) m.put(k, o.optString(k));
+        return m;
     }
 
     /**
@@ -539,9 +635,50 @@ public class Server {
             param.put(k, query.optString(k));
         }
 
+        // 四步分派与宿主 JRE 时代的 proxy op 完全同源（抽成 proxyDispatch 两边共用）：
+        // guest 里以前只接了第 ④ 步，于是网盘的 do=config/input/quark 全部 502
+        // （2026-09-26 实测：只有 do=ck 有货）—— 那三步才是 Pan/Cloud_ 家族真正答题的地方。
+        Object[] rs = proxyDispatch(instance, param);
+        if (rs == null) throw new IllegalStateException("proxy 无人应答 do=" + param.get("do"));
+
+            int status = rs.length > 0 && rs[0] instanceof Number n ? n.intValue() : 200;
+            String mime = rs.length > 1 && rs[1] != null ? rs[1].toString() : "application/octet-stream";
+            long written = 0;
+            if (rs.length > 2 && rs[2] instanceof java.io.InputStream in) {
+                java.io.File f = new java.io.File(outPath);
+                java.io.File parent = f.getParentFile();
+                if (parent != null && !parent.exists()) parent.mkdirs();
+                try (java.io.FileOutputStream fout = new java.io.FileOutputStream(f)) {
+                    byte[] buf = new byte[64 * 1024];
+                    int n;
+                    while ((n = in.read(buf)) > 0) {
+                        fout.write(buf, 0, n);
+                        written += n;
+                    }
+                } finally {
+                    try { in.close(); } catch (Exception ignored) { }
+                }
+            }
+            var dt = System.currentTimeMillis() - t0;
+            System.err.println("[srv] " + site + ".proxy do=" + param.getOrDefault("do", "?")
+                    + " → " + status + " " + mime + " " + written + "B，耗时 " + dt + "ms");
+            return status + "|" + mime + "|" + written;
+    }
+
+    /**
+     * proxy 的四步分派（TVBox {@code ApiConfig.proxyLocal} + {@code JarLoader.invokeProxy} 合体语义）：
+     * ① 爬虫实例的 {@code proxy(Map)}；② {@code Cloud_<do>.proxy(Map)}（夸父/优汐/嘟嘟/阿狸）；
+     * ③ {@code proxyInput()}（Pan 家族的 Cookie 粘贴页）；④ jar 内静态 {@code Proxy.proxy(Map)}（荐片 do=ck 握手）。
+     * <p>宿主 JRE 的 proxy op 与 ART guest 里的 /proxy 服务（{@code bridge.Art.serveOne}）共用它 ——
+     * 少一步就有半类网盘交互哑掉。</p>
+     */
+    static Object[] proxyDispatch(Object instance, HashMap<String, String> param) throws Exception {
         // ① 实例方法：沿类层次找 proxy(Map)（爬虫可能覆写成 HashMap 形参，不能硬套 Map.class）。
         //    基类桩的 proxy 默认转 proxyLocal → null；爬虫没覆写时 rs 为 null，走 ②。
-        Object[] rs = invokeProxyMethod(instance, param);
+        // 壳类（BaseSpiderGuard 家族）把真爬虫藏在字段里：不先掏出来，① 与 ③ 永远找不到
+        // —— 宿主 JRE 时代 SPIDERS 里存的是解壳后的真类，ART 里存的是壳，两边形状不一样。
+        Object target = guardTarget(instance);
+        Object[] rs = invokeProxyMethod(target, param);
 
         // ② Guard 系网盘源平台分发：do=<平台> → Cloud_<平台>.proxy(Map)——
         //    夸父(夸克)/优汐(UC)/嘟嘟(百度)/阿狸(阿里) 的登录页/扫码/启停/推送
@@ -569,58 +706,65 @@ public class Server {
         // ③ Guard 系网盘源变体（Pan 家族）：无参静态 proxyInput()，返回契约与 proxy(Map) 相同
         if (rs == null) {
             try {
-                java.lang.reflect.Method m = instance.getClass().getMethod("proxyInput");
+                java.lang.reflect.Method m = target.getClass().getMethod("proxyInput");
                 Object r = m.invoke(null);
                 if (r instanceof Object[] arr) rs = arr;
             } catch (NoSuchMethodException ignored) {
             } catch (Throwable t) {
                 Throwable root = t;
                 while (root.getCause() != null) root = root.getCause();
-                System.err.println("[srv] " + instance.getClass().getSimpleName()
+                System.err.println("[srv] " + target.getClass().getSimpleName()
                         + ".proxyInput 异常: " + root.getClass().getSimpleName() + ": " + root.getMessage());
             }
         }
 
-        // ③ 静态回退：jar 内 com.github.catvod.spider.Proxy.proxy(Map)（TVBox JarLoader.invokeProxy
-        //    语义；荐片 do=ck 握手由它处理）
-        if (rs == null) {
+        // ④ 壳自带的静态 Proxy.proxy(Map)（真机 JarLoader.invokeProxy 语义；荐片 do=ck 握手归它）
+        if (rs == null) rs = jarProxy(instance, param);
+        return rs;
+    }
+
+    /** 给 guest 内的 /proxy 服务取已装载的爬虫实例（站点键 → 实例）。 */
+    static Object spiderOf(String site) { return SPIDERS.get(site); }
+
+    /**
+     * jar 内 {@code com.github.catvod.spider.Proxy.proxy(Map)}：类不存在或返回不是 Object[] 时回 null，
+     * 让调用方继续往下找（与 {@link #proxyDispatch} 的"没人应答就下一步"一致）。
+     */
+    static Object[] jarProxy(Object instance, java.util.Map<String, String> param) {
+        try {
             ClassLoader loader = instance.getClass().getClassLoader();
-            try {
-                Class<?> clz = loader.loadClass("com.github.catvod.spider.Proxy");
-                java.lang.reflect.Method m = clz.getMethod("proxy", java.util.Map.class);
-                Object r = m.invoke(null, param);
-                if (!(r instanceof Object[] arr)) {
-                    throw new IllegalStateException("Proxy.proxy() 返回 "
-                            + (r == null ? "null" : r.getClass().getName()));
-                }
-                rs = arr;
-            } catch (ClassNotFoundException e) {
-                throw new IllegalStateException("该 jar 未提供 com.github.catvod.spider.Proxy");
+            Class<?> clz = loader.loadClass("com.github.catvod.spider.Proxy");
+            java.lang.reflect.Method m = clz.getMethod("proxy", java.util.Map.class);
+            return m.invoke(null, param) instanceof Object[] arr ? arr : null;
+        } catch (ClassNotFoundException e) {
+            return null;
+        } catch (Throwable t) {
+            Throwable root = t;
+            while (root.getCause() != null) root = root.getCause();
+            System.err.println("[srv] 静态 Proxy.proxy 异常: " + root.getClass().getSimpleName()
+                    + ": " + root.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 壳 → 真爬虫：{@code BaseSpiderGuard} 的实现对象在它自己的 crawler 字段里（{@code Init.getSpider(name)}
+     * 造出来的），实例方法 {@code proxy(Map)} 与静态 {@code proxyInput()} 都长在那一层上。
+     * 找不到内层就原样返回（普通 jar 的爬虫本来就是真身）。
+     */
+    static Object guardTarget(Object wrapper) {
+        for (Class<?> c = wrapper.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+            for (java.lang.reflect.Field f : c.getDeclaredFields()) {
+                if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
+                if (!f.getType().getName().startsWith("com.github.catvod")) continue;
+                try {
+                    f.setAccessible(true);
+                    Object v = f.get(wrapper);
+                    if (v != null && v != wrapper) return v;
+                } catch (Throwable ignored) { }
             }
         }
-
-            int status = rs.length > 0 && rs[0] instanceof Number n ? n.intValue() : 200;
-            String mime = rs.length > 1 && rs[1] != null ? rs[1].toString() : "application/octet-stream";
-            long written = 0;
-            if (rs.length > 2 && rs[2] instanceof java.io.InputStream in) {
-                java.io.File f = new java.io.File(outPath);
-                java.io.File parent = f.getParentFile();
-                if (parent != null && !parent.exists()) parent.mkdirs();
-                try (java.io.FileOutputStream fout = new java.io.FileOutputStream(f)) {
-                    byte[] buf = new byte[64 * 1024];
-                    int n;
-                    while ((n = in.read(buf)) > 0) {
-                        fout.write(buf, 0, n);
-                        written += n;
-                    }
-                } finally {
-                    try { in.close(); } catch (Exception ignored) { }
-                }
-            }
-            var dt = System.currentTimeMillis() - t0;
-            System.err.println("[srv] " + site + ".proxy do=" + param.getOrDefault("do", "?")
-                    + " → " + status + " " + mime + " " + written + "B，耗时 " + dt + "ms");
-            return status + "|" + mime + "|" + written;
+        return wrapper;
     }
 
     /** 沿类层次找名为 proxy、单 Map 形参的方法并调用；返回 Object[] 或 null（未覆写/返回空/异常）。 */

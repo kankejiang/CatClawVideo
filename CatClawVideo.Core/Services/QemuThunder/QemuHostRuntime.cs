@@ -96,6 +96,21 @@ public sealed class QemuHostRuntime : IDisposable
     /// <summary>无 swap 时的 guest RAM（MB）—— 必须容得下 <see cref="DataDirMb"/> 的内存盘。</summary>
     public int GuestMemoryMb { get; set; } = 5120;
 
+    /// <summary>
+    /// 网卡设备形态。默认 PCI 版（Thunder initrd 自带 virtio_pci）；ART 那套 initrd 只
+    /// <c>insmod virtio_mmio + virtio_net</c>，必须换成 <c>virtio-net-device</c> ——
+    /// 否则 guest 里压根没有 eth0，hostfwd 永远连不上（2026-09-25 实测）。
+    /// </summary>
+    public string NetDevice { get; set; } = "virtio-net-pci,netdev=n0";
+
+    /// <summary>
+    /// 额外一条 hostfwd（宿主端口 → guest 端口）。ART guest 用它把 guest 里爬虫自带的
+    /// <c>/proxy</c> 服务透到宿主回环：爬虫回的播放地址写死 guest 的 9978，
+    /// 宿主播放器只有经这条隧道才够得着（2026-09-26 实测：guest 侧只绑 127.0.0.1 时
+    /// slirp 拨的是 guest eth0 地址，连接被直接 RST = WinError 10054）。
+    /// </summary>
+    public (int Host, int Guest)? ProxyTunnel { get; set; }
+
     /// <summary>启用 swap 时的 guest RAM（MB）—— 冷页能换出，取值可小得多。</summary>
     public int GuestMemoryMbWithSwap { get; set; } = 2560;
 
@@ -230,6 +245,8 @@ public sealed class QemuHostRuntime : IDisposable
             var netdev = $"user,id=n0,hostfwd=tcp:127.0.0.1:{MediaPort}-:20080";
             // Guard 解密服务：第二条 hostfwd（宿主与 guest 同号直连，桥进程经 127.0.0.1 调用）
             if (GuardPort > 0) netdev += $",hostfwd=tcp:127.0.0.1:{GuardPort}-:{GuardPort}";
+            // 爬虫自带 /proxy 服务的隧道（ART guest）
+            if (ProxyTunnel is { } pt) netdev += $",hostfwd=tcp:127.0.0.1:{pt.Host}-:{pt.Guest}";
             var args = new List<string>
             {
                 // -m 5120：guest RAM 需容得下 /thunder-data 的 tmpfs（3500m，见 initrd 的 /init）+ 引擎开销；
@@ -253,7 +270,7 @@ public sealed class QemuHostRuntime : IDisposable
                 "-kernel", "pkg_kernel",
                 "-initrd", InitrdName,
                 "-netdev", netdev,
-                "-device", "virtio-net-pci,netdev=n0",
+                "-device", NetDevice,
             };
 
             // ── 数据面块设备（可选）──

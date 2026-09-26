@@ -1,6 +1,7 @@
 package android.content.pm;
 public class ApplicationInfo {
     public String sourceDir = ".";
+    public String nativeLibraryDir = ".";
     public String dataDir = System.getProperty("user.dir") + "/data";
     public String processName = "com.catclaw.video";
     public int flags = 0;

@@ -31,11 +31,109 @@ using System.Text.Json.Nodes;
 using CatClawVideo.Core.Services.QemuThunder;
 
 var argList = args.ToList();
-var mode = argList.Count > 0 && (argList[0] == "bench" || argList[0] == "proxy-bench" || argList[0] == "download" || argList[0] == "seektest" || argList[0] == "rangetest" || argList[0] == "playtest" || argList[0] == "xfer" || argList[0] == "xfer-e2e" || argList[0] == "guard") ? argList[0] : "";
+var mode = argList.Count > 0 && (argList[0] == "bench" || argList[0] == "proxy-bench" || argList[0] == "download" || argList[0] == "seektest" || argList[0] == "rangetest" || argList[0] == "playtest" || argList[0] == "xfer" || argList[0] == "xfer-e2e" || argList[0] == "guard" || argList[0] == "art") ? argList[0] : "";
 if (mode.Length > 0) argList.RemoveAt(0);
 
 var sw = Stopwatch.StartNew();
 void Log(string m) => Console.WriteLine($"[{sw.Elapsed.TotalSeconds,7:F1}s] {m}");
+
+// ═══ art 模式：ART guest（QEMU 里真 Android ART 跑桥）的宿主侧台架 ═══
+// 用法: dotnet run --project hosttest -- art <runtimeDir> <bridgeDir> <jarUrl> [api=csp_MyDriveGuard]
+//   走**生产代码**（JavaSpiderRuntime.HomeContentAsync/SearchContentAsync），不复制协议逻辑：
+//   QemuArtGuest 起 VM → ArtJarServer 供 jar → 桥在 guest 里由真 ART 吃壳 jar、
+//   壳自己 System.load() arm64 ftyguard so 解出真 dex。逐段打延迟，用于 V3 取舍判据。
+if (mode == "art") return await ArtBenchAsync(argList);
+
+async Task<int> ArtBenchAsync(List<string> a)
+{
+    if (a.Count < 3) { Console.WriteLine("参数不足：<runtimeDir> <bridgeDir> <jarUrl> [api]"); return 2; }
+    var rtDir = a[0];
+    var bDir = a[1];
+    var jar = a[2];
+    var apiName = a.Count > 3 ? a[3] : "csp_MyDriveGuard";
+    var cls = apiName.StartsWith("csp_") ? apiName[4..] : apiName;
+
+    var rt = new CatClawVideo.Core.Providers.JavaSpiderRuntime(bDir, javaExe: "java", log: Log,
+        workDir: Path.Combine(Path.GetTempPath(), "catclaw-artbench"));
+    rt.ArtRuntimeDir = rtDir;
+    rt.ArtGuestMode = true;
+    // 构造期那行「桥链路」是按 AppContext.BaseDirectory 判的，台架是覆盖属性后才生效的，
+    // 所以这里补一行真实链路，否则日志会把人往「宿主 JRE」的方向带（2026-09-26 踩过）。
+    Log("实际桥链路：ART guest（台架覆盖 ArtRuntimeDir）");
+    var site = new CatClawVideo.Core.Models.VodSiteInfo
+    {
+        Key = "artbench", Name = "ART 台架", Api = apiName, Jar = jar, Ext = "", Type = 1,
+    };
+    Log($"ART guest 台架：runtime={rtDir} 桥目录={bDir} jar={jar} 类={cls}");
+
+    var t1 = Stopwatch.StartNew();
+    var home = await rt.HomeContentAsync(site);
+    Log($"homeContent（含起 VM + 装载）{t1.ElapsedMilliseconds}ms → {home.Length}B: {home[..Math.Min(200, home.Length)]}");
+
+    var t2 = Stopwatch.StartNew();
+    var search = await rt.SearchContentAsync(site, "庆余年", "1");
+    Log($"searchContent {t2.ElapsedMilliseconds}ms → {search[..Math.Min(200, search.Length)]}");
+
+    // jar 的原生对话框能不能上行：网盘系（登入自己网盘/排序/推送Cookie）全靠这条。
+    // guest 里 android.app.AlertDialog 是框架真类，桥的捕获层要靠 boot classpath 前置才抢得回来，
+    // 这条探针就是量它有没有生效（2026-09-26 应用内实测：action 到了桥，ui-dialog 上行 0 次）。
+    rt.UiEvent = ev =>
+    {
+        var name = ev["ev"]?.GetValue<string>() ?? "?";
+        var items = (ev["items"] as JsonArray)?.Count ?? 0;
+        Log($"★ 上行 UI 事件 {name} seq={ev["seq"]?.ToJsonString()} 标题={ev["title"]?.GetValue<string>() ?? ""} " +
+            $"条目={items} 二维码={(ev["qr"] is not null ? "有" : "无")}");
+    };
+    var t8 = Stopwatch.StartNew();
+    try
+    {
+        var act = await rt.ActionAsync(site, "loginShow");
+        Log($"action(loginShow) {t8.ElapsedMilliseconds}ms → {act[..Math.Min(120, act.Length)]}");
+    }
+    catch (Exception ex)
+    {
+        var m = ex.Message.Length > 90 ? ex.Message[..90] : ex.Message;
+        Log($"action(loginShow) {t8.ElapsedMilliseconds}ms → {ex.GetType().Name}: {m}");
+    }
+
+    // 全链路才算 P4 验收：home 只证明壳能解密，分类/详情/播放才证明 jar 的 proxy 自回调
+    // 与解析链在 guest 里真的跑起来了（2026-09-26：detail 空列表曾坑在 rig 传参口径上）。
+    string Grab(string re, string src) => System.Text.RegularExpressions.Regex.Match(src, re).Groups[1].Value;
+    var tid = Grab("\"type_id\"\\s*:\\s*\"([^\"]+)\"", home);
+    if (tid.Length == 0) tid = "1";
+    var t4 = Stopwatch.StartNew();
+    var cat = await rt.CategoryContentAsync(site, tid, "1");
+    var vid = Grab("\"vod_id\"\\s*:\\s*\"([^\"]+)\"", cat);
+    Log($"categoryContent {t4.ElapsedMilliseconds}ms → {cat.Length}B tid={tid} vid={vid}");
+    if (vid.Length == 0) { rt.Shutdown(); return 1; }
+    var t5 = Stopwatch.StartNew();
+    var det = await rt.DetailContentAsync(site, vid);
+    var from = Grab("\"vod_play_from\"\\s*:\\s*\"([^\"]+)\"", det).Split("$$$")[0];
+    var eps = Grab("\"vod_play_url\"\\s*:\\s*\"([^\"]+)\"", det).Split("$$$")[0].Split('#');
+    // 第二参是剧集串（vod_play_url 里 $ 后那段），与 SpiderVodProvider:211 的 episode.Url 同口径；
+    // 传 vod_id 时 jar 认不出地址、直接把入参回显成 url。
+    var play = eps.Length > 0 ? eps[0].Split('$').Last() : vid;
+    Log($"detailContent {t5.ElapsedMilliseconds}ms → {det.Length}B 线路={from} 集={play[..Math.Min(80, play.Length)]}");
+    var t6 = Stopwatch.StartNew();
+    var got = await rt.PlayerContentAsync(site, from, play);
+    Log($"playerContent {t6.ElapsedMilliseconds}ms → {got[..Math.Min(300, got.Length)]}");
+
+    // 爬虫自有的 do（danmu/ck/config…）必须由 guest 里的壳自己应答：宿主经 slirp 隧道取字节。
+    var t7 = Stopwatch.StartNew();
+    var via = await rt.ProxyAsync(new Dictionary<string, string> { ["do"] = "ck", ["siteKey"] = site.Key }, ct: default);
+    Log($"proxy 隧道 do=ck {t7.ElapsedMilliseconds}ms → " +
+        (via is null ? "null（没人接）" : $"{via.Value.Status} {via.Value.Mime} {via.Value.Body?.Length ?? 0}B " +
+        $"{System.Text.Encoding.UTF8.GetString(via.Value.Body ?? Array.Empty<byte>())[..Math.Min(120, via.Value.Body?.Length ?? 0)]}"));
+
+    var t3 = Stopwatch.StartNew();
+    var prefs = await rt.GetPrefsAsync();
+    Log($"getPrefs {t3.ElapsedMilliseconds}ms → {prefs?.ToJsonString() ?? "null"}");
+
+    rt.Shutdown();
+    Log("已收尾（VM 应随 Stop 退出）");
+    return 0;
+}
+
 
 // ═══ xfer 模式：数据面基准（宿主侧文件通道，不需要 QEMU）═══
 // 量化「guest 写入 → 宿主直读」稀疏块设备通道的速度 / 延迟 / 并发扩展。

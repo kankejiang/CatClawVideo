@@ -106,6 +106,10 @@
 		<PackageReference Include="Xamarin.AndroidX.Media3.ExoPlayer.Hls" Version="1.10.1.1" />
 		<PackageReference Include="Xamarin.AndroidX.Media3.Datasource" Version="1.10.1.1" />
 		<PackageReference Include="Xamarin.AndroidX.Media3.UI" Version="1.10.1.1" />
+		<PackageReference Include="Xamarin.AndroidX.Media3.Session" Version="1.10.1.1" />
+		<!-- Media3.Session 1.10.1.1 只把 Lifecycle.Service 锁到 2.10.0.2，而 MAUI 11 预览版解析到的
+		     Lifecycle.Runtime 已经是 2.11.0.1 → NU1608。这里显式抬到同一版，图才自洽。 -->
+		<PackageReference Include="Xamarin.AndroidX.Lifecycle.Service" Version="2.11.0.1" />
 	</ItemGroup>
 
 	<!-- Windows-specific: FFmpegInteropX（FFmpeg 解码注入 WinUI MediaPlayer）。
@@ -256,15 +260,13 @@
 	<!-- JavaBridge（jar 爬虫桥）：随应用分发到 JavaBridge/，让**安装版**也能找到桥
 	     （JavaSpiderRuntime.FindBridgeDir 从 AppContext.BaseDirectory 逐级向上找 JavaBridge/bridge.jar）。
 
-	     三块内容缺一不可：
-	       · bridge.jar + vendor/deps —— 跑普通 jar 爬虫；
-	       · vendor/dex2jar          —— 把 dex 转成 JVM 能加载的 jar（所有 csp_* 站点都要）；
-	       · vendor/unidbg           —— Guard 加固包的解壳器（模拟 ARM64 跑原生解密 .so），
-	                                    外加 unpacker.jar。缺它时 Guard 站点只能退回非 Guard 同族 jar，
-	                                    而「荐片|多线」这类没有替代品的站点会直接不可用
-	                                    （2026-09-19 用户实测安装版报「不可用 · unidbg 解壳失败且未找到
-	                                     替代的非 Guard 同族 jar」）。
-	     ⚠ 后两块共约 52MB（jar 已压缩，安装包难以再压），这是为「安装版片源与开发版一致」付的代价。 -->
+	     两块内容缺一不可：
+	       · bridge.jar + vendor/deps —— 跑普通 jar 爬虫与桥自身；
+	       · vendor/dex2jar          —— 把 dex 转成 JVM 能加载的 jar（宿主 JRE 那条路要它；
+	                                    ART guest 直接吃 dex，用不上）。
+	     2026-09-26 退役了第三块 vendor/unidbg（Guard 离线解壳器，33MB）：ARM 原生码一律在
+	     ART guest 里执行，见 ThunderRuntime\art_initrd.gz 与 JavaSpiderRuntime 的类注释。
+	     ⚠ 剩下的 dex2jar 约 19MB，是为「安装版片源与开发版一致」付的代价。 -->
 	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">
 		<Content Include="..\JavaBridge\bridge.jar">
 			<Link>JavaBridge\bridge.jar</Link>
@@ -278,10 +280,9 @@
 			<Link>JavaBridge\vendor\dex2jar\%(Filename)%(Extension)</Link>
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</Content>
-		<Content Include="..\JavaBridge\vendor\unidbg\*.jar">
-			<Link>JavaBridge\vendor\unidbg\%(Filename)%(Extension)</Link>
-			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-		</Content>
+		<!-- 2026-09-26 退役 vendor/unidbg：ARM 原生码一律在 ART guest 里执行，
+		     离线解壳器（模拟 ARM64 的 unidbg + unpacker.jar，33MB）不再随包。
+		     缺 art_initrd.gz 的机器上 Guard 源会明确报"解壳只能在 ART guest 里做"。 -->
 
 		<!-- ★ 第四块：**随包的精简 Java 运行时**（jlink 自 Microsoft OpenJDK 21，MIT 许可可再分发）。
 		     此前 jar 类爬虫源要求用户自备 JDK 21——社区反馈里最常见的「显示需要 spider 运行」
