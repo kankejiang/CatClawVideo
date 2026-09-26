@@ -394,6 +394,9 @@ public partial class HomeViewModel : ObservableObject
         LoadMoreCommand.NotifyCanExecuteChanged();
         try
         {
+            // 翻页去重索引：正常源页间无重叠；爬虫不守约定（每页返回同样内容，如网盘源的
+            // 「配置」类目固定 8 张卡）时靠它判停——此前 8 张卡拉到 40 部还在涨（2026-09-26 实测）
+            var seen = new HashSet<string>(Items.Select(i => i.Id));
             while (true)
             {
                 var next = _currentPage + 1;
@@ -408,9 +411,22 @@ public partial class HomeViewModel : ObservableObject
                     return;
                 }
 
+                var fresh = new List<VodItem>(items.Count);
+                foreach (var it in items)
+                    if (seen.Add(it.Id)) fresh.Add(it);
+
+                // 整页全是已有条目 = 该源不支持翻页（固定卡类目/末页重发）→ 判定加载完，不追加
+                if (fresh.Count == 0)
+                {
+                    HasMoreItems = false;
+                    HomeStatus = $"{CurrentSite.Name} · {_currentCategory.Name} · 已全部加载（{Items.Count} 部）";
+                    DiagLog.Write($"[loadmore] 第 {next} 页与已有条目完全重复 → 判定无更多");
+                    return;
+                }
+
                 _currentPage = next;
-                foreach (var it in items) Items.Add(it);
-                CoverResolver.Attach(_covers, items);   // 追加页同样补封面
+                foreach (var it in fresh) Items.Add(it);
+                CoverResolver.Attach(_covers, fresh);   // 追加页同样补封面
                 HomeStatus = $"{CurrentSite.Name} · {_currentCategory.Name} · 已加载 {Items.Count} 部";
 
                 // 条目够滚动（≥ MinFill）或本就是滚动触发的单页请求 → 停，交还滚动接管
