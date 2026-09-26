@@ -138,6 +138,15 @@ public final class PrefsStore {
                         have.append(e.getKey()).append('=').append(((String) e.getValue()).length()).append(' ');
             }
             System.err.println("[prefs] 落盘 " + n + " " + m.size() + " 键 非空: " + (have.length() == 0 ? "(无)" : have.toString().trim()));
+            // guest（真 ART）的 /data 是 tmpfs，VM 冷启即清：把落盘内容上行宿主持久化，
+            // 下次 guest 起来由宿主经 op=prefsput 回灌（JRE 桥 data.dir 本就在宿主盘，无需同步）
+            if ("Dalvik".equals(System.getProperty("java.vm.name"))) {
+                try {
+                    System.out.println(new org.json.JSONObject()
+                            .put("ev", "prefs-sync").put("name", n).put("xml", sb.toString()));
+                    System.out.flush();
+                } catch (Throwable ignored) { }
+            }
             return true;
         } catch (Throwable t) {
             System.err.println("[prefs] 写入失败 " + name + ": " + t);

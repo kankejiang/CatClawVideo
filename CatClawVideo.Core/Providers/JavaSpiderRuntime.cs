@@ -350,6 +350,39 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
 
         if (!ArtGuestMode) await StartJvmBridgeAsync(ct).ConfigureAwait(false);
         await HandshakeAsync(ct).ConfigureAwait(false);
+        // guest 的 /data 是 tmpfs（VM 冷启即清）：把上次会话持久化的偏好（网盘 Cookie 等）
+        // 回灌进 guest，必须发生在任何 spider 代码运行之前（PrefsStore 按名惰性读盘）
+        if (ArtGuestMode) await RestoreGuestPrefsAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 把上次会话持久化的 guest 偏好（<c>guest-prefs/*.xml</c>，由 <c>prefs-sync</c> 事件写来）
+    /// 回灌进 guest —— 走 <c>prefsput</c> op 写 guest 的 shared_prefs，网盘 Cookie 等
+    /// 因此能在 VM 冷启后存活。
+    /// </summary>
+    private async Task RestoreGuestPrefsAsync(CancellationToken ct)
+    {
+        try
+        {
+            var dir = Path.Combine(_workDir, "guest-prefs");
+            if (!Directory.Exists(dir)) return;
+            foreach (var f in Directory.GetFiles(dir, "*.xml"))
+            {
+                var xml = await File.ReadAllTextAsync(f, ct);
+                var req = new JsonObject
+                {
+                    ["id"] = Interlocked.Increment(ref _id),
+                    ["op"] = "prefsput",
+                    ["name"] = Path.GetFileNameWithoutExtension(f),
+                    ["xml"] = xml,
+                };
+                var resp = await RoundTripAsync(req, TimeSpan.FromSeconds(10), ct);
+                Log(resp["ok"]?.GetValue<bool>() == true
+                    ? $"guest 偏好回灌：{Path.GetFileName(f)}（{xml.Length}B）"
+                    : $"guest 偏好回灌失败 {Path.GetFileName(f)}: {resp["error"]}");
+            }
+        }
+        catch (Exception ex) { Log($"guest 偏好回灌异常: {ex.Message}"); }
     }
 
     /// <summary>宿主 JRE 那条路：起 java.exe 跑 bridge.Server，标准流当协议通道。</summary>
@@ -500,6 +533,20 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
                 // 桥主动上行的 UI 事件（ui-dialog / ui-dismiss / ui-toast）
                 if (obj.ContainsKey("ev"))
                 {
+                    // prefs-sync：guest（tmpfs）的偏好落盘上行 —— 存宿主盘，下次 VM 冷启回灌
+                    if (obj["ev"]?.GetValue<string>() == "prefs-sync")
+                    {
+                        try
+                        {
+                            var pname = obj["name"]?.GetValue<string>() ?? "default";
+                            var xml = obj["xml"]?.GetValue<string>() ?? "";
+                            var dir = Path.Combine(_workDir, "guest-prefs");
+                            Directory.CreateDirectory(dir);
+                            File.WriteAllText(Path.Combine(dir, pname + ".xml"), xml);
+                            Log($"guest 偏好同步落盘：{pname}（{xml.Length}B）");
+                        }
+                        catch { }
+                    }
                     try { UiEvent?.Invoke(obj); } catch { }
                     continue;
                 }

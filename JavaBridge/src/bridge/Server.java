@@ -203,6 +203,23 @@ public class Server {
                         }
                         yield arr.toString();
                     }
+                    case "prefsput" -> {
+                        // 宿主回灌 guest 偏好（guest 的 /data 是 tmpfs，VM 冷启即清，见 PrefsStore.flush
+                        // 的 prefs-sync 上行）：写回 shared_prefs/<name>.xml。PrefsStore 按名惰性读盘，
+                        // jar 首次访问该 name 时自然载入 —— 回灌必须发生在任何 spider 代码运行之前。
+                        String pn = req.optString("name", "default");
+                        String xml = req.optString("xml", "");
+                        if (pn.endsWith(".xml")) pn = pn.substring(0, pn.length() - 4);
+                        int slash = pn.lastIndexOf('/');
+                        if (slash >= 0) pn = pn.substring(slash + 1);
+                        if (pn.isEmpty()) pn = "default";
+                        java.io.File dir = new java.io.File(System.getProperty("data.dir", "data"), "shared_prefs");
+                        if (!dir.isDirectory()) dir.mkdirs();
+                        java.nio.file.Files.write(new java.io.File(dir, pn + ".xml").toPath(),
+                                xml.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                        System.err.println("[prefs] 宿主回灌 " + pn + "（" + xml.length() + "B）");
+                        yield "ok";
+                    }
                     default -> {
                         // 端口下发：桥内无 JNI（Android 走 TvBoxCompatBridge.SetProxyPort），走协议直写静态字段
                         if ("setProxyPort".equals(fop)) {
