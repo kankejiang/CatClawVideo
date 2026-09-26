@@ -53,6 +53,193 @@ public final class Art {
     }
 
     /**
+     * ui_stub.dex 的「桩优先」加载器：dex 里的类（android/** 桩）自取，其余走 parent（boot）。
+     * <p>boot classpath 覆盖是已证死路（mk_art_initrd.py 顶部注释：前置 -Xbootclasspath 也
+     * 抢不回 android.app.Dialog 的解析），唯一可行点是在<b>jar 源自己的 loader 链</b>上换
+     * 命名空间 —— 爬虫代码的 android.* 解析到 JRE 同款桩，Dialog/Toast 的 UI 事件才能上行。
+     * DexFile.loadClass(name, this) 是 ART（Android 9）公开的按 dex 定义类原语。</p>
+     */
+    private static volatile ClassLoader sStubFirst;
+
+    static ClassLoader stubFirst() {
+        if (sStubFirst != null) return sStubFirst;
+        synchronized (Art.class) {
+            if (sStubFirst != null) return sStubFirst;
+            ClassLoader boot = Art.class.getClassLoader();
+            File f = new File("/ui_stub.dex");
+            if (!f.isFile()) {
+                System.err.println("[art] 无 /ui_stub.dex，jar 源走 boot 解析（无 UI 桩）");
+                return sStubFirst = boot;
+            }
+            try {
+                dalvik.system.DexFile dex = dalvik.system.DexFile.loadDex(
+                        f.getAbsolutePath(), new File(dir("opt"), "ui_stub.odex").getAbsolutePath(), 0);
+                sStubFirst = new StubFirstLoader(boot, dex);
+                System.err.println("[art] UI 桩优先链就绪（" + f.getAbsolutePath() + "）");
+                // 补同步：setProxyPort 可能在本方法之前就被调（宿主一连上桥就下发端口），
+                // 那时桩链还不存在、同步被跳过 —— 这里从 boot 副本补写一次
+                try {
+                    Object cur = boot.loadClass("com.github.catvod.crawler.SpiderApi")
+                            .getField("hostProxyPort").get(null);
+                    if (cur instanceof Integer) setStubHostProxyPort((Integer) cur);
+                } catch (Throwable ignored) { }
+            } catch (Throwable t) {
+                System.err.println("[art] ui_stub.dex 加载失败（回落 boot）: " + t);
+                sStubFirst = boot;
+            }
+            return sStubFirst;
+        }
+    }
+
+    /** dex 命中自取（含 boot 重复名 = 桩赢），其余 parent 优先。 */
+    static final class StubFirstLoader extends ClassLoader {
+        private final dalvik.system.DexFile dex;
+
+        StubFirstLoader(ClassLoader parent, dalvik.system.DexFile dex) {
+            super(parent);
+            this.dex = dex;
+        }
+
+        @Override protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+            Class<?> c = findLoadedClass(name);
+            if (c == null) {
+                try { c = dex.loadClass(name, this); } catch (Throwable ignored) { }
+            }
+            if (c == null) return super.loadClass(name, resolve);
+            if (resolve) resolveClass(c);
+            return c;
+        }
+    }
+
+    /**
+     * 爬虫侧 Context：桩链在 → stub 命名空间的 Application（与 jar 代码同命名空间，类型身份一致
+     * —— 真 App extends 真 Application，灌进按桩解析的 Context 字段会 ICCE）；否则真 App 桩。
+     */
+    static Object spiderCtx() {
+        ClassLoader sf = stubFirst();
+        if (sf != Art.class.getClassLoader()) {
+            try {
+                return sf.loadClass("android.app.Application").getMethod("getInstance").invoke(null);
+            } catch (Throwable t) {
+                System.err.println("[art] stub Application 创建失败，回落真 App: " + t);
+            }
+        }
+        return app();
+    }
+
+    /**
+     * 把宿主下发的 proxy 端口同步进桩命名空间的 SpiderApi 副本（ui_stub.dex 里还有一份 ——
+     * 爬虫经 initApi 拿到的是它，只设 boot 副本 getAddress() 就回空串，云盘配置 URL 拼不出来）。
+     */
+    public static void setStubHostProxyPort(int port) {
+        if (sStubFirst == null || sStubFirst == Art.class.getClassLoader()) return;
+        try {
+            Class<?> apiCls = sStubFirst.loadClass("com.github.catvod.crawler.SpiderApi");
+            Field f = apiCls.getField("hostProxyPort");
+            f.setInt(null, port);
+        } catch (Throwable t) {
+            System.err.println("[art] 桩 SpiderApi 端口同步失败: " + t);
+        }
+    }
+
+    /**
+     * 把壳的「Context 反射提供者」喂饱：TVBox 公共类 {@code InitOrigin} 用
+     * {@code ActivityThread.currentActivityThread()} / {@code mApplication} 系反射链拿 Context，
+     * guest 不是 zygote 起的，那条链在真 framework 里返回 null → 壳 fallback 出
+     * {@code mBase=null} 的 ContextWrapper → 弹 UI 第一步
+     * {@code getPackageManager()} 就 NPE（2026-09-26 栈：ContextWrapper:96 ← merge.cn.B）。
+     *
+     * <p>做法：真 ActivityThread 类**不能换**（boot classpath 覆盖是已证死路），
+     * 改用 {@code Unsafe.allocateInstance} 绕构造器造一个真类实例（零副作用），
+     * 反射填 {@code sCurrentActivityThread}（静态）/ {@code mApplication} /
+     * {@code mInitialApplication} = 桥的 App 桩，{@code mActivities} 给空 ArrayMap
+     * （壳遍历它取 Activity：拿 null → 走壳自己的无 Activity 降级路径，如 proxy/HTML 配置页，
+     * 不去碰真 AlertDialog —— guest 里没有 WMS，真 UI 链走不通）。
+     * 任一步失败只告警：行为与注入前一致（壳自己 NPE）。</p>
+     */
+    public static void injectActivityThread() {
+        try {
+            System.err.println("[art] inject#1 forName ActivityThread");
+            Class<?> at = Class.forName("android.app.ActivityThread");
+            Object thread;
+            try {
+                System.err.println("[art] inject#2 unsafe");
+                Class<?> unsafeCls = Class.forName("sun.misc.Unsafe");
+                java.lang.reflect.Field uf = unsafeCls.getDeclaredField("theUnsafe");
+                uf.setAccessible(true);
+                Object unsafe = uf.get(null);   // theUnsafe 是静态字段：get(null) 拿到 Unsafe 实例本身
+                java.lang.reflect.Method alloc = unsafeCls.getMethod("allocateInstance", Class.class);
+                System.err.println("[art] inject#3 allocateInstance");
+                thread = alloc.invoke(unsafe, (Object) at);
+                System.err.println("[art] inject#3 ok: " + thread.getClass().getName());
+            } catch (Throwable u) {
+                System.err.println("[art] inject#3 unsafe 失败: " + u + " / cause=" + rootOf(u).getMessage()
+                        + " —— 退回私有构造反射（会拉起 Binder native，guest 预期炸）");
+                java.lang.reflect.Constructor<?> c = at.getDeclaredConstructor();
+                c.setAccessible(true);
+                thread = c.newInstance();
+            }
+            System.err.println("[art] inject#4 sCurrentActivityThread");
+            setStatic(at, "sCurrentActivityThread", thread);
+            // 真 ActivityThread（Android 9）没有 mApplication 字段（JRE 桩才有）——逐个容错填，
+            // 一个缺失不 abort：mInitialApplication / mAllApplications 才是真类里的应用钩子
+            System.err.println("[art] inject#5 mApplication/mInitialApplication");
+            trySetInstance(at, thread, "mApplication", app());
+            trySetInstance(at, thread, "mInitialApplication", app());
+            System.err.println("[art] inject#6 mAllApplications");
+            try {
+                java.lang.reflect.Field all = at.getDeclaredField("mAllApplications");
+                all.setAccessible(true);
+                Object list = all.get(thread);
+                if (list instanceof java.util.List) {
+                    ((java.util.List<?>) list).clear();
+                    ((java.util.List<Object>) list).add(app());
+                }
+            } catch (Throwable ignored) { }
+            // mActivities：空 ArrayMap（真类型，new 得起），壳遍历得 null Activity → 走降级
+            System.err.println("[art] inject#7 mActivities");
+            try {
+                Object empty = Class.forName("android.util.ArrayMap").getDeclaredConstructor().newInstance();
+                setInstance(at, thread, "mActivities", empty);
+            } catch (Throwable ignored) { }
+            System.err.println("[art] ActivityThread 伪实例已注入（sCurrentActivityThread/mApplication/"
+                    + "mInitialApplication=App, mActivities=空）");
+        } catch (Throwable t) {
+            Throwable c = rootOf(t);
+            System.err.println("[art] ActivityThread 注入失败（壳的 Context 链将维持现状）: "
+                    + t.getClass().getName() + " / cause=" + c.getClass().getName() + ": " + c.getMessage());
+        }
+    }
+
+    private static Throwable rootOf(Throwable t) {
+        Throwable c = t;
+        while (c.getCause() != null && c.getCause() != c) c = c.getCause();
+        return c;
+    }
+
+    private static void setStatic(Class<?> clz, String name, Object value) throws Exception {
+        java.lang.reflect.Field f = clz.getDeclaredField(name);
+        f.setAccessible(true);
+        f.set(null, value);
+    }
+
+    private static void setInstance(Class<?> clz, Object target, String name, Object value) throws Exception {
+        java.lang.reflect.Field f = clz.getDeclaredField(name);
+        f.setAccessible(true);
+        f.set(target, value);
+    }
+
+    /** 字段缺失/类型不符只告警不抛（真 framework 类与桩的字段集不一致是常态）。 */
+    private static void trySetInstance(Class<?> clz, Object target, String name, Object value) {
+        try {
+            setInstance(clz, target, name, value);
+            System.err.println("[art]   " + name + " = " + (value == null ? "null" : value.getClass().getName()));
+        } catch (Throwable t) {
+            System.err.println("[art]   " + name + " 跳过: " + rootOf(t));
+        }
+    }
+
+    /**
      * 把宿主给的 jar 引子落成本地文件。宿主 JRE 那条路传的是本地路径，guest 里读不到宿主的盘 ——
      * 所以 ART 模式约定传 URL（走 slirp：guest 看宿主是 10.0.2.2），例如控制口
      * {@code http://10.0.2.2:18090/jar?h=<hash>}。<b>jar 不烧进 initrd</b>：订阅里的源是开放集合。
@@ -234,12 +421,16 @@ public final class Art {
         File f = new File(jarPath);
         f.setReadOnly();
         String cache = dir("opt").getAbsolutePath();
-        ClassLoader sys = Art.class.getClassLoader();
+        // jar 源的 loader 挂「桩优先」parent：爬虫代码的 android.* 解析到 ui_stub.dex 桩
+        // （≈ JRE 桥语义，Dialog/Toast 桩才能把 UI 事件发出来）；boot 覆盖是已证死路，只能换命名空间。
+        ClassLoader sys = stubFirst();
         dalvik.system.DexClassLoader loader =
                 new dalvik.system.DexClassLoader(jarPath, cache, dir("lib").getAbsolutePath(), sys);
-        System.err.println("[art] DexClassLoader " + f.getName() + " 就绪");
+        System.err.println("[art] DexClassLoader " + f.getName() + " 就绪"
+                + (sys != Art.class.getClassLoader() ? "（parent=桩优先链）" : ""));
         Class<?> cls = loader.loadClass("com.github.catvod.spider." + className);
-        bindInit(loader, app());
+        Object ctx = spiderCtx();
+        bindInit(loader, ctx);
         // 登记站点键：爬虫自建的回调 URL 里 site= 用的是它自己的类名，两个键都要能找回这个站点。
         // 应答本身走 Server.proxyDispatch（与宿主 JRE 的 proxy op 同源：实例 proxy → Cloud_<do>
         // → proxyInput → 静态 Proxy.proxy）。以前这里只登记第 ④ 步，网盘系 do=input/quark 全 502。
@@ -252,9 +443,20 @@ public final class Art {
         listenProxy(TVBOX_PORT);
         System.err.println("[art] " + site + "：proxy 自回调已就位");
         Object sp = cls.getDeclaredConstructor().newInstance();
+        // 与 TVBox JarLoader.getSpider 的调用序列一致：siteKey → initApi → init。
+        // initApi 的实例必须取自**桩命名空间**（stub Spider 的 initApi 参数是桩 SpiderApi，
+        // 灌 boot 副本会 ICCE），宿主经 setStubHostProxyPort 同步端口到该副本。
+        try { cls.getField("siteKey").set(sp, site); } catch (Throwable ignored) { }
+        try {
+            Class<?> apiCls = sys.loadClass("com.github.catvod.crawler.SpiderApi");
+            Method ia = findMethod(cls, "initApi", 1);
+            if (ia != null) ia.invoke(sp, apiCls.getDeclaredConstructor().newInstance());
+        } catch (NoSuchMethodException ignored) { }
         long t0 = System.currentTimeMillis();
         try {
-            cls.getMethod("init", Context.class, String.class).invoke(sp, app(), ext == null ? "" : ext);
+            // 参数类型可能解析到桩命名空间（Class 身份与 boot 不同），不能 getMethod(Context.class, ...)
+            Method m = findMethod(cls, "init", 2);
+            if (m != null) m.invoke(sp, ctx, ext == null ? "" : ext);
         } catch (NoSuchMethodException ignored) { }
         System.err.println("[art] spider " + className + " init 完成 ("
                 + (System.currentTimeMillis() - t0) + "ms)");
@@ -266,7 +468,16 @@ public final class Art {
      * 把 {@code DexNative.getLoader(app)} 返回的 DexClassLoader 灌进它的 DexClassLoader 字段。
      * 任一步不成 → 退回普通 {@code Init.init(Context)}。
      */
-    static void bindInit(ClassLoader loader, Context ctx) {
+    static void bindInit(ClassLoader loader, Object ctx) {
+        // InitOrigin 家族的静态 Context 一并注入（merge.Ku 等壳代码走 InitOrigin.context()，
+        // 不注入 NPE on getSharedPreferences）—— 与宿主 JRE 的 Server.injectStaticContext 同源。
+        // ⚠ 必须在「没有 Init 类就提前 return」之前：解密产物（merge.* 结构）只有 InitOrigin 没有 Init
+        for (String holder : new String[]{
+                "com.github.catvod.spider.InitOrigin",
+                "com.github.catvod.spider.Init",
+                "com.github.catvod.spider.merge.InitOrigin"}) {
+            Server.injectStaticContext(loader, holder, ctx);
+        }
         Class<?> clz;
         try {
             clz = loader.loadClass("com.github.catvod.spider.Init");
@@ -278,37 +489,58 @@ public final class Art {
             Method get = clz.getMethod("get");
             init = get.invoke(null);
         } catch (Throwable ignored) { }
-        if (init != null && setField(clz, init, ctx) && bindDexLoader(clz, init, loader, ctx)) {
+        if (init != null && setContextField(clz, init, ctx) && bindDexLoader(clz, init, loader, ctx)) {
             System.err.println("[art] Init 单例已按 protected jar 序列注入");
-            return;
-        }
-        try {
-            clz.getMethod("init", Context.class).invoke(null, ctx);
-            System.err.println("[art] Init.init(Context) 完成");
-        } catch (Throwable t) {
-            System.err.println("[art] Init.init(Context) 失败: " + t);
+        } else {
+            try {
+                Method m = findMethod(clz, "init", 1);
+                if (m != null) m.invoke(null, ctx);
+                System.err.println("[art] Init.init(Context) 完成");
+            } catch (Throwable t) {
+                System.err.println("[art] Init.init(Context) 失败: " + t);
+            }
         }
     }
 
-    private static boolean setField(Class<?> clz, Object target, Context ctx) {
+    private static boolean setContextField(Class<?> clz, Object target, Object ctx) {
         try {
             Field c = clz.getDeclaredField("c");         // TVBox 里试的第一个名字
             c.setAccessible(true);
             c.set(target, ctx);
             return true;
         } catch (Throwable ignored) { }
-        for (Field fd : clz.getDeclaredFields()) {
-            try {
-                if (Modifier.isStatic(fd.getModifiers()) || !Context.class.isAssignableFrom(fd.getType())) continue;
-                fd.setAccessible(true);
-                fd.set(target, ctx);
-                return true;
-            } catch (Throwable ignored) { }
+        for (Class<?> t = clz; t != null && t != Object.class; t = t.getSuperclass()) {
+            for (Field fd : t.getDeclaredFields()) {
+                try {
+                    if (Modifier.isStatic(fd.getModifiers())) continue;
+                    // 按名字匹配 Context 系：字段类型可能解析到桩命名空间，与 boot 的 Context 类身份不同，
+                    // isAssignableFrom 会误判 false
+                    String tn = fd.getType().getName();
+                    if (!tn.equals("android.content.Context") && !tn.equals("android.app.Application")
+                            && !tn.equals("android.content.ContextWrapper")) continue;
+                    fd.setAccessible(true);
+                    fd.set(target, ctx);
+                    return true;
+                } catch (Throwable ignored) { }
+            }
         }
         return false;
     }
 
-    private static boolean bindDexLoader(Class<?> clz, Object init, ClassLoader loader, Context ctx) {
+    /** 按名字+参数个数找方法（含父类）：参数类型的 Class 身份跨命名空间时 getMethod 匹配不上。 */
+    private static Method findMethod(Class<?> clz, String name, int params) throws NoSuchMethodException {
+        for (Class<?> t = clz; t != null && t != Object.class; t = t.getSuperclass()) {
+            for (Method m : t.getDeclaredMethods()) {
+                if (m.getName().equals(name) && m.getParameterCount() == params) {
+                    m.setAccessible(true);
+                    return m;
+                }
+            }
+        }
+        throw new NoSuchMethodException(clz.getName() + "." + name + "/" + params);
+    }
+
+    private static boolean bindDexLoader(Class<?> clz, Object init, ClassLoader loader, Object ctx) {
         Object dexLoader;
         try {
             Class<?> dn = loader.loadClass("com.github.catvod.spider.DexNative");
@@ -367,6 +599,23 @@ public final class Art {
         @Override public String getPackageName() { return "com.catclaw.video"; }
         @Override public Context getApplicationContext() { return this; }
         @Override public ClassLoader getClassLoader() { return Art.class.getClassLoader(); }
+
+        /**
+         * guest 里必须覆写：真 {@code ContextWrapper.getPackageManager()} 走 mBase（null）→ NPE，
+         * 壳的 UI 工具类（merge.cn.B，2026-09-26 栈证实）第一步就死在这。
+         * 返回 {@code GuestPackageManager}（guest-src 单独编译，superclass 按环境解析到真
+         * PackageManager）；JRE 桩环境没有真类时回落 super（桩 Context 自带实现，行为不变）。
+         */
+        @Override public android.content.pm.PackageManager getPackageManager() {
+            if (!onArt()) return super.getPackageManager();   // JRE 桩链：桩 Context 自带实现，行为不变
+            try {
+                return (android.content.pm.PackageManager) Class.forName("bridge.GuestPackageManager")
+                        .getDeclaredConstructor().newInstance();
+            } catch (Throwable t) {
+                System.err.println("[art] GuestPackageManager 不可用，回落 super: " + t);
+                return super.getPackageManager();
+            }
+        }
 
         @Override public android.content.pm.ApplicationInfo getApplicationInfo() {
             android.content.pm.ApplicationInfo ai = new android.content.pm.ApplicationInfo();

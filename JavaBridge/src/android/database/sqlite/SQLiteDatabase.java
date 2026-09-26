@@ -12,7 +12,7 @@ import android.database.Cursor;
  * <p>桌面不做真 SQL：库路径记录下来，查询一律返回<b>非空的零行游标</b>（见
  * {@link android.database.EmptyCursor}——返回 null 会让爬虫在 moveToFirst() 上 NPE）。</p>
  */
-public class SQLiteDatabase {
+public class SQLiteDatabase extends SQLiteClosable {
 
     // openDatabase 的 flags（jar 里按名引用）
     public static final int OPEN_READONLY = 0x00000001;

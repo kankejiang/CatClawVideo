@@ -1,8 +1,5 @@
 package bridge;
 
-import android.app.Dialog;
-import android.content.DialogInterface;
-import android.graphics.Bitmap;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -28,6 +25,13 @@ import java.util.concurrent.atomic.AtomicInteger;
  * → {"ev":"ui-toast","text":".."}
  * ← {"id":-1,"op":"ui-result","seq":1,"which":0}   （which≥0=列表项，-1/-2/-3=肯定/否定/中性按钮）
  * </pre></p>
+ *
+ * <p><b>命名空间约束（2026-09-26 guest 桩链定死）</b>：本类在 boot（gb.dex）里，而调用方
+ * （android.app.Dialog/Toast 桩）在 guest 的 ui_stub.dex「桩优先」命名空间里 —— 同名
+ * android.* 在两边解析成<b>不同的 Class 对象</b>。所以本类 API 一律收发 {@code Object}
+ * （stub Dialog 实例、桩 listener、stub Bitmap），对桩专有方法（snapshotPixels /
+ * onClick 回调）走反射 —— 否则桩侧调用点因类型身份不符直接 ICCE/校验失败。
+ * JRE 桥里桩与桥同 jar，同一份代码行为不变。</p>
  */
 public final class UiBridge {
 
@@ -37,15 +41,47 @@ public final class UiBridge {
     /** 在屏的二维码登录框 seq 集合：期间 SystemClock 进入慢速节拍（jar 的扫码轮询只有约 13 次预算，须拉长窗口）。 */
     private static final Set<Integer> QR_SEQS = java.util.Collections.newSetFromMap(new ConcurrentHashMap<>());
 
-    /** 一个已 show 对话框的全部回调。 */
+    /**
+     * 扫码登录窗口状态（原在 android.os.SystemClock 桩里 —— 桩可能在 stub 命名空间而本类在
+     * boot，两边静态字段不共享；搬到这里两边都够得着）。
+     * <p>二维码框存续期间把 jar 的轮询节拍拉长 {@value #LOGIN_SLEEP_SCALE} 倍
+     * （13 次 ≈ 4.3 分钟），开关由二维码对话框的存续调用；10 分钟自愈上限防漏减。</p>
+     */
+    private static final int LOGIN_SLEEP_SCALE = 20;
+    private static volatile int loginWindows;
+    private static volatile long loginWindowStartMs;
+
+    /** 二维码登录框开始展示：进入慢速节拍（可嵌套，按计数归零退出）。 */
+    public static void beginLoginWindow() {
+        if (loginWindows == 0) loginWindowStartMs = System.currentTimeMillis();
+        loginWindows++;
+    }
+
+    /** 二维码登录框关闭：退出慢速节拍。 */
+    public static void endLoginWindow() {
+        if (loginWindows > 0) loginWindows--;
+    }
+
+    /** 扫码登录窗口是否生效。 */
+    public static boolean loginWindowActive() {
+        return loginWindows > 0
+                && System.currentTimeMillis() - loginWindowStartMs < 10 * 60_000L;
+    }
+
+    /** 延迟类调用的统一伸缩口：登录窗口内 ×{@value LOGIN_SLEEP_SCALE}，平时原样返回。 */
+    public static long scaleDelay(long delayMillis) {
+        return loginWindowActive() ? delayMillis * LOGIN_SLEEP_SCALE : delayMillis;
+    }
+
+    /** 一个已 show 对话框的全部回调。全部 {@code Object}：调用方在桩命名空间（见类注释）。 */
     public static final class Pending {
-        public final Dialog dialog;
-        public final DialogInterface.OnClickListener items;
-        public final DialogInterface.OnClickListener positive;
-        public final DialogInterface.OnClickListener negative;
-        public final DialogInterface.OnClickListener neutral;
-        public final DialogInterface.OnCancelListener cancel;
-        public final DialogInterface.OnDismissListener dismiss;
+        public final Object dialog;
+        public final Object items;
+        public final Object positive;
+        public final Object negative;
+        public final Object neutral;
+        public final Object cancel;
+        public final Object dismiss;
         /**
          * 条目来自摊平的自定义 View 树 → 点完**不关框**。
          * <para>Android 里 {@code setItems} 的列表框点一项就自动收，但网盘那种
@@ -54,10 +90,8 @@ public final class UiBridge {
          */
         public final boolean keepOpen;
 
-        public Pending(Dialog d, DialogInterface.OnClickListener i, DialogInterface.OnClickListener p,
-                       DialogInterface.OnClickListener n, DialogInterface.OnClickListener ne,
-                       DialogInterface.OnCancelListener c, DialogInterface.OnDismissListener dis,
-                       boolean keepOpen) {
+        public Pending(Object d, Object i, Object p, Object n, Object ne,
+                       Object c, Object dis, boolean keepOpen) {
             dialog = d; items = i; positive = p; negative = n; neutral = ne; cancel = c; dismiss = dis;
             this.keepOpen = keepOpen;
         }
@@ -81,7 +115,7 @@ public final class UiBridge {
         try {
             // 二维码登录框在屏：进入慢速节拍，把 jar 的扫码轮询窗口从约 13 秒拉长到数分钟
             if (spec != null && spec.has("qr") && QR_SEQS.add(seq)) {
-                android.os.SystemClock.beginLoginWindow();
+                beginLoginWindow();
                 System.err.println("[ui] 二维码登录框 #" + seq + " → 慢速节拍开启（当前窗口 " + QR_SEQS.size() + "）");
             }
             spec.put("ev", "ui-dialog").put("seq", seq);
@@ -92,13 +126,13 @@ public final class UiBridge {
     /** 二维码框关闭（dismiss / 用户取消两条路径都走这里）：最后一个关闭时退出慢速节拍。 */
     private static void onQrDialogClosed(int seq) {
         if (seq > 0 && QR_SEQS.remove(seq) && QR_SEQS.isEmpty()) {
-            android.os.SystemClock.endLoginWindow();
+            endLoginWindow();
             System.err.println("[ui] 二维码登录框 #" + seq + " → 慢速节拍关闭");
         }
     }
 
     /** Dialog.dismiss()/cancel()：上行关窗事件并触发 jar 的 dismiss/cancel 监听。 */
-    public static void dismissed(Dialog d, boolean cancelled) {
+    public static void dismissed(Object d, boolean cancelled) {
         Integer found = null;
         Pending p = null;
         for (Iterator<Map.Entry<Integer, Pending>> it = PENDING.entrySet().iterator(); it.hasNext(); ) {
@@ -111,8 +145,8 @@ public final class UiBridge {
         } catch (Throwable ignored) { }
         onQrDialogClosed(found);
         if (p != null) {
-            try { if (cancelled && p.cancel != null) p.cancel.onCancel(d); } catch (Throwable ignored) { }
-            try { if (p.dismiss != null) p.dismiss.onDismiss(d); } catch (Throwable ignored) { }
+            try { if (cancelled && p.cancel != null) invoke1(p.cancel, "onCancel", d); } catch (Throwable ignored) { }
+            try { if (p.dismiss != null) invoke1(p.dismiss, "onDismiss", d); } catch (Throwable ignored) { }
         }
     }
 
@@ -126,12 +160,16 @@ public final class UiBridge {
     }
 
     /** 二维码事件载荷：把 Bitmap 的黑白矩阵打包成 {"w","h","pixels","png"}（1=黑；png 是放大 4 倍的 PNG base64）。 */
-    public static JSONObject qrJson(Bitmap bm) {
+    public static JSONObject qrJson(Object bm) {
         if (bm == null) return null;
-        int[] px = bm.snapshotPixels();
-        if (px == null || px.length == 0) return null;
         try {
-            int w = bm.getWidth(), h = bm.getHeight();
+            // 桩命名空间的 Bitmap：反射取桩专有的 snapshotPixels（boot 里没有这个方法）
+            java.lang.reflect.Method mPx = bm.getClass().getMethod("snapshotPixels");
+            mPx.setAccessible(true);
+            int[] px = (int[]) mPx.invoke(bm);
+            if (px == null || px.length == 0) return null;
+            int w = ((Number) bm.getClass().getMethod("getWidth").invoke(bm)).intValue();
+            int h = ((Number) bm.getClass().getMethod("getHeight").invoke(bm)).intValue();
             JSONArray arr = new JSONArray();
             for (int v : px) arr.put(((v & 0xFF) < 128 && ((v >> 24) & 0xFF) > 0) || ((v & 0xFFFFFF) == 0 && ((v >> 24) & 0xFF) > 0) ? 1 : 0);
             JSONObject o = new JSONObject().put("w", w).put("h", h).put("pixels", arr);
@@ -185,20 +223,46 @@ public final class UiBridge {
         // BUTTON_POSITIVE=-1 / NEGATIVE=-2 / NEUTRAL=-3，与宿主回传值一致。
         final boolean stay = p.keepOpen && which >= 0;
         if (!stay) PENDING.remove(seq);
-        final Dialog d = p.dialog;
+        final Object d = p.dialog;
         Thread t = new Thread(() -> {
             try {
-                if (which >= 0 && p.items != null) p.items.onClick(d, which);
-                else if (which == DialogInterface.BUTTON_POSITIVE && p.positive != null) p.positive.onClick(d, which);
-                else if (which == DialogInterface.BUTTON_NEGATIVE && p.negative != null) p.negative.onClick(d, which);
-                else if (which == DialogInterface.BUTTON_NEUTRAL && p.neutral != null) p.neutral.onClick(d, which);
+                if (which >= 0 && p.items != null) invokeClick(p.items, d, which);
+                else if (which == -1 && p.positive != null) invokeClick(p.positive, d, which);
+                else if (which == -2 && p.negative != null) invokeClick(p.negative, d, which);
+                else if (which == -3 && p.neutral != null) invokeClick(p.neutral, d, which);
             } catch (Throwable ig) { }
             if (stay) return;
-            try { if (p.dismiss != null) p.dismiss.onDismiss(d); } catch (Throwable ig) { }
+            try { if (p.dismiss != null) invoke1(p.dismiss, "onDismiss", d); } catch (Throwable ig) { }
             onQrDialogClosed(seq);
             try { emit(new JSONObject().put("ev", "ui-dismiss").put("seq", seq).put("cancelled", false)); } catch (Throwable ig) { }
         }, "ui-result-" + seq);
         t.setDaemon(true);
         t.start();
+    }
+
+    /**
+     * 反射调桩 listener 的 {@code onClick(dialog, which)}。
+     * listener 在桩命名空间（其 onClick 参数是<b>桩</b> DialogInterface），本类在 boot ——
+     * 直接调会类型身份不符，按名字+形状匹配方法反射调（JRE 里同样成立）。
+     */
+    private static void invokeClick(Object listener, Object dialog, int which) throws Exception {
+        for (java.lang.reflect.Method m : listener.getClass().getMethods()) {
+            if (!m.getName().equals("onClick") || m.getParameterCount() != 2) continue;
+            Class<?>[] pt = m.getParameterTypes();
+            if (pt[1] != int.class) continue;
+            m.setAccessible(true);
+            m.invoke(listener, dialog, which);
+            return;
+        }
+    }
+
+    /** 反射调桩 listener 的单参回调（onCancel / onDismiss）。 */
+    private static void invoke1(Object listener, String name, Object dialog) throws Exception {
+        for (java.lang.reflect.Method m : listener.getClass().getMethods()) {
+            if (!m.getName().equals(name) || m.getParameterCount() != 1) continue;
+            m.setAccessible(true);
+            m.invoke(listener, dialog);
+            return;
+        }
     }
 }

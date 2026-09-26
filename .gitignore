@@ -456,6 +456,8 @@ JavaBridge/sources.txt
 /JavaBridge/qemu-src/art/gbcls/
 /JavaBridge/qemu-src/art/gbout/
 /JavaBridge/qemu-src/art/ucls/
+/JavaBridge/qemu-src/art/uistubcls/
+/JavaBridge/qemu-src/art/uistubout/
 /JavaBridge/qemu-src/art/*out/
 /JavaBridge/qemu-src/art/*.lst
 /JavaBridge/qemu-src/art/_tmp/

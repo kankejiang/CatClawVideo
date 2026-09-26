@@ -207,6 +207,7 @@ public class Server {
                         // 端口下发：桥内无 JNI（Android 走 TvBoxCompatBridge.SetProxyPort），走协议直写静态字段
                         if ("setProxyPort".equals(fop)) {
                             com.github.catvod.crawler.SpiderApi.setHostProxyPort(req.optInt("port"));
+                            bridge.Art.setStubHostProxyPort(req.optInt("port"));   // 桩命名空间副本（ui_stub.dex）
                             // guest 里 127.0.0.1 是它自己的回环，爬虫的 proxy:// 回调必须就地转发给宿主
                             if (Art.onArt()) Art.serveProxy(req.optInt("port"));
                             yield "ok";
@@ -491,7 +492,8 @@ public class Server {
                 + (dexLoader != null ? "（" + new File(realJar).getName() + "）" : "（无 realJar，跳过）"));
     }
 
-    private static void injectStaticContext(ClassLoader loader, String className, Context ctx) {
+    static void injectStaticContext(ClassLoader loader, String className, Object ctx) {
+
         try {
             Class<?> c = loader.loadClass(className);
             // ⚠ 必须注入 **Application**（不是裸 Context）：TVBox 的 InitOrigin 里
@@ -499,6 +501,8 @@ public class Server {
             //   init(Context) 内部会强转成 Application —— 传裸 Context 会被 ClassCastException
             //   吞掉，context() 依旧返回 null（实测 2026-09-16：传 Context 无效，改 Application 后 NPE 消失）。
             //   ctx 由调用方传入（同一个实例注入到所有公共类，避免各自 new 出一堆孤岛）。
+            //   guest 桩命名空间：ctx 是桩 Application（Object 传递）；参数类型按**名字**匹配
+            //   —— Class 身份跨命名空间不同，==Context.class 会失配（2026-09-26）。
             for (String fn : new String[]{"context", "mContext", "appContext", "N"}) {
                 try {
                     java.lang.reflect.Field f = c.getDeclaredField(fn);
@@ -513,9 +517,9 @@ public class Server {
                 Class<?>[] ps = m.getParameterTypes();
                 try {
                     m.setAccessible(true);
-                    if (ps.length == 1 && ps[0] == Context.class) {
+                    if (ps.length == 1 && "android.content.Context".equals(ps[0].getName())) {
                         m.invoke(null, ctx);
-                    } else if (ps.length == 2 && ps[0] == Context.class && ps[1] == String.class) {
+                    } else if (ps.length == 2 && "android.content.Context".equals(ps[0].getName()) && ps[1] == String.class) {
                         m.invoke(null, ctx, "");
                     }
                 } catch (Throwable ignored) { }

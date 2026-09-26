@@ -34,8 +34,10 @@ public final class GuestMain {
             System.err.println("[guest] ART: 主线程 Looper = " + android.os.Looper.getMainLooper());
             // 注：壳的 InitOrigin.getActivity() 走 ActivityThread.currentActivityThread()，本进程不是
             // zygote 起的，那条反射链拿不到（试过 ActivityThread.systemMain()，ART 里直接抛
-            // InvocationTargetException，2026-09-26）。jar 自己把它 try 掉了并照常出线路，
-            // 所以这里不再补伪 ActivityThread —— 需要真 Activity 的功能（设备指纹族）另想办法。
+            // InvocationTargetException，2026-09-26）。→ 不再造伪 ActivityThread 类（boot 覆盖是死路），
+            // 改为 Unsafe 造真类伪实例 + 填静态字段，把 currentApplication()/mInitialApplication 指到桥的
+            // App 桩；mActivities 留空 —— 壳拿不到 Activity 就走它自己的无 Activity 降级（proxy/HTML）。
+            Art.injectActivityThread();
         }
         // 强制走 IPv4 栈：guest 里只配了 v4 地址，双栈绑定会让 slirp 的 v4 目标连不上。
         // ⚠ slirp hostfwd 拨的是 guest 的 eth0 地址（10.0.2.15），**不是**它的回环 ——

@@ -96,6 +96,30 @@ def build_gb_dex(bridge_jar, exclude, out_dex, java, d8, android_jar, workdir):
         print("   交出的类:", sorted(dropped)[:8], "…" if len(dropped) > 8 else "")
 
 
+def build_ui_stub_dex(bridge_jar, out_dex, java, d8, android_jar, workdir):
+    """android/** 桩 → 单独 dex：jar 源 loader 的「桩优先」parent 用。
+    boot classpath 覆盖是死路（见下），只能换命名空间 —— 爬虫代码的 android.* 解析到
+    JRE 同款桩（Dialog/Toast → bridge.UiBridge 事件上行），guest 里 UI 链才走得通。"""
+    cls = os.path.join(workdir, "uistubcls")
+    shutil.rmtree(cls, ignore_errors=True)
+    os.makedirs(cls)
+    kept = 0
+    prefixes = ("android/", "com/github/catvod/crawler/")
+    with zipfile.ZipFile(bridge_jar) as z:
+        for n in z.namelist():
+            if not (n.startswith(prefixes) and n.endswith(".class")):
+                continue
+            p = os.path.join(cls, n.replace("/", os.sep))
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            io.open(p, "wb").write(z.read(n))
+            kept += 1
+    files = [os.path.abspath(os.path.join(r, f)).replace("\\", "/")
+             for r, _, fs in os.walk(cls) for f in fs if f.endswith(".class")]
+    d8_to_dex(files, out_dex, java, d8, android_jar, workdir, "uistub")
+    print("ui_stub.dex: %d 个桩类（android 桩 + crawler 基类）→ %s（%dB）"
+          % (kept, out_dex, os.path.getsize(out_dex)))
+
+
 # 试过的死路（别再试第二遍，2026-09-26 实测）：把桥的 android UI 桩单独 dex 化、zipalign 后
 # 放到 -Xbootclasspath 最前面，想抢回 android.app.AlertDialog 的类名 —— ART 对 boot classpath
 # 里的重复类不是"先到先得"，`android.app.Dialog` 仍解析到 framework.jar（探针 op 里 fillSpec=无）。
@@ -149,6 +173,7 @@ def build_initrd(a):
     for f, mode in (("artlaunch", 0o100755), ("proppreload.so", 0o100644), ("fakelogd", 0o100755)):
         put(f, os.path.join(ART, f), mode)
     put("gb.dex", a.gb)
+    put("ui_stub.dex", a.uistub)
     put("tvbox.apk", a.tvbox)
     # TVBox 解析侧的 arm64 库：桥的 librarySearchPath 就是 /data/catclaw/art/lib（见 bridge.Art）
     with zipfile.ZipFile(a.tvbox) as z:
@@ -172,6 +197,7 @@ def main():
     ap.add_argument("--base", default=BASE_INITRD_DEFAULT, help="基座 initrd（提供 busybox/内核模块）")
     ap.add_argument("--out", default=os.path.join(ART, "art_initrd.gz"))
     ap.add_argument("--gb", default=os.path.join(ART, "gb.dex"))
+    ap.add_argument("--uistub", default=os.path.join(ART, "ui_stub.dex"))
     ap.add_argument("--sdk", default=SDK_DEFAULT)
     ap.add_argument("--bridge-jar", default=os.path.join(BRIDGE, "bridge.jar"))
     ap.add_argument("--skip-gb", action="store_true", help="复用现成 gb.dex（只重打 initrd）")
@@ -197,6 +223,7 @@ def main():
         exclude = {c for c in exclude if c not in KEEP_FROM_BRIDGE}
         exclude |= JAR_OWNED
         build_gb_dex(a.bridge_jar, exclude, a.gb, "java", d8, aj, ART)
+        build_ui_stub_dex(a.bridge_jar, a.uistub, "java", d8, aj, ART)
     build_initrd(a)
 
 

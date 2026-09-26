@@ -31,6 +31,25 @@ rem both jar invocations failed silently, so bridge.jar was never actually updat
 (if exist bridge.jar del bridge.jar)
 set JARTOOL=jar
 if defined JAVA_HOME if exist "%JAVA_HOME%\bin\jar.exe" set JARTOOL="%JAVA_HOME%\bin\jar.exe"
+rem ══ guest-only supplement: GuestPackageManager extends the REAL android.content.pm.PackageManager ══
+rem The main compile above has no real android.jar (stub env), so this class compiles separately
+rem with android.jar on the classpath. Its superclass descriptor resolves per-environment: the
+rem real PackageManager in the ART guest, our stub in the JRE bridge. Without android.jar (no SDK)
+rem we skip it: Art.App.getPackageManager() reflects and falls back, behavior unchanged.
+rem ⚠ Must run BEFORE the jar packaging below — otherwise the class stays in build/ and never
+rem   lands in bridge.jar → gb.dex → guest sees ClassNotFoundException (2026-09-26 probe).
+set ANDROID_JAR=
+if not defined ANDROID_JAR for /d %%D in ("%LOCALAPPDATA%\Android\Sdk\platforms\android-*") do set ANDROID_JAR=%%D\android.jar
+if exist "%ANDROID_JAR%" (
+  echo guest supplement: %ANDROID_JAR%
+  "%JAVAC%" -encoding UTF-8 --release 17 -cp "%ANDROID_JAR%" -d build guest-src\bridge\GuestPackageManager.java || exit /b 5
+) else (
+  echo android.jar not found - GuestPackageManager skipped (guest PackageManager stub unavailable) >&2
+)
+
+(if exist bridge.jar del bridge.jar)
+set JARTOOL=jar
+if defined JAVA_HOME if exist "%JAVA_HOME%\bin\jar.exe" set JARTOOL="%JAVA_HOME%\bin\jar.exe"
 %JARTOOL% --create --file bridge.jar -C build . || exit /b 4
 if not exist bridge.jar (
   echo bridge.jar not created: check jar.exe on PATH or under JAVA_HOME >&2

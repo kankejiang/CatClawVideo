@@ -732,8 +732,10 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         {
             // guest 读不到宿主的盘：换成宿主 jar 服务的 URL，桥里 Art.materialize() 取回归档
             var raw = _rawJars.TryGetValue(site.Key, out var rp) && File.Exists(rp) ? rp : jarPath;
+            // 纯 .class jar（无 classes.dex，如 fty.jar 一族）guest 的 ART 吃不了：先 d8 转 dex 再供
+            var serve = IsPureClassJar(raw) ? await EnsureDexJarAsync(raw, ct) : raw;
             _jarServer ??= new CatClawVideo.Core.Services.QemuThunder.ArtJarServer(_log);
-            var url = _jarServer.UrlFor(Path.GetFileName(raw).Replace("raw-", "").Replace(".jar", ""), raw);
+            var url = _jarServer.UrlFor(Path.GetFileName(serve).Replace("raw-", "").Replace(".jar", ""), serve);
             req["jars"] = new JsonArray(url);
             req["rawJar"] = url;
             Log($"{site.Name}: ART guest 取 jar ← {url}");
@@ -904,9 +906,158 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     /// <summary>Path=真实类转换产物；DexSource=转换输入（解壳产物/原始 jar）；RawJar=原始 Guard jar（含解密 so，壳框架用）；ShellJar=壳 dex 转换产物（壳框架类）。</summary>
     private readonly record struct JarConversion(string Path, string? DexSource, string? RawJar = null, string? ShellJar = null);
 
+    // ═══════════ 纯 .class jar 的 d8 预转换（ART guest 专用）═══════════
+
+    private static string? _d8JarPath;
+    private static string? _androidJarPath;
+    private readonly ConcurrentDictionary<string, string> _dexJars = new();
+
+    /// <summary>
+    /// jar 里只有 .class 没有 .dex —— TVBox 生态的「纯 java 构建」（fty.jar 一族）。
+    /// guest 的 ART 只吃 dex，这类 jar 必须先经 d8 转换才能进 guest。
+    /// </summary>
+    private static bool IsPureClassJar(string jarPath)
+    {
+        try
+        {
+            bool hasClass = false;
+            using var zip = System.IO.Compression.ZipFile.OpenRead(jarPath);
+            foreach (var e in zip.Entries)
+            {
+                var n = e.FullName;
+                if (n.EndsWith(".dex", StringComparison.OrdinalIgnoreCase)) return false;
+                if (n.EndsWith(".class", StringComparison.OrdinalIgnoreCase)) hasClass = true;
+            }
+            return hasClass;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>Android SDK 的 d8（<c>build-tools/*/lib/d8.jar</c>，版本取最高）与配套 android.jar。</summary>
+    private static string? FindSdkTool(out string? androidJar)
+    {
+        androidJar = null;
+        var roots = new List<string>();
+        void AddRoot(string? p) { if (!string.IsNullOrEmpty(p) && Directory.Exists(p)) roots.Add(p); }
+        AddRoot(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Android", "Sdk"));
+        AddRoot(Environment.GetEnvironmentVariable("ANDROID_HOME"));
+        AddRoot(Environment.GetEnvironmentVariable("ANDROID_SDK_ROOT"));
+        AddRoot(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Android", "android-sdk"));
+        foreach (var root in roots)
+        {
+            var bt = Path.Combine(root, "build-tools");
+            if (!Directory.Exists(bt)) continue;
+            string? best = null;
+            Version? bestV = null;
+            foreach (var d in Directory.GetDirectories(bt))
+            {
+                var cand = Path.Combine(d, "lib", "d8.jar");
+                if (!File.Exists(cand)) continue;
+                var v = Version.TryParse(Path.GetFileName(d), out var pv) ? pv : new Version(0, 0);
+                if (bestV is null || v > bestV) { best = cand; bestV = v; }
+            }
+            if (best is null) continue;
+            var pf = Path.Combine(root, "platforms");
+            if (Directory.Exists(pf))
+            {
+                androidJar = Directory.GetDirectories(pf)
+                    .Select(d => (Path: d, Ver: int.TryParse(Path.GetFileName(d)["android-".Length..], out var n) ? n : -1))
+                    .Where(x => x.Ver > 0)
+                    .OrderByDescending(x => x.Ver)
+                    .Select(x => Path.Combine(x.Path, "android.jar"))
+                    .FirstOrDefault(File.Exists);
+            }
+            return best;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// 纯 .class jar → dex jar（d8），产物缓存在 converted 目录（按内容哈希命名，跨启动复用）。
+    /// <para>guest 的 ART 吃不了 .class 字节码；转换产物的 android.* 引用在 guest 里经
+    /// 桩优先链（ui_stub.dex）解析到 JRE 同款桩，UI/偏好行为与宿主 JRE 链路一致。</para>
+    /// <para>⚠️ d8 直接吃 jar 输入（不解包）：dex2jar 产物里有仅大小写不同的重复条目，
+    /// 解到 Windows 大小写不敏感的盘上会互相覆盖丢类；类数超 64K 时 d8 会产出
+    /// classes2.dex…，重打包时全部收进去。</para>
+    /// </summary>
+    private async Task<string> EnsureDexJarAsync(string rawJar, CancellationToken ct)
+    {
+        if (_dexJars.TryGetValue(rawJar, out var hit) && File.Exists(hit)) return hit;
+
+        var java = FindJavaExe() ?? throw new InvalidOperationException(
+            "ART guest 加载纯 .class jar 需要 java 运行时（本机未找到 java.exe）");
+        _d8JarPath ??= FindSdkTool(out _androidJarPath);
+        var d8 = _d8JarPath ?? throw new InvalidOperationException(
+            "ART guest 加载纯 .class jar 需要 Android build-tools 的 d8（未找到 build-tools/*/lib/d8.jar）");
+
+        var h = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(rawJar))).ToLowerInvariant()[..24];
+        var outJar = Path.Combine(_convertedDir, h + "-d8.jar");
+        if (File.Exists(outJar)) return _dexJars[rawJar] = outJar;
+
+        var work = Path.Combine(_convertedDir, "d8-" + h);
+        var outDir = Path.Combine(work, "out");
+        Directory.CreateDirectory(outDir);
+        try
+        {
+            var t0 = Environment.TickCount64;
+            var psi = new ProcessStartInfo
+            {
+                FileName = java,
+                UseShellExecute = false,
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
+                CreateNoWindow = true,
+            };
+            psi.ArgumentList.Add("-Xmx1g");
+            psi.ArgumentList.Add("-cp");
+            psi.ArgumentList.Add(d8);
+            psi.ArgumentList.Add("com.android.tools.r8.D8");
+            psi.ArgumentList.Add("--min-api");
+            psi.ArgumentList.Add("28");
+            psi.ArgumentList.Add("--release");
+            psi.ArgumentList.Add("--output");
+            psi.ArgumentList.Add(outDir);
+            psi.ArgumentList.Add(rawJar);
+            if (!string.IsNullOrEmpty(_androidJarPath))
+            {
+                psi.ArgumentList.Add("--lib");
+                psi.ArgumentList.Add(_androidJarPath);
+            }
+
+            Log($"d8 转换（{Path.GetFileName(rawJar)}，{new FileInfo(rawJar).Length / 1024}KB）…");
+            using var p = Process.Start(psi) ?? throw new InvalidOperationException("d8 进程启动失败");
+            var err = await p.StandardError.ReadToEndAsync(ct);
+            await p.WaitForExitAsync(ct);
+            if (p.ExitCode != 0)
+                throw new InvalidOperationException(
+                    $"d8 失败（exit {p.ExitCode}）: {err[..Math.Min(err.Length, 2000)]}");
+
+            // d8 可能按 64K 限制拆多个 dex（classes.dex/classes2.dex/...），全部收进输出 jar
+            var dexFiles = Directory.GetFiles(outDir, "*.dex");
+            if (dexFiles.Length == 0) throw new InvalidOperationException("d8 没产出任何 dex");
+            using (var outZip = System.IO.Compression.ZipFile.Open(outJar, System.IO.Compression.ZipArchiveMode.Create))
+            {
+                foreach (var df in dexFiles)
+                {
+                    var entry = outZip.CreateEntry(Path.GetFileName(df), System.IO.Compression.CompressionLevel.Optimal);
+                    using var es = entry.Open();
+                    using var src = File.OpenRead(df);
+                    await src.CopyToAsync(es, ct);
+                }
+            }
+            Log($"d8 完成：{dexFiles.Length} 个 dex → {Path.GetFileName(outJar)}"
+                + $"（{(new FileInfo(outJar).Length / 1024)}KB，{Environment.TickCount64 - t0}ms）");
+            return _dexJars[rawJar] = outJar;
+        }
+        finally
+        {
+            try { Directory.Delete(work, recursive: true); } catch { }
+        }
+    }
+
     /// <summary>
     /// 下载 → 校验 → Guard 解壳 → dex2jar 转换。
-    /// <para>返回转换后的 java jar；**返回 null 表示这个 jar 在本平台不可用**
+    /// <para>返回转换后的 java jar；**返回 null 表示这个 jar 在本平台不可用**</para>
     /// （Guard 且解壳失败/解壳器缺失，或 <paramref name="requireClass"/> 指定的类不在其中），
     /// 由调用方决定换哪个 jar —— 用 null 而不是抛异常，是为了让「换 jar」成为正常流程而不是错误路径。</para>
     /// </summary>

@@ -47,31 +47,19 @@ public class SystemClock {
      * 对话框的存续调用。</p>
      */
     private static final int LOGIN_SLEEP_SCALE = 20;
-    /** 扫码登录窗口计数（>0 = 有二维码框在屏）；另设 10 分钟自愈上限防漏减。 */
-    private static volatile int loginWindows;
-    private static volatile long loginWindowStartMs;
 
-    /** 二维码登录框开始展示：进入慢速节拍（可嵌套，按计数归零退出）。 */
-    public static void beginLoginWindow() {
-        if (loginWindows == 0) loginWindowStartMs = System.currentTimeMillis();
-        loginWindows++;
-    }
+    /**
+     * 登录窗口状态在 {@code bridge.UiBridge}（2026-09-26 guest 桩链：本类可能被装进
+     * ui_stub.dex 的桩命名空间，UiBridge 在 boot —— 两边静态字段不共享，状态必须只有一份）。
+     */
+    public static void beginLoginWindow() { bridge.UiBridge.beginLoginWindow(); }
 
-    /** 二维码登录框关闭：退出慢速节拍。 */
-    public static void endLoginWindow() {
-        if (loginWindows > 0) loginWindows--;
-    }
+    public static void endLoginWindow() { bridge.UiBridge.endLoginWindow(); }
 
-    /** 扫码登录窗口是否生效（10 分钟自愈上限：漏掉 end 也不至于永久慢速）。 */
-    private static boolean loginWindowActive() {
-        return loginWindows > 0
-                && System.currentTimeMillis() - loginWindowStartMs < 10 * 60_000L;
-    }
+    private static boolean loginWindowActive() { return bridge.UiBridge.loginWindowActive(); }
 
     /** 延迟类调用的统一伸缩口：登录窗口内 ×{@value LOGIN_SLEEP_SCALE}，平时原样返回。 */
-    public static long scaleDelay(long delayMillis) {
-        return loginWindowActive() ? delayMillis * LOGIN_SLEEP_SCALE : delayMillis;
-    }
+    public static long scaleDelay(long delayMillis) { return bridge.UiBridge.scaleDelay(delayMillis); }
 
     public static void sleep(long ms) {
         if (ms <= 0) return;
