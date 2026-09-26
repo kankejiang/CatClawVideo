@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using CatClawVideo.Core.Interfaces;
 using CatClawVideo.Core.Models;
 using CatClawVideo.Core.Providers;
@@ -253,6 +253,20 @@ public partial class SourceConfigPage : ContentPage
         RebuildSubs();
         try { await _db.DeleteSubscriptionAsync(row.Sub); }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[源配置] 订阅删除失败: {ex.Message}"); }
+
+        // 多订阅并存：被删订阅的站点要从仓库里退场 —— 重载剩余订阅并整体替换
+        try
+        {
+            var rest = await _db.GetSubscriptionsAsync();
+            var merged = await _subscriptionManager.LoadAllSubscriptionsAsync(
+                rest.Select(s => new CatClawVideo.Core.Interfaces.SubscriptionRef(s.Name, s.SourceUrl)));
+            SiteRegistry.Replace(merged);
+            Core.Models.SiteCache.Save(merged);
+            _sites.Clear();
+            foreach (var s in merged) _sites.Add(BuildRow(s));
+            RebuildSites();
+        }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[源配置] 剩余订阅重载失败: {ex.Message}"); }
     }
 
     private void RebuildSites()
@@ -355,9 +369,16 @@ public partial class SourceConfigPage : ContentPage
             }
             skipped = sites.Count - added;
 
+            // 多订阅并存（2026-09-26）：现注册表快照 + 新订阅站点按 Key 覆盖合并
+            // （重加同一订阅 = 刷新其站点；不同订阅的站点共存）。此前 Replace(sites)
+            // 会把已装订阅的站点整体顶掉。
+            var mergedTable = SiteRegistry.Sites.ToDictionary(s => s.Key, s => s, StringComparer.OrdinalIgnoreCase);
+            foreach (var s in sites) mergedTable[s.Key] = s;
+            var mergedList = mergedTable.Values.ToList();
+
             // 写入站点仓库（首页/搜索从这里取可播站点）+ 落盘缓存（下次启动秒读）
-            SiteRegistry.Replace(sites);
-            Core.Models.SiteCache.Save(sites);
+            SiteRegistry.Replace(mergedList);
+            Core.Models.SiteCache.Save(mergedList);
 
             // 订阅入库（按地址去重，重复添加只刷新站点）
             var name = chosenLine is null ? new Uri(url).Host : ShortHost(url) + " · " + chosenLine;

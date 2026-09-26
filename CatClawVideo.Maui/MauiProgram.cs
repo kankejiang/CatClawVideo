@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using CatClawVideo.Maui.Services;
 using CatClawVideo.Maui.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
@@ -469,25 +469,21 @@ public static class MauiProgram
             {
                 var database = app.Services.GetRequiredService<VideoDatabase>();
                 var subscriptionManager = app.Services.GetRequiredService<ISubscriptionManager>();
-                foreach (var sub in await database.GetSubscriptionsAsync())
+                // 多订阅并存（2026-09-26）：此前「第一个成功即 return」，第二个及以后的订阅
+                // 永远不生效（用户加了英格里希嗷呜仍只见饭太硬的站）。现在依次加载合并。
+                var subs = await database.GetSubscriptionsAsync();
+                var merged = await subscriptionManager.LoadAllSubscriptionsAsync(
+                    subs.Select(s => new CatClawVideo.Core.Interfaces.SubscriptionRef(s.Name, s.SourceUrl)));
+                if (merged.Count > 0)
                 {
-                    try
-                    {
-                        var sites = await subscriptionManager.LoadSubscriptionAsync(sub.SourceUrl);
-                        SiteRegistry.Replace(sites);
-                        CatClawVideo.Core.Models.SiteCache.Save(sites);   // 供下次启动秒读
-                        DiagLog.Write($"[启动] 订阅恢复成功: {sub.Name} ({sub.SourceUrl}) → {sites.Count} 站点");
-                        System.Diagnostics.Debug.WriteLine($"[启动] 订阅恢复成功: {sub.Name} ({sub.SourceUrl})");
-                        return;
-                    }
-                    catch (Exception ex)
-                    {
-                        // 落文件：Windows 无控制台，Debug.WriteLine 抓不到，否则「源没反应」查不出原因
-                        DiagLog.Write($"[启动] 订阅恢复失败 {sub.Name} ({sub.SourceUrl}): {ex.Message}");
-                        System.Diagnostics.Debug.WriteLine($"[启动] 订阅恢复失败 {sub.SourceUrl}: {ex.Message}");
-                    }
+                    SiteRegistry.Replace(merged);
+                    CatClawVideo.Core.Models.SiteCache.Save(merged);   // 供下次启动秒读
+                    DiagLog.Write($"[启动] 订阅恢复成功: {subs.Count} 个订阅 → 合并 {merged.Count} 站点");
                 }
-                DiagLog.Write("[启动] 所有订阅均恢复失败，站点列表为空");
+                else
+                {
+                    DiagLog.Write("[启动] 所有订阅均恢复失败，站点列表为空");
+                }
             }
             catch (Exception ex)
             {
