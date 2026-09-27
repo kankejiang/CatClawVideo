@@ -63,8 +63,10 @@ public class CompositeVodSourceProvider : IVodSourceProvider, IActionVodSourcePr
         var sources = await Required(site).GetPlaySourcesAsync(site, item, ct).ConfigureAwait(false);
 
         var engine = Interfaces.MagnetEngines.Thunder;
+        CatClawVideo.Maui.Services.BtFileLog.Write($"[磁力展开] engine={(engine?.Name ?? "<null>")} isReady={engine?.IsReady} busy={engine?.IsBusy}");
         if (engine is null || !engine.IsReady)
         {
+            CatClawVideo.Maui.Services.BtFileLog.Write("[磁力展开] 引擎不可用 → 保持站点原始选集");
             yield return Clone(sources);
             yield break;
         }
@@ -72,6 +74,8 @@ public class CompositeVodSourceProvider : IVodSourceProvider, IActionVodSourcePr
         var magnetCount = sources
             .SelectMany(s => s.Episodes)
             .Count(e => e.Url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase));
+        var firstUrl = sources.SelectMany(s => s.Episodes).Select(e => e.Url).FirstOrDefault() ?? "<无>";
+        CatClawVideo.Maui.Services.BtFileLog.Write($"[磁力展开] magnetCount={magnetCount} 线路={sources.Count} busy={engine.IsBusy} 首条url={firstUrl[..Math.Min(60, firstUrl.Length)]}");
         // ⚠ 流式路径用**宽上限**（不是全量路径的 12）：渐进产出下「串行解析拖慢详情页」
         // 不成立——首条磁力同步展开后立即上屏，其余后台逐条刷新，IsBusy/cancel/缓存
         // 三层都有效。12 的旧上限会把「13 条打包磁力」这类正常形态（如新6V 整季分包）
@@ -79,6 +83,7 @@ public class CompositeVodSourceProvider : IVodSourceProvider, IActionVodSourcePr
         // 文件拆分」的直接死因）。宽上限只防病态站点把引擎长期占满。
         if (magnetCount == 0 || magnetCount > MaxMagnetsToStreamExpand)
         {
+            CatClawVideo.Maui.Services.BtFileLog.Write($"[磁力展开] 计数为 0 或超上限 {MaxMagnetsToStreamExpand} → 保持站点原始选集");
             yield return Clone(sources);
             yield break;
         }
@@ -116,7 +121,11 @@ public class CompositeVodSourceProvider : IVodSourceProvider, IActionVodSourcePr
             for (int i = 0; i < src.Episodes.Count; i++)
             {
                 if (!src.Episodes[i].Url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase)) continue;
-                if (engine.IsBusy) return false;
+                if (engine.IsBusy)
+                {
+                    CatClawVideo.Maui.Services.BtFileLog.Write("[磁力展开] 首条跳过：引擎忙（有活跃播放/下载会话）");
+                    return false;
+                }
 
                 // 缓存命中无需再探（ExpandSingleMagnetAsync 内部会走缓存并回填）
                 var ok = await ExpandSingleMagnetAsync(src, i, engine, gate, ct).ConfigureAwait(false);
@@ -142,13 +151,22 @@ public class CompositeVodSourceProvider : IVodSourceProvider, IActionVodSourcePr
         {
             files = await ProbeOneAsync(engine, ep, gate, ct).ConfigureAwait(false);
         }
-        if (files is not { Count: > 0 }) return false;
+        if (files is not { Count: > 0 })
+        {
+            CatClawVideo.Maui.Services.BtFileLog.Write($"[磁力展开] 探测无果：{ep.Name[..Math.Min(40, ep.Name.Length)]}");
+            return false;
+        }
 
         var videos = files
             .Where(f => VideoExtensions.Contains(Path.GetExtension(f.Name)))
             .OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
-        if (videos.Count == 0) return false;
+        if (videos.Count == 0)
+        {
+            CatClawVideo.Maui.Services.BtFileLog.Write($"[磁力展开] 种子内无视频文件：{ep.Name[..Math.Min(40, ep.Name.Length)]}（共 {files.Count} 项）");
+            return false;
+        }
+        CatClawVideo.Maui.Services.BtFileLog.Write($"[磁力展开] {ep.Name[..Math.Min(40, ep.Name.Length)]} → {videos.Count} 个视频文件");
 
         // 幂等：已是展开态（首项名字与种子内首文件一致）就不重复替换
         if (src.Episodes[index].Name == videos[0].Name) return false;

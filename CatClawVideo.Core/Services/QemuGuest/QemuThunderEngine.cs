@@ -476,28 +476,30 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
         if (!IsTaskAlreadyExists(s))
             return (false, s.LastError ?? $"引擎未能在 20s 内启动下载任务（st={s.LastSt}）");
 
-        // 外部 VM（合并 guest）：机器是爬虫桥的，不能重启清任务表 —— 直接失败收场（上层回落内置 BT）。
-        // 引擎里同 btih 句柄仍在，重发 DL 只会再撞 9128，白等一轮。
-        if (_external is not null)
-        {
-            Log("外部 VM 模式不支持 9128 VM 级恢复（ART VM 归爬虫桥）：本任务失败收场");
-            s.Cancelled = true;
-            return (false, "引擎任务冲突（9128），外部 VM 模式无法重启清表");
-        }
-
-        Log("⚠ 引擎报 9128（同种子任务已存在）且 guest 侧 stopTask 清理无效 —— 重启 guest 重来一次");
+        Log("⚠ 引擎报 9128（同种子任务已存在）且 guest 侧 stopTask 清理无效 —— 重启引擎清任务表");
         _history.TryRemove(s.Magnet, out _);
 
-        // 重启 VM：guest 的引擎任务表随进程消失。数据面（下载目录 tmpfs）会丢，
+        // 重启引擎：guest 的引擎任务表随「进程/VM」消失。数据面（下载目录 tmpfs）会丢，
         // 但宿主磁盘缓存里的块还在，重下走磁盘命中。
         try { _server.SetCommand("STOP"); } catch { }
-        try { _runtime?.Stop(); } catch { }
-        _runtime = null;
+        if (_external is not null)
+        {
+            // 外部 VM（合并 guest）：VM 是爬虫桥的不能杀 —— 只重启 guest 内 harness 进程
+            //（EXIT → init 迅雷段的监督循环 2s 拉起），引擎任务表随进程清空，效果等同重启 VM，
+            // 且不影响爬虫桥（独立进程）。实测「退出播放页→重播同片必 9128」就靠这里救。
+            if (!await RestartExternalHarnessLockedAsync(ct).ConfigureAwait(false))
+                return (false, "引擎任务冲突（9128），且 harness 重启失败");
+        }
+        else
+        {
+            try { _runtime?.Stop(); } catch { }
+            _runtime = null;
+        }
         _session = null;
         s.Cancelled = true;              // 让可能还在跑的旧等待段退出
 
         if (!await EnsureStartedLockedAsync(ct).ConfigureAwait(false))
-            return (false, "引擎任务冲突（9128），且重启迅雷 VM 失败");
+            return (false, "引擎任务冲突（9128），且重启迅雷引擎失败");
 
         // 重新走「磁力 → 种子」：VM 重启后 tmpfs 是空的，种子文件必须重新落盘
         var s2 = await PrepareSessionLockedAsync(s.Magnet, pick.Name, ct).ConfigureAwait(false);
@@ -728,6 +730,24 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
     {
         Log("[引擎] 外部 VM 已退出（爬虫桥重置/崩溃）——结束迅雷会话，下次任务自动重拉");
         try { Teardown("外部 VM 退出"); } catch { }
+    }
+
+    /// <summary>合并模式专用：重启 guest 内迅雷 harness 进程（持 <see cref="_gate"/> 调用）。
+    ///
+    /// <para>背景（2026-09-27 实测）：引擎对同 btih 的任务句柄清理到分钟级甚至根本不清
+    /// （见 ctrlloop.c 的 9128 自愈注释），自起 VM 模式靠「杀 VM」兜底；合并模式 VM 归
+    /// 爬虫桥不能杀 —— 唯一可靠的等价复位是让 harness 进程退出（引擎任务表随进程清空），
+    /// 由合并 initrd 迅雷段的监督循环 2s 后拉起新进程并重新回连控制口。已下载数据不受影响
+    /// （/thunder-data 是 VM 级 tmpfs + 块设备，都不随 harness 进程死）。</para></summary>
+    private async Task<bool> RestartExternalHarnessLockedAsync(CancellationToken ct)
+    {
+        if (_external is null || _server is null) return false;
+        Log("[引擎] 合并模式：重启 guest 内迅雷 harness（EXIT → 监督循环拉起，引擎任务表清空）");
+        try { _server.SetCommand("EXIT"); } catch { }
+        _server.ResetFirstPoll();
+        var ok = await _server.WaitFirstPollAsync(TimeSpan.FromSeconds(120)).ConfigureAwait(false);
+        Log(ok ? "[引擎] harness 已重启并重新回连" : "[引擎] harness 重启后 120s 未回连（放弃）");
+        return ok;
     }
 
     /// <summary>唤醒被冻结的 VM（新会话前的必要动作：冻着的机器媒体口不会应答）。</summary>
@@ -1101,15 +1121,18 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
                 {
                     try
                     {
-                        // 外部 VM（合并 guest）：机器是爬虫桥的，不能重启清任务表 —— 本会话失败收场，
-                        // 下次任务从 TASK MAGNET 重新走（引擎同 btih 句柄仍在，可能再撞 9128 → 回落内置 BT）。
+                        // 外部 VM（合并 guest）：机器是爬虫桥的，不能重启 VM —— 等价复位 =
+                        // 重启 guest 内 harness 进程（引擎任务表随进程清空，爬虫桥不受影响）。
                         if (_external is not null)
                         {
-                            Log("外部 VM 模式不支持 VM 级恢复（ART VM 归爬虫桥）：本次任务失败收场");
+                            Log("外部 VM 模式：VM 级恢复改为重启 guest 内 harness（清空引擎任务表）");
                             _history.TryRemove(s.Magnet, out _);
                             try { _server?.SetCommand("STOP"); } catch { }
                             _session = null;
                             s.Cancelled = true;
+                            if (!await RestartExternalHarnessLockedAsync(CancellationToken.None).ConfigureAwait(false))
+                            { Log("harness 重启失败（guest 起不来）"); return; }
+                            Log("harness 已重启，引擎任务表已清空（下载可重新发起）");
                             return;
                         }
                         Log("任务自动恢复次数用尽 → 尝试 VM 级恢复（重启 guest 清空引擎任务表）");

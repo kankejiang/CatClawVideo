@@ -855,6 +855,14 @@ static void main_loop(void) {
                     g_torrent_reported = 0; g_play_reported = 0;
                     ctrl_report("stopped", 0, 0, 0, 0, 0, "");
                 }
+            } else if (!strncmp(cmd, "EXIT", 4)) {
+                // 宿主要求重启 harness（引擎任务句柄清不掉时唯一的可靠复位，见合并模式
+                // QemuGuestEngine.RestartExternalHarnessLockedAsync）：进程退出 → 合并 initrd
+                // 迅雷段的监督循环 2s 后拉起新 harness（引擎任务表随进程清空）。
+                // /thunder-data（VM 级 tmpfs）与块设备数据不受影响。
+                printf("[ctrl] EXIT → 进程退出（监督循环将重启 harness，引擎任务表清空）\n");
+                fflush(stdout);
+                _exit(0);
             } else if (!strncmp(cmd, "GLOAD ", 6)) {
                 // Guard 模块加载 so（jar hash 由宿主下发；实际 dlopen 在 guard 线程做——so 状态线程相关）
                 guard_on_cmd(cmd);

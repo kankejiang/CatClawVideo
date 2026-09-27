@@ -19,7 +19,12 @@ import os
 import sys
 
 # 从 pkg（迅雷）并入 ART 的文件（ART 里没有的才追加；已有同名则替换）
+# ⚠ harness 必须从 pkg 取：pkg_initrd.gz 由 repack_initrd.cs 维护（ctrlloop.c 改动后
+#   重编译的 harness 都打进那里），ART 基座里是旧版 —— 追加条目在 cpio 末尾、解包时
+#   覆盖同名前条目，pkg 的新 harness 才是生效的那份（2026-09-27 实测漏加导致
+#   「EXIT 命令不生效」假象）。
 TAKE_FROM_PKG = {
+    "harness",
     "system/lib64/libxl_thunder_sdk.so",
     "system/lib64/libxl_stat.so",
     "thunder-data/setting.cfg",
@@ -60,9 +65,18 @@ if [ -n "$TP" ] && [ -x /harness ]; then
         $BB sleep 1; i=$((i+1))
     done
     $BB mkdir -p /thunder-data 2>/dev/null
-    # 输出留到 /thunder.log（不吞）：排障要看崩溃/连接日志（cat /thunder.log）
-    /harness >/thunder.log 2>&1 &
-    echo "[thunder] harness 已起（CTRL_PORT=$TP BLK_DEV=${BLK_DEV:-无}，日志 /thunder.log）"
+    # 监督循环：harness 退出（崩溃 / 宿主 EXIT 重置）→ 2s 后拉起新进程。
+    # 引擎任务表随进程清空（合并模式宿主靠它做 9128 等价「重启 VM」复位）；
+    # /thunder-data 是 VM 级 tmpfs、块设备数据在宿主镜像 —— 都不随 harness 进程死。
+    # 输出续写 /thunder.log（不吞）：排障要看崩溃/连接日志（cat /thunder.log）。
+    (
+      while true; do
+        /harness >>/thunder.log 2>&1
+        echo "[thunder] harness 退出（code=$?），2s 后重启（引擎任务表清空）"
+        $BB sleep 2
+      done
+    ) &
+    echo "[thunder] harness 监督循环已起（CTRL_PORT=$TP BLK_DEV=${BLK_DEV:-无}，日志 /thunder.log）"
 fi
 '''
 
