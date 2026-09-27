@@ -256,7 +256,17 @@ public sealed class QemuArtGuest : IDisposable
                 // 在 2~4 vCPU（docs/qemu-tcg-tuning.md §6，>4 反而更慢），4 是上限取值。
                 // 合并模式要同时扛「桥 + 迅雷引擎」，内存上调（有 swap 时冷页可换出）
                 GuestMemoryMb = ThunderMerged ? 3072 : 2048,
-                SmpCount = 4,
+                // vCPU 按虚拟化方式分（2026-09-27 用户提出 x86 方案应吃更多核）：
+                // · aarch64 = TCG 软件模拟：2~4 峰值、>4 反而更慢（翻译块缓存与翻译锁全局共享，
+                //   12 vCPU 实测 0.78×）→ 保持 4，弱机按宿主核数收缩（QemuHostRuntime 默认语义）。
+                // · x86 = WHPX 硬件虚拟化：vCPU 是真宿主线程、真并行，TCG 的上限理由全部不成立
+                //   → 给宿主逻辑核的一半（留核给宿主侧代理/SLIRP/应用本体），下限 4 上限 12。
+                //   ⚠ WHPX 不可用时 QEMU 自动落 TCG，此时该值偏大（TCG 多 vCPU 反噬）——
+                //   x86 guest 目前仅 CATCLAW_X86_GUEST=1 实验开关启用，验收时如遇无 WHPX
+                //   机器再按需降。
+                SmpCount = GuestArch == GuestArch.X86_64
+                    ? Math.Clamp(Environment.ProcessorCount / 2, 4, 12)
+                    : Math.Clamp(Environment.ProcessorCount, 1, 4),
                 // ⚠ aarch64 必须是 virtio-net-device：ART initrd 只 insmod virtio_mmio+virtio_net，
                 //   用 PCI 版 guest 里没有 eth0，hostfwd 永远连不上（实测踩过）。
                 //   x86（q35）走 PCI：virtio-net-pci + Debian 内核模块链（见 mk_x86_initrd.sh）。

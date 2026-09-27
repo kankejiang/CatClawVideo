@@ -89,6 +89,10 @@ public sealed class QemuHostRuntime : IDisposable
     /// 所以多实例场景交给操作系统调度器分时即可，不要把单实例的 -smp 反向放大。</para>
     ///
     /// <para>下调到宿主核数是为了弱机：4 核以下按实际核数给，避免在 2 核机器上超订。</para>
+    ///
+    /// <para>⚠ 上限 4 是 **TCG（aarch64）语义**。WHPX（x86 硬件虚拟化）下 vCPU 是真宿主
+    /// 线程、真并行，翻译锁/超订的理由全部不成立 —— 由调用方按架构覆盖
+    /// （QemuArtGuest：x86 给宿主逻辑核一半，Clamp 4~12）。</para>
     /// </summary>
     public int SmpCount { get; set; } = Math.Clamp(Environment.ProcessorCount, 1, 4);
 
