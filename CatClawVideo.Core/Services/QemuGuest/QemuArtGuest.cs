@@ -207,9 +207,12 @@ public sealed class QemuArtGuest : IDisposable
     {
         // 三件套校验按架构取文件名（x86 mini guest：Debian 内核 + x86 引擎 + art_initrd_x64.gz）
         var qemuExe = GuestArch == GuestArch.X86_64 ? GuestQemuExeName : "qemu-system-aarch64.exe";
-        // 合并模式（ThunderMerged）优先用合并 initrd；x86 走各自的 override，aarch64 用默认名
-        var initrdFile = ThunderMerged ? MergedInitrdName
-            : GuestArch == GuestArch.X86_64 ? GuestInitrdName : InitrdName;
+        // ⚠ 架构优先于合并：merged initrd 是 aarch64 专属（x86 的迅雷走 qemu-aarch64-static
+        //   转译路线、资产独立）——2026-09-27 实测「合并优先」会让 x86 内核拿到 aarch64
+        //   rootfs（busybox ENOEXEC）→ kernel panic "No working init found"。
+        var initrdFile = GuestArch == GuestArch.X86_64
+            ? GuestInitrdName
+            : ThunderMerged ? MergedInitrdName : InitrdName;
         var kernelFile = KernelFileName;
         var missing = new[] { qemuExe, kernelFile, initrdFile }
             .Where(f => !File.Exists(Path.Combine(_runtimeDir, f))).ToList();
