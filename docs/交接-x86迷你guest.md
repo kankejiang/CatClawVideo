@@ -533,17 +533,28 @@ init.tmpl.sh 的 `CATCLAW_BCP_LOCATIONS + -Xnorelocate` 立即生效（已就位
   —— dex2oat 的运行依赖库（libart/libLLVM 等）在 `sys28\lib64` 基本齐全。
 - 108：`/usr/bin/qemu-aarch64-static` 就绪；qemu-user `-L <sys28>` 模式已验证（§6.8）。
 
-**实施步骤**（下轮开工）：
-1. WSL 挂 `artroot.raw`（`mount -o loop,ro`）→ 提取 `dex2oat(d)` + `libartd*` 等缺库进 `sys28`。
-2. 108：`qemu-aarch64-static -L <sys28> <sys28>/bin/dex2oatd --version` 跑通（依赖缺啥补啥）。
-3. 组装 boot image 生成：`dex2oatd --runtime-arg -Xbootclasspath:<15 项> --runtime-arg
-   -Xnorelocate --image=.../boot.art --oat-file=.../boot.oat --dex-file=<15 jar，dex-location
-   对齐 BCP> --instruction-set=arm64`（产物校验链自洽）。
-4. 产物（boot.art/oat/vdex）打进 initrd（mk_art_initrd 资产替换或 merge 追加）→ 108 实测：
-   `imageless` 日志消失 + `timed_restart.sh` 对比（目标 <25s）。
-5. 顺带裁剪上表可裁项 → 重压 zstd → 安装包二次瘦身。
-6. 全链路回归：桥 ping / 站点加载 / 磁力（合并）/ Guard——AOT 模式与原 imageless 行为差异
-   重点盯 Guard 解壳与 DexClassLoader（2026-09-27 的线程域/注册时序结论在 AOT 下需复验）。
+**实施步骤**（2026-09-28 首轮：工具链已通，卡点已定位）：
+1. ✅ WSL2 挂 `artroot.raw`（ext4）→ 提取 `dex2oat/dex2oatd`（740KB/1MB，动态链 libart）。
+2. ✅ 108：merged initrd 解包成 `art-tree`（dex2oat 的运行环境与输入 jar 同源）；qemu-user
+   `-L art-tree dex2oatd --version` 跑通；**fakelogd 通道**（宿主造 `/dev/socket` + art-tree/
+   fakelogd）拿到了 dex2oat 的真实日志——第一轮报 `--android-root unspecified`，补
+   `--android-root=<tree>` 后 BCP 被 accept（`setting boot class path to ...`）。
+3. ⚠ **卡点（新发现）**：`No dex files in zip file '/system/framework/ext.jar'`——
+   **系统镜像的 framework jar 是 stub（无 dex），真实代码在 `boot.vdex`（19.7MB）**。
+   dex2oat 编译需先 `vdexExtractor`（anestisb/vdexExtractor，108 gcc 可编）从 vdex 抽
+   dex，再以 `--dex-location` 对齐 jar 路径编译——产物校验与「stub jar + vdex」的真机
+   语义自洽。
+4. ⏳ vdex 抽 dex → 全量 dex2oat（qemu-user 慢，预计 1~3h 后台）→ 产物（boot.art/oat/vdex）
+   进 initrd → `imageless` 消失 + `timed_restart.sh` 对比（目标 <25s）。
+5. ⏳ 裁剪清单：**首轮实测 TIMEOUT**——裁 libLLVM_android/libartd/libartd-compiler/libpac/
+   libbluetooth/libpdfium 6 项后 guest 桥 300s 未就绪（6 者中有隐藏依赖，机制保留在
+   mk_art_initrd 的 `EXCLUDE_SYSTEM`（现清单空），**逐个二分定位后再启用**）。
+6. ⏳ 全链路回归：桥 ping / 站点 / 磁力（合并）/ Guard——AOT 与 imageless 行为差异重点盯
+   Guard 解壳与 DexClassLoader（线程域/注册时序结论在 AOT 下需复验）。
+
+---
+
+## 7. 未完成任务
 
 ---
 

@@ -151,10 +151,20 @@ def build_initrd(a):
             dirs_of(rel)
             ents.append((rel, 0o120777, 0, 0, 1, 0, 0, 0, 0, 0, tgt.encode()))
     skipped = 0
+    excluded = 0
+    # ── /system 裁剪（§6.10）：机制已就绪，**清单暂空**——
+    # 2026-09-28 首轮实测：裁 libLLVM_android/libartd/libartd-compiler/libpac/libbluetooth/
+    # libpdfium 6 项后 guest 300s 桥未就绪（TIMEOUT），6 者中有隐藏依赖，需逐个二分定位。
+    # （dex2oat 工具链三件：boot 镜像离线生成走 108 qemu-user——但 ART 的 linker namespace
+    #   或 JIT 路径可能仍引用，先别裁；libpac/bluetooth/pdfium 同批嫌疑。）
+    EXCLUDE_SYSTEM = set()
     for root, ds, fs in os.walk(a.sys28):
         for f in fs:
             fp = os.path.join(root, f)
             rel = "system/" + os.path.relpath(fp, a.sys28).replace("\\", "/")
+            if rel in EXCLUDE_SYSTEM:
+                excluded += 1
+                continue
             try:
                 data = io.open(fp, "rb").read()
             except OSError:
@@ -196,8 +206,8 @@ def build_initrd(a):
         blob = gzip.compress(raw, 6, mtime=0)
         kind = "gzip-6"
     io.open(a.out, "wb").write(blob)
-    print("art_initrd: cpio %.1fMB → %s %.1fMB（%s），/system 跳过 %d 个打不开的文件"
-          % (len(raw) / 1048576, kind, os.path.getsize(a.out) / 1048576, a.out, skipped))
+    print("art_initrd: cpio %.1fMB → %s %.1fMB（%s），/system 跳过 %d 个打不开的文件、裁剪 %d 个无用件"
+          % (len(raw) / 1048576, kind, os.path.getsize(a.out) / 1048576, a.out, skipped, excluded))
 
 
 def main():
