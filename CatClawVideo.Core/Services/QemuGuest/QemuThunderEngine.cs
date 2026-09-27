@@ -55,6 +55,8 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
     private QemuHostRuntime? _runtime;
     /// <summary>外部 VM 租约（合并 guest 模式）：非空时 VM 归 QemuArtGuest，本引擎不自起 QEMU。</summary>
     private QemuArtGuest.ThunderLease? _external;
+    /// <summary>最近一次 PrepareSession 失败原因（外层 9128 自愈判断用；成功/开始时清空）。</summary>
+    private string? _lastPrepareError;
     private QemuControlServer? _server;
     private int _mediaPort;
     private int _monitorPort;
@@ -903,9 +905,24 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
         return true;
     }
 
-    /// <summary>Phase 1：下发磁力并把 .torrent 拉回来展开文件列表（成功即缓存会话）。</summary>
+    /// <summary>Phase 1 包装：合并模式下 TASK MAGNET 撞 9128（同 btih 句柄顽留，STOP 也清不掉）
+    /// → 重启 harness 清任务表后重试一次（自起 VM 模式的等价兜底是杀 VM）。2026-09-27 实测：
+    /// 「退出播放页→重播同片」在合并模式 100% 触发此路径。</summary>
     private async Task<Session?> PrepareSessionLockedAsync(string magnet, string? preferName, CancellationToken ct)
     {
+        var s = await PrepareSessionCoreLockedAsync(magnet, preferName, ct).ConfigureAwait(false);
+        if (s is not null || _external is null) return s;
+        if (_lastPrepareError is null || !_lastPrepareError.Contains("9128", StringComparison.Ordinal)) return s;
+        Log("[引擎] TASK MAGNET 撞 9128（同 btih 句柄顽留）→ 重启 harness 清表后重试一次");
+        if (!await RestartExternalHarnessLockedAsync(ct).ConfigureAwait(false)) return null;
+        return await PrepareSessionCoreLockedAsync(magnet, preferName, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Phase 1 核心：下发磁力并把 .torrent 拉回来展开文件列表（成功即缓存会话）。
+    /// 失败原因记入 <see cref="_lastPrepareError"/>（外层 9128 自愈判断用）。</summary>
+    private async Task<Session?> PrepareSessionCoreLockedAsync(string magnet, string? preferName, CancellationToken ct)
+    {
+        _lastPrepareError = null;
         // 历史命中：同一磁力直接复用（含文件列表/种子路径），不再发 TASK MAGNET（9128 重复任务）
         if (_history.TryGetValue(magnet, out var hist) && hist.Files.Count > 0)
         {
@@ -949,7 +966,7 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
         while (DateTime.UtcNow < hardDeadline)
         {
             if (s.Cancelled) return null;
-            if (s.LastError is not null) { Log(s.LastError); _session = null; return null; }
+            if (s.LastError is not null) { Log(s.LastError); _lastPrepareError = s.LastError; _session = null; return null; }
 
             var data = await TryFetchTorrentQuietAsync(directTorrentPath, ct).ConfigureAwait(false);
             if (data is null && (s.TorrentRawPath.Length > 0 || s.TorrentUrlPath.Length > 0))
@@ -977,6 +994,7 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
         if (parsed is null)
         {
             Log($"等种子落盘超时（{(DateTime.UtcNow - startUtc).TotalSeconds:F0}s，疑似死链或无资源）");
+            _lastPrepareError = "timeout";
             _session = null;
             return null;
         }

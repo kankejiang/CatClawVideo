@@ -7,8 +7,14 @@ namespace CatClawVideo.Core.Providers;
 /// <summary>
 /// 聚合路由 Provider：按站点的 CanHandle 把请求路由到具体实现
 /// （MacCMS json 直连 / TVBox spider 爬虫）。HomeViewModel / WatchPage 统一注入本类。
+/// <para>⚠ 必须显式声明 <see cref="CatClawVideo.Core.Interfaces.IProgressiveVodSourceProvider"/>：
+/// StreamPlaySourcesAsync 方法单独存在不算实现——曾因接口未挂，WatchPage 的
+/// <c>_provider is IProgressiveVodSourceProvider</c> 恒 false，流式展开从未生效
+/// （全部走全量阻塞路径，超 12 条打包磁力的整季直接不展开——2026-09-27 用户实测
+/// 「选集不按文件拆分」的总根因）。</para>
 /// </summary>
-public class CompositeVodSourceProvider : IVodSourceProvider, IActionVodSourceProvider
+public class CompositeVodSourceProvider : IVodSourceProvider, IActionVodSourceProvider,
+    CatClawVideo.Core.Interfaces.IProgressiveVodSourceProvider
 {
     private readonly IReadOnlyList<IVodSourceProvider> _providers;
 
