@@ -63,6 +63,18 @@ static const char *BCP =
     ":/system/framework/framework-oahl-backward-compatibility.jar:/system/framework/android.test.base.jar";
 
 int main(int argc, char **argv) {
+    /* 属性可达性探针：nativebridge 属性是否经 proppreload 可读（libart 同进程同路径）。
+     * 输出空值 = 拦截缺口（proppreload 缺 __system_property_find/read_callback 实现）。 */
+    {
+        char v[92] = {0};
+        const char *names[] = {"ro.dalvik.vm.native.bridge", "ro.enable.native.bridge.exec",
+                               "ro.dalvik.vm.isa.arm64"};
+        for (int i = 0; i < 3; i++) {
+            int n = __system_property_get(names[i], v);
+            printf("artlaunch: prop[%s] = %.*s\n", names[i], n > 0 ? n : 0, v);
+        }
+        fflush(stdout);
+    }
     /* Android 11+ 的 libnativeloader 需要显式初始化（正常由 AndroidRuntime::StartVM 代劳，
      * 我们直调 JNI_CreateJavaVM 绕过了它）——不初始化的话 CreateVM 内部第一个系统库
      * dlopen（libandroid.so）直接 abort：GetSystemNamespace 失败（2026-09-27 实测）。
@@ -73,6 +85,25 @@ int main(int argc, char **argv) {
         void (*initnl)(void) = nl ? (void (*)(void)) dlsym(nl, "InitializeNativeLoader") : NULL;
         if (initnl) { initnl(); printf("artlaunch: nativeloader 已初始化\n"); }
         else printf("artlaunch: 无 InitializeNativeLoader（老版本跳过）\n");
+        /* 转译器可加载性探针：dlopen libndk_translation.so（nativebridge 主库），
+         * 失败的 dlerror 会直接指出缺依赖/路径问题（与 ART 的调用链无关）。 */
+        {
+            void *nb = dlopen("libndk_translation.so", RTLD_NOW | RTLD_GLOBAL);
+            printf("artlaunch: dlopen libndk_translation = %s\n", nb ? "OK" : dlerror());
+            fflush(stdout);
+            /* 正常由 app_process 的 AndroidRuntime 代劳：LoadNativeBridge + NativeBridgeInitialize。
+             * 我们直调 JNI_CreateJavaVM 绕过了它 → libart 的 Runtime::InitNativeBridge 因
+             * NativeBridgeInitialized()=false 走属性路径（实测未触发，原因待查）——干脆手工初始化。
+             * 成功后 libart 在 dlopen arm64 so 时经 nativebridge 钩子交给 libndk 转译执行。 */
+            if (nb) {
+                void *nbl = dlopen("libnativebridge.so", RTLD_NOW | RTLD_GLOBAL);
+                if (nbl) {
+                    bool (*LoadNB)(const char*, const void*) =
+                        (bool (*)(const char*, const void*)) dlsym(nbl, "LoadNativeBridge");
+                    if (LoadNB) printf("artlaunch: LoadNativeBridge = %d\n", LoadNB("libndk_translation.so", NULL));
+                } else printf("artlaunch: dlopen libnativebridge failed: %s\n", dlerror());
+            }
+        }
         fflush(stdout);
     }
 
@@ -137,6 +168,16 @@ int main(int argc, char **argv) {
     printf("artlaunch: JNI_CreateJavaVM = %d\n", rc);
     fflush(stdout);
     if (rc != JNI_OK || env == NULL) return 1;
+    /* nativebridge 初始化（正确签名+时机）：正常由被绕过的 AndroidRuntime 在
+     * CreateVM 后调 InitializeNativeBridge(env, isa)——libart 只 Load 不 Init。 */
+    {
+        void *nbl = dlopen("libnativebridge.so", RTLD_NOW | RTLD_GLOBAL);
+        bool (*InitNB)(JNIEnv*, const char*) =
+            (bool (*)(JNIEnv*, const char*)) dlsym(nbl, "InitializeNativeBridge");
+        if (InitNB) printf("artlaunch: InitializeNativeBridge = %d\n", InitNB(env, "arm64"));
+        else printf("artlaunch: 无 InitializeNativeBridge 符号\n");
+        fflush(stdout);
+    }
 
     /* boot classpath 里 android.os.SystemProperties / android.util.Log 的 native 平时由
      * libandroid_runtime 在 zygote 启动时注册；我们没有那条路，所以让预加载的

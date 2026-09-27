@@ -31,11 +31,22 @@ $BB sleep 1
 
 export ANDROID_ROOT=/system ANDROID_DATA=/data ANDROID_STORAGE=/storage
 export ANDROID_ART_ROOT=/apex/com.android.art
+export ANDROID_I18N_ROOT=/apex/com.android.i18n
+export ANDROID_TZDATA_ROOT=/apex/com.android.tzdata
 export TMPDIR=/data/local/tmp
 export LD_LIBRARY_PATH=/apex/com.android.art/lib64:/apex/com.android.os.statsd/lib64:/system/lib64
 # 13 的 boot classpath：core 五件在 ART apex，framework 件在 /system/framework
-export CATCLAW_BCP="/apex/com.android.art/javalib/core-oj.jar:/apex/com.android.art/javalib/core-libart.jar:/apex/com.android.art/javalib/okhttp.jar:/apex/com.android.art/javalib/bouncycastle.jar:/apex/com.android.art/javalib/apache-xml.jar:/system/framework/framework.jar:/system/framework/ext.jar:/system/framework/telephony-common.jar:/system/framework/voip-common.jar:/system/framework/ims-common.jar:/system/framework/android.hidl.base-V1.0-java.jar:/system/framework/android.hidl.manager-V1.0-java.jar:/system/framework/android.test.base.jar"
+# BCP 全部走 /system 路径（core jar 已从 apex 拷出）——避免触发 apex linker namespace
+export CATCLAW_JVM_EXTRA="-Xnoimage-dex2oat -Xnodex2oat"
+export CATCLAW_BCP="/system/javalib/core-oj.jar:/system/javalib/core-libart.jar:/system/javalib/core-icu4j.jar:/system/javalib/okhttp.jar:/system/javalib/bouncycastle.jar:/system/javalib/apache-xml.jar:/system/javalib/conscrypt.jar:/system/framework/framework.jar:/system/framework/ext.jar:/system/framework/telephony-common.jar:/system/framework/voip-common.jar:/system/framework/ims-common.jar:/system/framework/android.hidl.base-V1.0-java.jar:/system/framework/android.hidl.manager-V1.0-java.jar:/system/framework/android.test.base.jar"
 
+# ── ARM 转译内核层注册（binfmt_misc）──
+# ndk_translation 的 arm64 runner 走 execve 注册：arm64 ELF（e_machine 低字节 b7=183）由
+# /system/bin/ndk_translation_program_runner_binfmt_misc_arm64 接管。
+# PreInitializeNativeBridge 会 exec arm64 wrapper，不注册则 ENOEXEC/x86 linker 报架构错。
+mkdir -p /binfmt_misc
+mount -t binfmt_misc none /binfmt_misc 2>/dev/null
+echo ':arm64_exe:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7::/system/bin/ndk_translation_program_runner_binfmt_misc_arm64:P' > /binfmt_misc/register 2>/dev/null && echo "[init] binfmt arm64 已注册" || echo "[init] binfmt 注册跳过"
 LD_PRELOAD=/proppreload.so /system/bin/artlaunch bridge.GuestMain /gb.dex:/tvbox.apk $PORT &
 LP=$!
 while true; do

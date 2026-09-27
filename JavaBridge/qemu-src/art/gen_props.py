@@ -1,8 +1,17 @@
 """从镜像自己的 build.prop + prop.default 生成 proppreload 的属性表（init 读的就是这两份）。"""
-import io, re, os
+import io, re, os, sys
+
+# 用法：python gen_props.py [aarch64|x86_64]
+#   aarch64（默认）→ v1/props_gen.h    —— 现网 aarch64 guest，行为零变化
+#   x86_64          → props_gen_x64.h —— x86 mini guest：追加 nativebridge（libndk）属性组，
+#                     让 ART 把 arm64 so 的 dlopen 转给 Google ndk_translation 转译执行
+#                     （prebuilts 来自 supremegamers 的 ChromeOS sdk_gphone_x86_64:13 抽取）。
+arch = sys.argv[1] if len(sys.argv) > 1 else 'aarch64'
 
 props = {}
-for f in ('sys28/build.prop', 'sys28/etc/prop.default'):
+# 镜像属性源按架构：aarch64 用 sys28（Android9 dump），x86_64 用 x86sys（Waydroid Android13 rootfs）
+mirror_dir = 'x86sys' if arch == 'x86_64' else 'sys28'
+for f in (f'{mirror_dir}/build.prop', f'{mirror_dir}/etc/prop.default'):
     if not os.path.exists(f):
         print("缺", f); continue
     for ln in io.open(f, encoding='utf-8', errors='replace'):
@@ -33,11 +42,25 @@ extra = {
 }
 props.update(extra)
 
+if arch == 'x86_64':
+    # nativebridge 属性组（x86 mini guest 专属）：arm64 so 的加载交给 libndk_translation。
+    # abilist 把 arm64-v8a 排在 x86_64 之后：优先原生，arm64 走转译。32 位不转译（abilist32 空）。
+    props.update({
+        'ro.enable.native.bridge.exec': '1',
+        'ro.dalvik.vm.isa.arm': 'x86',
+        'ro.dalvik.vm.isa.arm64': 'x86_64',
+        'ro.dalvik.vm.native.bridge': 'libndk_translation.so',
+        'ro.product.cpu.abi': 'x86_64',
+        'ro.product.cpu.abilist': 'x86_64,arm64-v8a',
+        'ro.product.cpu.abilist64': 'x86_64,arm64-v8a',
+    })
+
 def esc(s):
     return s.replace('\\', '\\\\').replace('"', '\\"')
 
 body = ''.join('    { "%s", "%s" },\n' % (esc(k), esc(v)) for k, v in sorted(props.items()))
-io.open('v1/props_gen.h', 'w', encoding='utf-8', newline='').write(
+out = 'props_gen_x64.h' if arch == 'x86_64' else 'v1/props_gen.h'
+io.open(out, 'w', encoding='utf-8', newline='').write(
     '/* 自动生成，别手改：gen_props.py 从镜像的 /system/build.prop + /etc/prop.default\n'
     '   + 我们的覆盖项（排在后面，__system_property_find 从后往前扫 ⇒ 覆盖生效）。 */\n'
     'static PV g_props[] = {\n' + body + '};\n')

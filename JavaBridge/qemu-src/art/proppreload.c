@@ -34,8 +34,14 @@ typedef struct prop_info {
 
 typedef struct { char name[PROP_NAME_MAX]; char value[PROP_VALUE_MAX]; } PV;
 
-/* Android 9 (API 28) arm64 模拟器镜像的等价值；顺序无所谓，查找是线性的。 */
+/* 属性表按架构二选一（gen_props.py 生成）：
+ *   默认 v1/props_gen.h    —— aarch64 现网表
+ *   -DX86_GUEST → props_gen_x64.h —— x86 mini guest 表（含 nativebridge/libndk 属性组） */
+#ifdef X86_GUEST
+#include "props_gen_x64.h"
+#else
 #include "props_gen.h"
+#endif
 
 
 #define NPROPS ((int) (sizeof(g_props) / sizeof(g_props[0])))

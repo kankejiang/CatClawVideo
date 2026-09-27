@@ -73,3 +73,24 @@ QemuGuest/
 - tools/x86guest/run_x86_test.sh / diag.sh / diag2.sh —— 测试与诊断
 - tools/slim_sys28.py —— aarch64 sys28 闭包裁剪（libpdfium 事故修正版）
 - C# 接线：JavaSpiderRuntime（CATCLAW_X86_GUEST=1 实验开关，默认关）
+## 阶段 2 转译攻坚日志（2026-09-27，进行中）
+
+ndk_translation（ChromeOS sdk_gphone_x86_64:13 官方抽取，supremegamers 仓库 11arm_13arm64 分支，prebuilts 约 42MB）已并入 rootfs：
+
+| 项 | 状态 |
+|----|------|
+| gen_props.py 架构化（x86_64 → props_gen_x64.h，nativebridge 属性组） | ✅ |
+| proppreload.c 宏选属性表（-DX86_GUEST），157 条在跑 | ✅ |
+| artlaunch 探针：3 个 nativebridge 属性全部可达 | ✅ |
+| dlopen libndk_translation 主库 | ✅ 依赖齐全 |
+| LoadNativeBridge（手工补，libart 只 Load 不 Init） | ✅ =1，state kOpened |
+| InitializeNativeBridge(env,"arm64")（正确签名+时机） | ❌ =0，转译器回调失败，日志被 fakelogd 吞 |
+| PreInitializeNativeBridge（exec arm64 wrapper） | ❌ 双架构 linker config 深水区，artlaunch 崩溃 → 已回退 |
+| binfmt_misc 注册（挂载点必须在 rootfs /binfmt_misc，procfs 不支持 mkdir） | ✅ 基础设施就绪 |
+
+结果：**非 Guard 源在 x86 guest 完全可用（原生速度）**；Guard 源暂由 aarch64 guest 兜底。
+
+下次路线：
+1. fakelogd 打印完整 priority/tag/msg → 拿到 ndk initialize 的真实失败原因（当前只有 tag）；
+2. arm64 wrapper 的 ld.config 双架构分离（arm64 linker 读到了 x86 的 ld.config.txt 抓错库）；
+3. binfmt 基础设施已就绪（arm64_exe 注册串在 ndk 包 etc/binfmt_misc/，runner 在 bin/ 顶层）。
