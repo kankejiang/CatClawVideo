@@ -119,7 +119,12 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
         ColdStartStatus.Text = siteCount == 0
             ? "正在恢复订阅与站点…"
             : SiteRegistry.JarSpiderAvailable
+#if ANDROID
+                // Android 的 jar 桥是进程内 DexClassLoader（没有 QEMU），冷启动只是 dex 加载，秒级
+                ? "正在启动爬虫运行时…"
+#else
                 ? "正在启动视频引擎（QEMU ART 冷启动，约 40 秒）…"
+#endif
                 : "正在加载首页数据…";
     }
 
