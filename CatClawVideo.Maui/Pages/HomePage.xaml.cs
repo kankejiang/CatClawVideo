@@ -77,6 +77,7 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
     // 轮询（400ms）而非事件接线：订阅/引擎/首页数据三个信号分属三层，轮询最省接线。
 
     private IDispatcherTimer? _coldStartTimer;
+    private readonly DateTime _coldStartUtc = DateTime.UtcNow;
 
     private void StartColdStartOverlay()
     {
@@ -103,6 +104,18 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
     private void ApplyColdStartStatus()
     {
         var siteCount = SiteRegistry.Playable.Count();
+        var elapsed = (DateTime.UtcNow - _coldStartUtc).TotalSeconds;
+
+        // ── 进度条（假进度，按实测耗时标定）──
+        // 冷启动大头 = ART guest 41~46s：把「引擎阶段」锚定到 45s 走到 ~85%，先快后慢
+        //（elapsed/55 线性爬升 + 0.15 起跳，前 10s 观感推进明显、后期放缓不死等）；
+        // 订阅未就绪钉在 5%；数据上屏瞬间充满（淡出前的收尾）。
+        double p = siteCount == 0
+            ? 0.05
+            : Math.Min(0.85, 0.15 + elapsed / 55.0);
+        if (_vm.Categories.Count > 0) p = 1.0;
+        _ = ColdStartProgress.ProgressTo(p, 380, Easing.Linear);
+
         ColdStartStatus.Text = siteCount == 0
             ? "正在恢复订阅与站点…"
             : SiteRegistry.JarSpiderAvailable
