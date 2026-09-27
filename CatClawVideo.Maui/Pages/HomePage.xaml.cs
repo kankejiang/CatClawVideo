@@ -65,6 +65,56 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
 
         // 列表数据变化后（首次加载/翻页）刷新列数并复位越界焦点
         _vm.Items.CollectionChanged += (_, _) => MainThread.BeginInvokeOnMainThread(OnItemsChanged);
+
+        StartColdStartOverlay();
+    }
+
+    // ═══════════ 冷启动遮罩 ═══════════
+    //
+    // ART guest（QEMU TCG）冷启动实测 41~46 秒（解 590MB initrd + ART 运行时 boot），
+    // 期间海报墙全空、只有站点条一行小字——体感「白屏卡死」（2026-09-27 用户反馈）。
+    // 遮罩分阶段显示真实进度；首页数据（分类）就绪即淡出进入主界面。
+    // 轮询（400ms）而非事件接线：订阅/引擎/首页数据三个信号分属三层，轮询最省接线。
+
+    private IDispatcherTimer? _coldStartTimer;
+
+    private void StartColdStartOverlay()
+    {
+        _coldStartTimer = Dispatcher.CreateTimer();
+        _coldStartTimer.Interval = TimeSpan.FromMilliseconds(400);
+        _coldStartTimer.Tick += (_, _) => UpdateColdStartOverlay();
+        _coldStartTimer.Start();
+        UpdateColdStartOverlay();
+    }
+
+    private void UpdateColdStartOverlay()
+    {
+        // 数据就绪（分类已上屏）= 冷启动结束：停表并淡出进主界面
+        if (_vm.Categories.Count > 0)
+        {
+            _coldStartTimer?.Stop();
+            _coldStartTimer = null;
+            MainThread.BeginInvokeOnMainThread(() => _ = FadeOutColdStartOverlayAsync());
+            return;
+        }
+        MainThread.BeginInvokeOnMainThread(ApplyColdStartStatus);
+    }
+
+    private void ApplyColdStartStatus()
+    {
+        var siteCount = SiteRegistry.Playable.Count();
+        ColdStartStatus.Text = siteCount == 0
+            ? "正在恢复订阅与站点…"
+            : SiteRegistry.JarSpiderAvailable
+                ? "正在启动视频引擎（QEMU ART 冷启动，约 40 秒）…"
+                : "正在加载首页数据…";
+    }
+
+    private async Task FadeOutColdStartOverlayAsync()
+    {
+        if (!ColdStartOverlay.IsVisible) return;
+        await ColdStartOverlay.FadeTo(0, 350, Easing.CubicOut);
+        ColdStartOverlay.IsVisible = false;
     }
 
     public Task OnTabShownAsync()

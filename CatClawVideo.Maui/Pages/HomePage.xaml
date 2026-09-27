@@ -161,6 +161,28 @@
             </CollectionView.ItemTemplate>
         </CollectionView>
 
+        <!-- 冷启动遮罩：ART guest（QEMU TCG）冷启动实测 41~46 秒 + 订阅恢复期间，海报墙全空
+             只有一行小字，体感如同卡死。这里用全屏遮罩分阶段显示真实进度（恢复订阅 → 引擎
+             冷启动 → 加载首页数据），首页数据就绪后由代码后台淡出进入主界面。
+             覆盖三行（RowSpan=3）+ 不透明背景，避免底下空海报墙透出。 -->
+        <Grid Grid.Row="0" Grid.RowSpan="3" x:Name="ColdStartOverlay" IsVisible="True"
+              BackgroundColor="{DynamicResource WindowBackgroundColor}">
+            <VerticalStackLayout VerticalOptions="Center" Spacing="14" Padding="0,0,0,70">
+                <Label Text="🐾 猫爪影视" FontSize="30" FontAttributes="Bold"
+                       HorizontalOptions="Center"
+                       TextColor="{DynamicResource TextPrimaryColor}" />
+                <ActivityIndicator IsRunning="True" WidthRequest="30" HeightRequest="30"
+                                   HorizontalOptions="Center"
+                                   Color="{DynamicResource PrimaryColor}" />
+                <Label x:Name="ColdStartStatus" FontSize="13.5" MaxLines="2" WidthRequest="460"
+                       HorizontalOptions="Center" HorizontalTextAlignment="Center"
+                       TextColor="{DynamicResource TextSecondaryColor}" />
+                <Label Text="冷启动仅发生在每次开机后的首次访问，之后秒开" FontSize="11" Opacity="0.6"
+                       HorizontalOptions="Center" HorizontalTextAlignment="Center"
+                       TextColor="{DynamicResource TextHintColor}" />
+            </VerticalStackLayout>
+        </Grid>
+
     </Grid>
 
 </ContentView>
