@@ -332,6 +332,49 @@ Start-Process "...\bin\Debug\net11.0-windows10.0.26100.0\win-x64\CatClawVideo.Ma
 - aarch64 TCG 上聚合网盘源 detailContent 71~90s → x86 WHPX 上同类调用毫秒~秒级，
   **「非 Guard 源原生速度」的核心价值已落地**；宿主测速等接真实订阅 ext 后自然体现。
 
+### 6.8 迅雷引擎与 ART guest 合并方案（2026-09-27 可行性已验证，待实施）
+
+> 用户既定设计（架构图「qemu-aarch64-static（迅雷 aarch64 harness 的 user-mode
+> 转译，预留）」）：**迅雷引擎不再独占一个 aarch64 TCG VM，搬进 x86 mini guest**，
+> 与 QemuArtGuest 共用同一个 QEMU 实例。
+
+**目标形态**：
+```
+x86 guest（WHPX 单 QEMU 实例）
+├─ artlaunch（ART 桥，18600 行协议）                     ← 已有
+├─ qemu-aarch64-static -L /thunder /thunder/harness      ← 新增（用户态转译迅雷）
+│    ├─ 监听 :20080（媒体流）→ 宿主 hostfwd（x86 QEMU 已有 media hostfwd）
+│    ├─ 回连 10.0.2.2:18080（控制口）→ 宿主 QemuControlServer（协议零改动）
+│    └─ 提供 BLK_DEV 口：写 /dev/vdb → 宿主直读（x86 QEMU 加 virtio-blk drive）
+└─ /thunder-data 真 tmpfs（ramfs statvfs 不可信，迅雷会静默不下数据）
+```
+
+**已验证（2026-09-27 108 实机，qemu-user 直跑）**：
+- `qemu-aarch64-static -L <thunder目录> ./harness` 直接跑通 bionic PIE：
+  linker64 加载 ✓ 迷你 JNIEnv ✓ DNS(114) ✓ 引擎加载 ✓ 真调用——
+  `getDownloadLibVersion()=6.0529.260.26`、`XYVodSDK_getVersion()=2.0.8.15-arm64_v8a`
+- `-L` sysroot 模式天然解决 `/system/bin/linker64` 与 `/system/lib64` 绝对路径
+- 件体积：qemu-aarch64-static 16.6MB（static-pie）+ thunder 包 ~11MB —— initrd 可接受
+- harness 全部参数走**环境变量**（CTRL_PORT/BLK_DEV/PROXY_PORT=20080/QCO=1/
+  GUARD_PORT），cmdline 仅传 ctrl=/blkdev=/swapdev=/tdata= —— x86 guest 可 1:1 提供
+
+**收益**（对照 docs/qemu-engine-performance.md）：迅雷引擎从全系统 TCG（2.9%，
+19.5 MB/s）升级为用户态转译（7.2%，约 2.5×）；省掉整个 aarch64 VM
+（-m 2560 + 4 vCPU TCG 满负荷）；单 QEMU 进程。
+
+**实施清单**：
+1. mk_x86_initrd.sh：initrd 加 `qemu-aarch64-static` + `/thunder/`（harness+system libs
+   +thunder-data 种子），initrd 预算 ~306MB
+2. init_x86.sh：起 harness（env 对齐 + hosts 劫持 4 条 sandai 域名 + /thunder-data tmpfs）
+3. x86 QEMU 命令行：btcache storemain/swapmain 两块 virtio-blk + `blkdev=/dev/vdb
+   swapdev=/dev/…` cmdline（QemuHostRuntime x86 分支加 drive 参数）
+4. 宿主 C#：QemuGuestEngine 增加 x86 分支——复用 ART guest 的 QEMU 实例（共享
+   QemuHostRuntime 设备层）；**关键设计点：生命周期耦合**——ART 桥重置当前会
+   Stop 整个 VM 连带杀迅雷会话，需改为「ART 重置只重启 guest 内 artlaunch 进程
+   （init 监督器），不动 VM」；→ 该监督器改造建议与合并同期做（init_x86.sh 现在
+   是串行待机，改为后台 + 监督重启）
+5. 验收：磁力全链路（TASK MAGNET→媒体流→块设备直读）+ 性能对照 19.5 MB/s 基线
+
 ---
 
 ## 7. 未完成任务
@@ -340,6 +383,8 @@ Start-Process "...\bin\Debug\net11.0-windows10.0.26100.0\win-x64\CatClawVideo.Ma
       真因是注册时序/namespace 判定/g_runtime_callbacks 三连）
 - [x] 非 Guard 源原生速度验收（2026-09-27 晚 ✅，见 §6.7——load/调用链毫秒级）
 - [ ] 壳初始化后段 SIGSEGV 空指针（取证完成，见 §6.6——补齐极简环境缺的框架支撑）
+- [ ] **迅雷引擎与 ART guest 合并**（用户既定设计，可行性已验证，见 §6.8——按实施清单
+      5 步走；关键设计点：ART 重置只重启 artlaunch 进程而非整个 VM）
 - [ ] 双 guest 路由的 C# 实现（按源分流）——暂缓（非 Guard 已原生，Guard 待 §6.6 突破）
 - [ ] WHPX 不可用用户的一键启用引导（设置页，DISM VirtualMachinePlatform）
 - [ ] 发行打包（build-win-release.ps1 带 x86 组件，预计 +300MB）

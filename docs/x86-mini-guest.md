@@ -222,3 +222,27 @@ categoryContent/detailContent 调用链全 ok、毫秒级响应。aarch64 TCG �
    64KB 管道 → write 阻塞在信号处理里 → guest 全线程冻住（探针 accept 了但
    pong 永远不回，手工 ping 也超时）。修复：哨兵日志默认关（CATCLAW_SIGLOG=1
    才输出）；教训——信号处理内不得做无节流 stdio 写入。
+
+## 2026-09-27 深夜（二）：迅雷引擎合并方案可行性验证 ✅
+
+用户澄清：架构上迅雷引擎与 QemuArtGuest 应合并进同一个 x86 guest（架构图里
+qemu-aarch64-static 那行就是预留方案），而不是各占一个 QEMU 实例。
+
+**可行性探测（108 实机，qemu-user 直跑）**：
+- 从宿主 QemuGuest/pkg_initrd.gz 解出迅雷件（harness 212KB + system/ 11MB）
+- `qemu-aarch64-static -L <thunder目录> ./harness` ——**直接跑通**：
+  bionic linker64 加载（ld.config 警告无害）✓ 迷你 JNIEnv（43 实现/190 陷阱）✓
+  DNS 自检（UDP 114）✓ 引擎加载 ✓ 真调用——
+  getDownloadLibVersion() = 6.0529.260.26、XYVodSDK_getVersion() = 2.0.8.15-arm64_v8a
+- `-L` sysroot 天然解决 /system/bin/linker64 与 /system/lib64 绝对路径
+- 件体积：qemu-aarch64-static 16.6MB static-pie + thunder 11MB —— initrd +28MB 可接受
+- harness 参数全走环境变量（CTRL_PORT/BLK_DEV/PROXY_PORT/QCO/GUARD_PORT），
+  cmdline 只需 ctrl=/blkdev=/swapdev=/tdata= —— x86 guest 1:1 可提供
+
+**收益预估**（对照 qemu-engine-performance.md）：全系统 TCG 2.9%（19.5 MB/s）
+→ 用户态转译 7.2%（约 2.5×，且跑在 WHPX guest 里少一层嵌套）；省掉整个
+aarch64 VM（-m 2560 + 4 vCPU TCG 满负荷）。
+
+**关键设计点（实施时注意）**：ART 桥重置当前 = Stop 整个 VM，会连带杀迅雷会话
+——合并时应改「init 监督器：artlaunch 死了只重启它，VM 不动」。
+实施清单见交接文档 §6.8。
