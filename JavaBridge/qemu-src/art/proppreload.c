@@ -160,6 +160,25 @@ static void __attribute__((constructor)) proppreload_note(void) {
     fprintf(stderr, "[proppreload] 接管 Android 属性 API：%d 条\n", NPROPS);
 }
 
+#ifdef X86_GUEST
+/* ── nativebridge namespace 判定接管（2026-09-27，Guard 转译最后一环）────────────
+ * 现象：壳 DexNative.<clinit> 的 System.load(arm64 so) 报
+ *   dlopen failed: ".fty…" is for EM_AARCH64 (183) instead of EM_X86_64 (62)
+ * 链路：System.load → libnativeloader；classloader namespace 创建时
+ * NativeLoaderNamespace::Create 逐段调 NativeBridgeIsPathSupported(search_path)
+ * 决定 namespace 是否 bridged；ndk_translation 的该回调对我们所有路径都返回 false
+ * （实测含官方 /data/app/…/lib/arm64 模式）→ namespace 永久 not-bridged →
+ * arm64 so 全走 bionic dlopen → 架构不符拒绝。
+ * 接管语义：/data/catclaw 前缀（桥的 librarySearchPath 根）→ true——壳的
+ * classloader namespace 只服务壳的 arm64 so，全量 bridge 是正确语义；namespace
+ * bridged 后加载走 NativeBridgeLoadLibraryExt → ndk arm64 linker 转译（已实测通）。
+ * 其余路径 → false，与原实现实测值一致（原实现对一切路径都拒绝）。
+ * LD_PRELOAD 位于全局组最前，libnativeloader 的 PLT 解析会命中本实现。 */
+int NativeBridgeIsPathSupported(const char *path) {
+    return path != NULL && strncmp(path, "/data/catclaw", 13) == 0;
+}
+#endif
+
 /* ── ashmem 替身 ─────────────────────────────────────────────────────────────
  * 实测（2026-09-25，假 logd 捞回来的）：ART 起来后死在
  *   ashmem_create_region failed for 'Sentinel fault page': No such file or directory

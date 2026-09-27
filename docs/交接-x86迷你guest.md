@@ -1,7 +1,7 @@
 # 工作交接文档：x86 Mini Guest（Android 13 转译运行时）
 
-> 更新日期：2026-09-27
-> 状态：阶段 1 完成（可用）、阶段 2 转译攻坚进行中（卡在最后一环）
+> 更新日期：2026-09-27（晚）
+> 状态：阶段 1 完成（可用）；阶段 2 转译攻坚：壳解密+真实 dex 加载已通，剩壳初始化后段退出
 > 交接范围：x86 mini guest 全部工作 + 关联的性能优化/瘦身背景
 
 ---
@@ -19,11 +19,14 @@ $env:CATCLAW_X86_GUEST = '1'     # 不设 = aarch64 现网行为，零变化
 # 启动应用 → 日志 %APPDATA%\CatClawVideo.debug\home-debug.log 看「桥就绪」
 ```
 
-**当前卡点一句话**：ndk_translation 的 ARM 转译链已打通到「主线程 JNI 全部正常」，
-但经 DexClassLoader 加载的壳类发起的 JNI 调用查不到已注册的 native 方法
-（嫌疑：转译线程的 JNI 查找域 / classloader namespace）——对照实验已埋好，详见 §6。
+**当前状态一句话**：§6 的「壳类 JNI 查不到 native 方法」卡点已连环攻破——
+三个根因（注册时序晚于 ndk initialize、libnativeloader namespace 判定、
+LoadNativeBridge 缺 ART callbacks 表）全部修复后，Guard 壳已能解密并加载
+真实 dex（「自定义爬虫代码加载成功」日志实锤）。剩最后一环：壳初始化后段
+进程静默退出（无 ART dump，疑似转译段 fault 处理链），详见 §6.6。
 
-**接手第一步**：读本文档 §4（操作手册）→ 跑通 §4.2 的 108 侧测试 → 看 §6 的卡点。
+**接手第一步**：读本文档 §4（操作手册）→ 跑通 §4.2 的 108 侧测试 →
+跑 `python3 bench_guard.py` 复现壳加载 → 攻 §6.6 的静默退出。
 
 ---
 
@@ -101,7 +104,7 @@ Windows 宿主
 | `CatClawVideo.Core/Providers/JavaSpiderRuntime.cs` | 桥的宿主侧：`_guestArchOverride`/`_guestKernelFile` 等开关字段；`CATCLAW_X86_GUEST=1` 触发 |
 | `CatClawVideo.Maui/QemuGuest/` | 部署目录（原 ThunderRuntime）——csproj `QemuGuest\**` 通配拷贝 |
 | `JavaBridge/qemu-src/art/` | artlaunch.c / proppreload.c / fakelogd.c / gen_props.py / props_gen_x64.h / gb.dex / 双架构编译产物 |
-| `JavaBridge/qemu-src/tools/x86guest/` | 组装/测试/诊断脚本（见 §4） |
+| `JavaBridge/qemu-src/tools/x86guest/` | 组装/测试/诊断脚本（见 §4）；`bench_guard.py` = Guard 壳转译验收（ping→load WoGGGuard→homeContent）；`sym_lookup.py` = libart 符号表解析诊断 |
 | `JavaBridge/qemu-src/tools/mk_art_initrd.py` | aarch64 initrd 重打管线 |
 | `docs/x86-mini-guest.md` | 技术日志（攻坚过程全记录，与本文档互补） |
 
@@ -202,6 +205,10 @@ Start-Process "...\bin\Debug\net11.0-windows10.0.26100.0\win-x64\CatClawVideo.Ma
 | 14 | config 解析失败 `section "system" not found` | 缺 `[system]` 段头 | bionic config 语法要求段头 |
 | 15 | fakelogd 只输出 tag 丢 msg | 只做可打印串抽取 | 重写为 logdw 协议解析（prio@11/tag/msg），hex 诊断模式 LOGD_HEX=1 |
 | 16 | loop 挂载残留 → cp 全挂 | 上次会话未 umount | mount 前 `umount ... \|\| true` |
+| 17 | 线程实验块无输出静默跳过 | JNI_GetCreatedJavaVMs 误声明两参（真三参），出参 nv 永不写 | 修签名 (vmBuf,1,&nv)；JNI 导出函数签名必须对照头文件 |
+| 18 | 壳类 Build.CPU_ABI 必死（类 erroneous） | ndk InitNB 触发 Build.<clinit> 时 boot natives 还没注册 | 注册挪到 PreNB/InitNB 之前（artlaunch 主流程重排） |
+| 19 | System.load(arm64) 报 EM 架构不符 | libnativeloader 的 namespace bridged 依赖 IsPathSupported，ndk 对一切路径 false | proppreload 接管该回调（/data/catclaw 前缀 → true） |
+| 20 | 壳 so 加载 CHECK failed: g_runtime_callbacks | LoadNativeBridge 第二参传 NULL（必须传 ART 的 9 函数 callbacks 表） | 按 libart 静态 vaddr 重建表（artlaunch，锚点 InitializeNativeBridge@0x71ccf0） |
 
 ---
 
@@ -234,28 +241,100 @@ Start-Process "...\bin\Debug\net11.0-windows10.0.26100.0\win-x64\CatClawVideo.Ma
 | 跳过 PreInitialize 直调 Initialize | 静默失败（返回 0） |
 | 文件层对照（库/config） | 已完全对齐，非文件问题 |
 
-### 6.4 下一步（按优先级）
+### 6.4 下一步（按优先级）——全部执行完毕（2026-09-27 下午）
 
-1. **排障线程域对照实验**（已埋在 artlaunch：pthread + AttachCurrentThread + 主线程/
-   新线程双对照）——实验块入口 printf 分步定位为什么输出没上串口。新线程失败坐实 →
-   查 ndk 主库 strings 里的线程相关开关；成功 → 转向 2。
-2. **桥侧取证**：改 Server.java 在 load 流程打印壳类的实际 ClassLoader 与 SystemProperties
-   来源（重编 gb.dex 走 JavaBridge/build.cmd 链路）。
-3. **开源源码**：找 google/ndk_translation 的 mirror（GitHub 搜索未果，可试
-   chromium.googlesource.com 的 ARC++ 分支或 Bliss-x86 的 vendor 仓库 issue 区）。
-4. **兜底**：双 guest 路由（C# 按源分流——非 Guard 走 x86 原生、Guard 走 aarch64），
-   工程量小、可先把非 Guard 源的原生速度落地。
+1. **线程域对照实验** → 实验块静默跳过的原因 + 新线程成功，见 §6.5-①②
+2. **桥侧取证** → 未走到：artlaunch 侧审计已足够定位（§6.5-③）
+3. **开源源码** → 未需要：108 上反汇编 libart/libnativebridge/ndk 库已拿到全部答案
+4. **双 guest 路由兜底** → 暂不需要（壳加载已通）
+
+### 6.5 连环三根因（2026-09-27 下午，全部实锤+修复）
+
+> 排障方法：给 artlaunch 实验块/审计加分步 printf → 修一个、重装 initrd、
+> 跑 bench_guard.py（load WoGGGuard）看现象推进。循环 4 轮打穿。
+
+**① 实验块静默 + Build 类永久 erroneous —— 注册时序**
+- 现象链：实验块无输出 → 补探针发现 `JNI_GetCreatedJavaVMs` 返回 nv=0 →
+  **该函数真实签名是三参 (vmBuf, bufLen, nVMs)，代码误声明两参**，nv 的地址被当
+  bufLen=0 传入、出参永不写 → 修签名后 nv=1。
+- 新线程 `native_get` 返回 x86_64 **成功** → **线程域假设排除**。
+- 但实验块执行期间出现 `Landroid/os/Build; failed initialization` +
+  `Failed to register non-native method ... native_get as native`：
+  **ndk InitializeNativeBridge 内部触发 Build.<clinit>（读 CPU_ABI 做伪装），
+  此时 proppreload 还没注册 boot natives（注册块原本在 InitNB 之后）→
+  UnsatisfiedLinkError → Build 类被永久标记 erroneous** → 壳链路任何
+  Build.CPU_ABI 访问必死，而主线程自测（不碰 Build）却正常——正是旧卡点现象。
+- 修复：`catclaw_register_boot_natives` 挪到 PreNB/InitNB **之前**（CreateVM 后立即）。
+  修复后 `Build.CPU_ABI = arm64-v8a`（ndk 伪装层正常工作，壳的 contains("64") 可过）。
+- 附带实锤（反射 Modifier 审计）：LOS20 的 `native_get(String)` 单参版 **flags=0xa
+  非 native**（Java 实现，走 handle 体系），proppreload 注册它报「non-native」属正常，
+  表里该行可删；`native_find_prop(String,[B)` 在 13 里改名 `native_find(String)J`，
+  需按 handle 语义重写才能补注册（未做，不阻塞）。
+
+**② System.load 不走 nativebridge —— namespace 判定**
+- 现象推进到：壳 `DexNative.<clinit>` 解密出 arm64 so 后 `System.load` 报
+  `dlopen failed: ".fty…" is for EM_AARCH64 (183) instead of EM_X86_64 (62)`。
+- 排障：审计 `NativeBridgeIsSupported(arm64 so)=1`、`NativeBridgeLoadLibrary(arm64)=OK`
+  ——**转译器本体完全可用**；反汇编 libart 发现它只导入
+  `NativeBridgeGetTrampoline/Initialized` 等，**加载判定在 libnativeloader**：
+  `NativeLoaderNamespace::Create` 对 search_path 逐段调 `NativeBridgeIsPathSupported`
+  决定 namespace 是否 bridged；ndk 的该回调对**所有路径**都返回 false
+  （实测含官方 `/data/app/…/lib/arm64` 模式）→ namespace 永久 not-bridged → bionic dlopen。
+- 修复：proppreload.c（LD_PRELOAD，全局组最前）**接管 `NativeBridgeIsPathSupported`**：
+  `/data/catclaw` 前缀 → true（壳的 classloader namespace 只服务壳的 arm64 so，
+  全量 bridge 是正确语义），其余 → false（与原实现实测值一致）。
+  命名空间 bridged 后加载走 `NativeBridgeLoadLibraryExt` → ndk arm64 linker 转译。
+  另：LoadNativeBridge 调用顺序改为先于 InitializeNativeLoader（防 libnativeloader
+  缓存「bridge 不可用」）。
+
+**③ 壳 so 加载时 ART abort —— g_runtime_callbacks 为 NULL**
+- 现象推进到：`native_bridge.cc:453: CHECK failed: g_runtime_callbacks` → 进程 abort。
+- 排障：反汇编 libnativebridge——`LoadNativeBridge(filename, runtime_callbacks)` 把
+  **第二参**存全局，`InitializeNativeBridge` 调 ndk 的 initialize 回调时作第一参传入；
+  artlaunch 原代码 `LoadNativeBridge("libndk_translation.so", NULL)` → ndk 的
+  `g_runtime_callbacks = NULL` → 壳 so 加载时 CHECK 失败。
+- 正确值 = libart 静态全局 `art::native_bridge_art_callbacks_`（未导出，`_ZL` 符号）。
+  反汇编 `art::LoadNativeBridge` 确认它传该表；dump `.data` 得 9 个函数指针：
+  GetMethodShorty / GetNativeMethodCount / GetNativeMethods /
+  4 个静态辅助（未导出）/ DexFile closeDexFile+defineClassNative 系。
+- 修复：artlaunch 以导出符号 `_ZN3art22InitializeNativeBridgeEP7_JNIEnvPKc`
+  （静态 vaddr 0x71ccf0）求运行基址，按静态 vaddr 表 `{0x71cdc0, 0x71d540, 0x71dc30,
+  0xd077d, 0xb867a, 0x71f0e0, 0x9e64b, 0x9b23c, 0x71f9d0}` 重建回调指针数组传入。
+
+**修复后里程碑**：`load WoGGGuard` → `DexNative.<clinit>` 通过 → fty so 转译加载执行 →
+**壳解密出真实 dex 并加载成功**（壳内部日志「自定义爬虫代码加载成功」）。
+
+### 6.6 新卡点：壳初始化后段静默退出（当前唯一堵点）
+
+- 现象：壳日志「自定义爬虫代码加载成功」之后，桥进程**无 ART abort dump、
+  无内核 segfault 记录**直接退出（[init] 桥进程已退出），load 请求 EOF。
+- 疑点（按优先级）：
+  1. **转译执行段的 SIGSEGV 处理链**：壳继续初始化会执行真实类的 arm64 native，
+     ndk 依赖 SIGSEGV fault handler（ro.ndk_translation.flags=accurate-sigsegv）；
+     artlaunch 顶部自实现的 SetSpecialSignalHandlerFn 只是「记下+sigaction」，
+     可能没把 ART fault manager / ndk handler 链式转发——真实段错误被误杀。
+  2. 壳 init 后段调用了我们还缺的 boot native / 系统服务（无日志盲区）。
+  3. 真实类 <clinit> 里又一块 arm64 so 的加载/执行路径问题。
+- 建议手段：artlaunch 的 g_chain 升级为真·信号链（先调已注册 handler 再回落）；
+  LOGD_HEX=1 抓 ndk 的静默日志；给 artlaunch 加 pthread_atfork/atexit 打点确认
+  退出路径（exit vs 信号）。
+- 验收脚本：108 `/root/x86guest/bench_guard.py`（ping → load WoGGGuard →
+  homeContent），qemu 日志 tail 看断点。
 
 ---
 
 ## 7. 未完成任务
 
-- [ ] ndk 转译 classloader/线程域问题（见 §6）
-- [ ] 双 guest 路由的 C# 实现（按源分流）
+- [x] ndk 转译 classloader/线程域问题（2026-09-27 连环攻破，见 §6.5——线程域假设被否，
+      真因是注册时序/namespace 判定/g_runtime_callbacks 三连）
+- [ ] 壳初始化后段静默退出（新卡点，见 §6.6）
+- [ ] 双 guest 路由的 C# 实现（按源分流）——暂缓（壳加载已通，可能不需要）
 - [ ] WHPX 不可用用户的一键启用引导（设置页，DISM VirtualMachinePlatform）
 - [ ] 发行打包（build-win-release.ps1 带 x86 组件，预计 +300MB）
 - [ ] Guard 转译打通后的真机验收：玩偶 detailContent 71.6s → 秒级对照
 - [ ] 镜像裁剪第二轮：framework boot 分件与 framework-res.apk（需动 boot classpath，风险高一档）
+- [ ] proppreload 表清理：native_get(String) 单参版在 13 里非 native（注册必失败，可删）；
+      native_find_prop 已改名 native_find(String)J（handle 语义，需重写）
 
 ---
 

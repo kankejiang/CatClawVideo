@@ -63,19 +63,30 @@ static const char *BCP =
     ":/system/framework/android.hidl.base-V1.0-java.jar:/system/framework/android.hidl.manager-V1.0-java.jar"
     ":/system/framework/framework-oahl-backward-compatibility.jar:/system/framework/android.test.base.jar";
 
-/* 线程域实验：ndk initialize 后新线程的 native 解析是否可用（主线程 vs 新线程对照） */
+/* 线程域实验：ndk initialize 后新线程的 native 解析是否可用（主线程 vs 新线程对照）。
+ * 分步 printf 定位输出断点（2026-09-27：块静默跳过，getvm/线程创建均未检） */
 static JavaVM *g_test_vm;
 static jobject g_test_sp;
 static jmethodID g_test_ng;
 static void *thread_runner(void *arg) {
+    printf("artlaunch: [线程实验] 线程函数已进入\n"); fflush(stdout);
     JNIEnv *e3 = NULL;
-    if ((*g_test_vm)->AttachCurrentThread(g_test_vm, &e3, NULL) == JNI_OK) {
+    jint arc = (*g_test_vm)->AttachCurrentThread(g_test_vm, &e3, NULL);
+    printf("artlaunch: [线程实验] AttachCurrentThread = %d\n", arc); fflush(stdout);
+    if (arc == JNI_OK && e3) {
         jstring r3 = (jstring) (*e3)->CallStaticObjectMethod(e3, g_test_sp, g_test_ng,
             (*e3)->NewStringUTF(e3, "ro.product.cpu.abi"), (*e3)->NewStringUTF(e3, "(def)"));
-        const char *s3 = r3 ? (*e3)->GetStringUTFChars(e3, r3, 0) : "(null)";
-        printf("artlaunch: 新线程 native_get = %s\n", s3);
-        if (r3) (*e3)->ReleaseStringUTFChars(e3, r3, s3);
-    } else printf("artlaunch: 新线程 Attach 失败\n");
+        if ((*e3)->ExceptionCheck(e3)) {   /* No implementation found 会在这里现形 */
+            printf("artlaunch: [线程实验] 新线程 native_get 抛异常：\n");
+            (*e3)->ExceptionDescribe(e3);
+            (*e3)->ExceptionClear(e3);
+        } else {
+            const char *s3 = r3 ? (*e3)->GetStringUTFChars(e3, r3, 0) : "(null)";
+            printf("artlaunch: [线程实验] 新线程 native_get = %s\n", s3);
+            if (r3) (*e3)->ReleaseStringUTFChars(e3, r3, s3);
+        }
+    }
+    printf("artlaunch: [线程实验] 线程函数结束\n"); fflush(stdout);
     return NULL;
 }
 
@@ -96,30 +107,70 @@ int main(int argc, char **argv) {
     /* Android 11+ 的 libnativeloader 需要显式初始化（正常由 AndroidRuntime::StartVM 代劳，
      * 我们直调 JNI_CreateJavaVM 绕过了它）——不初始化的话 CreateVM 内部第一个系统库
      * dlopen（libandroid.so）直接 abort：GetSystemNamespace 失败（2026-09-27 实测）。
-     * 初始化内部会读 /linkerconfig/ld.config.txt（init 里由 linkerconfig 预生成）。
-     * ⚠ 必须放在最前：JNI_CreateJavaVM 内部就会触发。 */
+     * ⚠ 顺序定生死：LoadNativeBridge 必须先于 InitializeNativeLoader——libnativeloader
+     *   初始化时缓存「bridge 可用」标志，先 init 的话永远 false → 所有 classloader
+     *   namespace 永久 not-bridged → 壳的 arm64 so 全走 bionic dlopen 报
+     *   「EM_AARCH64 instead of EM_X86_64」（2026-09-27 壳加载实测的最后一环根因）。 */
     {
+        void *nb = dlopen("libndk_translation.so", RTLD_NOW | RTLD_GLOBAL);
+        printf("artlaunch: dlopen libndk_translation = %s\n", nb ? "OK" : dlerror());
+        fflush(stdout);
+        if (nb) {
+            void *nbl = dlopen("libnativebridge.so", RTLD_NOW | RTLD_GLOBAL);
+            if (nbl) {
+                bool (*LoadNB)(const char*, const void*) =
+                    (bool (*)(const char*, const void*)) dlsym(nbl, "LoadNativeBridge");
+                if (LoadNB) {
+                    /* ⚠ 第二参绝不能传 NULL：LoadNativeBridge 会把它存为全局 runtime callbacks，
+                     * ndk initialize 收到后存 g_runtime_callbacks；壳 so 加载路径
+                     * CHECK(g_runtime_callbacks) 失败 → ART abort（2026-09-27 实锤）。
+                     * 正确值 = libart 静态全局 art::native_bridge_art_callbacks_（未导出，
+                     * 9 个函数指针：GetMethodShorty/GetNativeMethodCount/GetNativeMethods/
+                     * 4 个静态辅助/DexFile close+defineClass 系——2026-09-27 反汇编 dump）。
+                     * 按「运行时基址 + 静态 vaddr」重建：锚点用导出符号
+                     * _ZN3art22InitializeNativeBridgeEP7_JNIEnvPKc（静态 vaddr 0x71ccf0）。 */
+                    static const uintptr_t kAnchorVaddr = 0x71ccf0;
+                    static const uintptr_t kCbVaddr[9] = {
+                        0x71cdc0, 0x71d540, 0x71dc30, 0xd077d, 0xb867a,
+                        0x71f0e0, 0x9e64b, 0x9b23c, 0x71f9d0
+                    };
+                    static void *s_fns[9];
+                    void *h_art_early = dlopen("libart.so", RTLD_NOW | RTLD_GLOBAL);
+                    void *anchor = h_art_early
+                        ? dlsym(h_art_early, "_ZN3art22InitializeNativeBridgeEP7_JNIEnvPKc") : NULL;
+                    if (anchor) {
+                        uintptr_t base = (uintptr_t) anchor - kAnchorVaddr;
+                        for (int i = 0; i < 9; i++) s_fns[i] = (void *) (base + kCbVaddr[i]);
+                        printf("artlaunch: LoadNativeBridge = %d（callbacks 重建 base=%p）\n",
+                               LoadNB("libndk_translation.so", (const void *) s_fns), (void *) base);
+                    } else {
+                        printf("artlaunch: LoadNativeBridge = %d（无锚点，callbacks=NULL 兜底）\n",
+                               LoadNB("libndk_translation.so", NULL));
+                    }
+                }
+            } else printf("artlaunch: dlopen libnativebridge failed: %s\n", dlerror());
+        }
         void *nl = dlopen("libnativeloader.so", RTLD_NOW | RTLD_GLOBAL);
         void (*initnl)(void) = nl ? (void (*)(void)) dlsym(nl, "InitializeNativeLoader") : NULL;
-        if (initnl) { initnl(); printf("artlaunch: nativeloader 已初始化\n"); }
+        if (initnl) { initnl(); printf("artlaunch: nativeloader 已初始化（NB 之后）\n"); }
         else printf("artlaunch: 无 InitializeNativeLoader（老版本跳过）\n");
-        /* 转译器可加载性探针：dlopen libndk_translation.so（nativebridge 主库），
-         * 失败的 dlerror 会直接指出缺依赖/路径问题（与 ART 的调用链无关）。 */
+        /* 路径判定审计：classloader namespace 的 bridged 标志大概率来自
+         * NativeBridgeIsPathSupported(库路径)——看 ndk 认不认壳的 nativeLibraryDir */
         {
-            void *nb = dlopen("libndk_translation.so", RTLD_NOW | RTLD_GLOBAL);
-            printf("artlaunch: dlopen libndk_translation = %s\n", nb ? "OK" : dlerror());
-            fflush(stdout);
-            /* 正常由 app_process 的 AndroidRuntime 代劳：LoadNativeBridge + NativeBridgeInitialize。
-             * 我们直调 JNI_CreateJavaVM 绕过了它 → libart 的 Runtime::InitNativeBridge 因
-             * NativeBridgeInitialized()=false 走属性路径（实测未触发，原因待查）——干脆手工初始化。
-             * 成功后 libart 在 dlopen arm64 so 时经 nativebridge 钩子交给 libndk 转译执行。 */
-            if (nb) {
-                void *nbl = dlopen("libnativebridge.so", RTLD_NOW | RTLD_GLOBAL);
-                if (nbl) {
-                    bool (*LoadNB)(const char*, const void*) =
-                        (bool (*)(const char*, const void*)) dlsym(nbl, "LoadNativeBridge");
-                    if (LoadNB) printf("artlaunch: LoadNativeBridge = %d\n", LoadNB("libndk_translation.so", NULL));
-                } else printf("artlaunch: dlopen libnativebridge failed: %s\n", dlerror());
+            void *nbl2 = dlopen("libnativebridge.so", RTLD_NOW | RTLD_GLOBAL);
+            bool (*isAv)(void) = (bool (*)(void)) dlsym(nbl2, "NativeBridgeIsAvailable");
+            bool (*isPS)(const char *) = (bool (*)(const char *)) dlsym(nbl2, "NativeBridgeIsPathSupported");
+            if (isAv) printf("artlaunch: [审计] NativeBridgeIsAvailable = %d\n", isAv());
+            if (isPS) {
+                /* ndk 的路径白名单模式探测：官方 app 的 native 库目录以 lib/arm64 结尾 */
+                const char *paths[] = {
+                    "/data/catclaw/art/lib",
+                    "/data/catclaw/art/lib/arm64",
+                    "/data/app/~~abc==/com.foo.bar-xyz==/lib/arm64",
+                    "/system/lib64/arm64",
+                };
+                for (int i = 0; i < 4; i++)
+                    printf("artlaunch: [审计] IsPathSupported(%s) = %d\n", paths[i], isPS(paths[i]));
             }
         }
         fflush(stdout);
@@ -186,28 +237,13 @@ int main(int argc, char **argv) {
     printf("artlaunch: JNI_CreateJavaVM = %d\n", rc);
     fflush(stdout);
     if (rc != JNI_OK || env == NULL) return 1;
-    /* nativebridge 初始化（正确签名+时机）：正常由被绕过的 AndroidRuntime 在
-     * CreateVM 后调 InitializeNativeBridge(env, isa)——libart 只 Load 不 Init。 */
-    {
-        void *nbl = dlopen("libnativebridge.so", RTLD_NOW | RTLD_GLOBAL);
-        bool (*InitNB)(JNIEnv*, const char*) =
-            (bool (*)(JNIEnv*, const char*)) dlsym(nbl, "InitializeNativeBridge");
-        fflush(stdout);
-        /* PreInitialize：拉起 arm64 bridge 进程（app_process64）准备环境——
-         * 官方顺序 Load → PreInitialize → Initialize。wrapper 的 arm64 linker64 现在读
-         * /system/etc/ld.config.arm64.txt（mk 生成），依赖解析不再误中 x86 库。 */
-        bool (*PreNB)(const char*, const char*) =
-            (bool (*)(const char*, const char*)) dlsym(nbl, "PreInitializeNativeBridge");
-        if (PreNB) printf("artlaunch: PreInitializeNativeBridge = %d\n", PreNB("/data/catclaw", "arm64"));
-        fflush(stdout);
-if (InitNB) printf("artlaunch: InitializeNativeBridge = %d\n", InitNB(env, "arm64"));
-        else printf("artlaunch: 无 InitializeNativeBridge 符号\n");
-        fflush(stdout);
-    }
-
     /* boot classpath 里 android.os.SystemProperties / android.util.Log 的 native 平时由
      * libandroid_runtime 在 zygote 启动时注册；我们没有那条路，所以让预加载的
-     * proppreload.so 通过 RegisterNatives 主动补上（详见 proppreload.c 注释）。 */
+     * proppreload.so 通过 RegisterNatives 主动补上（详见 proppreload.c 注释）。
+     * ⚠ 必须在 nativebridge 初始化（尤其 InitNB）**之前**：ndk initialize 内部会触发
+     *   Build.<clinit>（它要读 CPU_ABI 做伪装），那时注册还没就位 → UnsatisfiedLinkError
+     *   → Build 类被永久标记 erroneous → 经 DexClassLoader 的壳类调 Build.CPU_ABI 全挂
+     *   （2026-09-27 从 InitNB 期间的「Build failed initialization」日志实锤）。 */
     jmethodID ng = NULL;   /* native_get（双参）：自测与线程域实验共用 */
     {
         int (*reg)(JNIEnv *) = (int (*)(JNIEnv *)) dlsym(RTLD_DEFAULT, "catclaw_register_boot_natives");
@@ -239,24 +275,130 @@ if (InitNB) printf("artlaunch: InitializeNativeBridge = %d\n", InitNB(env, "arm6
         }
         fflush(stdout);
     }
-    /* 线程域实验：新线程 AttachCurrentThread 后调同一 native_get——
-     * 主线程成功而新线程失败 = ndk initialize 对非主线程 JNI 域的破坏 */
+    /* nativebridge 初始化（正确签名+时机）：正常由被绕过的 AndroidRuntime 在
+     * CreateVM 后调 InitializeNativeBridge(env, isa)——libart 只 Load 不 Init。 */
     {
-        JavaVM *vm2 = NULL;
-        void *vml = dlopen("libart.so", RTLD_NOW | RTLD_GLOBAL);
-        if (vml) {
-            jint (*getvm)(JavaVM **, jsize *) = NULL;
-            *(void **) &getvm = dlsym(vml, "JNI_GetCreatedJavaVMs");
-            jsize nv = 0;
-            if (getvm && getvm(&vm2, &nv) == JNI_OK && nv > 0 && vm2) {
-                g_test_vm = vm2;
-                g_test_ng = ng;
-                pthread_t th;
-                pthread_create(&th, NULL, thread_runner, NULL);
-                pthread_join(th, NULL);
+        void *nbl = dlopen("libnativebridge.so", RTLD_NOW | RTLD_GLOBAL);
+        bool (*InitNB)(JNIEnv*, const char*) =
+            (bool (*)(JNIEnv*, const char*)) dlsym(nbl, "InitializeNativeBridge");
+        fflush(stdout);
+        /* PreInitialize：拉起 arm64 bridge 进程（app_process64）准备环境——
+         * 官方顺序 Load → PreInitialize → Initialize。wrapper 的 arm64 linker64 现在读
+         * /system/etc/ld.config.arm64.txt（mk 生成），依赖解析不再误中 x86 库。 */
+        bool (*PreNB)(const char*, const char*) =
+            (bool (*)(const char*, const char*)) dlsym(nbl, "PreInitializeNativeBridge");
+        if (PreNB) printf("artlaunch: PreInitializeNativeBridge = %d\n", PreNB("/data/catclaw", "arm64"));
+        fflush(stdout);
+        if (InitNB) printf("artlaunch: InitializeNativeBridge = %d\n", InitNB(env, "arm64"));
+        else printf("artlaunch: 无 InitializeNativeBridge 符号\n");
+        fflush(stdout);
+    }
+    /* 审计 1：Build 类状态——ndk initialize 触发的 <clinit> 现在应成功（注册已提前）。
+     * 若这里读 CPU_ABI 都抛异常，说明 Build 已 erroneous，壳链路必死。 */
+    {
+        jclass b = (*env)->FindClass(env, "android/os/Build");
+        if (!b) {
+            printf("artlaunch: [审计] FindClass(Build) 失败（erroneous!）\n");
+            (*env)->ExceptionDescribe(env); (*env)->ExceptionClear(env);
+        } else {
+            jfieldID f = (*env)->GetStaticFieldID(env, b, "CPU_ABI", "Ljava/lang/String;");
+            if (!f) {
+                printf("artlaunch: [审计] CPU_ABI 字段拿不到\n");
+                (*env)->ExceptionDescribe(env); (*env)->ExceptionClear(env);
+            } else {
+                jstring v = (jstring) (*env)->GetStaticObjectField(env, b, f);
+                if ((*env)->ExceptionCheck(env)) {
+                    printf("artlaunch: [审计] 读 CPU_ABI 抛异常（erroneous!）\n");
+                    (*env)->ExceptionDescribe(env); (*env)->ExceptionClear(env);
+                } else {
+                    const char *vs = v ? (*env)->GetStringUTFChars(env, v, 0) : "(null)";
+                    printf("artlaunch: [审计] Build.CPU_ABI = %s\n", vs);
+                    if (v) (*env)->ReleaseStringUTFChars(env, v, vs);
+                }
             }
         }
         fflush(stdout);
+    }
+    /* 审计 2：SystemProperties 方法修饰符——proppreload 有 2 个方法报「non-native」，
+     * 用反射 Modifier 实锤哪些方法在 LOS20 的 dex 里真不是 native（决定注册表怎么补）。 */
+    {
+        jclass sp2 = (*env)->FindClass(env, "android/os/SystemProperties");
+        if (sp2) {
+            const char *names[] = {"native_get", "native_get", "native_get", "get", "native_find"};
+            const char *sigs[] = {"(Ljava/lang/String;)Ljava/lang/String;",
+                                  "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                                  "(J)Ljava/lang/String;",
+                                  "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                                  "(Ljava/lang/String;)J"};
+            jclass mth = (*env)->FindClass(env, "java/lang/reflect/Method");
+            jmethodID gm = mth ? (*env)->GetMethodID(env, mth, "getModifiers", "()I") : NULL;
+            jclass mod = (*env)->FindClass(env, "java/lang/reflect/Modifier");
+            jmethodID isn = mod ? (*env)->GetStaticMethodID(env, mod, "isNative", "(I)Z") : NULL;
+            for (int i = 0; i < 5; i++) {
+                jmethodID mid = (*env)->GetStaticMethodID(env, sp2, names[i], sigs[i]);
+                if (!mid) { (*env)->ExceptionClear(env);
+                    printf("artlaunch: [审计] %s%s: methodID 拿不到\n", names[i], sigs[i]); continue; }
+                if (!gm || !isn) { printf("artlaunch: [审计] 反射设施不可用\n"); break; }
+                jobject rm = (*env)->ToReflectedMethod(env, sp2, mid, JNI_TRUE);
+                if (!rm) { (*env)->ExceptionClear(env); continue; }
+                jint flags = (*env)->CallIntMethod(env, rm, gm);
+                jboolean isN = (*env)->CallStaticBooleanMethod(env, mod, isn, flags);
+                printf("artlaunch: [审计] %s %s: flags=0x%x native=%d\n", names[i], sigs[i], flags, isN);
+                if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionDescribe(env); (*env)->ExceptionClear(env); }
+                (*env)->DeleteLocalRef(env, rm);
+            }
+        } else { (*env)->ExceptionDescribe(env); (*env)->ExceptionClear(env); }
+        fflush(stdout);
+    }
+    /* 审计 3：nativebridge 对 arm64 so 的判定与加载——壳的 System.load 走了 bionic dlopen
+     * （「is for EM_AARCH64 instead of EM_X86_64」），说明 ART 的加载分支没交给 nativebridge。
+     * 这里直接问 libnativebridge：判定函数认不认 arm64、转译加载链路通不通。 */
+    {
+        void *nbl3 = dlopen("libnativebridge.so", RTLD_NOW | RTLD_GLOBAL);
+        if (nbl3) {
+            bool (*isSup)(const char *) = (bool (*)(const char *)) dlsym(nbl3, "NativeBridgeIsSupported");
+            void *(*nbLoad)(const char *, int) = (void *(*)(const char *, int)) dlsym(nbl3, "NativeBridgeLoadLibrary");
+            if (isSup)
+                printf("artlaunch: [审计] IsSupported(/system/lib64/arm64/libc++.so) = %d\n",
+                       isSup("/system/lib64/arm64/libc++.so"));
+            else printf("artlaunch: [审计] 无 NativeBridgeIsSupported 符号\n");
+            if (nbLoad) {
+                void *h = nbLoad("/system/lib64/arm64/libc++.so", RTLD_NOW);
+                printf("artlaunch: [审计] NativeBridgeLoadLibrary(arm64 libc++.so) = %s\n",
+                       h ? "OK" : dlerror());
+                if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionDescribe(env); (*env)->ExceptionClear(env); }
+            } else printf("artlaunch: [审计] 无 NativeBridgeLoadLibrary 符号\n");
+        }
+        fflush(stdout);
+    }
+    /* 线程域实验：新线程 AttachCurrentThread 后调同一 native_get——
+     * 主线程成功而新线程失败 = ndk initialize 对非主线程 JNI 域的破坏 */
+    {
+        printf("artlaunch: [线程实验] 块进入 ng=%p sp=%p\n", (void *) ng, (void *) g_test_sp); fflush(stdout);
+        JavaVM *vm2 = NULL;
+        void *vml = dlopen("libart.so", RTLD_NOW | RTLD_GLOBAL);
+        if (!vml) printf("artlaunch: [线程实验] dlopen libart 失败: %s\n", dlerror());
+        if (vml) {
+            /* 真实签名是三参 (vmBuf, bufLen, nVMs)——之前误声明成两参，
+             * nv 的地址被当 bufLen=0 传入、出参永不写入 → nv 恒 0 → 实验静默跳过 */
+            jint (*getvm)(JavaVM **, jsize, jsize *) = NULL;
+            *(void **) &getvm = dlsym(vml, "JNI_GetCreatedJavaVMs");
+            jsize nv = 0;
+            jint grc = getvm ? getvm(&vm2, 1, &nv) : -1000;
+            printf("artlaunch: [线程实验] GetCreatedJavaVMs rc=%d nv=%d vm=%p\n",
+                   grc, nv, (void *) vm2); fflush(stdout);
+            if (getvm && grc == JNI_OK && nv > 0 && vm2) {
+                g_test_vm = vm2;
+                g_test_ng = ng;
+                pthread_t th;
+                int pc = pthread_create(&th, NULL, thread_runner, NULL);
+                printf("artlaunch: [线程实验] pthread_create = %d\n", pc); fflush(stdout);
+                if (pc == 0) pthread_join(th, NULL);
+            } else {
+                printf("artlaunch: [线程实验] 取 VM 失败，对照实验跳过\n"); fflush(stdout);
+            }
+        }
+        printf("artlaunch: [线程实验] 块结束\n"); fflush(stdout);
     }
     /* 桥启动：FindClass(cls) → main(String[]) */
     char slash[192];

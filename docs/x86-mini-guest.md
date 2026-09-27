@@ -155,3 +155,32 @@ C. 等待/寻找 ndk_translation 的社区完整实践（Waydroid/Bliss 社区�
    找线程相关开关，或调整 InitializeNativeBridge 的调用线程
 3. 若新线程也成功：问题在壳 dex 类的解析域——从桥侧（Server.java）在 load 流程中
    打印类的实际来源与 ClassLoader
+
+## 2026-09-27 四续：三大连环根因攻破，Guard 壳解密+真实 dex 加载打通
+
+接手交接文档后按 §6.4 路线执行，四轮「改 artlaunch → scp → mk_x86_initrd →
+mi_test → bench_guard.py」循环打穿三根因（详细论证见交接文档 §6.5）：
+
+1. **签名坑**：实验块静默 = JNI_GetCreatedJavaVMs 误声明两参（真三参）。
+   修复后新线程 native_get 成功 → **线程域假设排除**（文档旧嫌疑①被否）。
+2. **注册时序**：ndk InitNB 触发 Build.<clinit> 时 boot natives 未注册 →
+   Build 永久 erroneous → 壳链必死（旧卡点真身）。注册挪到 InitNB 前，
+   Build.CPU_ABI=arm64-v8a（ndk 伪装层正常）。修饰符审计：LOS20 native_get(String)
+   非 native 属正常；native_find_prop 已改名 native_find(String)J。
+3. **namespace 判定**：System.load(arm64) 走 bionic dlopen——libnativeloader 的
+   NativeLoaderNamespace::Create 靠 NativeBridgeIsPathSupported 定 bridged，
+   ndk 对一切路径 false（含官方 /data/app/…/lib/arm64）。proppreload 接管该回调
+   （/data/catclaw → true）。顺带把 LoadNativeBridge 挪到 InitializeNativeLoader 前。
+4. **g_runtime_callbacks**：LoadNativeBridge 第二参（ART 的 9 函数 callbacks 表）
+   传 NULL → 壳 so 加载时 ndk CHECK 失败 abort。反汇编 libart 定位静态全局
+   art::native_bridge_art_callbacks_（未导出），按导出锚点求基址重建 9 指针表。
+
+里程碑：load WoGGGuard → DexNative.<clinit>（Build.CPU_ABI 检查）→ fty so 转译
+加载执行 → **壳解密出真实 dex 并加载成功**（壳日志「自定义爬虫代码加载成功」）。
+
+新卡点（交接文档 §6.6）：壳日志后进程无 dump 静默退出。嫌疑：artlaunch 自实现的
+sigchain 没做链式转发，转译段真实 SIGSEGV 被误杀；或壳 init 后段缺系统支撑。
+下一步从信号链（g_chain 升级为真链）+ LOGD_HEX 取证入手。
+
+诊断脚本沉淀：tools/x86guest/bench_guard.py（Guard 验收）、sym_lookup.py
+（libart 符号→函数指针表还原，重建 callbacks 时用过）。
