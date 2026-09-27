@@ -288,8 +288,11 @@ public static class MauiProgram
 
         // ★ jar 桥预热：ART guest VM 冷启动（5~11s）此前发生在第一次 jar 站点调用上——
         //   首选站点是 jar 源时就整段叠进「首页首载/切站」等待里。订阅就绪且存在 jar 源时，
-        //   启动后台把桥拉起来（延迟 6s 避让首屏 UI 与迅雷 VM 预热；幂等、失败无害，
-        //   Android 的 DexSpiderRuntime 不是本类型 → 自动 no-op）。
+        //   启动后台把桥拉起来（延迟 6s 避让首屏 UI 与迅雷 VM 预热；幂等、失败无害）。
+        //   ⚠ 桌面专属：引用 JavaSpiderRuntime.WarmUpAsync（ART guest 桥的预热）；
+        //   Android 的 DexSpiderRuntime 是进程内 Dex 桥、无 VM 冷启动，无需预热
+        //   （is 模式检查对 Android 的 var 具体类型是 CS8121 编译错误）。
+#if !ANDROID
         _ = Task.Run(async () =>
         {
             try
@@ -306,6 +309,7 @@ public static class MauiProgram
             }
             catch { /* 预热失败交给首次调用懒启动 */ }
         });
+#endif
 
         // js2Proxy 回环代理路由：按 siteKey 查站点 → 按 SpiderKind 分派 JS/Java 爬虫运行时
         spiderProxy.JsProxyHandler = (query, ct) =>
