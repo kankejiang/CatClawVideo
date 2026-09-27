@@ -12,6 +12,7 @@
  * is not part of the Android system image we ship in the initrd.
  */
 #include <jni.h>
+#include <pthread.h>
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -61,6 +62,23 @@ static const char *BCP =
     ":/system/framework/voip-common.jar:/system/framework/ims-common.jar"
     ":/system/framework/android.hidl.base-V1.0-java.jar:/system/framework/android.hidl.manager-V1.0-java.jar"
     ":/system/framework/framework-oahl-backward-compatibility.jar:/system/framework/android.test.base.jar";
+
+/* 线程域实验：ndk initialize 后新线程的 native 解析是否可用（主线程 vs 新线程对照） */
+static JavaVM *g_test_vm;
+static jobject g_test_sp;
+static jmethodID g_test_ng;
+static void *thread_runner(void *arg) {
+    JNIEnv *e3 = NULL;
+    if ((*g_test_vm)->AttachCurrentThread(g_test_vm, &e3, NULL) == JNI_OK) {
+        jstring r3 = (jstring) (*e3)->CallStaticObjectMethod(e3, g_test_sp, g_test_ng,
+            (*e3)->NewStringUTF(e3, "ro.product.cpu.abi"), (*e3)->NewStringUTF(e3, "(def)"));
+        const char *s3 = r3 ? (*e3)->GetStringUTFChars(e3, r3, 0) : "(null)";
+        printf("artlaunch: 新线程 native_get = %s\n", s3);
+        if (r3) (*e3)->ReleaseStringUTFChars(e3, r3, s3);
+    } else printf("artlaunch: 新线程 Attach 失败\n");
+    return NULL;
+}
+
 
 int main(int argc, char **argv) {
     /* 属性可达性探针：nativebridge 属性是否经 proppreload 可读（libart 同进程同路径）。
@@ -190,12 +208,14 @@ if (InitNB) printf("artlaunch: InitializeNativeBridge = %d\n", InitNB(env, "arm6
     /* boot classpath 里 android.os.SystemProperties / android.util.Log 的 native 平时由
      * libandroid_runtime 在 zygote 启动时注册；我们没有那条路，所以让预加载的
      * proppreload.so 通过 RegisterNatives 主动补上（详见 proppreload.c 注释）。 */
+    jmethodID ng = NULL;   /* native_get（双参）：自测与线程域实验共用 */
     {
         int (*reg)(JNIEnv *) = (int (*)(JNIEnv *)) dlsym(RTLD_DEFAULT, "catclaw_register_boot_natives");
         if (reg) printf("artlaunch: boot natives 注册 %d 个\n", reg(env));
         else printf("artlaunch: 没有 catclaw_register_boot_natives（LD_PRELOAD 没生效？）\n");
         if ((*env)->ExceptionCheck(env)) { printf("artlaunch: 注册阶段有异常\n"); (*env)->ExceptionDescribe(env); (*env)->ExceptionClear(env); }
-    /* 自测：注册后立即经 JNI 调 SystemProperties.get——验证注册在 ART 侧真的生效 */
+    }
+    /* 自测：注册后立即经 JNI 验证注册真的生效 */
     {
         jclass sp = (*env)->FindClass(env, "android/os/SystemProperties");
         jmethodID g = sp ? (*env)->GetStaticMethodID(env, sp, "get", "(Ljava/lang/String;)Ljava/lang/String;") : NULL;
@@ -205,14 +225,40 @@ if (InitNB) printf("artlaunch: InitializeNativeBridge = %d\n", InitNB(env, "arm6
             const char *rs = r ? (*env)->GetStringUTFChars(env, r, 0) : "(null)";
             printf("artlaunch: 自测 SystemProperties.get = %s\n", rs);
             if (r) (*env)->ReleaseStringUTFChars(env, r, rs);
-        } else {
-            printf("artlaunch: 自测 GetStaticMethodID 失败\n");
+            ng = (*env)->GetStaticMethodID(env, sp, "native_get",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
+            g_test_sp = (*env)->NewGlobalRef(env, sp);
+            if (ng) {
+                jstring r2 = (jstring) (*env)->CallStaticObjectMethod(env, sp, ng, k,
+                    (*env)->NewStringUTF(env, "(def)"));
+                const char *r2s = r2 ? (*env)->GetStringUTFChars(env, r2, 0) : "(null)";
+                printf("artlaunch: 自测 native_get 直调 = %s\n", r2s);
+                if (r2) (*env)->ReleaseStringUTFChars(env, r2, r2s);
+            } else printf("artlaunch: 自测 native_get 的 methodID 拿不到\n");
             if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionDescribe(env); (*env)->ExceptionClear(env); }
         }
         fflush(stdout);
     }
+    /* 线程域实验：新线程 AttachCurrentThread 后调同一 native_get——
+     * 主线程成功而新线程失败 = ndk initialize 对非主线程 JNI 域的破坏 */
+    {
+        JavaVM *vm2 = NULL;
+        void *vml = dlopen("libart.so", RTLD_NOW | RTLD_GLOBAL);
+        if (vml) {
+            jint (*getvm)(JavaVM **, jsize *) = NULL;
+            *(void **) &getvm = dlsym(vml, "JNI_GetCreatedJavaVMs");
+            jsize nv = 0;
+            if (getvm && getvm(&vm2, &nv) == JNI_OK && nv > 0 && vm2) {
+                g_test_vm = vm2;
+                g_test_ng = ng;
+                pthread_t th;
+                pthread_create(&th, NULL, thread_runner, NULL);
+                pthread_join(th, NULL);
+            }
+        }
+        fflush(stdout);
     }
-
+    /* 桥启动：FindClass(cls) → main(String[]) */
     char slash[192];
     size_t ci = 0;
     for (; cls[ci] && ci + 1 < sizeof(slash); ci++) slash[ci] = (cls[ci] == '.') ? '/' : cls[ci];
@@ -222,11 +268,12 @@ if (InitNB) printf("artlaunch: InitializeNativeBridge = %d\n", InitNB(env, "arm6
     jmethodID m = (*env)->GetStaticMethodID(env, c, "main", "([Ljava/lang/String;)V");
     if (!m) { printf("artlaunch: no main(String[])\n"); return 1; }
     jobjectArray arr = (*env)->NewObjectArray(env, argc > 3 ? argc - 3 : 0,
-                                              (*env)->FindClass(env, "java/lang/String"), NULL);
+        (*env)->FindClass(env, "java/lang/String"), NULL);
     for (int i = 3; i < argc; i++) {
         jstring js = (*env)->NewStringUTF(env, argv[i]);
         (*env)->SetObjectArrayElement(env, arr, i - 3, js);
     }
+
     (*env)->CallStaticVoidMethod(env, c, m, arr);
     if ((*env)->ExceptionCheck(env)) { printf("artlaunch: java threw\n"); (*env)->ExceptionDescribe(env); return 1; }
     printf("artlaunch: done\n");

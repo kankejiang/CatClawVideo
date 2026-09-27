@@ -128,3 +128,30 @@ ndk_translation（ChromeOS sdk_gphone_x86_64:13 官方抽取，supremegamers 仓
 A. 继续啃 ndk（需拿到 ChromeOS 官方系统镜像抽完整调好的 /system 对照；或逆向闭源 loader）
 B. 双 guest 路由落地（x86 跑非 Guard 源原生速度 + aarch64 兜 Guard；工程量小、价值立现）
 C. 等待/寻找 ndk_translation 的社区完整实践（Waydroid/Bliss 社区跟进）
+### 2026-09-27 三续：官方镜像对照完成，卡点推进到「线程域」
+
+对照基准：Android 13 API 33 官方模拟器镜像（google_apis/x86_64-33_r12.zip，1.5GB，
+与 ndk 包指纹同源）。解包链：GPT → 7z 解 LP super → 7z 解 ext4（7-Zip 25.01 全程原生
+支持，simg2img/mount 均不需要）。
+
+比对结论（好于预期）：
+- 官方 lib64/arm64 恰好 59 个库，与我们拷的 ndk 包**完全一致**，无缺库
+- 官方 ld.config.arm64.txt 全文已采纳（${LIB}/arm64/bootstrap 预留路径、visible、
+  com_android_neuralnetworks fake APEX namespace、dir.system 含 /data）
+- cpuinfo.arm64.txt 已用官方版语义（我们伪造的等价）
+- 文件/配置层全部对齐后，arm64 loader 的 EM 架构 FATAL 彻底消失
+
+新卡点（比昨天深一层，且已半解）：
+- 主线程：RegisterNatives 注册生效（SystemProperties.get 自测返回正确值 + native_get
+  直调也成功）——「注册不生效」假设被否
+- DexClassLoader 链（壳 so 静态初始化发起的 JNI 调用）：同一 native_get 报 No
+  implementation found——嫌疑收窄到「转译执行线程的 JNI 查找域」或「类加载器视角」
+- artlaunch 已埋好主线程/新线程对照实验（pthread + AttachCurrentThread），新线程
+  的输出尚未在串口出现（实验块待排障），这是下一步第一件事
+
+下一步：
+1. 排障线程实验块的输出（加块入口 printf 分步定位）→ 拿主线程 vs 新线程对照数据
+2. 若新线程失败坐实：ndk initialize 对非主线程 JNI 域的影响——从 ndk 主库 strings
+   找线程相关开关，或调整 InitializeNativeBridge 的调用线程
+3. 若新线程也成功：问题在壳 dex 类的解析域——从桥侧（Server.java）在 load 流程中
+   打印类的实际来源与 ClassLoader
