@@ -447,10 +447,14 @@ JavaBridge/sources.txt
 /APKINDEX
 /APKINDEX.tar.gz
 
-# ART guest 的 initrd：226MB 二进制、可由 qemu-src/tools/mk_art_initrd.py 再生，不入仓库；
-# 出包时由 build-win-release.ps1 [1.4/2] 拷进发布目录的 ThunderRuntime。
+# ART guest 的 initrd：>100MB 二进制（GitHub 单文件限制会拒收 push），不入仓库；
+# 出包时由 build-win-release.ps1 [1.4/2] 拷进发布目录。
+# · art_initrd.gz        —— 纯桥基座（mk_art_initrd.py 产物，merge 脚本的输入，本机留档 D:\Code\_artifacts\）
+# · art_initrd_merged.gz —— 合并版（桥+迅雷，merge_thunder_into_art.py 产物，运行时核心，别删）
 /CatClawVideo.Maui/QemuGuest/art_initrd.gz
+/CatClawVideo.Maui/QemuGuest/art_initrd_merged.gz
 /JavaBridge/qemu-src/art/art_initrd.gz
+/JavaBridge/qemu-src/art/art_initrd_merged.gz
 
 # ART initrd 打包的中间件（mk_art_initrd.py 每次重生成，别入库）
 /JavaBridge/qemu-src/art/gbcls/
