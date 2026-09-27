@@ -15,6 +15,7 @@
 用法：python merge_thunder_into_art.py <art_initrd.gz> <pkg_initrd.gz> <out.gz>
 """
 import gzip
+import io
 import os
 import sys
 
@@ -129,6 +130,35 @@ def trailer_bytes():
     return bytes(hdr) + name + b"\0" + b"\0" * ((-(110 + len(name) + 1)) % 4)
 
 
+ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+
+
+def read_initrd_f(path):
+    """initrd 读取：按 magic 自动识别 zstd / gzip（art 基座自 2026-09-28 起为 zstd-19）。"""
+    with open(path, "rb") as f:
+        magic = f.read(4)
+    if magic == ZSTD_MAGIC:
+        import zstandard
+        with open(path, "rb") as f:
+            return io.BytesIO(zstandard.ZstdDecompressor().stream_reader(f).read())
+    return gzip.open(path, "rb")
+
+
+def write_initrd_f(path, raw):
+    """initrd 写入：zstd -19（比 gzip -6 小 ~25%，解压快 3~5 倍；Alpine 6.12 内核
+    CONFIG_RD_ZSTD=y，按 magic 自动识别）。无 zstandard 库时回退 gzip。"""
+    try:
+        import zstandard
+        blob = zstandard.ZstdCompressor(level=19).compress(raw)
+        kind = "zstd-19"
+    except ImportError:
+        blob = gzip.compress(raw, 6, mtime=0)
+        kind = "gzip-6"
+    with open(path, "wb") as f:
+        f.write(blob)
+    print("输出压缩: %s（%.1fMB）" % (kind, len(blob) / 1048576))
+
+
 def main():
     art_path, pkg_path, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
 
@@ -152,7 +182,8 @@ def main():
 
     replaced = set()
     appended = set()
-    with gzip.open(art_path, "rb") as f, gzip.open(out_path, "wb", compresslevel=1) as o:
+    buf = io.BytesIO()
+    with read_initrd_f(art_path) as f:
         # 2) 全量转写 ART，替换 init
         while True:
             e = read_newc(f)
@@ -170,18 +201,19 @@ def main():
                 data = txt.encode("utf-8")
                 print("替换 init（+%d 字节迅雷段）" % (len(THUNDER_SEG)))
                 replaced.add("init")
-            write_newc(o, hdr, name, data)
+            write_newc(buf, hdr, name, data)
 
         # 3) 追加迅雷资产（用 pkg 的原 header，改名为 ./<key>）
         for key, (hdr, data) in sorted(take.items()):
-            write_newc(o, hdr, "./" + key, data)
+            write_newc(buf, hdr, "./" + key, data)
             appended.add(key)
             print("追加 %s（%dB）" % (key, len(data)))
 
-        o.write(trailer_bytes())
+        buf.write(trailer_bytes())
+
+    write_initrd_f(out_path, buf.getvalue())
 
     print("完成：%s（%d 条替换, %d 条追加）" % (out_path, len(replaced), len(appended)))
-    print("大小: %.1f MB" % (os.path.getsize(out_path) / 1048576))
 
 
 if __name__ == "__main__":

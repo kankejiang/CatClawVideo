@@ -184,9 +184,20 @@ def build_initrd(a):
     add("init", init.encode(), 0o100755)
 
     raw = RC.write_cpio(ents)
-    io.open(a.out, "wb").write(gzip.compress(raw, 6, mtime=0))   # mtime=0：产物可复现
-    print("art_initrd: cpio %.1fMB → gz %.1fMB（%s），/system 跳过 %d 个打不开的文件"
-          % (len(raw) / 1048576, os.path.getsize(a.out) / 1048576, a.out, skipped))
+    # initramfs 用 zstd -19（2026-09-28）：比 gzip -6 小 ~25%（安装包/传输体积），
+    # 解压快 3~5 倍（内核冷启动的解包段受益）。Alpine 6.12 内核 CONFIG_RD_ZSTD=y，
+    # 内核按 magic 自动识别（文件名保留 .gz 是历史——引用面大，改名不值）。
+    # 无 zstandard 库时回退 gzip（mtime=0：产物可复现）。
+    try:
+        import zstandard
+        blob = zstandard.ZstdCompressor(level=19).compress(raw)
+        kind = "zstd-19"
+    except ImportError:
+        blob = gzip.compress(raw, 6, mtime=0)
+        kind = "gzip-6"
+    io.open(a.out, "wb").write(blob)
+    print("art_initrd: cpio %.1fMB → %s %.1fMB（%s），/system 跳过 %d 个打不开的文件"
+          % (len(raw) / 1048576, kind, os.path.getsize(a.out) / 1048576, a.out, skipped))
 
 
 def main():
