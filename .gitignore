@@ -464,3 +464,6 @@ JavaBridge/sources.txt
 
 # 本地 .NET 运行时（DOTNET_ROOT 指向的私有运行时，官方 zip 解压即用，不入库）
 /.dotnet/
+
+# x86 mini guest 的 initrd（260MB，mk_x86_initrd.sh 产物，可由 JavaBridge/qemu-src/tools/x86guest 再生，不入仓库；内核 vmlinuz 入库）
+/CatClawVideo.Maui/QemuGuest/x86guest/art_initrd_x64.gz

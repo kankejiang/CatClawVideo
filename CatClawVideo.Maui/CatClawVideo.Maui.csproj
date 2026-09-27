@@ -247,8 +247,9 @@
 		</ItemGroup>
 	</Target>
 
-	<!-- QEMU 迅雷引擎运行时（Windows 专用）：随应用分发到 QemuGuest/。
-	     引擎从 AppContext.BaseDirectory\QemuGuest 加载（见 Core/Services/QemuGuest）。
+	<!-- QEMU guest 运行时（Windows 专用）：随应用分发到 QemuGuest/。
+	     宿主编排从 AppContext.BaseDirectory\QemuGuest 加载（见 Core/Services/QemuGuest）；
+	     承载迅雷引擎与站点/网盘/荐片的 ART 桥（aarch64 TCG / x86_64 WHPX 双架构，2026-09-27）。
 	     目录缺失时构建不报错，引擎判未就绪、磁力自动回落内置 BT。 -->
 	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">
 		<None Remove="QemuGuest\**" />
