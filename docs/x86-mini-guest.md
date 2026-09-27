@@ -246,3 +246,20 @@ aarch64 VM（-m 2560 + 4 vCPU TCG 满负荷）。
 **关键设计点（实施时注意）**：ART 桥重置当前 = Stop 整个 VM，会连带杀迅雷会话
 ——合并时应改「init 监督器：artlaunch 死了只重启它，VM 不动」。
 实施清单见交接文档 §6.8。
+
+## 2026-09-27 深夜（三）：迅雷控制端地址环境变量化（用户要求 localhost）
+
+用户指出 harness 里硬编码的 `10.0.2.2:18080` 应为可配置的本机地址。改造：
+
+- `ctrlloop.c`/`guard.c`：5 处 http 调用（/task 轮询、/report×2、/res×2）从字面量
+  `"10.0.2.2"` 改为 `ctrl_host()`——读 `CTRL_HOST` 环境变量，**缺省 127.0.0.1**；
+  guest 部署由 init 显式 `export CTRL_HOST="10.0.2.2"`（SLIRP 约定，行为零变化）。
+- 至此三种场景统一：108 直跑/同机调试用默认 localhost；guest（现网 aarch64 VM、
+  未来 x86 合并）用 init 注入的 10.0.2.2。
+- 闭环验证（108 qemu-user）：假控制端 `thunder_probe.py` 监听 127.0.0.1:18080，
+  `CTRL_HOST=127.0.0.1 ... ./harness` → /task 轮询抵达、PING→pong 上报回环 ✓
+- 产品件重打（repack_pkg.sh：新 harness + init 注入 CTRL_HOST）→ hosttest 回归
+  🎉 全链路通过（磁力→6 项文件列表→HTTP 206→起播，18.8s）。
+- 观察记录：hosttest 默认磁力链路径偶发一次引擎线程 SIGSEGV（重跑不复现；产品
+  运行时 `MAGNET=none` 不走该路径，无害）；排查中确认 108 直跑与 guest 原生两种
+  环境的对照方法（同包同链 35s 对跑）。

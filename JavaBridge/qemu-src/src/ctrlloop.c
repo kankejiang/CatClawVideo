@@ -1,12 +1,11 @@
 // ═══════════════════════════════════════════════════════════════════════
 //  控制通道：宿主 App ⇄ guest harness
 //
-//  qemu 用户网络里 **10.0.2.2 = 宿主的 loopback**（SLIRP 会把 guest 发往
-//  10.0.2.2:<port> 的连接转到宿主 127.0.0.1:<port>）。所以：
-//    · 宿主 App 起一个极小的 HTTP 服务（控制端）
-//    · guest 每秒 GET /task 问"有没有新任务"
-//    · 拿到任务后驱动迅雷引擎，并把状态/播放地址 POST 回 /report
-//
+//  控制端地址由环境变量 **CTRL_HOST** 决定（2026-09-27 环境变量化，原先硬编码）：
+//    · guest 里跑（现网 aarch64 迅雷 VM / 未来 x86 guest 合并）：init 显式
+//      export CTRL_HOST=10.0.2.2 —— qemu 用户网络里 10.0.2.2 = 宿主 loopback
+//      （SLIRP 把 guest 发往 10.0.2.2:<port> 的连接转到宿主 127.0.0.1:<port>）。
+//    · 本机直跑（108 调试、同机部署）：不设即默认 127.0.0.1。
 //  协议（纯文本，一行一条）：
 //    宿主 → guest（/task 的响应体）
 //      NONE
@@ -35,6 +34,13 @@
 
 static EngineFns g_eng;
 static int g_ctrl_port = 0;
+
+// 控制端主机（见文件头）：环境变量 CTRL_HOST 覆盖，缺省 127.0.0.1（本机直跑）。
+// guest 部署由 init 显式 export CTRL_HOST=10.0.2.2 —— 行为与改造前完全一致。
+static const char *ctrl_host(void) {
+    const char *h = getenv("CTRL_HOST");
+    return (h && *h) ? h : "127.0.0.1";
+}
 static long g_task_id = 0;
 static char g_task_name[256] = "";
 static int g_task_is_magnet = 0;
@@ -403,7 +409,7 @@ static void ctrl_report(const char *ev, long id, int st, int err, long done, lon
              "/report?ev=%s&id=%ld&st=%d&err=%d&done=%ld&total=%ld&msg=%s",
              ev, id, st, err, done, total, m);
     char body[256];
-    if (http_get_body("10.0.2.2", g_ctrl_port, path, body, sizeof body) != 0)
+    if (http_get_body(ctrl_host(), g_ctrl_port, path, body, sizeof body) != 0)
         printf("[ctrl] （上报失败，宿主控制端没起？）\n");
 }
 
@@ -759,7 +765,7 @@ static void main_loop(void) {
             g_rearm_done = 1;
         }
         // ② 控制通道：每秒问一次
-        if (g_ctrl_port && http_get_body("10.0.2.2", g_ctrl_port, "/task", body, sizeof body) == 0) {
+        if (g_ctrl_port && http_get_body(ctrl_host(), g_ctrl_port, "/task", body, sizeof body) == 0) {
             char *cmd = body;
             while (*cmd == ' ' || *cmd == '\n' || *cmd == '\r') cmd++;
             if (!strncmp(cmd, "TASK ", 5)) {

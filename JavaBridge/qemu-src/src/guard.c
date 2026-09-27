@@ -362,7 +362,7 @@ static void guard_report_big(const char *ev, const char *msg) {
     if (!path) { free(enc); return; }
     snprintf(path, pl, "/report?ev=%s&msg=%s", ev, enc);
     static char resp[256];
-    if (http_get_body("10.0.2.2", g_ctrl_port, path, resp, sizeof resp) != 0)
+    if (http_get_body(ctrl_host(), g_ctrl_port, path, resp, sizeof resp) != 0)
         printf("[guard] （上行 %s 失败，宿主控制端没起？）\n", ev);
     free(enc); free(path);
 }
@@ -471,7 +471,7 @@ static GObj *guard_get_res_stream(const char *name) {
     url_encode(name, enc, sizeof enc);
     snprintf(path, sizeof path, "/res?jar=%s&name=%s", g_guard_jar, enc);
     unsigned char *body = NULL; int blen = 0;
-    if (ghttp_get_mem("10.0.2.2", g_ctrl_port, path, &body, &blen) != 0) {
+    if (ghttp_get_mem(ctrl_host(), g_ctrl_port, path, &body, &blen) != 0) {
         printf("[gcall] getResourceAsStream(%s) → 宿主无此条目\n", name);
         return NULL;
     }
@@ -1676,7 +1676,7 @@ static void guard_do_load(const char *jarhash) {
     char path[256];
     snprintf(path, sizeof path, "/res?jar=%s&name=__so__", g_guard_jar);
     printf("[guard] 开始拉取 so：%s（控制口 %d）\n", path, g_ctrl_port);
-    if (ghttp_get_mem("10.0.2.2", g_ctrl_port, path, &so, &solen) != 0) {
+    if (ghttp_get_mem(ctrl_host(), g_ctrl_port, path, &so, &solen) != 0) {
         printf("[guard] ✗ 从宿主取 guard so 失败\n");
         guard_report_big("guard", "error: 从宿主取 guard so 失败（jar 未注册？）");
         return;

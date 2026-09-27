@@ -112,6 +112,9 @@ export P2SP_SECS="0"
 export DL_SECS="0"
 export PROXY_PORT="20080"
 export CTRL_PORT="18080"
+# ★ 控制端主机：guest 视角的宿主 loopback = 10.0.2.2（SLIRP 约定）。
+#   harness 侧默认 127.0.0.1（本机直跑调试用），guest 部署必须在这里显式指定。
+export CTRL_HOST="10.0.2.2"
 # ★ 数据面块设备：harness 把引擎吐出的字节按文件偏移写进它，宿主直读同一物理文件。
 #   宿主侧由 QemuHostRuntime 用 -drive file=... 挂上，**并把设备名经 cmdline 的 blkdev= 传进来** ——
 #   不能再硬编码 /dev/vda：多挂一块 swap 盘后，若数据面孔缺位，vda 就变成 swap 盘了
