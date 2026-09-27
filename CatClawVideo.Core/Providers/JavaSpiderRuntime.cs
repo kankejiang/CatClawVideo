@@ -118,6 +118,16 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     /// </summary>
     public bool ArtGuestMode { get; set; }
 
+    // ── x86 mini guest（实验性，2026-09-27）——
+    //    CATCLAW_X86_GUEST=1 时 ART guest 切到 x86_64 架构（Waydroid Android 13 子集 +
+    //    Debian 6.1 内核 + WHPX 硬件加速），联调进行中（JavaBridge/qemu-src/tools/x86guest/）。
+    //    ⚠ 默认关：aarch64 现网行为零变化；开关打开且 x86 运行时（ThunderRuntime\x86guest\
+    //    下的内核/initrd + qemu-system-x86_64.exe）齐全时才生效，否则回落 aarch64。
+    private CatClawVideo.Core.Services.QemuThunder.GuestArch? _guestArchOverride;
+    private string? _guestKernelFile;
+    private string? _guestInitrdFile;
+    private string? _guestQemuExe;
+
     public JavaSpiderRuntime(string bridgeDir, string javaExe, Action<string>? log = null,
         string? workDir = null, Func<int>? proxyPort = null)
     {
@@ -134,10 +144,19 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         ArtRuntimeDir = Path.Combine(AppContext.BaseDirectory, "ThunderRuntime");
         ArtGuestMode = CatClawVideo.Core.Services.QemuThunder.QemuArtGuest.IsAvailable(ArtRuntimeDir)
                        && Environment.GetEnvironmentVariable("CATCLAW_NO_ART") != "1";
+        // x86 mini guest 实验开关（2026-09-27，联调中）：仅当 x86 运行时齐全才切架构
+        if (Environment.GetEnvironmentVariable("CATCLAW_X86_GUEST") == "1")
+        {
+            _guestArchOverride = CatClawVideo.Core.Services.QemuThunder.GuestArch.X86_64;
+            _guestKernelFile = @"x86guest\vmlinuz-6.1.0-50-amd64";
+            _guestInitrdFile = @"x86guest\art_initrd_x64.gz";
+            _guestQemuExe = "qemu-system-x86_64.exe";
+        }
         // 启动就把走哪条桥链路写进日志：两条链路的差异只会以"某个站点不对"的形式浮现，
         // 不写明模式的话排障第一步会变成猜。
         Log($"桥链路：{(ArtGuestMode ? "ART guest（" + ArtRuntimeDir + '\\' + CatClawVideo.Core.Services.QemuThunder.QemuArtGuest.InitrdName + '）' : "宿主 JRE")}"
-            + (Environment.GetEnvironmentVariable("CATCLAW_NO_ART") == "1" ? "（CATCLAW_NO_ART=1 手动关掉）" : ""));
+            + (Environment.GetEnvironmentVariable("CATCLAW_NO_ART") == "1" ? "（CATCLAW_NO_ART=1 手动关掉）" : "")
+            + (Environment.GetEnvironmentVariable("CATCLAW_X86_GUEST") == "1" ? "（CATCLAW_X86_GUEST=1 实验性 x86 mini guest）" : ""));
         // 桥可用 = bridge.jar + deps（能跑非 Guard 的 jar 爬虫）；Guard 解壳能力单独判定
         // （2026-09-16 拆分：此前把 dex2jar 也算进来，缺它就把全部 jar 源判死 —— 用户实测 46 个源整体消失）
         IsSupported = File.Exists(Path.Combine(bridgeDir, "bridge.jar"))
@@ -481,7 +500,15 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
             if (IsBridgeReady) return;   // 排队期间别的调用已把桥拉起来
             if (ArtGuestMode)
             {
-                _art ??= new CatClawVideo.Core.Services.QemuThunder.QemuArtGuest(ArtRuntimeDir, _log);
+                _art ??= new CatClawVideo.Core.Services.QemuThunder.QemuArtGuest(ArtRuntimeDir, _log)
+                {
+                    // x86 mini guest 实验开关（CATCLAW_X86_GUEST=1）：切架构 + 覆盖内核/
+                    // initrd/引擎文件名；缺省 null → ArtGuest 内部走 aarch64 缺省，现网零变化
+                    GuestArch = _guestArchOverride ?? CatClawVideo.Core.Services.QemuThunder.GuestArch.Arm64,
+                    KernelFileName = _guestKernelFile ?? "pkg_kernel",
+                    GuestInitrdName = _guestInitrdFile ?? CatClawVideo.Core.Services.QemuThunder.QemuArtGuest.InitrdName,
+                    GuestQemuExeName = _guestQemuExe ?? "qemu-system-aarch64.exe",
+                };
                 var link = await _art.ConnectAsync(ct).ConfigureAwait(false);
                 if (link is null)
                 {
