@@ -256,6 +256,11 @@
 		<Content Include="QemuGuest\**">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</Content>
+		<!-- x86 mini guest 组件（QemuGuest\x86guest\：vmlinuz + art_initrd_x64.gz，约 285MB）
+		     本次发布不含：实验性（CATCLAW_X86_GUEST=1 才启用）且播放链路未完成验收
+		     （壳真实类 playerContent 的 VerifyError 卡点，见 docs/交接-x86迷你guest.md §6）。
+		     修好验收后再随包发布 —— 删掉本 Remove 即可恢复。 -->
+		<Content Remove="QemuGuest\x86guest\**" />
 	</ItemGroup>
 
 	<!-- JavaBridge（jar 爬虫桥）：随应用分发到 JavaBridge/，让**安装版**也能找到桥
