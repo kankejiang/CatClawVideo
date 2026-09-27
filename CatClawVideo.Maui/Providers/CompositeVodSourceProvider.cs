@@ -72,7 +72,12 @@ public class CompositeVodSourceProvider : IVodSourceProvider, IActionVodSourcePr
         var magnetCount = sources
             .SelectMany(s => s.Episodes)
             .Count(e => e.Url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase));
-        if (magnetCount == 0 || magnetCount > MaxMagnetsToExpand)
+        // ⚠ 流式路径用**宽上限**（不是全量路径的 12）：渐进产出下「串行解析拖慢详情页」
+        // 不成立——首条磁力同步展开后立即上屏，其余后台逐条刷新，IsBusy/cancel/缓存
+        // 三层都有效。12 的旧上限会把「13 条打包磁力」这类正常形态（如新6V 整季分包）
+        // 整个挡在展开之外，选集永远停在站点打包名（2026-09-27 用户实测「集数没有按
+        // 文件拆分」的直接死因）。宽上限只防病态站点把引擎长期占满。
+        if (magnetCount == 0 || magnetCount > MaxMagnetsToStreamExpand)
         {
             yield return Clone(sources);
             yield break;
@@ -441,8 +446,14 @@ public class CompositeVodSourceProvider : IVodSourceProvider, IActionVodSourcePr
         return m.Success && int.TryParse(m.Groups[1].Value, out var n4) ? n4 : 9999;
     }
 
-    /// <summary>单次详情页最多展开的磁力条数（超出则放弃展开，避免串行解析拖慢）</summary>
+    /// <summary>单次详情页最多展开的磁力条数（超出则放弃展开，避免串行解析拖慢）。
+    /// 仅用于**全量阻塞路径**（<see cref="GetPlaySourcesAsync"/>，要等全部探测完才返回）。</summary>
     private const int MaxMagnetsToExpand = 12;
+
+    /// <summary>流式路径的展开上限：渐进产出（先上屏、后台逐条刷新、IsBusy 自动让路），
+    /// 「拖慢详情页」不成立 —— 宽上限只防病态站点（几百条磁力把引擎长期占满）。
+    /// 每个未缓存磁力实测 0.2~5s 串行探测，60 条 ≈ 后台最多跑几分钟（随时可被点播打断）。</summary>
+    private const int MaxMagnetsToStreamExpand = 60;
 
     /// <summary>磁力 → 文件列表 的进程级缓存：每条磁力探测要 ~5s（引擎解析种子），5 条磁力的详情页
     /// 首次要 25s+。缓存后再次进入（含离开后回来、超引擎 10 分钟会话）直接命中，秒开。只存成功结果。</summary>
