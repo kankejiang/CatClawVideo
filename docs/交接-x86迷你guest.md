@@ -497,7 +497,53 @@ x86 guest（WHPX 单 QEMU 实例）
 合并模式下跳过 VM 级恢复（VM 归桥）→ 失败即回落内置 BT。
 
 验收脚本（`tools/x86guest/`）：`restart_merged.sh`（冒烟）/ `merged_full_run.sh`（全链路）/
-`bridge_ping.py` / `blk_check.py` / `verify_merged.py`。
+`bridge_ping.py` / `blk_check.py` / `verify_merged.py` / `timed_restart.sh`（桥就绪计时）。
+
+### 6.10 启动提速 + 镜像瘦身专项（2026-09-28 侦察完毕，待实施）
+
+> 用户目标：ART guest 冷启动 41~46s → 更快；安装包 374MB → 更小。两者由同一专项解决。
+
+**启动时间实测分解**（108 内核时钟 + 宿主墙钟）：
+内核 + initrd 解包 **6.6s**（zstd 后解压更快）→ **ART boot ~36s（大头）** → 站点 + homeContent ~5s。
+ART boot 慢的实锤：`Could not create image space ... Cannot relocate ... Only the zygote can
+create the global boot image` → **imageless running，每次启动全量 JIT**。
+
+**boot 镜像三连实测**（init.tmpl.sh，均已留痕）：`CATCLAW_BCP_LOCATIONS`（位置对齐）/
+`+ -Xnorelocate` / `+ -Xzygote` —— 全部仍走 relocate→imageless。**根因 = boot.oat 的 dex
+checksum 与当前 jar 对不齐**（framework jar 是符号链接布局 + 历史裁剪动过内容）。
+**正解 = 离线 dex2oat 用当前 jar 自产配套 boot 镜像**（自产自销校验必过），产物进 initrd 后
+init.tmpl.sh 的 `CATCLAW_BCP_LOCATIONS + -Xnorelocate` 立即生效（已就位），预计 ART boot
+36s → 15~20s。
+
+**initrd 585MB 分布侦察**（zstd 版前，Top 可裁项）：
+| 项 | 大小 | 判定 |
+|---|---|---|
+| `system/lib64/vndk-28`（179 文件） | 51.2MB | vendor 库，极简 rootfs 无 vendor 进程——**待验证 linker namespace 依赖** |
+| `libLLVM_android.so` + `libartd.so` + `libartd-compiler.so` | 30MB | **dex2oat 专用**，guest 运行时不需要（boot 镜像离线生成后成立） |
+| `libpac.so` / `libbluetooth.so` / `libpdfium.so` | 18MB | WebView PAC / 蓝牙 / PDF——本 guest 无此能力 |
+| `system/usr/icu`（icudt） | 23MB | 中文必需；裁非中文 locale 属进阶优化 |
+| `framework-res.apk` | 41.5MB | 多 DPI 资源裁剪——res 引用难静态判定，风险中 |
+
+保守合计可裁 **~90MB（585→~495）**，zstd 后 initrd 164→~140MB。
+
+**资源与路径**：
+- `D:\Code\.shot\artroot.raw`（**2.7GB**）——疑似完整 aarch64 ART 系统镜像，**dex2oat 本体
+  应在此**（sys28/sys28_slim 的 bin 已被裁、无 dex2oat）；WSL Debian（已装）可挂 ext4 提取。
+- `D:\Code\.shot\sys28`（469MB，顶层 bin/etc/framework/lib64/usr/xbin，无 system/ 前缀）
+  —— dex2oat 的运行依赖库（libart/libLLVM 等）在 `sys28\lib64` 基本齐全。
+- 108：`/usr/bin/qemu-aarch64-static` 就绪；qemu-user `-L <sys28>` 模式已验证（§6.8）。
+
+**实施步骤**（下轮开工）：
+1. WSL 挂 `artroot.raw`（`mount -o loop,ro`）→ 提取 `dex2oat(d)` + `libartd*` 等缺库进 `sys28`。
+2. 108：`qemu-aarch64-static -L <sys28> <sys28>/bin/dex2oatd --version` 跑通（依赖缺啥补啥）。
+3. 组装 boot image 生成：`dex2oatd --runtime-arg -Xbootclasspath:<15 项> --runtime-arg
+   -Xnorelocate --image=.../boot.art --oat-file=.../boot.oat --dex-file=<15 jar，dex-location
+   对齐 BCP> --instruction-set=arm64`（产物校验链自洽）。
+4. 产物（boot.art/oat/vdex）打进 initrd（mk_art_initrd 资产替换或 merge 追加）→ 108 实测：
+   `imageless` 日志消失 + `timed_restart.sh` 对比（目标 <25s）。
+5. 顺带裁剪上表可裁项 → 重压 zstd → 安装包二次瘦身。
+6. 全链路回归：桥 ping / 站点加载 / 磁力（合并）/ Guard——AOT 模式与原 imageless 行为差异
+   重点盯 Guard 解壳与 DexClassLoader（2026-09-27 的线程域/注册时序结论在 AOT 下需复验）。
 
 ---
 
