@@ -78,6 +78,12 @@ public sealed class QemuArtGuest : IDisposable
 
     private readonly EventHandler? _onExit;
 
+    /// <summary>已 Dispose 标志：Dispose 后的实例一律禁止再连（防「僵尸复活」）。
+    /// 背景（2026-09-27 多 qemu 事故）：重置窗口期的竞态调用者曾拿到已判死的实例引用，
+    /// 经 ConnectAsync→StartAsync 把已 Stop 的 QemuHostRuntime 重新拉起——每次重置叠一个
+    /// 孤儿 qemu。Dispose 先置本标志 + 下游 QemuHostRuntime 生命周期串行，双保险。</summary>
+    private volatile bool _disposed;
+
     private void Log(string m) => _log?.Invoke("[art-vm] " + m);
 
     /// <summary>ART 运行时是否已部署（缺 art_initrd.gz 时整条 ART 路静默不启用）。</summary>
@@ -94,6 +100,7 @@ public sealed class QemuArtGuest : IDisposable
         await _connectGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            if (_disposed) return null;   // 已收尾的实例禁止复活（并发/竞态引用兜底）
             if (IsUp && _w is not null && _r is not null) return (_w, _r);
             // 三件套校验按架构取文件名（x86 mini guest：Debian 内核 + x86 引擎 + art_initrd_x64.gz）
             var qemuExe = GuestArch == GuestArch.X86_64 ? GuestQemuExeName : "qemu-system-aarch64.exe";
@@ -146,7 +153,8 @@ public sealed class QemuArtGuest : IDisposable
         //   也一样 connect 成功（实测：1.5s 就"连上"，随后 ping 15s 超时）。
         //   所以这里用一次真的 ping 当就绪探针，不通就换一条连接重来。
         var deadline = DateTime.UtcNow + TimeSpan.FromMinutes(4);   // 冷启动：解 226MB initrd + ART 起 VM
-        while (DateTime.UtcNow < deadline && !ct.IsCancellationRequested)
+        // _disposed 进入条件：实例被并发收尾时探针立即退出返回 null，不再傻等满 4 分钟
+        while (DateTime.UtcNow < deadline && !ct.IsCancellationRequested && !_disposed)
         {
             TcpClient? c = null;
             try
@@ -212,9 +220,11 @@ public sealed class QemuArtGuest : IDisposable
         return finished == readTask ? await readTask.ConfigureAwait(false) : null;
     }
 
-    /// <summary>收尾：关掉桥连接并停 VM。VM 平时靠 KillOnClose job 兜底，这里管主动退出。</summary>
+    /// <summary>收尾：关掉桥连接并停 VM。VM 平时靠 KillOnClose job 兜底，这里管主动退出。
+    /// ⚠ _disposed 置位必须先于停 VM：在飞的 ConnectAsync 探针/后续调用见到标志即止。</summary>
     public void Dispose()
     {
+        _disposed = true;
         if (_onExit is not null) AppDomain.CurrentDomain.ProcessExit -= _onExit;
         try { _sock?.Close(); } catch { }
         _sock = null; _w = null; _r = null;

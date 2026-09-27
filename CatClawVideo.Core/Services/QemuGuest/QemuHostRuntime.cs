@@ -64,6 +64,8 @@ public sealed class QemuHostRuntime : IDisposable
     private KillOnCloseJob? _job;
     private StreamWriter? _fileLog;
     private int _filtered;
+    /// <summary>Start/Stop 生命周期互斥（多 qemu 事故修复，见 StartAsync 注释）。</summary>
+    private readonly object _lifecycle = new();
 
     /// <summary>
     /// guest 的 vCPU 数（<c>-smp</c>）。默认 = <c>宿主逻辑核数</c>，**但硬上限 4**。
@@ -232,8 +234,18 @@ public sealed class QemuHostRuntime : IDisposable
     /// </summary>
     public event Action? Died;
 
-    /// <summary>启动 QEMU（不等待 guest 就绪；就绪信号由控制端首次轮询给出）。</summary>
+    /// <summary>启动 QEMU（不等待 guest 就绪；就绪信号由控制端首次轮询给出）。
+    /// ⚠ StartAsync 与 Stop() 经 <see cref="_lifecycle"/> 串行（2026-09-27 多 qemu 事故）：
+    /// 重置窗口期的竞态曾让「Stop 后进行中的 Start」把已判死的 VM 复活成孤儿 qemu。 </summary>
     public Task<bool> StartAsync(CancellationToken ct = default)
+    {
+        lock (_lifecycle)
+        {
+            return StartLocked();
+        }
+    }
+
+    private Task<bool> StartLocked()
     {
         if (IsRunning) return Task.FromResult(true);
         if (!IsRuntimePresent)
@@ -245,6 +257,11 @@ public sealed class QemuHostRuntime : IDisposable
         try
         {
             ReapStaleVmOnOurPorts();
+            // x86 引擎（qemu-system-x86_64）在产品里只服务 ART guest（迅雷/Guard/下载都是
+            // aarch64），同一时刻只应存在一个——启动前按名字回收全部遗留孤儿（上一会话
+            // 竞态/强杀残留）。端口回收（ReapStaleVmOnOurPorts）只能管同端口，换端口后失效。
+            if (QemuExeName.StartsWith("qemu-system-x86_64", StringComparison.Ordinal))
+                ReapStaleVmsByName();
             OpenFileLog();
 
             var psi = new ProcessStartInfo
@@ -398,20 +415,23 @@ public sealed class QemuHostRuntime : IDisposable
         catch { _fileLog = null; }
     }
 
-    /// <summary>停掉 VM（杀进程树）并关掉日志句柄。</summary>
+    /// <summary>停掉 VM（杀进程树）并关掉日志句柄。与 StartAsync 经 <see cref="_lifecycle"/> 串行。</summary>
     public void Stop()
     {
-        var p = _proc;
-        _proc = null;
-        if (p is not null)
+        lock (_lifecycle)
         {
-            try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { }
-            try { p.WaitForExit(5000); } catch { }
-            try { p.Dispose(); } catch { }
-            _log?.Invoke($"[qemu] 已停止（过滤 {_filtered} 行 jni 噪声，完整日志：{ConsoleLogPath}）");
+            var p = _proc;
+            _proc = null;
+            if (p is not null)
+            {
+                try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { }
+                try { p.WaitForExit(5000); } catch { }
+                try { p.Dispose(); } catch { }
+                _log?.Invoke($"[qemu] 已停止（过滤 {_filtered} 行 jni 噪声，完整日志：{ConsoleLogPath}）");
+            }
+            try { _fileLog?.Flush(); _fileLog?.Dispose(); } catch { }
+            _fileLog = null;
         }
-        try { _fileLog?.Flush(); _fileLog?.Dispose(); } catch { }
-        _fileLog = null;
     }
 
     /// <summary>
@@ -479,6 +499,25 @@ public sealed class QemuHostRuntime : IDisposable
             if (port <= 0) continue;
             if (TcpListeners.ReapOwner(port, QemuExeName.Replace(".exe", "")))
                 _log?.Invoke($"[qemu] 端口 {port} 被上一世遗留的 VM 占着，已回收");
+        }
+    }
+
+    /// <summary>按可执行文件名回收遗留 VM（x86 ART guest 专用：同时刻只应存在一个）。
+    /// 端口回收管不到「换端口后的旧实例」，这里是竞态/强杀残留的最后一道安全网。</summary>
+    private void ReapStaleVmsByName()
+    {
+        var name = QemuExeName.Replace(".exe", "");
+        foreach (var p in Process.GetProcessesByName(name))
+        {
+            try
+            {
+                if (_proc is not null && p.Id == _proc.Id) continue;   // 本实例的（正常不会走到）
+                p.Kill(entireProcessTree: true);
+                p.WaitForExit(3000);
+                _log?.Invoke($"[qemu] 回收遗留 {name} pid={p.Id}（启动前按名清理）");
+            }
+            catch { }
+            finally { try { p.Dispose(); } catch { } }
         }
     }
 

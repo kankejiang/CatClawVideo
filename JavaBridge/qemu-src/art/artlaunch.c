@@ -32,27 +32,37 @@ typedef bool (*chain_fn)(int, siginfo_t *, void *);
 static chain_fn g_chain[SIGCHAIN_MAX];
 
 /* 信号哨兵（2026-09-27）：壳真实类首调转译代码后 SIGSEGV 无 dump 直接 139 死，
- * 这里包一层 trampoline——每次信号先 write 日志（信号号/故障码/故障地址）再转发
- * 真实 handler。排查 ndk 转译段 fault 到底有没有进 handler、地址落在哪。 */
+ * trampoline 包住注册进来的 handler，记信号号/故障码/故障地址后转发。
+ * ⚠ 日志默认关（CATCLAW_SIGLOG=1 才 write）：宿主握手期 console 管道无人读，
+ * ndk 转译 fault 的 SIGSEGV 是高频信号，write 很快写满 64KB 管道缓冲 → 信号处理内
+ * 阻塞 → guest 全线程冻住 → 探针 ping 永远无应答（2026-09-27 宿主 WHPX 实锤，
+ * 15:50 无哨兵构建同一流程是通的）。环形内存缓冲不值得——fatal 由 ndk 自己 _exit，
+ * 我们没有稳定的 dump 时机；要取证时在 108 上开着跑即可。 */
+static int g_siglog;   /* main 开头读一次环境变量，信号处理内不做 getenv（非异步安全） */
+
 static void sig_trampoline(int sig, siginfo_t *info, void *ctx) {
-    char buf[96];
-    static const char hex[] = "0123456789abcdef";
-    uintptr_t a = (uintptr_t) info->si_addr;
-    buf[0] = '['; buf[1] = 's'; buf[2] = 'i'; buf[3] = 'g'; buf[4] = ']';
-    buf[5] = ' ';
-    int n = 6;
-    /* 固定格式 "signal=%d code=%d addr=0x<hex16>\n"——只用 write，异步信号安全 */
-    buf[n++] = 's'; buf[n++] = '='; buf[n++] = (char) ('0' + sig);
-    buf[n++] = ' '; buf[n++] = 'c'; buf[n++] = '=';
-    int c = info->si_code;
-    if (c < 0) { buf[n++] = '-'; c = -c; }
-    if (c > 9) { buf[n++] = (char) ('0' + c / 10); c %= 10; }
-    buf[n++] = (char) ('0' + c);
-    buf[n++] = ' '; buf[n++] = 'a'; buf[n++] = '=';
-    for (int i = 15; i >= 0; i--) buf[n + (15 - i)] = hex[(a >> (i * 4)) & 0xf];
-    n += 16;
-    buf[n++] = '\n';
-    write(2, buf, n);
+    if (g_siglog) {
+        char buf[96];
+        static const char hex[] = "0123456789abcdef";
+        uintptr_t a = (uintptr_t) info->si_addr;
+        buf[0] = '['; buf[1] = 's'; buf[2] = 'i'; buf[3] = 'g'; buf[4] = ']';
+        buf[5] = ' ';
+        int n = 6;
+        /* 固定格式 "s=<sig> c=<code> a=0x<hex16>\n"——只用 write，异步信号安全 */
+        buf[n++] = 's'; buf[n++] = '=';
+        if (sig > 9) { buf[n++] = (char) ('0' + sig / 10); sig %= 10; }
+        buf[n++] = (char) ('0' + sig);
+        buf[n++] = ' '; buf[n++] = 'c'; buf[n++] = '=';
+        int c = info->si_code;
+        if (c < 0) { buf[n++] = '-'; c = -c; }
+        if (c > 9) { buf[n++] = (char) ('0' + c / 10); c %= 10; }
+        buf[n++] = (char) ('0' + c);
+        buf[n++] = ' '; buf[n++] = 'a'; buf[n++] = '=';
+        for (int i = 15; i >= 0; i--) buf[n + (15 - i)] = hex[(a >> (i * 4)) & 0xf];
+        n += 16;
+        buf[n++] = '\n';
+        write(2, buf, n);
+    }
     chain_fn real = g_chain[sig];
     if (real) real(sig, info, ctx);
     else _exit(128 + sig);   /* 没有真 handler：显式留退出码 */
@@ -123,6 +133,7 @@ static void *thread_runner(void *arg) {
 
 
 int main(int argc, char **argv) {
+    g_siglog = getenv("CATCLAW_SIGLOG") != NULL;
     /* 属性可达性探针：nativebridge 属性是否经 proppreload 可读（libart 同进程同路径）。
      * 输出空值 = 拦截缺口（proppreload 缺 __system_property_find/read_callback 实现）。 */
     {
