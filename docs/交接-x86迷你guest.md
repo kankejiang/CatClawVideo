@@ -323,6 +323,32 @@ Start-Process "...\bin\Debug\net11.0-windows10.0.26100.0\win-x64\CatClawVideo.Ma
   homeContent），qemu 日志 tail 看断点；`init_x86.sh` 现在会打桥进程退出码
   （139=SIGSEGV 132=SIGILL 134=SIGABRT）。
 
+#### 2026-09-27 深夜取证进展（黑箱已拆开一半）
+
+**已修的真 bug：sigchain 单槽**。原 `artlaunch.c` 的 `g_chain` 每个信号只存
+一个 handler，而 ART 的 FaultManager 与 ndk 转译器**都会**注册 SIGSEGV，互相
+覆盖使处理链断裂：guest fault 经 ndk 修正上下文后恢复到无效 PC → 立刻再 fault
+→ 循环（内核打印 `ip=fffffffffffffb17 error 15`、同 PC 反复出现就是它）。
+已改为真 libsigchain 语义（多槽、后注册者先处理、谁返回 true 谁收敛）。
+
+**取证工具链**（`CATCLAW_SIGLOG=1` 开启）：信号哨兵打印 si_code/故障地址/
+**崩溃 PC**（ucontext 的 REG_RIP），并现场解析 `/proc/self/maps` 打印 PC 落在
+哪个模块+偏移；桥侧 `Art.loadSpider` 加了 step#3..#11 步骤打点；init 加了
+`-Xcheck:jni`。脚本：`run_guard_crash.sh` / `run_guard_siglog.sh` /
+`enable_checkjni.py` / `build_gb_dex.py`（只重打 dex，不动现网 initrd）。
+
+**当前结论**：
+- 崩溃发生在 **`loadClass` 内部**（壳 `<clinit>` 后半段：打完「自定义爬虫代码
+  加载成功」后，连 `step#3` 日志都没出来）
+- 崩溃 PC 落在 **`/apex/com.android.art/lib64/libart.so` 的可执行段**（偏移
+  0x15f000 起），故障地址非 0 ⇒ **不是「guest 代码解引用 NULL」，而是 ART 自身
+  在执行中访问违规**
+- 顺带补了 App 桩的 `getSystemService`（造真类 Unsafe 伪实例，绝不返回 null）
+  ——本次崩溃并未经过它，但同类坑已消除
+
+**下一步（明线）**：用 108 的 x86_64 binutils 把崩溃偏移反查到 libart 的
+具体函数（`addr2line` / `nm`），定位 ART 的哪条路径在转译上下文里跑飞。
+
 ### 6.7 非 Guard 源原生速度验收（2026-09-27 晚，✅ 通过）
 
 - 108 `bench_speed.py` / `bench_pick.py`：fty.jar（宿主 NonGuardFallbackJars 同源，
