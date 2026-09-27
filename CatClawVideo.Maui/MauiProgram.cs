@@ -237,7 +237,25 @@ public static class MauiProgram
         // 桥爬虫 UI 事件 → MAUI 对话框/二维码（对齐 TVBox：点「登入自己网盘」弹
         // 「已登录+启用中」列表 + 扫码登录，而非回落网页）
         if (jarRuntime is CatClawVideo.Core.Providers.JavaSpiderRuntime desktopJar)
+        {
             CatClawVideo.Maui.Services.SpiderUiHost.Attach(desktopJar);
+
+            // ★ 迅雷引擎合并（2026-09-27，docs 交接 §6.9）：装了 art_initrd_merged.gz 时，
+            //   迅雷引擎不再自起 QEMU —— 与爬虫桥共用同一个 ART VM（媒体口 / 数据盘 / swap
+            //   全租用，省 ~2.5GB RAM 与一次内核冷启动）。配置在建 VM 前注入；缺合并 initrd
+            //   时 ExternalVm* 为 null，迅雷引擎维持原状（自起 aarch64 VM）。
+            if (File.Exists(Path.Combine(AppContext.BaseDirectory, "QemuGuest",
+                    CatClawVideo.Core.Providers.JavaSpiderRuntime.ThunderMergeInitrdName)))
+            {
+                desktopJar.ThunderMerge = new CatClawVideo.Core.Providers.JavaSpiderRuntime.ThunderMergeConfig(
+                    CatClawVideo.Core.Services.QemuGuest.QemuGuestEngine.CtrlPort,
+                    qemuThunder.BlockDeviceRoot);
+                qemuThunder.ExternalVmProbe = () => desktopJar.CanProvideThunderVm;
+                qemuThunder.ExternalVmProvider = ct => desktopJar.EnsureThunderVmAsync(ct);
+                BtFileLog.Write("[qemu] 迅雷引擎合并已启用（外部 VM 模式：与爬虫桥共用 ART VM，控制口 "
+                    + CatClawVideo.Core.Services.QemuGuest.QemuGuestEngine.CtrlPort + "）");
+            }
+        }
 
 #endif
         // spider 型直播源（TVBox LivePlayActivity 的 liveContent 链）：Core.Live 不依赖爬虫层，

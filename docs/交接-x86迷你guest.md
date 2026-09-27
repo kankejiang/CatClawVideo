@@ -443,6 +443,51 @@ x86 guest（WHPX 单 QEMU 实例）
    是串行待机，改为后台 + 监督重启）
 5. 验收：磁力全链路（TASK MAGNET→媒体流→块设备直读）+ 性能对照 19.5 MB/s 基线
 
+### 6.9 迅雷引擎与 ART guest 合并——宿主/运行时实施完成（2026-09-27，待 108 实机验收）
+
+> 路线定为 **aarch64 合并 initrd**（§6.8 的 x86 用户态转译方案留作备选）：一个 TCG VM
+> 同时跑「爬虫桥 + 迅雷 harness」——省掉整个第二台 aarch64 VM（-m 2560 + 4 vCPU）与
+> 一次内核冷启动。
+
+**产物与工具**
+
+- `JavaBridge/qemu-src/tools/merge_thunder_into_art.py`：`art_initrd.gz` + `pkg_initrd.gz` →
+  `CatClawVideo.Maui/QemuGuest/art_initrd_merged.gz`（并入 `libxl_thunder_sdk.so` /
+  `libxl_stat.so` / `thunder-data` 种子；init 在「ART guest begin」横幅后追加**迅雷段**）。
+- 迅雷段（init 追加）：`thunderport=` cmdline → `CTRL_HOST=10.0.2.2`（**关键**：缺省
+  127.0.0.1 是 guest 自己，harness 永远连不上宿主）、`CTRL_PORT`、`PROXY_PORT=20080`、
+  `BLK_DEV=$(getarg blkdev)`（**绝不硬编码** `/dev/vda`：swap 先挂时 vda 会是交换区，
+  引擎字节写进 swap）、`swapdev → mkswap+swapon`；等 eth0 起来后 `/harness >/thunder.log 2>&1 &`。
+
+**宿主实现**
+
+- `QemuArtGuest.ThunderMerged`：合并 initrd + 挂 `store-art.img`/`swap-art.img` 块设备 +
+  cmdline `thunderport=` + 内存 3072；新增 `EnsureVmRunningAsync`（只起 VM、不等桥探针——
+  磁力任务不该等 4 分钟的桥就绪）与 `ThunderLease`（媒体口/数据盘/swap 外借 + `Died` 转发）。
+- `QemuGuestEngine.ExternalVmProvider`（外部 VM 模式）：不再自起 QEMU，租 ART VM 的媒体口
+  （hostfwd → guest :20080）与块设备；控制口由 guest harness 主动回连（协议零改动）。
+  行为适配：退出播放页/空闲回收只发 `STOP` 结束会话（VM 归桥，不杀）；9128 与任务死亡的
+  VM 级恢复在外部模式跳过（不能重启清表）→ 失败回落内置 BT；租约 `Died`（桥重置/VM 崩溃）
+  → 结束会话，下次任务自动重拉。
+- `JavaSpiderRuntime`：`ThunderMerge` 配置 + `EnsureThunderVmAsync`（懒建 ART guest 时带上
+  合并配置——桥预热与迅雷首任务共用同一实例，一次冷启动同时喂两边）；`MauiProgram` 在
+  merged initrd 存在时装配 `ExternalVmProbe/Provider`。
+- ⚠ 活跃副本在 `CatClawVideo.Maui/Providers/JavaSpiderRuntime.cs`（源声明遮蔽 Core 程序集里
+  的同名旧副本，编译不报重名——改桥/合并逻辑以 Maui 副本为准）。
+
+**本轮修掉的两个致命 bug（旧版合并脚本，108 冒烟起不来的直接死因）**
+
+1. `write_newc` 不重写 cpio `namesize` 字段：pkg 条目名不带 `./` 而追加时写 `./`+key，
+   长度差 2 → 合并 initrd 解包到追加条目即 garbage。已修；全量读回校验 1763 条目无错位。
+2. 迅雷段漏 `CTRL_HOST` 与 `BLK_DEV` 硬编码、缺 `PROXY_PORT`/swap 处理（见上，已补齐）。
+
+**验收路径（108）**
+
+1. 把新 `art_initrd_merged.gz` 拷到 `/root/x86guest/`，跑 `bash tools/x86guest/restart_merged.sh`：
+   桥 ping + harness 回连 18080 双通过（`verify_merged.py`）。
+2. 磁力全链路：TASK MAGNET → 媒体流 206 → 块设备直读。
+3. 对照：内存占用（省一台 VM）/ 起播时间；回归 `hosttest`。
+
 ---
 
 ## 7. 未完成任务
@@ -451,8 +496,8 @@ x86 guest（WHPX 单 QEMU 实例）
       真因是注册时序/namespace 判定/g_runtime_callbacks 三连）
 - [x] 非 Guard 源原生速度验收（2026-09-27 晚 ✅，见 §6.7——load/调用链毫秒级）
 - [ ] 壳初始化后段 SIGSEGV 空指针（取证完成，见 §6.6——补齐极简环境缺的框架支撑）
-- [ ] **迅雷引擎与 ART guest 合并**（用户既定设计，可行性已验证，见 §6.8——按实施清单
-      5 步走；关键设计点：ART 重置只重启 artlaunch 进程而非整个 VM）
+- [ ] **迅雷引擎与 ART guest 合并——108 实机验收**（宿主/运行时已实施完成，见 §6.9；
+      验收 = 桥 ping + harness 回连 + 磁力全链路 + 内存/起速对照）
 - [ ] 双 guest 路由的 C# 实现（按源分流）——暂缓（非 Guard 已原生，Guard 待 §6.6 突破）
 - [ ] WHPX 不可用用户的一键启用引导（设置页，DISM VirtualMachinePlatform）
 - [ ] 发行打包（build-win-release.ps1 带 x86 组件，预计 +300MB）

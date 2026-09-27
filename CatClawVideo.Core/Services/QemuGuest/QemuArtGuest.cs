@@ -66,6 +66,30 @@ public sealed class QemuArtGuest : IDisposable
     /// <summary>把爬虫写的 guest 地址换成宿主隧道地址；没开隧道时原样返回。</summary>
     public string? ProxyBase => ProxyTunnelPort > 0 ? $"http://127.0.0.1:{ProxyTunnelPort}" : null;
 
+    // ── 迅雷引擎合并（2026-09-27，docs 交接 §6.9）────────────────────────────────
+    /// <summary>合并模式：本 VM 用「ART+迅雷」合并 initrd（<see cref="MergedInitrdName"/>），
+    /// 桥与迅雷 harness 同 guest 跑。启用后额外：挂数据面（store-art.img→/dev/vda）与
+    /// 交换区（swap-art.img→/dev/vdb）块设备；cmdline 增 <c>thunderport=</c>——合并 initrd
+    /// 的 /init「迅雷段」据此拉起 harness 回连宿主该端口。宿主侧 QemuThunderEngine 切
+    /// 「外部 VM 模式」复用本 VM（不再自起第二个 QEMU，省 ~2.5GB RAM 与一次内核启动）。</summary>
+    public bool ThunderMerged { get; set; }
+
+    /// <summary>合并模式下迅雷 harness 的控制口（回连宿主；与 QemuThunderEngine 的控制服务器同号）。</summary>
+    public int ThunderPort { get; set; }
+
+    /// <summary>块设备镜像目录（与 QemuThunderEngine.BlockDeviceRoot 同目录约定）。
+    /// 合并模式非空时挂 <c>store-art.img</c> + <c>swap-art.img</c>（稀疏，实际只占写入量）。</summary>
+    public string? BlockDeviceRoot { get; set; }
+
+    /// <summary>数据面块设备容量（合并模式）。</summary>
+    public long BlockDeviceCapacityBytes { get; set; } = 64L * 1024 * 1024 * 1024;
+
+    /// <summary>交换区容量（合并模式；0 = 不挂）。</summary>
+    public long SwapDeviceCapacityBytes { get; set; } = 6L * 1024 * 1024 * 1024;
+
+    /// <summary>合并模式使用的 initrd 文件名。</summary>
+    public string MergedInitrdName { get; set; } = "art_initrd_merged.gz";
+
     public QemuArtGuest(string runtimeDir, Action<string>? log = null)
     {
         _runtimeDir = runtimeDir;
@@ -102,45 +126,7 @@ public sealed class QemuArtGuest : IDisposable
         {
             if (_disposed) return null;   // 已收尾的实例禁止复活（并发/竞态引用兜底）
             if (IsUp && _w is not null && _r is not null) return (_w, _r);
-            // 三件套校验按架构取文件名（x86 mini guest：Debian 内核 + x86 引擎 + art_initrd_x64.gz）
-            var qemuExe = GuestArch == GuestArch.X86_64 ? GuestQemuExeName : "qemu-system-aarch64.exe";
-            var initrdFile = GuestArch == GuestArch.X86_64 ? GuestInitrdName : InitrdName;
-            var kernelFile = KernelFileName;
-            var missing = new[] { qemuExe, kernelFile, initrdFile }
-                .Where(f => !File.Exists(Path.Combine(_runtimeDir, f))).ToList();
-            if (missing.Count > 0) { Log("运行时不齐全，缺：" + string.Join(", ", missing)); return null; }
-            if (_vm is null)
-            {
-                var bridge = PickFreePort(PortSeed);
-                var media = PickFreePort(bridge + 1);       // QemuHostRuntime 总要一条 -:20080 的 hostfwd，别撞号
-                // 爬虫的播放地址写的是它自己那个 /proxy（guest 里的 9978），给它开一条宿主隧道。
-                var tunnel = PickFreePort(media + 1);
-                if (bridge == 0 || media == 0) { Log("找不到可用端口"); return null; }
-                BridgePort = bridge;
-                ProxyTunnelPort = tunnel;
-                _dns ??= new ArtDnsServer(_log);      // guest 里所有 Java 域名解析都问到这（见 ArtDnsServer 注释）
-                _vm = new QemuHostRuntime(_runtimeDir, media, _log, initrdFile, consoleLogTag: "-art",
-                        monitorPort: 0, ctrlPort: _dns.Port, guardPort: bridge, magnetOverride: "none")
-                {
-                    Arch = GuestArch,
-                    QemuExeName = qemuExe,
-                    KernelName = kernelFile,
-                    // 实测：2048MB 够 ART + 桥 + 一个源（TCG 下 -smp>4 反而更慢，见 QemuHostRuntime 注释）。
-                    // vCPU 2 → 4（2026-09-26）：桥已 per-site 并行（4 线程池），聚合网盘源的 detail
-                    // 里几十次 TLS 握手在 TCG 下是纯 CPU 计算，多核能让它们真并行；TCG 实测吞吐峰值
-                    // 在 2~4 vCPU（docs/qemu-tcg-tuning.md §6，>4 反而更慢），4 是上限取值。
-                    GuestMemoryMb = 2048,
-                    SmpCount = 4,
-                    // ⚠ aarch64 必须是 virtio-net-device：ART initrd 只 insmod virtio_mmio+virtio_net，
-                    //   用 PCI 版 guest 里没有 eth0，hostfwd 永远连不上（实测踩过）。
-                    //   x86（q35）走 PCI：virtio-net-pci + Debian 内核模块链（见 mk_x86_initrd.sh）。
-                    NetDevice = GuestArch == GuestArch.X86_64
-                        ? "virtio-net-pci,netdev=n0"
-                        : "virtio-net-device,netdev=n0",
-                    ProxyTunnel = tunnel > 0 ? (tunnel, GuestProxyPort) : null,
-                };
-            }
-            if (!await _vm!.StartAsync(ct).ConfigureAwait(false)) { Log("QEMU 启动失败"); return null; }
+            if (!await StartVmLockedAsync(ct).ConfigureAwait(false)) return null;
         }
         finally { _connectGate.Release(); }
 
@@ -212,6 +198,141 @@ public sealed class QemuArtGuest : IDisposable
 
     /// <summary>桥连接的所有权（_sock/_w/_r 三个字段的写入互斥）。</summary>
     private readonly object _ownership = new();
+
+    /// <summary>创建（若未建）+ 启动 VM。持 <see cref="_connectGate"/> 调用。
+    /// <para>ConnectAsync（桥会话）与 <see cref="EnsureVmRunningAsync"/>（合并模式迅雷引擎）
+    /// 共用：后者只要 QEMU 进程起来——harness 由合并 initrd 的迅雷段拉起并回连宿主控制口，
+    /// 与本类的桥就绪探针互不依赖（TCG 下桥就绪要几分钟，磁力任务不该等）。</para></summary>
+    private async Task<bool> StartVmLockedAsync(CancellationToken ct)
+    {
+        // 三件套校验按架构取文件名（x86 mini guest：Debian 内核 + x86 引擎 + art_initrd_x64.gz）
+        var qemuExe = GuestArch == GuestArch.X86_64 ? GuestQemuExeName : "qemu-system-aarch64.exe";
+        // 合并模式（ThunderMerged）优先用合并 initrd；x86 走各自的 override，aarch64 用默认名
+        var initrdFile = ThunderMerged ? MergedInitrdName
+            : GuestArch == GuestArch.X86_64 ? GuestInitrdName : InitrdName;
+        var kernelFile = KernelFileName;
+        var missing = new[] { qemuExe, kernelFile, initrdFile }
+            .Where(f => !File.Exists(Path.Combine(_runtimeDir, f))).ToList();
+        if (missing.Count > 0) { Log("运行时不齐全，缺：" + string.Join(", ", missing)); return false; }
+
+        if (_vm is null)
+        {
+            var bridge = PickFreePort(PortSeed);
+            var media = PickFreePort(bridge + 1);       // QemuHostRuntime 总要一条 -:20080 的 hostfwd，别撞号
+            // 爬虫的播放地址写的是它自己那个 /proxy（guest 里的 9978），给它开一条宿主隧道。
+            var tunnel = PickFreePort(media + 1);
+            if (bridge == 0 || media == 0) { Log("找不到可用端口"); return false; }
+            BridgePort = bridge;
+            ProxyTunnelPort = tunnel;
+            _dns ??= new ArtDnsServer(_log);      // guest 里所有 Java 域名解析都问到这（见 ArtDnsServer 注释）
+            // 合并模式：数据面/交换区镜像（与 QemuThunderEngine 同目录约定，文件名带 -art 区分）
+            string? blkPath = null, swapPath = null;
+            if (ThunderMerged && !string.IsNullOrEmpty(BlockDeviceRoot))
+            {
+                try
+                {
+                    blkPath = Path.Combine(BlockDeviceRoot!, "store-art.img");
+                    if (SwapDeviceCapacityBytes > 0)
+                        swapPath = Path.Combine(BlockDeviceRoot!, "swap-art.img");
+                }
+                catch (Exception ex)
+                {
+                    Log("合并模式镜像路径无效（退纯 HTTP 通道）：" + ex.Message);
+                    blkPath = null; swapPath = null;
+                }
+            }
+            _vm = new QemuHostRuntime(_runtimeDir, media, _log, initrdFile, consoleLogTag: "-art",
+                    monitorPort: 0, ctrlPort: _dns.Port, guardPort: bridge, magnetOverride: "none",
+                    blockImagePath: blkPath, blockImageBytes: blkPath is null ? 0 : BlockDeviceCapacityBytes,
+                    swapImagePath: swapPath, swapImageBytes: swapPath is null ? 0 : SwapDeviceCapacityBytes,
+                    thunderPort: ThunderMerged ? ThunderPort : 0)
+            {
+                Arch = GuestArch,
+                QemuExeName = qemuExe,
+                KernelName = kernelFile,
+                // 实测：2048MB 够 ART + 桥 + 一个源（TCG 下 -smp>4 反而更慢，见 QemuHostRuntime 注释）。
+                // vCPU 2 → 4（2026-09-26）：桥已 per-site 并行（4 线程池），聚合网盘源的 detail
+                // 里几十次 TLS 握手在 TCG 下是纯 CPU 计算，多核能让它们真并行；TCG 实测吞吐峰值
+                // 在 2~4 vCPU（docs/qemu-tcg-tuning.md §6，>4 反而更慢），4 是上限取值。
+                // 合并模式要同时扛「桥 + 迅雷引擎」，内存上调（有 swap 时冷页可换出）
+                GuestMemoryMb = ThunderMerged ? 3072 : 2048,
+                SmpCount = 4,
+                // ⚠ aarch64 必须是 virtio-net-device：ART initrd 只 insmod virtio_mmio+virtio_net，
+                //   用 PCI 版 guest 里没有 eth0，hostfwd 永远连不上（实测踩过）。
+                //   x86（q35）走 PCI：virtio-net-pci + Debian 内核模块链（见 mk_x86_initrd.sh）。
+                NetDevice = GuestArch == GuestArch.X86_64
+                    ? "virtio-net-pci,netdev=n0"
+                    : "virtio-net-device,netdev=n0",
+                ProxyTunnel = tunnel > 0 ? (tunnel, GuestProxyPort) : null,
+            };
+            // 合并模式：给迅雷引擎建租约（媒体口 / 数据盘 / swap 全租用；VM 生命周期仍归本类）。
+            // Died 转发：QemuThunderEngine 借它感知「桥侧把 VM 收走了」（桥重置会连带杀迅雷会话）。
+            if (ThunderMerged)
+            {
+                Lease = new ThunderLease(this, media, _vm.BlockStore, _vm.SwapStore);
+                _vm.Died += () => Lease?.NotifyDied();
+            }
+        }
+        if (!await _vm!.StartAsync(ct).ConfigureAwait(false)) { Log("QEMU 启动失败"); return false; }
+        return true;
+    }
+
+    /// <summary>只确保 QEMU 进程起来（不等桥就绪）——合并模式迅雷引擎用：harness 由合并
+    /// initrd 的迅雷段拉起并回连宿主控制口，与桥会话互不依赖。幂等；失败返回 false。</summary>
+    public async Task<bool> EnsureVmRunningAsync(CancellationToken ct = default)
+    {
+        await _connectGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_disposed) return false;
+            if (_vm is { IsRunning: true }) return true;
+            return await StartVmLockedAsync(ct).ConfigureAwait(false);
+        }
+        finally { _connectGate.Release(); }
+    }
+
+    /// <summary>QEMU 进程是否在跑（外部租约判活用）。</summary>
+    public bool IsVmRunning => _vm is { IsRunning: true };
+
+    /// <summary>合并模式给迅雷引擎的租约（VM 未创建为 null；见 <see cref="ThunderLease"/>）。</summary>
+    public ThunderLease? Lease { get; private set; }
+
+    /// <summary>
+    /// 合并模式的外借租约：<c>QemuGuestEngine</c>「外部 VM 模式」借本 VM 跑迅雷 harness ——
+    /// 不自起第二个 QEMU，媒体口（guest 代理 20080 的宿主 hostfwd）/ 数据面块设备 / 交换区
+    /// 全租用（省 ~2.5GB RAM 与一次内核启动）。VM 生命周期仍归本类：桥重置会连带杀迅雷
+    /// 会话（<see cref="Died"/> 通知），阶段一接受该耦合（docs 交接 §6.9）。
+    /// </summary>
+    public sealed class ThunderLease
+    {
+        internal ThunderLease(QemuArtGuest owner, int mediaPort, SparseBlockStore? blockStore, SparseBlockStore? swapStore)
+        {
+            Owner = owner;
+            MediaPort = mediaPort;
+            BlockStore = blockStore;
+            SwapStore = swapStore;
+        }
+
+        /// <summary>租出 VM 的 ART guest（判活/日志用）。</summary>
+        public QemuArtGuest Owner { get; }
+
+        /// <summary>媒体口（宿主的 hostfwd → guest 20080，迅雷 harness 的代理就在那）。</summary>
+        public int MediaPort { get; }
+
+        /// <summary>数据面块设备（guest /dev/vdX ↔ 宿主 store-art.img 同一物理文件）。</summary>
+        public SparseBlockStore? BlockStore { get; }
+
+        /// <summary>交换区（guest mkswap/swapon 的那块；无 = 纯内存 tmpfs）。</summary>
+        public SparseBlockStore? SwapStore { get; }
+
+        /// <summary>VM 是否还在跑。</summary>
+        public bool IsRunning => Owner.IsVmRunning;
+
+        /// <summary>VM 退出（含桥重置收走）——迅雷引擎据此结束会话。</summary>
+        public event Action? Died;
+
+        internal void NotifyDied() => Died?.Invoke();
+    }
 
     private static async Task<string?> WaitForLineAsync(StreamReader r, CancellationToken ct)
     {

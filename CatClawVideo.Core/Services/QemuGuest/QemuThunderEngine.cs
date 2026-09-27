@@ -53,6 +53,8 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
     private readonly Timer _watchdog;   // 播放中巡检上游断粮（guest 对「速度=0 但任务未死」不上报，宿主必须自己盯）
 
     private QemuHostRuntime? _runtime;
+    /// <summary>外部 VM 租约（合并 guest 模式）：非空时 VM 归 QemuArtGuest，本引擎不自起 QEMU。</summary>
+    private QemuArtGuest.ThunderLease? _external;
     private QemuControlServer? _server;
     private int _mediaPort;
     private int _monitorPort;
@@ -95,8 +97,24 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
 
     public string Name => "迅雷(QEMU)";
 
-    /// <summary>运行时文件已部署即算「就绪」；VM 懒启动发生在首次任务。</summary>
-    public bool IsReady => QemuHostRuntime.IsPresent(_runtimeDir, _initrdName);
+    /// <summary>
+    /// 外部 VM 模式（迅雷引擎合并进 ART guest，2026-09-27，docs 交接 §6.9）：非 null 时本引擎
+    /// <b>不再自起 QEMU</b> —— 复用 <see cref="QemuArtGuest"/> 的 VM（媒体口 / 数据盘 / swap 全租用），
+    /// harness 由合并 initrd（<c>art_initrd_merged.gz</c>）的 init 迅雷段拉起、回连本引擎控制口
+    /// （宿主 <c>thunderport=</c> 下发）。返回 null = 外部 VM 不可用 → 回落自起 VM 模式。
+    /// 收益：省 ~2.5GB RAM 与一次内核冷启动（对照 docs/qemu-engine-performance.md）。
+    /// </summary>
+    public Func<CancellationToken, Task<QemuArtGuest.ThunderLease?>>? ExternalVmProvider { get; set; }
+
+    /// <summary>外部 VM 可用性同步探针（<see cref="IsReady"/> 用；通常 = 合并 initrd 在且 ART guest 启用）。
+    /// null = 按自起 VM 模式判定。</summary>
+    public Func<bool>? ExternalVmProbe { get; set; }
+
+    /// <summary>运行时文件已部署即算「就绪」（外部 VM 模式改问合并 initrd 是否在）；
+    /// VM 懒启动发生在首次任务。</summary>
+    public bool IsReady => ExternalVmProbe is not null
+        ? ExternalVmProbe()
+        : QemuHostRuntime.IsPresent(_runtimeDir, _initrdName);
 
     /// <summary>引擎是否有活跃的播放/下载会话（已下发 DL 且未被替换）。探测类操作
     /// （详情页磁力展开）必须让位：PrepareSession 会替换 _session 并 Dispose 缓存代理，
@@ -387,7 +405,9 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
                 //   LastError 为 null，于是空转到 180 分钟才报「下载超时」，而进度早已冻结
                 //   （用户看到的就是「下载到大文件时中断」）。这里 1s 一拍地判进程存活，死了立即返回
                 //   **可续传**的失败 —— 宿主磁盘缓存块与引擎已落盘数据都还在。
-                if (_runtime is { } rt && rt.HasExited)
+                //   外部 VM 模式（合并 guest）判租约：ART VM 挂了（桥重置/崩溃）同理立刻中止。
+                var vmDead = _external is not null ? !_external.IsRunning : _runtime?.HasExited == true;
+                if (vmDead)
                 {
                     Log("引擎 VM 进程已退出（崩溃或被系统回收）—— 中止本次下载；已下数据在宿主磁盘缓存，重试即续传");
                     return (false, "引擎 VM 已退出（可续传：重试即从断点继续）");
@@ -455,6 +475,15 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
         // 白丢一次 VM 冷启动（约 11s）与已下进度。
         if (!IsTaskAlreadyExists(s))
             return (false, s.LastError ?? $"引擎未能在 20s 内启动下载任务（st={s.LastSt}）");
+
+        // 外部 VM（合并 guest）：机器是爬虫桥的，不能重启清任务表 —— 直接失败收场（上层回落内置 BT）。
+        // 引擎里同 btih 句柄仍在，重发 DL 只会再撞 9128，白等一轮。
+        if (_external is not null)
+        {
+            Log("外部 VM 模式不支持 9128 VM 级恢复（ART VM 归爬虫桥）：本任务失败收场");
+            s.Cancelled = true;
+            return (false, "引擎任务冲突（9128），外部 VM 模式无法重启清表");
+        }
 
         Log("⚠ 引擎报 9128（同种子任务已存在）且 guest 侧 stopTask 清理无效 —— 重启 guest 重来一次");
         _history.TryRemove(s.Magnet, out _);
@@ -692,6 +721,15 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
         try { _runtime?.Stop(); } catch { }
     }
 
+    /// <summary>外部 VM 退出（桥重置/崩溃）回调：结束会话让状态收敛。
+    /// Teardown 只发 STOP 不杀 VM（VM 已死，而且它归 QemuArtGuest）；下次任务走
+    /// <see cref="EnsureStartedLockedAsync"/> 时由租约提供方重新拉起 VM。</summary>
+    private void OnExternalVmDied()
+    {
+        Log("[引擎] 外部 VM 已退出（爬虫桥重置/崩溃）——结束迅雷会话，下次任务自动重拉");
+        try { Teardown("外部 VM 退出"); } catch { }
+    }
+
     /// <summary>唤醒被冻结的 VM（新会话前的必要动作：冻着的机器媒体口不会应答）。</summary>
     private void ResumeVmLocked()
     {
@@ -727,8 +765,9 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
                     Log($"[缓存] 磁盘缓存目录初始化失败（本次会话不落盘）：{ex.Message}");
                 }
             }
+            // 数据面块设备：自起 VM 用自己的盘；外部 VM 模式（合并 guest）租 ART VM 的 store-art.img
             var proxy = new QemuStreamProxy(_mediaPort, s.PlayUrlPath, s.PickSize,
-                QemuStreamProxy.ContentTypeFor(s.PickName), Log, cacheDir, _runtime?.BlockStore);
+                QemuStreamProxy.ContentTypeFor(s.PickName), Log, cacheDir, _runtime?.BlockStore ?? _external?.BlockStore);
             // seek 重定位 → KICK 引擎进入预取模式：让引擎优先下载 seek 目标区间
             //（「seek 到哪下到哪」，不重定位也发无害——引擎已按读位置供数）
             proxy.OnRelocate = () =>
@@ -767,7 +806,31 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
             }
         }
 
-        if (_runtime is null || !_runtime.IsRunning)
+        // ── 外部 VM 模式（合并 guest）：VM 由 QemuArtGuest 持有，这里只等 harness 回连 ──
+        if (ExternalVmProvider is not null)
+        {
+            var lease = await ExternalVmProvider(ct).ConfigureAwait(false);
+            if (lease is null) { Log("外部 VM 不可用（合并 initrd 缺失或 ART VM 起不来）"); return false; }
+            if (!ReferenceEquals(_external, lease))
+            {
+                _external = lease;
+                // 订阅 VM 退出（桥重置会连带收走迅雷会话）：只在租约仍是当前的有效
+                lease.Died += () => { if (ReferenceEquals(_external, lease)) OnExternalVmDied(); };
+            }
+            _mediaPort = lease.MediaPort;
+            // 模式切换兜底：曾自起过 VM 的实例（运行时/配置变更）先收掉旧机
+            if (_runtime is not null) { try { _runtime.Stop(); } catch { } _runtime = null; }
+            _server.ResetFirstPoll();
+            // TCG 下 ART guest 冷启动（解 226MB initrd + 内核 + init）约 1~2 分钟；harness 由 init
+            // 迅雷段拉起后每秒轮询控制口 —— 首次 /task 到达即算就绪（桥就绪与否与本引擎无关）。
+            if (!await _server.WaitFirstPollAsync(TimeSpan.FromSeconds(180)).ConfigureAwait(false))
+            {
+                Log("外部 VM 已启动，但 180s 内迅雷 harness 未回连控制端（guest 里 cat /thunder.log 看死因）");
+                return false;
+            }
+            Log($"外部 VM 就绪（ART VM 媒体口 {_mediaPort}，迅雷 harness 已回连）");
+        }
+        else if (_runtime is null || !_runtime.IsRunning)
         {
             _runtime?.Dispose();
             _mediaPort = PickFreePort(_mediaPort);
@@ -1038,6 +1101,17 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
                 {
                     try
                     {
+                        // 外部 VM（合并 guest）：机器是爬虫桥的，不能重启清任务表 —— 本会话失败收场，
+                        // 下次任务从 TASK MAGNET 重新走（引擎同 btih 句柄仍在，可能再撞 9128 → 回落内置 BT）。
+                        if (_external is not null)
+                        {
+                            Log("外部 VM 模式不支持 VM 级恢复（ART VM 归爬虫桥）：本次任务失败收场");
+                            _history.TryRemove(s.Magnet, out _);
+                            try { _server?.SetCommand("STOP"); } catch { }
+                            _session = null;
+                            s.Cancelled = true;
+                            return;
+                        }
                         Log("任务自动恢复次数用尽 → 尝试 VM 级恢复（重启 guest 清空引擎任务表）");
                         _history.TryRemove(s.Magnet, out _);
                         try { _server?.SetCommand("STOP"); } catch { }
@@ -1269,7 +1343,9 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
     {
         try
         {
-            if (_disposed || _runtime is not { IsRunning: true }) return;
+            // 判活：自起 VM 看进程；外部 VM 模式（合并 guest）看租约 —— VM 归 ART 桥，不归本引擎。
+            var alive = _external is not null ? _external.IsRunning : _runtime is { IsRunning: true };
+            if (_disposed || !alive) return;
 
             // ① 冻结态（用户已退出播放页）：下载已停，但 5GB 内存还占着 → 15 分钟后收机器。
             //   冻结期间 guest 不再上报，_lastActiveUtc 自然停止刷新，窗口能真正走完。
@@ -1299,7 +1375,9 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
                 if (DateTime.UtcNow - _playbackIdleSinceUtc.Value < TimeSpan.FromMinutes(5)) return;
                 Log("播放会话已连续 5 分钟无读者（页面退出钩子没走到？）→ 冻结下载");
                 ReleaseProxy();
-                if (_runtime.SetPaused(true)) { _vmPaused = true; _playbackIdleSinceUtc = null; }
+                // ⚠ _runtime 必须空判：外部 VM 模式（合并 guest）它恒为 null，
+                //   冻结不可用 → Teardown 发 STOP 结束会话（VM 归 ART 桥，不杀）
+                if (_runtime?.SetPaused(true) == true) { _vmPaused = true; _playbackIdleSinceUtc = null; }
                 else Teardown("无读者且冻结不可用");
                 return;
             }
@@ -1309,7 +1387,8 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
             _playbackIdleSinceUtc = null;
             if (DateTime.UtcNow - _lastActiveUtc < TimeSpan.FromMinutes(15)) return;
 
-            Log("空闲 15 分钟，停掉 QEMU 释放内存");
+            // 外部 VM 模式只是结束迅雷会话（VM 归 ART 桥，不能也无需回收）
+            Log(_external is not null ? "空闲 15 分钟，结束迅雷会话（外部 VM 继续服务爬虫桥）" : "空闲 15 分钟，停掉 QEMU 释放内存");
             Teardown("空闲 15 分钟");
         }
         catch { }

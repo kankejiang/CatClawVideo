@@ -73,6 +73,9 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     /// </summary>
     private CatClawVideo.Core.Services.QemuGuest.QemuArtGuest? _art;
 
+    /// <summary>_art 懒创建的互斥：桥会话与迅雷合并（两个调用方）可能并发首建同一实例。</summary>
+    private readonly object _artCreateLock = new();
+
     /// <summary>ART guest 的 jar 供给服务（guest 读不到宿主的盘，只能经 slirp 用 http 取）。</summary>
     private CatClawVideo.Core.Services.QemuGuest.ArtJarServer? _jarServer;
     private readonly SemaphoreSlim _ioLock = new(1, 1);
@@ -149,7 +152,11 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         // ── ART guest（2026-09-25 定案：ARM 原生码 + TVBox/壳 jar 的 dex 全进 QEMU 里的真 ART）──
         // 装了 QemuGuest\art_initrd.gz 就默认走这条；两条链路的取舍/延迟对比用 CATCLAW_NO_ART=1 关掉。
         ArtRuntimeDir = Path.Combine(AppContext.BaseDirectory, "QemuGuest");
-        ArtGuestMode = CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.IsAvailable(ArtRuntimeDir)
+        // 合并 initrd（art_initrd_merged.gz）= art_initrd.gz 的超集（桥 + 迅雷引擎同 guest，
+        // 见 §6.9）：只部署了合并版时也走 ART 链路（桥用合并 initrd）。两者都在时由合并
+        // 配置注入与否决定（QemuArtGuest.ThunderMerged 分支）。
+        ArtGuestMode = (CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.IsAvailable(ArtRuntimeDir)
+                        || File.Exists(Path.Combine(ArtRuntimeDir, ThunderMergeInitrdName)))
                        && Environment.GetEnvironmentVariable("CATCLAW_NO_ART") != "1";
         // x86 mini guest 实验开关（2026-09-27，联调中）：仅当 x86 运行时齐全才切架构
         if (Environment.GetEnvironmentVariable("CATCLAW_X86_GUEST") == "1")
@@ -161,7 +168,10 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         }
         // 启动就把走哪条桥链路写进日志：两条链路的差异只会以"某个站点不对"的形式浮现，
         // 不写明模式的话排障第一步会变成猜。
-        Log($"桥链路：{(ArtGuestMode ? "ART guest（" + ArtRuntimeDir + '\\' + CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.InitrdName + '）' : "宿主 JRE")}"
+        var mergedOnDisk = File.Exists(Path.Combine(ArtRuntimeDir, ThunderMergeInitrdName));
+        Log($"桥链路：{(ArtGuestMode ? "ART guest（" + ArtRuntimeDir + '\\'
+                + (mergedOnDisk ? ThunderMergeInitrdName + "，含迅雷引擎）" : CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.InitrdName + "）")
+                : "宿主 JRE")}"
             + (Environment.GetEnvironmentVariable("CATCLAW_NO_ART") == "1" ? "（CATCLAW_NO_ART=1 手动关掉）" : "")
             + (Environment.GetEnvironmentVariable("CATCLAW_X86_GUEST") == "1" ? "（CATCLAW_X86_GUEST=1 实验性 x86 mini guest）" : ""));
         // 桥可用 = bridge.jar + deps（能跑非 Guard 的 jar 爬虫）；Guard 解壳能力单独判定
@@ -228,6 +238,76 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
                 catch { }
             }
         });
+    }
+
+    // ═══════════ 迅雷引擎合并（外部 VM 模式，2026-09-27，docs 交接 §6.9）═══════════
+
+    /// <summary>合并模式配置（MauiProgram 装配时注入；非 null 且合并 initrd 在 = 迅雷引擎
+    /// 走「外部 VM 模式」——不再自起第二个 QEMU，与爬虫桥同 guest）。</summary>
+    public sealed record ThunderMergeConfig(int ControlPort, string? BlockDeviceRoot);
+
+    /// <summary>迅雷合并配置；null = 不合并（迅雷引擎自起 VM，行为同合并前）。</summary>
+    public ThunderMergeConfig? ThunderMerge { get; set; }
+
+    /// <summary>合并 initrd 文件名（与 <c>QemuArtGuest.MergedInitrdName</c> 同约定）。</summary>
+    public const string ThunderMergeInitrdName = "art_initrd_merged.gz";
+
+    /// <summary>能否提供迅雷外部 VM（同步探针：ART 链路可用 + 配置已注入 + 合并 initrd 在）。
+    /// 三缺一 → 迅雷引擎回落自起 VM 模式。</summary>
+    public bool CanProvideThunderVm =>
+        ArtGuestMode && ThunderMerge is not null
+        && File.Exists(Path.Combine(ArtRuntimeDir, ThunderMergeInitrdName));
+
+    /// <summary>给迅雷引擎（<c>QemuGuestEngine</c> 外部 VM 模式）提供租约：确保 ART VM（合并
+    /// initrd）起来并返回租约；不可用/起不来返回 null（引擎回落自起 VM 模式）。</summary>
+    public async Task<CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.ThunderLease?> EnsureThunderVmAsync(
+        CancellationToken ct = default)
+    {
+        if (!CanProvideThunderVm) return null;
+        CatClawVideo.Core.Services.QemuGuest.QemuArtGuest art;
+        lock (_artCreateLock) { _art ??= CreateArtGuest(); art = _art; }
+        // VM 已按「纯桥」配置在跑（上一次创建时合并配置还没注入？）：中途换 initrd/换盘不可能，
+        // 本轮让位自起 VM 模式（合并配置只在建 VM 前生效）。
+        if (art.IsVmRunning && !art.ThunderMerged)
+        {
+            Log("合并迅雷：ART VM 已按纯桥配置运行 —— 本次回自起 VM 模式（下次冷启动生效）");
+            return null;
+        }
+        ApplyThunderMerge(art);
+        if (!await art.EnsureVmRunningAsync(ct).ConfigureAwait(false))
+        {
+            Log("合并迅雷：ART VM 起不来（详见上文 [art-vm] 日志）");
+            return null;
+        }
+        if (art.Lease is null) { Log("合并迅雷：VM 已起但租约未建（ThunderMerged 未生效？）"); return null; }
+        Log($"合并迅雷：外部 VM 就绪（媒体口 {art.Lease.MediaPort}，harness 回连宿主控制口 {ThunderMerge!.ControlPort}）");
+        return art.Lease;
+    }
+
+    /// <summary>把合并配置灌进 art（幂等；<see cref="CreateArtGuest"/> 与
+    /// <see cref="EnsureThunderVmAsync"/> 共用——后者兜住「_art 建于配置注入之前」）。</summary>
+    private void ApplyThunderMerge(CatClawVideo.Core.Services.QemuGuest.QemuArtGuest art)
+    {
+        if (ThunderMerge is null) return;
+        art.ThunderMerged = true;
+        art.ThunderPort = ThunderMerge.ControlPort;
+        art.BlockDeviceRoot = ThunderMerge.BlockDeviceRoot;
+    }
+
+    /// <summary>创建 ART guest 实例（统一带 x86 实验 override 与迅雷合并配置；懒创建唯一入口）。</summary>
+    private CatClawVideo.Core.Services.QemuGuest.QemuArtGuest CreateArtGuest()
+    {
+        var art = new CatClawVideo.Core.Services.QemuGuest.QemuArtGuest(ArtRuntimeDir, _log)
+        {
+            // x86 mini guest 实验开关（CATCLAW_X86_GUEST=1）：切架构 + 覆盖内核/
+            // initrd/引擎文件名；缺省 null → ArtGuest 内部走 aarch64 缺省，现网零变化
+            GuestArch = _guestArchOverride ?? CatClawVideo.Core.Services.QemuGuest.GuestArch.Arm64,
+            KernelFileName = _guestKernelFile ?? "pkg_kernel",
+            GuestInitrdName = _guestInitrdFile ?? CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.InitrdName,
+            GuestQemuExeName = _guestQemuExe ?? "qemu-system-aarch64.exe",
+        };
+        ApplyThunderMerge(art);
+        return art;
     }
 
     /// <summary>
@@ -598,15 +678,8 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
                 var epoch = Volatile.Read(ref _bridgeEpoch);
                 if (ArtGuestMode)
                 {
-                    _art ??= new CatClawVideo.Core.Services.QemuGuest.QemuArtGuest(ArtRuntimeDir, _log)
-                    {
-                        // x86 mini guest 实验开关（CATCLAW_X86_GUEST=1）：切架构 + 覆盖内核/
-                        // initrd/引擎文件名；缺省 null → ArtGuest 内部走 aarch64 缺省，现网零变化
-                        GuestArch = _guestArchOverride ?? CatClawVideo.Core.Services.QemuGuest.GuestArch.Arm64,
-                        KernelFileName = _guestKernelFile ?? "pkg_kernel",
-                        GuestInitrdName = _guestInitrdFile ?? CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.InitrdName,
-                        GuestQemuExeName = _guestQemuExe ?? "qemu-system-aarch64.exe",
-                    };
+                    // 懒创建走统一入口（含 x86 override 与迅雷合并配置）；锁防「桥会话与迅雷合并并发首建」
+                    lock (_artCreateLock) { _art ??= CreateArtGuest(); }
                     var art = _art;
                     var link = await art.ConnectAsync(ct).ConfigureAwait(false);
                     if (epoch != Volatile.Read(ref _bridgeEpoch))

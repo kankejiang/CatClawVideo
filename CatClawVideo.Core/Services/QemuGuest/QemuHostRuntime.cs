@@ -39,6 +39,11 @@ public sealed class QemuHostRuntime : IDisposable
     /// <summary>Guard 解密服务端口（0 = 未启用；guest 监听 + 宿主 hostfwd 同号）。</summary>
     public int GuardPort { get; }
 
+    /// <summary>迅雷引擎控制口（合并 guest 模式，0 = 不起 harness；经 cmdline <c>thunderport=</c> 下发）。
+    /// ART initrd 的 /init 迅雷段据此拉起 harness（回连宿主 10.0.2.2:该端口）。
+    /// 详见 docs 交接 §6.9「迅雷引擎与 ART guest 合并」。</summary>
+    public int ThunderPort { get; }
+
     /// <summary>启动磁力覆盖（initrd 里烧死的那条；Guard VM 传 "none"）。</summary>
     public string? MagnetOverride { get; }
 
@@ -154,7 +159,8 @@ public sealed class QemuHostRuntime : IDisposable
         string initrdName = "pkg_initrd.gz", string consoleLogTag = "", int monitorPort = 0,
         string? blockImagePath = null, long blockImageBytes = 0,
         string? swapImagePath = null, long swapImageBytes = 0,
-        int ctrlPort = 0, int guardPort = 0, string? magnetOverride = null)
+        int ctrlPort = 0, int guardPort = 0, string? magnetOverride = null,
+        int thunderPort = 0)
     {
         RuntimeDir = runtimeDir;
         MediaPort = mediaPort;
@@ -162,6 +168,7 @@ public sealed class QemuHostRuntime : IDisposable
         InitrdName = initrdName;
         CtrlPort = ctrlPort;
         GuardPort = guardPort;
+        ThunderPort = thunderPort;
         MagnetOverride = magnetOverride;
         _log = log;
         // Debug/Release 隔离（见 AppPaths）
@@ -358,6 +365,8 @@ public sealed class QemuHostRuntime : IDisposable
             // Guard VM 的口令与启动磁力经 cmdline 覆盖（/init 的 getarg；缺省与旧行为一致）
             if (CtrlPort > 0) append += $" ctrl={CtrlPort}";
             if (GuardPort > 0) append += $" guardport={GuardPort}";
+            // 合并 guest 模式：ART initrd 的迅雷段据此拉起 harness（见 QemuArtGuest.ThunderMerged）
+            if (ThunderPort > 0) append += $" thunderport={ThunderPort}";
             if (!string.IsNullOrEmpty(MagnetOverride)) append += $" magnet={MagnetOverride}";
             args.Add("-append");
             args.Add(append);
