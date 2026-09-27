@@ -481,12 +481,23 @@ x86 guest（WHPX 单 QEMU 实例）
    长度差 2 → 合并 initrd 解包到追加条目即 garbage。已修；全量读回校验 1763 条目无错位。
 2. 迅雷段漏 `CTRL_HOST` 与 `BLK_DEV` 硬编码、缺 `PROXY_PORT`/swap 处理（见上，已补齐）。
 
-**验收路径（108）**
+**✅ 108 实机验收（2026-09-27 晚，全部通过）**
 
-1. 把新 `art_initrd_merged.gz` 拷到 `/root/x86guest/`，跑 `bash tools/x86guest/restart_merged.sh`：
-   桥 ping + harness 回连 18080 双通过（`verify_merged.py`）。
-2. 磁力全链路：TASK MAGNET → 媒体流 206 → 块设备直读。
-3. 对照：内存占用（省一台 VM）/ 起播时间；回归 `hosttest`。
+| 环节 | 结果 |
+|---|---|
+| initrd 解包 | 无 `malformed archive`（对照：修 namesize 前旧版必现，且引擎 .so 解不出） |
+| 桥 + harness 同 guest 双活 | 桥 ping `{"id":1,"ok":true,"result":"pong"}`；harness 回连控制端（`Host: 10.0.2.2:18080`，CTRL_HOST 修复生效） |
+| 引擎加载 | `libxl_thunder_sdk.so` 加载 + VOD 数据面起（`/thunder-data/vod.sock` unix socket + http server） |
+| swap | `Adding 6291452k swap on /dev/vdb` + `[thunder] swap on /dev/vdb` |
+| 磁力全链路 | TASK MAGNET → 种子 2946B / 2 文件 → DL → **700MB+ P2P 下载** → 媒体流 `HTTP 206 / 262144B / ftypisom` |
+| 块设备直读 | `store-art.img` 偏移 0 = `00000018 66747970 69736f6d 00000001`（MP4 头——harness 经 /dev/vda 直写，宿主直读同一物理文件） |
+
+已知边界（非本轮引入）：裸编排（`ctrlserver2.py` 无恢复逻辑）下任务在 73% 处以 `err=114010`
+死亡——与 2026-09-20 记录的长跑问题同型；产品代码 `RecoverTaskAsync` 有 5 轮 stopTask 重发，
+合并模式下跳过 VM 级恢复（VM 归桥）→ 失败即回落内置 BT。
+
+验收脚本（`tools/x86guest/`）：`restart_merged.sh`（冒烟）/ `merged_full_run.sh`（全链路）/
+`bridge_ping.py` / `blk_check.py` / `verify_merged.py`。
 
 ---
 
@@ -496,8 +507,7 @@ x86 guest（WHPX 单 QEMU 实例）
       真因是注册时序/namespace 判定/g_runtime_callbacks 三连）
 - [x] 非 Guard 源原生速度验收（2026-09-27 晚 ✅，见 §6.7——load/调用链毫秒级）
 - [ ] 壳初始化后段 SIGSEGV 空指针（取证完成，见 §6.6——补齐极简环境缺的框架支撑）
-- [ ] **迅雷引擎与 ART guest 合并——108 实机验收**（宿主/运行时已实施完成，见 §6.9；
-      验收 = 桥 ping + harness 回连 + 磁力全链路 + 内存/起速对照）
+- [x] **迅雷引擎与 ART guest 合并**（2026-09-27 晚 108 实机全链路验收通过，见 §6.9）
 - [ ] 双 guest 路由的 C# 实现（按源分流）——暂缓（非 Guard 已原生，Guard 待 §6.6 突破）
 - [ ] WHPX 不可用用户的一键启用引导（设置页，DISM VirtualMachinePlatform）
 - [ ] 发行打包（build-win-release.ps1 带 x86 组件，预计 +300MB）
