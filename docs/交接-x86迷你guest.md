@@ -206,6 +206,8 @@ Start-Process "...\bin\Debug\net11.0-windows10.0.26100.0\win-x64\CatClawVideo.Ma
 | 15 | fakelogd 只输出 tag 丢 msg | 只做可打印串抽取 | 重写为 logdw 协议解析（prio@11/tag/msg），hex 诊断模式 LOGD_HEX=1 |
 | 16 | loop 挂载残留 → cp 全挂 | 上次会话未 umount | mount 前 `umount ... \|\| true` |
 | 17 | 线程实验块无输出静默跳过 | JNI_GetCreatedJavaVMs 误声明两参（真三参），出参 nv 永不写 | 修签名 (vmBuf,1,&nv)；JNI 导出函数签名必须对照头文件 |
+| 21 | 一轮会话叠出 3~4 个 qemu 并存 | 重置窗口期竞态：Shutdown 后台跑，置空 _art 前并发调用者拿旧引用 → 旧 QemuHostRuntime 被 StartAsync 复活；随后新调用又 new 新实例 | 四层：Shutdown 先原子摘引 / _bridgeEpoch 代际校验 / QemuArtGuest._disposed 禁复活 / QemuHostRuntime 生命周期锁+按名回收孤儿（2026-09-27，宿主实测收敛为 0~1 个） |
+| 22 | 宿主探针连接被 accept 但 pong 永不回 | 信号哨兵每次 SIGSEGV 都 write 到 console，宿主握手期无人读 → 64KB 管道写满 → 信号处理内阻塞，guest 全线程冻住 | 哨兵日志改环境变量开关 CATCLAW_SIGLOG（默认关）；任何高频信号处理内禁用 stdio write |
 | 18 | 壳类 Build.CPU_ABI 必死（类 erroneous） | ndk InitNB 触发 Build.<clinit> 时 boot natives 还没注册 | 注册挪到 PreNB/InitNB 之前（artlaunch 主流程重排） |
 | 19 | System.load(arm64) 报 EM 架构不符 | libnativeloader 的 namespace bridged 依赖 IsPathSupported，ndk 对一切路径 false | proppreload 接管该回调（/data/catclaw 前缀 → true） |
 | 20 | 壳 so 加载 CHECK failed: g_runtime_callbacks | LoadNativeBridge 第二参传 NULL（必须传 ART 的 9 函数 callbacks 表） | 按 libart 静态 vaddr 重建表（artlaunch，锚点 InitializeNativeBridge@0x71ccf0） |

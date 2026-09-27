@@ -205,3 +205,20 @@ sigchain 没做链式转发，转译段真实 SIGSEGV 被误杀；或壳 init �
 NonGuardFallbackJars 同源）——load 全通（0.06~0.17s）、homeContent/
 categoryContent/detailContent 调用链全 ok、毫秒级响应。aarch64 TCG 的 71~90s
 对照下，**x86 mini guest 的核心性能价值已实证**。
+
+## 2026-09-27 深夜：宿主联调两个宿主侧事故修复
+
+宿主实测又暴露两个问题，均已修复并验证（commit 437134a + Maui 工作副本）：
+
+1. **多 qemu 并存（3~4 个）**：ResetBridge 的 Shutdown 在后台任务跑，置空 _art
+   前的 Dispose 窗口期内，并发 EnsureBridgeAsync 拿旧引用 → 旧 QemuHostRuntime
+   被 StartAsync「复活」（日志特征：同一媒体口 18601 反复出现）→ 随后又 new 新实例。
+   修复四层：Shutdown 先 Interlocked 原子摘引再销毁；_bridgeEpoch 会话代际
+   （重置同步自增，冷启动返回后校验，不一致换流重试）；QemuArtGuest._disposed
+   禁复活（探针循环早退）；QemuHostRuntime StartAsync/Stop 生命周期锁 + x86 启动前
+   按名回收孤儿。实测：重置后旧实例干净停止、无复活启动、x86 qemu 收敛为 0~1 个。
+2. **探针连接无 pong（握死）**：信号哨兵 trampoline 每次 SIGSEGV 都 write 到
+   console——宿主握手期 console 管道无人读，ndk 转译 fault 高频信号很快写满
+   64KB 管道 → write 阻塞在信号处理里 → guest 全线程冻住（探针 accept 了但
+   pong 永远不回，手工 ping 也超时）。修复：哨兵日志默认关（CATCLAW_SIGLOG=1
+   才输出）；教训——信号处理内不得做无节流 stdio 写入。
