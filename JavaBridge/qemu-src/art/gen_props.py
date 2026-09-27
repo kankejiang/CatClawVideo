@@ -50,6 +50,12 @@ if arch == 'x86_64':
         'ro.dalvik.vm.isa.arm': 'x86',
         'ro.dalvik.vm.isa.arm64': 'x86_64',
         'ro.dalvik.vm.native.bridge': 'libndk_translation.so',
+        # ndk_translation.mk 要求的完整属性集（2026-09-27 对着 supremegamers 包补齐）：
+        # vendor 开关对 64 位初始化路径、version/flags 是 ndk 行为开关（缺失 = initialize 静默失败）
+        'ro.vendor.enable.native.bridge.exec': '1',
+        'ro.vendor.enable.native.bridge.exec64': '1',
+        'ro.ndk_translation.version': '0.2.3',
+        'ro.ndk_translation.flags': 'accurate-sigsegv',
         'ro.product.cpu.abi': 'x86_64',
         'ro.product.cpu.abilist': 'x86_64,arm64-v8a',
         'ro.product.cpu.abilist64': 'x86_64,arm64-v8a',

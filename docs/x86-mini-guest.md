@@ -94,3 +94,22 @@ ndk_translation（ChromeOS sdk_gphone_x86_64:13 官方抽取，supremegamers 仓
 1. fakelogd 打印完整 priority/tag/msg → 拿到 ndk initialize 的真实失败原因（当前只有 tag）；
 2. arm64 wrapper 的 ld.config 双架构分离（arm64 linker 读到了 x86 的 ld.config.txt 抓错库）；
 3. binfmt 基础设施已就绪（arm64_exe 注册串在 ndk 包 etc/binfmt_misc/，runner 在 bin/ 顶层）。
+### 2026-09-27 续：死因闭环（ndk arm64 loader 搜索路径）
+
+- fakelogd 重写为协议级解析：logdw 报文 prio@offset11/tag/msg 全量输出（原抽串模式把
+  ndk 的关键日志全吞了），hex 诊断模式（LOGD_HEX=1）可 dump 原始报文
+- ndk 属性组按 mk 文件补齐：ro.vendor.enable.native.bridge.exec64=1、
+  ro.ndk_translation.version=0.2.3、ro.ndk_translation.flags=accurate-sigsegv
+- binfmt 挂载点修正（rootfs /binfmt_misc——procfs 不支持 mkdir）→ 注册成功 →
+  PreInitializeNativeBridge = 1（binfmt+runner 链路打通）
+- 伪造 cpuinfo 覆盖文件（/system/etc/cpuinfo.arm64.txt 与 /system/lib64/arm64/cpuinfo，
+  ndk initialize 要 bind-mount 到 /proc/cpuinfo，ChromeOS 构建时生成、ndk 包未携带）
+- **死因闭环**：PreNB 拉起的 arm64 wrapper（app_process64）由 ndk arm64 loader 解析，
+  搜依赖 libc++.so 时先命中 /system/lib64 的 x86 版 →「EM_X86_64 instead of
+  EM_AARCH64」FATAL → 进程树连坐（artlaunch 崩）。bionic 遇架构不符不继续搜索；
+  LD_LIBRARY_PATH 不被 ndk loader 尊重；ld.config 插 arm64 路径会引发更早的 linker
+  DEBUG 失败（x86 侧解析 config 即崩）。
+
+下次正道：读 google/ndk_translation 开源 mirror 的 loader 路径逻辑（arm64 目录的约定
+或开关属性），或为 arm64 wrapper 单独生成一份 ld.config（双架构分离——ndk runner
+对 config 文件名的约定需从源码确认）。

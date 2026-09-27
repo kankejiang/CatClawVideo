@@ -174,7 +174,8 @@ int main(int argc, char **argv) {
         void *nbl = dlopen("libnativebridge.so", RTLD_NOW | RTLD_GLOBAL);
         bool (*InitNB)(JNIEnv*, const char*) =
             (bool (*)(JNIEnv*, const char*)) dlsym(nbl, "InitializeNativeBridge");
-        if (InitNB) printf("artlaunch: InitializeNativeBridge = %d\n", InitNB(env, "arm64"));
+        fflush(stdout);
+if (InitNB) printf("artlaunch: InitializeNativeBridge = %d\n", InitNB(env, "arm64"));
         else printf("artlaunch: 无 InitializeNativeBridge 符号\n");
         fflush(stdout);
     }

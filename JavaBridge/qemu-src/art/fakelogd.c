@@ -21,7 +21,7 @@
 
 #define PATH_LOGD_WR "/dev/socket/logdw"
 
-static void dump(unsigned char *b, ssize_t n) {
+static void raw_dump(unsigned char *b, ssize_t n) {
     char run[512];
     size_t k = 0;
     for (ssize_t i = 0; i < n; i++) {
@@ -34,6 +34,39 @@ static void dump(unsigned char *b, ssize_t n) {
         }
     }
     if (k >= 4) { run[k] = 0; printf("[logd] %s\n", run); }
+    fflush(stdout);
+}
+
+static const char PRIO_CH[] = "??VDIWEF";   /* index = priority 1..7 → V/D/I/W/E/F */
+
+/* logdw 数据报两种形态（2026-09-27 改：之前只抽串，tag/msg 结构全丢——
+ * ndk_translation 的 initialize 失败原因就是被这个吞的，取证必须见到完整消息）：
+ *   新版 [u16 len][u8 hdr_size=1][u8 ver][u8 prio][tag\0][msg\0]
+ *   旧版 [u8 prio][tag\0][msg\0]
+ * 都解析不了时回退 raw_dump。 */
+static void dump(unsigned char *b, ssize_t n) {
+    /* 诊断：前 12 字节 hex（header 形态取证——logger_entry 的 hdr_size 实测 20+，不是 1） */
+    if (getenv("LOGD_HEX")) {
+        printf("[logd-hex] n=%zd:", n);
+        for (ssize_t i = 0; i < n && i < 240; i++) {
+            printf(" %02x", b[i]);
+            if ((i + 1) % 24 == 0) printf("\n           ");
+        }
+        printf("\n"); fflush(stdout);
+    }
+    ssize_t off = -1;
+    if (n >= 8 && b[2] >= 11 && b[2] <= 64 && b[2] < n && b[b[2]] >= 1 && b[b[2]] <= 7)
+        off = b[2];                                                  /* 新版：off = hdr_size（实测 20/28） */
+    else if (n >= 3 && b[0] >= 1 && b[0] <= 7) off = 1;              /* 旧版裸 prio */
+    if (off < 0) { raw_dump(b, n); return; }
+
+    unsigned char prio = b[off];
+    char *tag = (char *) b + off + 1;
+    if ((unsigned char *) tag + strlen(tag) + 1 >= b + n) { raw_dump(b, n); return; }
+    char *msg = tag + strlen(tag) + 1;
+    if (msg >= (char *) b + n) { printf("[logd][%c] %s: (no msg)\n", PRIO_CH[prio], tag); fflush(stdout); return; }
+    printf("[logd][%c] %s: %.*s\n", PRIO_CH[prio], tag,
+           (int) strnlen(msg, (size_t) (b + n - (unsigned char *) msg)), msg);
     fflush(stdout);
 }
 
