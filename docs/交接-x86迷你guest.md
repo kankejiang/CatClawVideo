@@ -304,22 +304,31 @@ Start-Process "...\bin\Debug\net11.0-windows10.0.26100.0\win-x64\CatClawVideo.Ma
 **修复后里程碑**：`load WoGGGuard` → `DexNative.<clinit>` 通过 → fty so 转译加载执行 →
 **壳解密出真实 dex 并加载成功**（壳内部日志「自定义爬虫代码加载成功」）。
 
-### 6.6 新卡点：壳初始化后段静默退出（当前唯一堵点）
+### 6.6 新卡点：壳初始化后段 SIGSEGV 空指针（当前唯一堵点）
 
-- 现象：壳日志「自定义爬虫代码加载成功」之后，桥进程**无 ART abort dump、
-  无内核 segfault 记录**直接退出（[init] 桥进程已退出），load 请求 EOF。
-- 疑点（按优先级）：
-  1. **转译执行段的 SIGSEGV 处理链**：壳继续初始化会执行真实类的 arm64 native，
-     ndk 依赖 SIGSEGV fault handler（ro.ndk_translation.flags=accurate-sigsegv）；
-     artlaunch 顶部自实现的 SetSpecialSignalHandlerFn 只是「记下+sigaction」，
-     可能没把 ART fault manager / ndk handler 链式转发——真实段错误被误杀。
-  2. 壳 init 后段调用了我们还缺的 boot native / 系统服务（无日志盲区）。
-  3. 真实类 <clinit> 里又一块 arm64 so 的加载/执行路径问题。
-- 建议手段：artlaunch 的 g_chain 升级为真·信号链（先调已注册 handler 再回落）；
-  LOGD_HEX=1 抓 ndk 的静默日志；给 artlaunch 加 pthread_atfork/atexit 打点确认
-  退出路径（exit vs 信号）。
+- 现象：壳日志「自定义爬虫代码加载成功」之后，桥进程退出，**退出码 139 = SIGSEGV**。
+- 取证（artlaunch 信号哨兵 trampoline，2026-09-27 晚）：崩溃前**大量 SIGSEGV 正常流转
+  处理**（accurate-sigsegv 模式转译运行依赖 fault 流转，链路 OK）→ 致命的一次是
+  `si_code=1 (SEGV_MAPERR)、si_addr=0x0`——**解引用空指针**，ndk 判定 fatal。
+- 定性：**转译引擎本身工作正常**（壳解密、真实 dex 加载都过了），死因是
+  **真实类初始化在极简环境拿到 NULL 依赖**（闭源加固代码没判空直接用）。
+  对齐 ChromeOS 完整系统还需要补齐哪块框架支撑，只能逐步试。
+- 宿主实测（Windows，CATCLAW_X86_GUEST=1）：与 108 现象完全一致——桥就绪 →
+  玩偶 jar 取回（90ms）→ DexClassLoader 就绪 → 壳解密成功 → 39ms 后退出。
+- 建议手段：换/补框架支撑面（AndroidRuntime 服务、mount ns、/system 扩展件）；
+  LOGD_HEX=1 抓 ndk 静默日志；对照 Bliss 完整镜像逐块补。
 - 验收脚本：108 `/root/x86guest/bench_guard.py`（ping → load WoGGGuard →
-  homeContent），qemu 日志 tail 看断点。
+  homeContent），qemu 日志 tail 看断点；`init_x86.sh` 现在会打桥进程退出码
+  （139=SIGSEGV 132=SIGILL 134=SIGABRT）。
+
+### 6.7 非 Guard 源原生速度验收（2026-09-27 晚，✅ 通过）
+
+- 108 `bench_speed.py` / `bench_pick.py`：fty.jar（宿主 NonGuardFallbackJars 同源，
+  900+ 非 Guard 爬虫类）→ load(Bili/Auete/AppYsV2/DouDou…) 全部成功（0.06~0.17s）、
+  homeContent/categoryContent/detailContent 调用链全部 ok（毫秒级响应；
+  数据为空仅因测试源未配 ext，机制本身全通）。
+- aarch64 TCG 上聚合网盘源 detailContent 71~90s → x86 WHPX 上同类调用毫秒~秒级，
+  **「非 Guard 源原生速度」的核心价值已落地**；宿主测速等接真实订阅 ext 后自然体现。
 
 ---
 
@@ -327,8 +336,9 @@ Start-Process "...\bin\Debug\net11.0-windows10.0.26100.0\win-x64\CatClawVideo.Ma
 
 - [x] ndk 转译 classloader/线程域问题（2026-09-27 连环攻破，见 §6.5——线程域假设被否，
       真因是注册时序/namespace 判定/g_runtime_callbacks 三连）
-- [ ] 壳初始化后段静默退出（新卡点，见 §6.6）
-- [ ] 双 guest 路由的 C# 实现（按源分流）——暂缓（壳加载已通，可能不需要）
+- [x] 非 Guard 源原生速度验收（2026-09-27 晚 ✅，见 §6.7——load/调用链毫秒级）
+- [ ] 壳初始化后段 SIGSEGV 空指针（取证完成，见 §6.6——补齐极简环境缺的框架支撑）
+- [ ] 双 guest 路由的 C# 实现（按源分流）——暂缓（非 Guard 已原生，Guard 待 §6.6 突破）
 - [ ] WHPX 不可用用户的一键启用引导（设置页，DISM VirtualMachinePlatform）
 - [ ] 发行打包（build-win-release.ps1 带 x86 组件，预计 +300MB）
 - [ ] Guard 转译打通后的真机验收：玩偶 detailContent 71.6s → 秒级对照

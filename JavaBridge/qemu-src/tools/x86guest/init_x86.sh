@@ -51,7 +51,9 @@ LD_PRELOAD=/proppreload.so /system/bin/artlaunch bridge.GuestMain /gb.dex:/tvbox
 LP=$!
 while true; do
     if ! $BB kill -0 $LP 2>/dev/null; then
-        echo "[init] 桥进程已退出，进入待机"
+        wait $LP
+        RC=$?
+        echo "[init] 桥进程已退出，退出码=$RC（139=SIGSEGV 132=SIGILL 134=SIGABRT 137=SIGKILL 0/1=主动退出）"
         break
     fi
     $BB sleep 5

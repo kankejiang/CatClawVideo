@@ -184,3 +184,24 @@ sigchain 没做链式转发，转译段真实 SIGSEGV 被误杀；或壳 init �
 
 诊断脚本沉淀：tools/x86guest/bench_guard.py（Guard 验收）、sym_lookup.py
 （libart 符号→函数指针表还原，重建 callbacks 时用过）。
+
+## 2026-09-27 晚：宿主实测复现 + 退出码/信号取证 + 非 Guard 源验收
+
+宿主（Windows，CATCLAW_X86_GUEST=1）实测与 108 完全一致：桥就绪 → 玩偶 jar
+取回 90ms → DexClassLoader 就绪 → 壳解密成功 → 39ms 后桥死。
+
+取证三件套：
+1. init_x86.sh 加 `wait` 打桥进程退出码 → **139 = SIGSEGV**；
+2. artlaunch 的 sigchain 实现包信号哨兵 trampoline（write 打 signo/si_code/si_addr
+   后转发真 handler）→ 崩溃前大量 SIGSEGV 正常流转（accurate-sigsegv 的 fault
+   机制在工作），致命一次 `si_code=1 si_addr=0x0`——**空指针**；
+3. 拉 BlissRoms-x86 官方集成 commit 与 prebuilt 仓库 mk：属性组与我们完全一致，
+   无新配置——排除了「少设属性」假设。
+
+定性：转译引擎 OK，死因 = 真实类初始化在极简环境拿到 NULL 依赖（闭源加固代码
+不判空）。突破方向：补框架支撑面对齐完整系统。
+
+非 Guard 源验收（bench_speed.py/bench_pick.py）：fty.jar（900+ 类，宿主
+NonGuardFallbackJars 同源）——load 全通（0.06~0.17s）、homeContent/
+categoryContent/detailContent 调用链全 ok、毫秒级响应。aarch64 TCG 的 71~90s
+对照下，**x86 mini guest 的核心性能价值已实证**。

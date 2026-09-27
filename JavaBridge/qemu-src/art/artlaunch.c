@@ -19,6 +19,7 @@
 #include <string.h>
 #include <signal.h>
 #include <stdbool.h>
+#include <unistd.h>
 
 /* libsigchain 要求**主程序**导出这三个符号（实测 tombstone：
  *   #01 libsigchain.so AddSpecialSignalHandlerFn+20
@@ -30,12 +31,42 @@
 typedef bool (*chain_fn)(int, siginfo_t *, void *);
 static chain_fn g_chain[SIGCHAIN_MAX];
 
+/* 信号哨兵（2026-09-27）：壳真实类首调转译代码后 SIGSEGV 无 dump 直接 139 死，
+ * 这里包一层 trampoline——每次信号先 write 日志（信号号/故障码/故障地址）再转发
+ * 真实 handler。排查 ndk 转译段 fault 到底有没有进 handler、地址落在哪。 */
+static void sig_trampoline(int sig, siginfo_t *info, void *ctx) {
+    char buf[96];
+    static const char hex[] = "0123456789abcdef";
+    uintptr_t a = (uintptr_t) info->si_addr;
+    buf[0] = '['; buf[1] = 's'; buf[2] = 'i'; buf[3] = 'g'; buf[4] = ']';
+    buf[5] = ' ';
+    int n = 6;
+    /* 固定格式 "signal=%d code=%d addr=0x<hex16>\n"——只用 write，异步信号安全 */
+    buf[n++] = 's'; buf[n++] = '='; buf[n++] = (char) ('0' + sig);
+    buf[n++] = ' '; buf[n++] = 'c'; buf[n++] = '=';
+    int c = info->si_code;
+    if (c < 0) { buf[n++] = '-'; c = -c; }
+    if (c > 9) { buf[n++] = (char) ('0' + c / 10); c %= 10; }
+    buf[n++] = (char) ('0' + c);
+    buf[n++] = ' '; buf[n++] = 'a'; buf[n++] = '=';
+    for (int i = 15; i >= 0; i--) buf[n + (15 - i)] = hex[(a >> (i * 4)) & 0xf];
+    n += 16;
+    buf[n++] = '\n';
+    write(2, buf, n);
+    chain_fn real = g_chain[sig];
+    if (real) real(sig, info, ctx);
+    else _exit(128 + sig);   /* 没有真 handler：显式留退出码 */
+}
+
 chain_fn SetSpecialSignalHandlerFn(int signal, struct sigaction *sa) {
     if (signal < 0 || signal >= SIGCHAIN_MAX || !sa) return NULL;
     chain_fn old = g_chain[signal];
     g_chain[signal] = (chain_fn) sa->sa_sigaction;
+    struct sigaction tramp;
+    memcpy(&tramp, sa, sizeof tramp);
+    tramp.sa_sigaction = sig_trampoline;
     struct sigaction dummy;
-    sigaction(signal, sa, &dummy);
+    sigaction(signal, &tramp, &dummy);
     return old;
 }
 

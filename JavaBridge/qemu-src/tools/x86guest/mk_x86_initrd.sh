@@ -101,6 +101,8 @@ cp $W/TVBox_debug-java64.apk $R/tvbox.apk
 # Guard 壳 jar（玩偶）——nativebridge 转译实测用
 mkdir -p $R/data/catclaw/art/inbox
 [ -f $W/wogg.jar ] && cp $W/wogg.jar $R/data/catclaw/art/inbox/raw-08a27c1fff2c064ae9a12c34.jar
+# 非 Guard 同族 jar（宿主 NonGuardFallbackJars 同源，900+ 爬虫类）——原生速度基准用
+[ -f $W/fty.jar ] && cp $W/fty.jar $R/fty.jar
 
 # ── 3. 内核模块 ──
 # ⚠ 移除 dex2oat64：13 在 boot 镜像缺失时会现场调 dex2oat 生成 boot classpath 镜像，
