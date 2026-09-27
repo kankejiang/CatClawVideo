@@ -2242,8 +2242,14 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
             if (!PrefetchedTitles.Add(norm)) return;   // 同一部片只预取一轮
         }
         var currentKey = _site?.Key;
+        var currentJar = _site?.Jar;
         var candidates = SiteRegistry.Playable
             .Where(x => x.Key != currentKey && x.Searchable)
+            // ⚠ 排除与当前源同 jar 的兄弟源（2026-09-27 端口抢占实锤）：csp_*Guard 同 jar 家族的
+            //   多个源共享壳内部的约定流服务端口（6678）——预取装载兄弟源会把当前源的流服务顶掉，
+            //   播放时其 6678 地址全 0B（播放器「源不受支持」）。兄弟站内容同壳同质、预取收益低；
+            //   换源到兄弟站时它自己的装载会抢回端口，无需预取。Jar 字段同 jar 站点为同一 md5 串。
+            .Where(x => string.IsNullOrEmpty(x.Jar) || string.IsNullOrEmpty(currentJar) || x.Jar != currentJar)
             // 快源先跑（搜索速度档案）：慢源延后，避免占住预取名额
             .OrderBy(x => CatClawVideo.Core.Providers.JavaSpiderRuntime.LastSearchMs(x.Key) is { } ms
                 ? (ms > 8000 ? ms + 30_000 : ms) : 0)

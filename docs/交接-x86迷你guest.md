@@ -1,7 +1,8 @@
 # 工作交接文档：x86 Mini Guest（Android 13 转译运行时）
 
-> 更新日期：2026-09-27（晚）
-> 状态：阶段 1 完成（可用）；阶段 2 转译攻坚：壳解密+真实 dex 加载已通，剩壳初始化后段退出
+> 更新日期：2026-09-27（深夜）
+> 状态：阶段 1 完成（可用）；阶段 2 转译攻坚：壳解密+真实 dex 加载已通，
+>       播放链路根因（Guard 家族 6678 端口抢占）已定位并修复（§6.8）
 > 交接范围：x86 mini guest 全部工作 + 关联的性能优化/瘦身背景
 
 ---
@@ -19,14 +20,15 @@ $env:CATCLAW_X86_GUEST = '1'     # 不设 = aarch64 现网行为，零变化
 # 启动应用 → 日志 %APPDATA%\CatClawVideo.debug\home-debug.log 看「桥就绪」
 ```
 
-**当前状态一句话**：§6 的「壳类 JNI 查不到 native 方法」卡点已连环攻破——
-三个根因（注册时序晚于 ndk initialize、libnativeloader namespace 判定、
-LoadNativeBridge 缺 ART callbacks 表）全部修复后，Guard 壳已能解密并加载
-真实 dex（「自定义爬虫代码加载成功」日志实锤）。剩最后一环：壳初始化后段
-进程静默退出（无 ART dump，疑似转译段 fault 处理链），详见 §6.6。
+**当前状态一句话**：Guard 壳全链路（解密→真实 dex→加载→解析→**播放**）已打通：
+- §6.5 三根因（注册时序/namespace 判定/g_runtime_callbacks）+ §6.6 的 ui_stub.dex
+  缺失（108 崩而用户环境活的关键差异）+ §6.8 的 **Guard 家族 6678 端口抢占**
+  （播放「源不受支持」的根因，四层修复已落地并端到端验证）全部解决。
+- aarch64 现网 + x86 mini guest 双线可用；非 Guard 源原生速度验收通过（§6.7）。
 
 **接手第一步**：读本文档 §4（操作手册）→ 跑通 §4.2 的 108 侧测试 →
-跑 `python3 bench_guard.py` 复现壳加载 → 攻 §6.6 的静默退出。
+跑 `python3 bench_guard.py` 复现壳加载 → 需要播放排障时见 §6.8
+（桥调试直通泵 + tools/x86guest/debug_*.py 系列探针）。
 
 ---
 
@@ -357,6 +359,46 @@ Start-Process "...\bin\Debug\net11.0-windows10.0.26100.0\win-x64\CatClawVideo.Ma
   数据为空仅因测试源未配 ext，机制本身全通）。
 - aarch64 TCG 上聚合网盘源 detailContent 71~90s → x86 WHPX 上同类调用毫秒~秒级，
   **「非 Guard 源原生速度」的核心价值已落地**；宿主测速等接真实订阅 ext 后自然体现。
+
+### 6.8 Guard 家族 6678 端口抢占——「源不受支持」播放失败根因（2026-09-27 晚，✅ 修复+验证）
+
+**现象**：玩偶（Guard 主源）在应用里加载/浏览全部正常，点播放即弹「播放失败：源不受
+支持（视频编码或容器格式不兼容）」；宿主日志见 `[art] 流透传失败: unexpected end of
+stream`（Art.java 的 okhttp 连 guest 6678 被秒断）。
+
+**根因（四轮实验逐层排除后锁定）**：**csp_*Guard 同 jar 家族（玩偶/seed/荐片/MDrive/
+光影…全来自同一 08a27c…jar）的多个源共享壳内部的「约定流服务端口 6678」**——谁最近被
+装载（壳服务初始化），谁就占住 6678；其它源的 `playerContent` 依旧返回
+`http://127.0.0.1:6678/proxy/play/<盘>/<文件>`（端口写死壳内），请求打在不认识它的
+服务上 → handler `NullPointerException: Attempt to read from null array`（aF.i/Vd.tF/
+sx.i/Jz）→ 0B 秒断 = okhttp 的「unexpected end of stream」。进程内累计 49 次该 NPE。
+
+**证据链（全在 108/宿主实测）**：
+1. 干净会话（只装玩偶）playerContent → 6678 探针 200 OK + 真实 MP4 流（ftypisom）；
+2. 同会话 `load seed`（同 jar）→ 玩偶 6678 立刻 0B；同 site `load` 被幂等缓存挡下
+   （12ms "loaded"）无法恢复；**新 site key 重装载（新 ClassLoader）3.4s → 100% 抢回**；
+3. 用户失败会话（18:38）时间线实锤：应用启动后 MDrive/seed 先于播放被装载
+   （跨源预取触发，18:38:29/33）→ `Found local server port 6678`（壳易主）→
+   玩偶 playerContent（48.8）→ 播放器拉流（48.9）→ 0B（49.2）；
+4. 请求特征（HTTP/1.1+Keep-Alive+gzip+Dalvik UA）、读断、时序窗口、prefs 缺失
+   逐一实验排除（详见 tools/x86guest/debug_*.py 系列脚本沉淀）。
+
+**修复（四层）**：
+- 桥（Server.java）：`load` 新增 `force` 参数——绕过「site 已装载」幂等缓存，重走
+  装载（新 DexClassLoader → 壳静态/服务状态重建 → 重新占回 6678）；
+- 宿主（JavaSpiderRuntime）：`_lastGuardSiteKey` 跟踪最近装载的 Guard 家族源；
+  `PlayerContentAsync` 播放前「Guard 端口守卫」——本源非最近装载者时先 force 重装
+  本源抢回端口（实测 3.5s）再 playerContent；
+- 宿主（WatchPage）：跨源预取候选排除与当前源同 jar 的兄弟源（预防顶端口，
+  同壳同质预取收益低）；
+- 交互工具：桥调试直通泵（`CATCLAW_BRIDGE_DEBUG=1` + `bridge-debug-in.jsonl`/
+  `bridge-debug-out.log`，对宿主持有的单会话桥做任意取证；启动时跳过历史行）。
+
+**验证**：seed 顶掉（0B）→ force 重装玩偶（3.5s）→ 探针 200 OK 且 +6s 保持稳定；
+宿主守卫逻辑与实验语义一致（代码 review）。
+
+**遗留**：danmaku（9978）同为壳系服务端口，理论上同型竞争，但其失败不影响播放主链，
+暂未加守卫；若用户反馈弹幕时有时无，按同法处理。
 
 ### 6.8 迅雷引擎与 ART guest 合并方案（2026-09-27 可行性已验证，待实施）
 

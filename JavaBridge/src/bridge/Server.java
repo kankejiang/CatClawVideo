@@ -199,7 +199,7 @@ public class Server {
                                 : loadFull(freq.optString("site"), freq.optString("className"), freq.optString("ext"),
                                         freq.optJSONArray("jars"), freq.optString("shellJar", null),
                                         freq.optString("rawJar", null), freq.optString("realJar", null),
-                                        freq.optInt("guardPort", 0));
+                                        freq.optInt("guardPort", 0), freq.optBoolean("force", false));
                         o = new JSONObject().put("id", fid).put("ok", true)
                                 .put("result", result == null ? JSONObject.NULL : result).toString();
                     } catch (Throwable t) {
@@ -219,7 +219,7 @@ public class Server {
                 Object result = switch (fop) {
                     case "load" -> loadFull(req.optString("site"), req.optString("className"), req.optString("ext"), req.optJSONArray("jars"),
                             req.optString("shellJar", null), req.optString("rawJar", null), req.optString("realJar", null),
-                            req.optInt("guardPort", 0));
+                            req.optInt("guardPort", 0), req.optBoolean("force", false));
                     case "call" -> call(req.optString("site"), req.optString("method"), req.optJSONArray("args"));
                     case "ping" -> "pong";
                     case "probe" -> {
@@ -279,18 +279,84 @@ public class Server {
                     }
                     case "netstat" -> {
                         // guest 监听端口盘点（/proc/net/tcp{,6}，st=0A 即 LISTEN）：
-                        // 诊断壳的流中转服务（6678）是否真的活着
+                        // 诊断壳的流中转服务（6678）是否真的活着。
+                        // 2026-09-27：宿主侧曾见空输出——改用 FileReader 逐行（procfs size=0，
+                        // readAllLines 在某些实现上直接返回空）并把异常打进结果，不再静默吞。
                         StringBuilder sb = new StringBuilder();
                         for (String f : new String[]{"/proc/net/tcp", "/proc/net/tcp6"}) {
-                            try {
-                                for (String ln : java.nio.file.Files.readAllLines(java.nio.file.Path.of(f))) {
+                            try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.FileReader(f))) {
+                                String ln;
+                                while ((ln = br.readLine()) != null) {
                                     String[] p = ln.trim().split("\\s+");
                                     if (p.length > 3 && "0A".equals(p[3]))
                                         sb.append(Integer.parseInt(p[1].split(":")[1], 16)).append(' ');
                                 }
-                            } catch (Throwable ignored) { }
+                            } catch (Throwable e) { sb.append('!').append(f).append('=').append(e).append(' '); }
                         }
                         yield sb.toString();
+                    }
+                    case "fetch" -> {
+                        // 通用 guest 内探针（2026-09-27 壳流服务 6678 排查）：原始 socket 直连
+                        // host:port，发一条 HTTP/1.0 GET，把「连上没 / 收到多少字节 / 原始回复」
+                        // 原样回传。宿主的「unexpected end of stream」到底是「对端秒 FIN」还是
+                        // 「有数据但非 HTTP」，一次照清楚；也可复现壳的端口探测行为。
+                        String host = req.optString("host", "127.0.0.1");
+                        int port = req.optInt("port", 0);
+                        String path = req.optString("path", "/");
+                        String range = req.optString("range", null);
+                        int max = req.optInt("max", 2048);
+                        int tmo = req.optInt("timeout", 6000);
+                        /* 2026-09-27 播放链路排查：okhttp（Art.java）请求 6678 报 unexpected end of stream
+                         * 而裸 HTTP/1.0 探针成功——把「请求特征」做成参数，一网打尽：
+                         * http=1.1 / keepalive=1 / gzip=1 / ua=<字符串> / connhang=<毫秒>（发完挂住不读，
+                         * 模拟「连上不发/慢发」） */
+                        String httpVer = req.optString("http", "1.0");
+                        String ua = req.optString("ua", "CatClawProbe/1.0");
+                        boolean keepalive = req.optBoolean("keepalive", false);
+                        boolean gzip = req.optBoolean("gzip", false);
+                        StringBuilder fsb = new StringBuilder();
+                        java.net.Socket sk = null;
+                        try {
+                            sk = new java.net.Socket();
+                            sk.connect(new java.net.InetSocketAddress(host, port), 4000);
+                            sk.setSoTimeout(tmo);
+                            fsb.append("connected\n");
+                            StringBuilder rq = new StringBuilder();
+                            rq.append("GET ").append(path).append(" HTTP/").append(httpVer).append("\r\n")
+                              .append("Host: ").append(host).append(':').append(port).append("\r\n");
+                            if (keepalive) rq.append("Connection: Keep-Alive\r\n");
+                            if (gzip) rq.append("Accept-Encoding: gzip\r\n");
+                            if (range != null && range.length() > 0)
+                                rq.append("Range: ").append(range).append("\r\n");
+                            rq.append("User-Agent: ").append(ua).append("\r\n\r\n");
+                            java.io.OutputStream so = sk.getOutputStream();
+                            so.write(rq.toString().getBytes("UTF-8"));
+                            so.flush();
+                            fsb.append("sent ").append(rq.length()).append("B\n");
+                            byte[] buf = new byte[max];
+                            int n = 0;
+                            try {
+                                int r;
+                                while (n < max && (r = sk.getInputStream().read(buf, n, max - n)) > 0) n += r;
+                            } catch (java.net.SocketTimeoutException te) {
+                                fsb.append("read-timeout\n");
+                            }
+                            fsb.append("recv ").append(n).append("B: ");
+                            for (int i = 0; i < n; i++) {
+                                int b = buf[i] & 0xff;
+                                if (b >= 32 && b < 127) fsb.append((char) b);
+                                else if (b == 10) fsb.append("\\n");
+                                else if (b == 13) fsb.append("\\r");
+                                else fsb.append("\\x")
+                                        .append(Character.forDigit((b >> 4) & 15, 16))
+                                        .append(Character.forDigit(b & 15, 16));
+                            }
+                        } catch (Throwable e) {
+                            fsb.append("EX ").append(e.getClass().getName()).append(": ").append(e.getMessage());
+                        } finally {
+                            if (sk != null) try { sk.close(); } catch (Throwable ignored) { }
+                        }
+                        yield fsb.toString();
                     }
                     case "prefsput" -> {
                         // 宿主回灌 guest 偏好（guest 的 /data 是 tmpfs，VM 冷启即清，见 PrefsStore.flush
@@ -338,7 +404,7 @@ public class Server {
     }
 
     private static String load(String site, String className, String ext, org.json.JSONArray jars) throws Exception {
-        return loadFull(site, className, ext, jars, null, null, null, 0);
+        return loadFull(site, className, ext, jars, null, null, null, 0, false);
     }
 
     /** 壳框架加载：shellJar=壳 dex 转换产物；rawJar=原始 Guard jar（assets/*.so 解密引擎）；realJar=解壳产物；
@@ -382,9 +448,20 @@ public class Server {
     }
 
     private static String loadFull(String site, String className, String ext, org.json.JSONArray jars,
-                                   String shellJar, String rawJar, String realJar, int guardPort) throws Exception {
+                                   String shellJar, String rawJar, String realJar, int guardPort,
+                                   boolean force) throws Exception {
         synchronized (LOCK) {
-            if (SPIDERS.containsKey(site)) return "loaded";
+            if (SPIDERS.containsKey(site)) {
+                if (!force) return "loaded";
+                // force 重装载（2026-09-27 端口抢占修复的桥侧配套）：Guard 家族的多个源共享壳内部的
+                // 约定流服务端口（6678），任何同 jar 兄弟源被装载都会把先装载者的流服务顶掉——
+                // 表现为其 playerContent 返回的 6678 地址请求全 0B（handler NPE）。宿主在「播放
+                // Guard 家族源且期间有同 jar 站点被装载」时以 force 重装载本源：新 DexClassLoader
+                // → 新类 → 壳静态/服务状态重建 → 本源重新占回端口。实测新 site key 重装载 3.4s 可
+                // 100% 抢回（docs 交接 §6.8）。
+                SPIDERS.remove(site);
+                System.err.println("[srv] force 重装载: " + site + " (" + className + ")");
+            }
 
             // guest（QEMU 里的真 ART）：壳 jar 由 ART 直接吃，ARM native 就地执行，
             // 既不需要 Guard 解密通道，也不需要 dex2jar 产物（2026-09-25 P3 实测 336ms 出 homeContent）。

@@ -84,6 +84,13 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     private readonly ConcurrentDictionary<string, bool> _loadedSites = new();
     private readonly ConcurrentDictionary<string, string> _convertedJars = new();
 
+    /// <summary>最近装载成功的 Guard 家族站点键（<c>csp_*Guard</c>）。
+    /// csp_*Guard 同 jar 家族的多个源共享壳内部的约定流服务端口（6678）——任何兄弟源在本源
+    /// 之后被装载（跨源预取/手动浏览）都会把本源的流服务顶掉，本源 playerContent 返回的 6678
+    /// 地址全 0B（handler NPE，「unexpected end of stream」）。播放前用它判断本源是否需要
+    /// force 重装载抢回端口（2026-09-27 实锤，见 docs 交接 §6.8）。</summary>
+    private string? _lastGuardSiteKey;
+
     /// <summary>
     /// 站点 → 改用替代 jar 后的类名（去掉 <c>Guard</c> 后缀）。
     /// <para>Guard 外壳的类名都带 <c>Guard</c> 后缀（<c>DouDouGuard</c> / <c>SixVGuard</c>），
@@ -163,6 +170,64 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
                       && Directory.Exists(Path.Combine(bridgeDir, "vendor", "deps"));
         // 正常退出先走一次优雅收尾（job 只兜崩溃/被 kill 的情况）
         AppDomain.CurrentDomain.ProcessExit += (_, _) => Shutdown();
+        StartBridgeDebugPump();
+    }
+
+    /// <summary>
+    /// 桥调试直通（2026-09-27 播放取证）：env <c>CATCLAW_BRIDGE_DEBUG=1</c> 时，后台轮询
+    /// <c>&lt;workDir&gt;\bridge-debug-in.jsonl</c> 的新行（每行一个桥请求 JSON），经现有
+    /// 桥会话发送，响应/异常追加进 bridge-debug-out.log。
+    /// 为什么需要它（不能直接连桥）：GuestMain 是单连接串行模型（accept → Server.main 直到
+    /// EOF），宿主应用占用唯一会话，外部客户端连上也只会干等；且此路复用宿主已装配的会话状态
+    /// （玩偶已装载），可直接 call/fetch 取证壳的流服务（6678）等运行时事实。
+    /// </summary>
+    private void StartBridgeDebugPump()
+    {
+        if (Environment.GetEnvironmentVariable("CATCLAW_BRIDGE_DEBUG") != "1") return;
+        var inPath = Path.Combine(_workDir, "bridge-debug-in.jsonl");
+        var outPath = Path.Combine(_workDir, "bridge-debug-out.log");
+        Log("[dbg] 桥调试直通已开启：" + inPath);
+        _ = Task.Run(async () =>
+        {
+            int cursor = 0;
+            // 启动时跳过已有行：in.jsonl 是跨会话的追加文件，从 0 重放会在启动后重跑全部
+            // 历史请求（每个 1~5s），新请求排队尾 → 实际超时（2026-09-27 实测踩过）。
+            try { if (File.Exists(inPath)) cursor = (await File.ReadAllLinesAsync(inPath)).Length; }
+            catch { }
+            while (true)
+            {
+                try
+                {
+                    await Task.Delay(2000).ConfigureAwait(false);
+                    if (!File.Exists(inPath)) continue;
+                    var lines = await File.ReadAllLinesAsync(inPath).ConfigureAwait(false);
+                    while (cursor < lines.Length)
+                    {
+                        var t = lines[cursor].Trim();
+                        if (t.Length == 0 || t.StartsWith("#")) { cursor++; continue; }
+                        if (!IsBridgeReady) break;   // 桥未就绪：停在此行，下一轮重试
+                        var sw = System.Diagnostics.Stopwatch.StartNew();
+                        try
+                        {
+                            var req = System.Text.Json.Nodes.JsonNode.Parse(t)!.AsObject();
+                            var resp = await RoundTripAsync(req, TimeSpan.FromSeconds(300), CancellationToken.None).ConfigureAwait(false);
+                            sw.Stop();
+                            await File.AppendAllTextAsync(outPath,
+                                $"### {DateTime.Now:HH:mm:ss} <- {t}\n{sw.ElapsedMilliseconds}ms {resp.ToJsonString()}\n").ConfigureAwait(false);
+                            Log($"[dbg] {t[..Math.Min(t.Length, 70)]} → {sw.ElapsedMilliseconds}ms");
+                        }
+                        catch (Exception ex)
+                        {
+                            await File.AppendAllTextAsync(outPath,
+                                $"### {DateTime.Now:HH:mm:ss} <- {t}\nEX {ex.Message}\n").ConfigureAwait(false);
+                            Log("[dbg] 失败: " + ex.Message);
+                        }
+                        cursor++;
+                    }
+                }
+                catch { }
+            }
+        });
     }
 
     /// <summary>
@@ -381,9 +446,29 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     /// 本地流中转服务（<c>http://127.0.0.1:6678/proxy/play/…</c>，壳拿 Cookie 中转夸克直链）。
     /// 壳跑在 guest 里，宿主播放器够不到 —— 改写成 <see cref="QemuArtGuest.ProxyTunnelPort"/>
     /// （hostfwd 直达 guest 桥；guest 桥把该路径透传给壳的流服务）。danmaku 钩子同改。
+    /// <para><b>Guard 端口抢占守卫</b>（2026-09-27 实锤）：csp_*Guard 同 jar 家族的多个源共享
+    /// 壳内部的约定流服务端口（6678）——兄弟源一旦在本源之后装载（跨源预取/手动浏览），本源
+    /// 的流服务就被顶掉，playerContent 返回的 6678 地址全 0B（handler NPE → 播放器
+    /// 「unexpected end of stream／源不受支持」）。修复：播放前本源不是「最近装载的 Guard 源」
+    /// 时先 force 重装载本源（新 ClassLoader 重建壳状态 → 重占回端口；实测 3.4s、100% 抢回）。</para>
     /// </summary>
     public async Task<string> PlayerContentAsync(VodSiteInfo site, string flag, string id, CancellationToken ct = default)
     {
+        if (IsGuardSite(site) && _lastGuardSiteKey != site.Key)
+        {
+            try
+            {
+                Log($"{site.Name}: Guard 端口守卫——最近装载为 {_lastGuardSiteKey ?? "(无)"}，force 重装载本源抢回 6678");
+                await EnsureBridgeAsync(ct).ConfigureAwait(false);
+                var jar = await EnsureConvertedJarAsync(site, ct).ConfigureAwait(false);
+                await EnsureSiteLoadedAsync(site, jar, ct, force: true).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                // 抢回失败不阻断播放尝试：仍可能（本次/窗口内）可用，失败则播放器侧报原错误
+                Log($"{site.Name}: Guard 端口守卫重装失败（继续尝试播放）: {ex.Message}");
+            }
+        }
         var raw = await CallAsync(site, "playerContent", new JsonArray(flag ?? "", id), ct).ConfigureAwait(false);
         if (ArtGuestMode && raw.Contains("127.0.0.1:6678") && _art is { ProxyTunnelPort: > 0 } art)
         {
@@ -719,6 +804,7 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
                 Shutdown();
                 _loadedSites.Clear();
                 _loadFailedSites.Clear();
+                _lastGuardSiteKey = null;
                 Log("爬虫引擎已重置，下一次调用会重新起桥（ART guest 约 15s）");
             }
             catch (Exception ex)
@@ -1025,9 +1111,15 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
             ? alt
             : site.Api.StartsWith("csp_", StringComparison.OrdinalIgnoreCase) ? site.Api[4..] : site.Api;
 
-    private async Task EnsureSiteLoadedAsync(VodSiteInfo site, string jarPath, CancellationToken ct)
+    /// <summary>Guard 家族站点：<c>csp_*Guard</c>——同 jar 的多个源共享壳内 6678 流端口，
+    /// 播放前需要做端口抢占守卫（见 <see cref="PlayerContentAsync"/>）。</summary>
+    private static bool IsGuardSite(VodSiteInfo site) =>
+        site.Api.StartsWith("csp_", StringComparison.OrdinalIgnoreCase) &&
+        site.Api.EndsWith("Guard", StringComparison.OrdinalIgnoreCase) && site.Api.Length > 6;
+
+    private async Task EnsureSiteLoadedAsync(VodSiteInfo site, string jarPath, CancellationToken ct, bool force = false)
     {
-        if (_loadedSites.TryGetValue(site.Key, out _)) return;
+        if (_loadedSites.TryGetValue(site.Key, out _) && !force) return;
         // 会话级负缓存：结构性加载失败（VerifyError 等，重试也不会好）不再反复烧桥——
         // 实测 Wogg/Douban 每轮搜索都要白跑 5~7s 的 load。重置引擎时清空，给重试机会。
         if (_loadFailedSites.TryGetValue(site.Key, out var failedWhy))
@@ -1042,6 +1134,9 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
             ["ext"] = await PrepareExtAsync(site, ct),
             ["jars"] = new JsonArray(jarPath),
         };
+        // force 重装载（桥侧绕过「site 已装载」幂等缓存）：Guard 家族端口抢占的抢回手段
+        // （见 PlayerContentAsync 的 Guard 端口守卫与字段 _lastGuardSiteKey 注释）。
+        if (force) req["force"] = true;
         // ART guest：桥在 guest 里，rawJar 由 ART 直接吃（classes.dex）、壳自己 System.load()
         // 那个 arm64 ftyguard so 并解出真 dex（2026-09-25 实测：装载 3272ms、homeContent 183ms）。
         // ⇒ 不下发 shellJar/realJar 这两个宿主转换产物，也不启动独立 Guard VM。
@@ -1133,6 +1228,9 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         }
         _loadedSites[site.Key] = true;
         _loadFailedSites.TryRemove(site.Key, out _);
+        // Guard 家族装载次序跟踪（端口抢占守卫用，见 _lastGuardSiteKey 注释）：
+        // 只有带 Guard 后缀的壳类名才占 6678；降级到真实类（无 Guard）的不算。
+        if (className.EndsWith("Guard", StringComparison.Ordinal)) _lastGuardSiteKey = site.Key;
         Log($"站点 {site.Key} 已加载");
     }
 

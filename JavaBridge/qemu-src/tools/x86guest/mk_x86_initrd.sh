@@ -97,6 +97,11 @@ cp $W/proppreload_x64.so $R/proppreload.so
 cp $W/fakelogd.x64       $R/fakelogd
 chmod +x $R/bin/busybox $R/artlaunch $R/system/bin/artlaunch $R/fakelogd
 cp $W/gb.dex $R/gb.dex
+# ui_stub.dex（UI 桩优先链）：Art.stubFirst() 从 /ui_stub.dex 加载，jar 源的 android.*
+# 解析到桩而非真 framework（Dialog/Toast 事件才能上行）。⚠ 缺它 Guard 壳初始化即崩
+# （2026-09-27：108 崩/用户环境活的唯一差异，mk 脚本此前丢行——与 build_gb_dex.py
+# 的产物配套，两处生成的 dm 必须都进 initrd）
+[ -f $W/ui_stub.dex ] && cp $W/ui_stub.dex $R/ui_stub.dex
 cp $W/TVBox_debug-java64.apk $R/tvbox.apk
 # Guard 壳 jar（玩偶）——nativebridge 转译实测用
 mkdir -p $R/data/catclaw/art/inbox
