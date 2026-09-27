@@ -1,0 +1,1686 @@
+using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
+using CatClawVideo.Core.Interfaces;
+using CatClawVideo.Core.Models;
+
+namespace CatClawVideo.Core.Providers;
+
+/// <summary>
+/// jar/dex 爬虫运行时（桌面）：<b>两条链路共用同一套行协议</b> ——
+/// <list type="bullet">
+///   <item><b>ART guest（默认，装了 <c>QemuGuest/art_initrd.gz</c> 就启用）</b>：QEMU 里跑真
+///   Android 9 的 ART，桥与 TVBox/壳 jar 都在里面，<b>ARM 原生码就地执行</b>。
+///   2026-09-26 实测荐片┃多线全链路：detail 0.5s/4347B → player 1.8s 拿到真 m3u8。</item>
+///   <item><b>宿主 JRE（回落/纯 .class 的 java 源）</b>：常驻 Java 桥进程，spider jar 经 dex2jar
+///   转换后加载。<b>它解不了 Guard 壳</b>（见下），所以 Guard 源只在 guest 里可用。</item>
+/// </list>
+/// <para><b>Guard 加固包为什么必须在 guest 里解</b>：壳把真 spider dex 加密成
+/// <c>assets/ftyshinidie.guard</c>，解密器是 ARM Android native（<c>assets/ftyguard_v8.so</c>，
+/// <c>JNI_OnLoad</c> + <c>RegisterNatives</c> 注册 <c>DexNative</c> 的 8 个 native）。
+/// x64 JVM 跑不了 ARM 指令；曾用 <b>unidbg 模拟 ARM64</b> 离线解壳，但它自建一套 Android 桩，
+/// 结果"看着对而语义不同"（同一条 <c>DECRYPT 10232B</c> 出过两种结果），且随包多 33MB ——
+/// <b>2026-09-26 退役</b>。现在由 guest 里的真 ART 让壳自己 <c>System.load()</c> 那个 so，
+/// 明文 dex（<c>cache/sharedb/config.db</c>）我们从不接触。</para>
+/// <para>解壳器不可用或解壳失败时，退而求其次改用**同族「非 Guard 构建」**的 jar
+/// （见 <see cref="NonGuardFallbackJars"/>），它提供同名去掉 <c>Guard</c> 后缀的真实实现
+/// （<c>csp_SixVGuard</c> → <c>SixV</c>）。</para>
+/// <para>认证预处理：ext global 含 username/password 而缺 token 时，自动向
+/// {server}/api/auth/login 登录注入 token（小雅 AListSh 需要）。</para>
+/// </summary>
+public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderActionRuntime, IDisposable, ISpiderLiveRuntime
+{
+    public string Id => "jvm-dex";
+
+    /// <summary>
+    /// **只读**程序目录：<c>bridge.jar</c> 与 <c>vendor/*</c> 的所在地（安装版是
+    /// <c>C:\Program Files\CatClawVideo\JavaBridge</c>，普通用户无写权限）。
+    /// </summary>
+    private readonly string _bridgeDir;
+
+    /// <summary>
+    /// **可写**工作目录 —— 必须与 <see cref="_bridgeDir"/> 分开：jar 转换产物与桥进程的
+    /// <c>data</c> 目录都要落盘，写程序目录会抛 <c>UnauthorizedAccessException</c>。
+    ///
+    /// <para>2026-09-19 用户实测（安装版）：磁力/自带源拉取失败，报
+    /// 「Access to the path 'C:\Program Files\CatClawVideo\JavaBridge\converted' is denied.」
+    /// —— 开发机跑仓库目录（可写）从不触发，只有安装包才暴露。</para>
+    ///
+    /// <para>落在 <c>%APPDATA%\CatClawVideo\javabridge\</c>，与其余可写数据同一处
+    /// （见 <see cref="AppPaths"/>）。</para>
+    /// </summary>
+    private readonly string _workDir;
+
+    /// <summary>jar 转换产物目录（原始 jar、Guard 解壳产物、dex2jar 输出）。</summary>
+    private readonly string _convertedDir;
+
+    private readonly string _javaExe;
+    private readonly Action<string>? _log;
+    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(30) };
+
+    private Process? _proc;
+    private StreamWriter? _stdin;
+    private StreamReader? _stdout;
+
+    /// <summary>
+    /// ART guest（QEMU 里真 Android ART 跑桥）；只在 <see cref="ArtGuestMode"/> 时用。
+    /// 桥的行协议改为走 TCP，<see cref="_stdin"/>/<see cref="_stdout"/> 直接架在 socket 流上，
+    /// 因此请求/响应/事件分发那套代码两条链路完全共用。
+    /// </summary>
+    private CatClawVideo.Core.Services.QemuGuest.QemuArtGuest? _art;
+
+    /// <summary>ART guest 的 jar 供给服务（guest 读不到宿主的盘，只能经 slirp 用 http 取）。</summary>
+    private CatClawVideo.Core.Services.QemuGuest.ArtJarServer? _jarServer;
+    private readonly SemaphoreSlim _ioLock = new(1, 1);
+    private int _id;
+
+    /// <summary>桥 JVM 的 KillOnClose job —— 句柄一关，内核就把 JVM 一起收走，不留孤儿。</summary>
+    private CatClawVideo.Core.Services.KillOnCloseJob? _job;
+
+    private readonly ConcurrentDictionary<string, bool> _loadedSites = new();
+    private readonly ConcurrentDictionary<string, string> _convertedJars = new();
+
+    /// <summary>
+    /// 站点 → 改用替代 jar 后的类名（去掉 <c>Guard</c> 后缀）。
+    /// <para>Guard 外壳的类名都带 <c>Guard</c> 后缀（<c>DouDouGuard</c> / <c>SixVGuard</c>），
+    /// 而解壳出来的真实 dex 里**不带**后缀（<c>DouDou</c> / <c>SixV</c>），桥必须按真实名加载。
+    /// guest 解壳与换非 Guard 同族 jar 两条路的映射规则一致。</para>
+    /// </summary>
+    private readonly ConcurrentDictionary<string, string> _nonGuardClass = new();
+
+
+    /// <summary>
+    /// 配置的 jar 是 Guard 加固、而本平台解不开时，按顺序尝试的**非 Guard 同族 jar**。
+    /// <para>判定标准（两者都过才用）：① 不含 <c>assets/*.so</c> + <c>*.guard</c>；
+    /// ② <c>classes*.dex</c> 里确实存在「去掉 Guard 后缀」的那个类。</para>
+    /// <para>默认值是 TVBox 生态里长期使用的非 Guard 同族构建（提供 SixV / Proxy / AList 等 900+ 类）。
+    /// 如需替换，改这里即可（例如换成自己镜像）。</para>
+    /// </summary>
+    public static List<string> NonGuardFallbackJars { get; } =
+    [
+        "https://raw.liucn.cc/box/fty.jar",
+    ];
+
+    public bool IsSupported { get; }
+
+    /// <summary>QEMU 运行时目录（<c>art_initrd.gz</c> 与 <c>pkg_kernel</c> 所在处）。</summary>
+    public string ArtRuntimeDir { get; set; }
+
+    /// <summary>
+    /// 是否用 ART guest 跑桥。<b>默认：装了 <c>art_initrd.gz</c> 就开</b>（见构造函数注释）。
+    /// <para>开着时 Guard 壳 jar 按真机的样子装载：ART 直接吃 <c>classes.dex</c>，
+    /// 壳自己 <c>System.load()</c> 那个 arm64 <c>ftyguard_v8.so</c>，native 解出的真 dex 由
+    /// 壳内部的 <c>DexClassLoader</c> 承载 —— 桥不再需要 dex2jar / 解壳 / 手写 DexNative 替身。</para>
+    /// </summary>
+    public bool ArtGuestMode { get; set; }
+
+    // ── x86 mini guest（实验性，2026-09-27）——
+    //    CATCLAW_X86_GUEST=1 时 ART guest 切到 x86_64 架构（Waydroid Android 13 子集 +
+    //    Debian 6.1 内核 + WHPX 硬件加速），联调进行中（JavaBridge/qemu-src/tools/x86guest/）。
+    //    ⚠ 默认关：aarch64 现网行为零变化；开关打开且 x86 运行时（QemuGuest\x86guest\
+    //    下的内核/initrd + qemu-system-x86_64.exe）齐全时才生效，否则回落 aarch64。
+    private CatClawVideo.Core.Services.QemuGuest.GuestArch? _guestArchOverride;
+    private string? _guestKernelFile;
+    private string? _guestInitrdFile;
+    private string? _guestQemuExe;
+
+    public JavaSpiderRuntime(string bridgeDir, string javaExe, Action<string>? log = null,
+        string? workDir = null, Func<int>? proxyPort = null)
+    {
+        _bridgeDir = bridgeDir;
+        _javaExe = javaExe;
+        _log = log;
+        _proxyPort = proxyPort;
+        // 可写目录默认落用户数据区；显式传入只是为了测试/特殊部署。
+        // ⚠ 绝不回落到 bridgeDir：安装版那是 Program Files，写它就是本次故障。
+        _workDir = workDir ?? AppPaths.Sub("javabridge");
+        _convertedDir = Path.Combine(_workDir, "converted");
+        // ── ART guest（2026-09-25 定案：ARM 原生码 + TVBox/壳 jar 的 dex 全进 QEMU 里的真 ART）──
+        // 装了 QemuGuest\art_initrd.gz 就默认走这条；两条链路的取舍/延迟对比用 CATCLAW_NO_ART=1 关掉。
+        ArtRuntimeDir = Path.Combine(AppContext.BaseDirectory, "QemuGuest");
+        ArtGuestMode = CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.IsAvailable(ArtRuntimeDir)
+                       && Environment.GetEnvironmentVariable("CATCLAW_NO_ART") != "1";
+        // x86 mini guest 实验开关（2026-09-27，联调中）：仅当 x86 运行时齐全才切架构
+        if (Environment.GetEnvironmentVariable("CATCLAW_X86_GUEST") == "1")
+        {
+            _guestArchOverride = CatClawVideo.Core.Services.QemuGuest.GuestArch.X86_64;
+            _guestKernelFile = @"x86guest\vmlinuz-6.1.0-50-amd64";
+            _guestInitrdFile = @"x86guest\art_initrd_x64.gz";
+            _guestQemuExe = "qemu-system-x86_64.exe";
+        }
+        // 启动就把走哪条桥链路写进日志：两条链路的差异只会以"某个站点不对"的形式浮现，
+        // 不写明模式的话排障第一步会变成猜。
+        Log($"桥链路：{(ArtGuestMode ? "ART guest（" + ArtRuntimeDir + '\\' + CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.InitrdName + '）' : "宿主 JRE")}"
+            + (Environment.GetEnvironmentVariable("CATCLAW_NO_ART") == "1" ? "（CATCLAW_NO_ART=1 手动关掉）" : "")
+            + (Environment.GetEnvironmentVariable("CATCLAW_X86_GUEST") == "1" ? "（CATCLAW_X86_GUEST=1 实验性 x86 mini guest）" : ""));
+        // 桥可用 = bridge.jar + deps（能跑非 Guard 的 jar 爬虫）；Guard 解壳能力单独判定
+        // （2026-09-16 拆分：此前把 dex2jar 也算进来，缺它就把全部 jar 源判死 —— 用户实测 46 个源整体消失）
+        IsSupported = File.Exists(Path.Combine(bridgeDir, "bridge.jar"))
+                      && Directory.Exists(Path.Combine(bridgeDir, "vendor", "deps"));
+        // 正常退出先走一次优雅收尾（job 只兜崩溃/被 kill 的情况）
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => Shutdown();
+    }
+
+    /// <summary>
+    /// 收尾桥：发 <c>exit</c> 让它自己结束读循环，等不到再 kill。
+    /// 两条链路都在这里收：JRE 杀子进程树，ART guest 关 socket 并停 VM（VM 另有 KillOnClose job 兜底）。
+    /// 幂等，可重复调用。
+    /// </summary>
+    public void Shutdown()
+    {
+        // ⚠ 先原子摘引用再销毁（2026-09-27 多 qemu 事故修复）：此前 Dispose 期间 _art/_proc
+        //   仍是非 null，竞态窗口里并发调用者拿旧引用进 ConnectAsync → 旧 QemuHostRuntime
+        //   被 StartAsync「复活」→ 每次重置叠一个孤儿 qemu（实锤：同一媒体口反复出现）。
+        //   摘引 + 代际号自增建立不变量：已判死的会话实例永远不会被新调用者复用/复活。
+        var p = Interlocked.Exchange(ref _proc, null);
+        var art = Interlocked.Exchange(ref _art, null);
+        var stdin = Interlocked.Exchange(ref _stdin, null);
+        _stdout = null;
+        if (p is null && art is null) return;
+        try
+        {
+            // 收尾阶段不再有新请求进来了，直接写：拿 _stdinLock 反而可能在别的线程手里卡死。
+            // 用摘下来的局部引用——两条链路共用（JRE 挂子进程 stdin，ART 挂 socket 流）。
+            try { stdin?.Write("{\"op\":\"exit\"}"); stdin?.Flush(); } catch { }
+            if (p is not null && !p.WaitForExit(1500)) p.Kill(entireProcessTree: true);
+        }
+        catch { /* 进程可能已经自己退了 */ }
+        finally
+        {
+            try { stdin?.Dispose(); } catch { }
+            if (p is not null)
+            {
+                try { p.StandardInput.Close(); } catch { }
+                if (!p.HasExited) { try { p.Kill(entireProcessTree: true); } catch { } }
+            }
+            try { art?.Dispose(); } catch { }
+        }
+    }
+
+    /// <summary>收尾并释放 job：job 句柄一关，内核保证挂在其上的 JVM 不会活过本进程。</summary>
+    public void Dispose()
+    {
+        Shutdown();
+        _job?.Dispose();
+        _job = null;
+    }
+
+
+    private void Log(string m) => _log?.Invoke("[jvm] " + m);
+
+    /// <summary>宿主本地 SpiderProxyServer 主端口（懒访问器）；桥进程启动后经 setProxyPort 下发。</summary>
+    private readonly Func<int>? _proxyPort;
+
+    /// <summary>最近一次调用的站点（spider 发起的 /proxy 请求不携带 siteKey，回调时按它定位）。</summary>
+    private volatile VodSiteInfo? _lastSite;
+
+    /// <summary>Guard 源的壳框架 jar（壳 dex 转换产物）与原始 jar（含解密 so）——load 时下发桥。</summary>
+    private readonly ConcurrentDictionary<string, string> _shellJars = new();
+    private readonly ConcurrentDictionary<string, string> _rawJars = new();
+
+    /// <summary>
+    /// 查找系统里的 java.exe，取**版本最高**的那个（随包 <c>JavaBridge/jre</c> 存在时短路返回，见下）。
+    /// <para>扫描顺序：JAVA_HOME → <c>C:\Program Files\Java\*</c> → <c>C:\Program Files\Microsoft\jdk-*</c> → PATH。
+    /// 取最高版本是通用兜底策略：bridge.jar 是 major 61（--release 17），太老的 JDK 跑不了新字节码；
+    /// 本机常见「PATH 里 17、JAVA_HOME 里 21」或同时装两套 JDK，按目录名版本号排序取最大。</para>
+    /// </summary>
+    public static string? FindJavaExe()
+    {
+        // ★ 随包的精简运行时**优先**（JavaBridge/jre，jlink 自 Microsoft OpenJDK 21，MIT 许可）。
+        //   两个理由：
+        //   ① 开箱即用 —— 装了这份就不要求用户自备 Java（2026-09-22 用户反馈：最常见根因就是机器上没 Java）。
+        //   ② 版本可控 —— bridge.jar 现在是 **major 61（--release 17**，为了能在 QEMU guest 的
+        //      Alpine OpenJDK 17 里跑同一份字节码），但 unpacker.jar 仍是 65，所以运行时下限并没有降；
+        //      随包运行时永远满足，短路返回、不与系统 Java 比大小。
+        if (FindBridgeDir() is { } bundledDir)
+        {
+            var bundled = Path.Combine(bundledDir, "jre", "bin", "java.exe");
+            if (File.Exists(bundled)) return bundled;
+        }
+
+        var candidates = new List<(int Major, string Path)>();
+        void Consider(string? p)
+        {
+            if (string.IsNullOrEmpty(p) || !File.Exists(p)) return;
+            var dir = new DirectoryInfo(Path.GetDirectoryName(p)!);
+            var m = Regex.Match(dir.Name, @"(\d+)");
+            candidates.Add((m.Success ? int.Parse(m.Groups[1].Value) : 0, p));
+        }
+
+        var home = Environment.GetEnvironmentVariable("JAVA_HOME");
+        if (!string.IsNullOrEmpty(home)) Consider(Path.Combine(home, "bin", "java.exe"));
+
+        foreach (var root in new[] { @"C:\Program Files\Java", @"C:\Program Files\Microsoft", @"C:\Program Files\Android\openjdk" })
+        {
+            if (!Directory.Exists(root)) continue;
+            foreach (var dir in Directory.GetDirectories(root))
+                Consider(Path.Combine(dir, "bin", "java.exe"));
+        }
+
+        var pathVar = Environment.GetEnvironmentVariable("PATH") ?? "";
+        foreach (var d in pathVar.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            try { Consider(Path.Combine(d.Trim(), "java.exe")); }
+            catch { }
+        }
+
+        return candidates.Count == 0
+            ? null
+            : candidates.OrderByDescending(c => c.Major).First().Path;
+    }
+
+    /// <summary>
+    /// 向上查找 JavaBridge 目录（bridge.jar 所在，App 部署目录或仓库根）。
+    /// <para>⚠ 会**收集全部候选再挑能力最全**的一个：随包分发的那份只带 `bridge.jar + vendor/deps`（约 3.4MB），
+    /// 而开发机的仓库目录通常连 `vendor/dex2jar`（JRE 桥转换管线）一起有 —— 就近返回会把转换能力丢掉
+    /// （2026-09-16 实测：随包副本优先后，全部 jar 站点转换失败）。
+    /// 并列时取最近的（OrderByDescending 稳定排序，候选按由近到远收集）。</para>
+    /// </summary>
+    public static string? FindBridgeDir()
+    {
+        var candidates = new List<string>();
+        for (var d = new DirectoryInfo(AppContext.BaseDirectory); d != null && d.Parent != null; d = d.Parent)
+        {
+            var cand = Path.Combine(d.FullName, "JavaBridge");
+            if (File.Exists(Path.Combine(cand, "bridge.jar"))) candidates.Add(cand);
+        }
+        if (candidates.Count == 0) return null;
+        return candidates.OrderByDescending(Score).First();
+
+        static int Score(string dir)
+        {
+            var s = 0;
+            try
+            {
+                if (Directory.Exists(Path.Combine(dir, "vendor", "deps"))) s += 1;
+                if (Directory.Exists(Path.Combine(dir, "vendor", "dex2jar"))) s += 2;
+            }
+            catch { }
+            return s;
+        }
+    }
+
+    // ═══════════ ISpiderRuntime 协议 ═══════════
+
+    public Task<string> HomeContentAsync(VodSiteInfo site, CancellationToken ct = default) =>
+        CallAsync(site, "homeContent", new JsonArray(1), ct);
+
+    public Task<string> CategoryContentAsync(VodSiteInfo site, string tid, string pg,
+        IReadOnlyDictionary<string, string>? filter = null, CancellationToken ct = default) =>
+        // 桥侧 Server.java 读第 3 参：extend 非空 → filter=true。Android 的 DexSpiderRuntime 同语义。
+        CallAsync(site, "categoryContent", CategoryArgs(tid, pg, filter), ct);
+
+    /// <summary>categoryContent 的参数数组：[tid, pg, {筛选键→值}]（无筛选时给空对象）。</summary>
+    static JsonArray CategoryArgs(string tid, string pg, IReadOnlyDictionary<string, string>? filter)
+    {
+        var map = new JsonObject();
+        if (filter is not null)
+            foreach (var (k, v) in filter) map[k] = v;
+        return new JsonArray(tid, pg, map);
+    }
+
+    // detailContent 会话级缓存：聚合网盘源的 detail 要串行探测多个网盘（实测玩偶 71~90s+），
+    // 重进详情页/重试绝不该再付一遍。键 = site|vodId；成功结果才缓存，上限 40 条超出清空。
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _detailCache =
+        new(StringComparer.Ordinal);
+
+    public async Task<string> DetailContentAsync(VodSiteInfo site, string id, CancellationToken ct = default)
+    {
+        var key = site.Key + "|" + id;
+        if (_detailCache.TryGetValue(key, out var hit)) return hit;
+        var raw = await CallAsync(site, "detailContent", new JsonArray(id), ct).ConfigureAwait(false);
+        if (_detailCache.Count >= 40) _detailCache.Clear();
+        _detailCache[key] = raw;
+        return raw;
+    }
+
+    /// <summary>桥生死探针（超时处置前用）：call 异步化后 ping 能穿透慢 call——
+    /// ping 得通说明桥活着、只是该调用慢，此时杀桥重置（15s 起桥 + 全站重载）是双输。</summary>
+    private async Task<bool> PingBridgeAliveAsync(TimeSpan timeout)
+    {
+        try
+        {
+            var resp = await RoundTripAsync(new JsonObject
+            {
+                ["id"] = Interlocked.Increment(ref _id),
+                ["op"] = "ping",
+            }, timeout, CancellationToken.None, resetOnTimeout: false).ConfigureAwait(false);
+            return resp["ok"]?.GetValue<bool>() == true;
+        }
+        catch { return false; }
+    }
+
+    // ── 搜索速度档案 ──
+    // 按站点记录上次 searchContent 实测耗时（含桥内排队），SearchPage 据此把快源排前、
+    // 慢源延后发起（「快的立即显示、慢的延后搜索」）；MacCMS/未搜过的源无记录 = 视为最快。
+    public static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> SearchElapsedMs =
+        new(StringComparer.Ordinal);
+
+    public static long? LastSearchMs(string siteKey) =>
+        SearchElapsedMs.TryGetValue(siteKey, out var ms) ? ms : null;
+
+    public async Task<string> SearchContentAsync(VodSiteInfo site, string keyword, string pg, CancellationToken ct = default)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            // 搜索专用 25s 短超时：搜索是全员扫描，个别慢源（实测某源 18s 且 0 结果）不该占桥 90s；
+            // 超时不重置桥——慢源只占自己那把站点锁（桥已 per-site 并行），重置会连累正在跑的其它源。
+            return await CallAsync(site, "searchContent", new JsonArray(keyword, pg), ct,
+                TimeSpan.FromSeconds(25), resetOnTimeout: false).ConfigureAwait(false);
+        }
+        finally { SearchElapsedMs[site.Key] = sw.ElapsedMilliseconds; }
+    }
+
+    /// <summary>
+    /// playerContent 结果直通宿主，但先做一处<b>端口改写</b>：壳把播放地址构造成它自己的
+    /// 本地流中转服务（<c>http://127.0.0.1:6678/proxy/play/…</c>，壳拿 Cookie 中转夸克直链）。
+    /// 壳跑在 guest 里，宿主播放器够不到 —— 改写成 <see cref="QemuArtGuest.ProxyTunnelPort"/>
+    /// （hostfwd 直达 guest 桥；guest 桥把该路径透传给壳的流服务）。danmaku 钩子同改。
+    /// </summary>
+    public async Task<string> PlayerContentAsync(VodSiteInfo site, string flag, string id, CancellationToken ct = default)
+    {
+        var raw = await CallAsync(site, "playerContent", new JsonArray(flag ?? "", id), ct).ConfigureAwait(false);
+        if (ArtGuestMode && raw.Contains("127.0.0.1:6678") && _art is { ProxyTunnelPort: > 0 } art)
+        {
+            Log($"{site.Name}: 壳流地址端口改写 6678 → {art.ProxyTunnelPort}");
+            _ = DiagnoseGuestPortsAsync(ct);
+            return raw.Replace("127.0.0.1:6678", "127.0.0.1:" + art.ProxyTunnelPort);
+        }
+        return raw;
+    }
+
+    /// <summary>guest 监听端口盘点（/proc/net/tcp）——诊断壳的流服务是否真的在听。</summary>
+    private async Task DiagnoseGuestPortsAsync(CancellationToken ct)
+    {
+        try
+        {
+            var req = new JsonObject { ["id"] = Interlocked.Increment(ref _id), ["op"] = "netstat" };
+            var resp = await RoundTripAsync(req, TimeSpan.FromSeconds(5), ct);
+            Log("guest 监听端口: " + resp["result"]?.GetValue<string>());
+        }
+        catch { }
+    }
+
+    /// <inheritdoc/>
+    public async Task<string?> InvokeDanmakuHookAsync(VodSiteInfo site, string hookUrl, CancellationToken ct = default)
+    {
+        try
+        {
+            using var h = new HttpRequestMessage(HttpMethod.Get, hookUrl);
+            using var r = await _http.SendAsync(h, ct).ConfigureAwait(false);
+            var body = await r.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            Log($"[解析] {site.Key}.danmaku钩子 → {(int)r.StatusCode} {body.Length}B");
+            string? real = r.Headers.Location?.ToString();
+            if (string.IsNullOrEmpty(real))
+            {
+                var t = body.Trim();
+                if (t.StartsWith("http", StringComparison.OrdinalIgnoreCase)) real = t;
+                else if (t.StartsWith("{"))
+                {
+                    try { real = System.Text.Json.Nodes.JsonNode.Parse(t)?["url"]?.GetValue<string>(); }
+                    catch { }
+                }
+            }
+            if (string.IsNullOrEmpty(real)) return null;
+            // 壳的流服务在 guest 里监听 6678：它给出的地址（绝对/相对）都要换算成宿主隧道端口
+            if (!real.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                real = "http://127.0.0.1:6678" + real;
+            if (ArtGuestMode && _art is { ProxyTunnelPort: > 0 } art)
+                real = real.Replace("127.0.0.1:6678", "127.0.0.1:" + art.ProxyTunnelPort);
+            Log($"[解析] {site.Key}.danmaku钩子给出播放地址 → {real}");
+            return real;
+        }
+        catch (Exception ex)
+        {
+            Log($"[解析] {site.Key}.danmaku钩子失败: {ex.Message}");
+            return null;
+        }
+    }
+
+    public Task<string> ActionAsync(VodSiteInfo site, string actionJson, CancellationToken ct = default) =>
+        CallAsync(site, "action", new JsonArray(actionJson ?? ""), ct);
+
+    /// <summary>
+    /// 桌面 JVM 桥的 <c>liveContent</c>：把站点自带的真实地址交给爬虫，回 TXT/M3U 频道表。
+    /// <para>桥侧 <c>Server.java</c> 的 switch 已有 <c>liveContent</c> case（2026-09-26 补，随
+    /// <c>bridge.jar</c> 重编）。爬虫没实现该方法时由 <see cref="CallAsync"/> 把桥的异常原文抛上去，
+    /// 而不是静默返回空 —— 静默空值会让上层误判成「该源没有频道」，排查方向就错了。</para>
+    /// </summary>
+    public Task<string> LiveContentAsync(VodSiteInfo site, string url, CancellationToken ct = default) =>
+        CallAsync(site, "liveContent", new JsonArray(url), ct);
+
+    // ═══════════ 进程与调用 ═══════════
+
+    /// <summary>
+    /// 后台预热桥（启动后调用）：ART guest VM 冷启动要 5~11s，此前发生在**第一次 jar 站点
+    /// 调用**上——首选站点是 jar 源时，整段冷启动直接叠进「首页首载/切站」的等待里。
+    /// 放到启动后台跑（宿主侧对迅雷 VM 已有同款预热先例），用户浏览首页的时间里 VM 就绪。
+    /// <para>幂等：桥已就绪时零开销直接返回；失败静默（首次真实调用仍会懒启动重试）。
+    /// ⚠ 限时 75s：预热与用户调用在 <see cref="_bridgeGate"/> 上互斥，guest 冷启动最坏要
+    /// 数分钟（226MB initrd 解压 + ART 起 VM），不限时的话一次卡住的预热会把用户的第一次
+    /// 调用也堵在队列里到天荒地老（2026-09-26 实测：预热占道 243s，用户点播放 90s 超时）。</para>
+    /// </summary>
+    public async Task WarmUpAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(75));
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            await EnsureBridgeAsync(cts.Token).ConfigureAwait(false);
+            Log($"桥预热完成（{sw.ElapsedMilliseconds}ms，{(ArtGuestMode ? "ART guest" : "宿主 JRE")}）");
+        }
+        catch (Exception ex)
+        {
+            Log($"桥预热失败/放弃（不影响后续懒启动）: {ex.Message}");
+        }
+    }
+
+    /// <summary>起桥全程互斥：并发 EnsureBridgeAsync 会双双连桥、覆盖 _stdin/_stdout、
+    /// 起两个 ReadLoop 分吃应答 —— 请求永远等不到回包（90s 超时的根因，2026-09-26 修复）。</summary>
+    private readonly SemaphoreSlim _bridgeGate = new(1, 1);
+
+    /// <summary>桥是否已就绪（不必重连）。快路径无锁检查。</summary>
+    private bool IsBridgeReady =>
+        ArtGuestMode
+            ? (_art is { IsUp: true } && _stdin is not null)
+            : (_proc is { HasExited: false } && _stdin is not null);
+
+    /// <summary>
+    /// 确保桥可用。<b>两条链路同一套行协议</b>：ART guest（QEMU 里真 ART，走 TCP）优先，
+    /// 其次宿主 JRE（子进程标准流）。握手在 <see cref="HandshakeAsync"/> 里，两边共用。
+    /// </summary>
+    private async Task EnsureBridgeAsync(CancellationToken ct)
+    {
+        if (IsBridgeReady) return;
+        // 重置窗口期直接快速失败（避免在 ResetBridge 的 Shutdown 旁边抢旧实例）：
+        // 上层调用点拿到这条消息会告诉用户稍后重试，而不是干等一轮冷启动。
+        if (Volatile.Read(ref _resetting) != 0)
+            throw new InvalidOperationException("爬虫引擎正在重置（上一次调用无响应），请稍后重试");
+        await _bridgeGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (IsBridgeReady) return;   // 排队期间别的调用已把桥拉起来
+            // 代际快照：ConnectAsync 冷启动可耗分钟级，期间可能发生 ResetBridge——
+            // 完成后必须校验会话没换代，否则拿到的链接/实例已属上一代（复活的旧 VM）。
+            for (var attempt = 0; ; attempt++)
+            {
+                var epoch = Volatile.Read(ref _bridgeEpoch);
+                if (ArtGuestMode)
+                {
+                    _art ??= new CatClawVideo.Core.Services.QemuGuest.QemuArtGuest(ArtRuntimeDir, _log)
+                    {
+                        // x86 mini guest 实验开关（CATCLAW_X86_GUEST=1）：切架构 + 覆盖内核/
+                        // initrd/引擎文件名；缺省 null → ArtGuest 内部走 aarch64 缺省，现网零变化
+                        GuestArch = _guestArchOverride ?? CatClawVideo.Core.Services.QemuGuest.GuestArch.Arm64,
+                        KernelFileName = _guestKernelFile ?? "pkg_kernel",
+                        GuestInitrdName = _guestInitrdFile ?? CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.InitrdName,
+                        GuestQemuExeName = _guestQemuExe ?? "qemu-system-aarch64.exe",
+                    };
+                    var art = _art;
+                    var link = await art.ConnectAsync(ct).ConfigureAwait(false);
+                    if (epoch != Volatile.Read(ref _bridgeEpoch))
+                    {
+                        // 长等待期间被重置：本会话（及其 VM）已由 ResetBridge 收走，
+                        // 不设流、不复用——链路/实例都已在 Shutdown 里 Dispose，重来一轮。
+                        if (attempt == 0) { Log("桥会话在冷启动期间被重置，重试一轮"); continue; }
+                        throw new InvalidOperationException("爬虫引擎连续重置，请稍后重试");
+                    }
+                    if (link is null)
+                    {
+                        ArtGuestMode = false;
+                        Log("ART guest 起不来 → 回落宿主 JRE 桥");
+                    }
+                    else if (!ReferenceEquals(art, _art) || IsBridgeReady)
+                    {
+                        // 并发调用方已接管（ownership 仲裁让位场景）→ 换流重试
+                        if (attempt == 0) { Log("ART 会话被并发调用方接管，换流重试"); continue; }
+                        throw new InvalidOperationException("ART 桥会话竞争冲突，请稍后重试");
+                    }
+                    else
+                    {
+                        (_stdin, _stdout) = link.Value;
+                        Log($"桥已连上 ART guest（127.0.0.1:{art.BridgePort}）");
+                        _ = Task.Run(ReadLoopAsync);
+                    }
+                }
+                break;
+            }
+
+            if (!ArtGuestMode) await StartJvmBridgeAsync(ct).ConfigureAwait(false);
+            await HandshakeAsync(ct).ConfigureAwait(false);
+            // guest 的 /data 是 tmpfs（VM 冷启即清）：把上次会话持久化的偏好（网盘 Cookie 等）
+            // 回灌进 guest，必须发生在任何 spider 代码运行之前（PrefsStore 按名惰性读盘）
+            if (ArtGuestMode) await RestoreGuestPrefsAsync(ct).ConfigureAwait(false);
+        }
+        finally { _bridgeGate.Release(); }
+    }
+
+    /// <summary>
+    /// 把上次会话持久化的 guest 偏好（<c>guest-prefs/*.xml</c>，由 <c>prefs-sync</c> 事件写来）
+    /// 回灌进 guest —— 走 <c>prefsput</c> op 写 guest 的 shared_prefs，网盘 Cookie 等
+    /// 因此能在 VM 冷启后存活。
+    /// </summary>
+    private async Task RestoreGuestPrefsAsync(CancellationToken ct)
+    {
+        try
+        {
+            var dir = Path.Combine(_workDir, "guest-prefs");
+            if (!Directory.Exists(dir)) return;
+            foreach (var f in Directory.GetFiles(dir, "*.xml"))
+            {
+                var xml = await File.ReadAllTextAsync(f, ct);
+                var req = new JsonObject
+                {
+                    ["id"] = Interlocked.Increment(ref _id),
+                    ["op"] = "prefsput",
+                    ["name"] = Path.GetFileNameWithoutExtension(f),
+                    ["xml"] = xml,
+                };
+                var resp = await RoundTripAsync(req, TimeSpan.FromSeconds(10), ct);
+                Log(resp["ok"]?.GetValue<bool>() == true
+                    ? $"guest 偏好回灌：{Path.GetFileName(f)}（{xml.Length}B）"
+                    : $"guest 偏好回灌失败 {Path.GetFileName(f)}: {resp["error"]}");
+            }
+        }
+        catch (Exception ex) { Log($"guest 偏好回灌异常: {ex.Message}"); }
+    }
+
+    /// <summary>宿主 JRE 那条路：起 java.exe 跑 bridge.Server，标准流当协议通道。</summary>
+    private async Task StartJvmBridgeAsync(CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = _javaExe,
+            // 工作目录必须是**可写**的 _workDir：桥进程启动时会把 data 目录建在相对路径
+            // 「data」下（见 bridge.Server 的 data.dir）。原先是 _bridgeDir → 安装版
+            // 直接写 Program Files 被拒。（classpath 因此改用绝对路径，见下。）
+            WorkingDirectory = _workDir,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+            StandardInputEncoding = new UTF8Encoding(false),
+            CreateNoWindow = true,
+        };
+        psi.ArgumentList.Add("-Dfile.encoding=UTF-8");
+        // TLS 握手日志（stderr → home-debug.log）：排障 spider 的出站 HTTPS 连接目标（SNI 主机名）
+        psi.ArgumentList.Add("-Djavax.net.debug=ssl:handshake");
+        // ⚠️ 必须关字节码校验：dex2jar 从 OLLVM 混淆过的 dex 还原出来的类，
+        // 经常**缺 StackMapTable**（`VerifyError: Expecting a stackmap frame at branch target N`），
+        // 校验器直接拒绝加载 → 站点整站不可用（2026-09-15 实测：原创/糯米/海绵/厂长/光影
+        // 全部栽在这上面，而它们的内容其实是好的）。JVM 21 起无法按类关闭校验，
+        // 只能在 JVM 级关掉；关掉后这类畸形类可以正常加载运行。
+        psi.ArgumentList.Add("-Xverify:none");
+        // 父进程 PID：桥里的看门狗按它自杀。Windows 上 job object 未必挂得进去
+        // （应用本身已在别的 job 里时 AssignProcessToJobObject 直接失败，实测 win32=5），
+        // 而 stdin 的写句柄会被其它子进程继承走 → EOF 也不可靠。两条都不靠时才不漏孤儿。
+        psi.ArgumentList.Add($"-Dcatclaw.ppid={Environment.ProcessId}");
+        psi.ArgumentList.Add("-cp");
+        // 绝对路径：工作目录已改为 _workDir（可写区），相对路径会解析不到 bridge.jar
+        psi.ArgumentList.Add($"{Path.Combine(_bridgeDir, "bridge.jar")};{Path.Combine(_bridgeDir, "vendor", "deps", "*")}");
+        psi.ArgumentList.Add("bridge.Server");
+        var proc = Process.Start(psi) ?? throw new InvalidOperationException("Java 桥进程启动失败");
+        Log($"桥进程已启动 pid={proc.Id}");
+        _stdin = proc.StandardInput;
+        _stdout = proc.StandardOutput;
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                string? l;
+                while ((l = proc.StandardError.ReadLine()) != null)
+                    if (l.Length > 0) Log("stderr: " + l[..Math.Min(300, l.Length)]);
+                Log("stderr 流关闭");
+            }
+            catch { }
+        });
+        _proc = proc;
+        // ⚠ 必须绑 job：.NET 在 Windows 上不会随父进程退出杀掉子进程。
+        // 此前每次关应用都留下一个 java.exe（实测一次会话 17 个），其中一个把 bridge.jar
+        // 映射住，导致改完桩 build.cmd 报 FileSystemException 重打包失败（2026-09-25）。
+        _job ??= CatClawVideo.Core.Services.KillOnCloseJob.Create();
+        if (_job is { } j && j.Attach(proc)) { /* 绑上了：应用一死内核就收走 JVM */ }
+        else Log($"桥 JVM 未能绑进 KillOnClose job（{_job?.LastError}；"
+                 + "父进程被强杀时靠桥自己的 ppid 看门狗退出）");
+
+        // 常驻读循环：请求-响应按 id 分发；桥主动上行的 UI 事件（ev 字段）回调 UiEvent
+        _ = Task.Run(ReadLoopAsync);
+    }
+
+    /// <summary>握手（两条链路共用）：ping 通了才算就绪，然后把宿主 proxy 端口下发给桥。</summary>
+    private async Task HandshakeAsync(CancellationToken ct)
+    {
+        var pong = await RoundTripAsync(new JsonObject { ["id"] = 0, ["op"] = "ping" }, TimeSpan.FromSeconds(15), ct);
+        if (!pong.ContainsKey("ok") || pong["ok"]?.GetValue<bool>() != true)
+            throw new InvalidOperationException("Java 桥握手失败");
+        Log(ArtGuestMode ? "ART guest 里的桥就绪" : "桥进程就绪");
+
+        // 下发宿主 proxy 端口：Guard 系网盘源靠 SpiderApi.getAddress/getPort 拼「云盘配置」
+        // 数据端点 URL，桥桩返回空会让 spider 内部 Gson 解析到错误文本直接炸（Expected
+        // BEGIN_OBJECT but was STRING → detailContent 整体失败，2026-09-24 实测）。
+        // 每次新桥都要重发（宿主 JRE 随进程重置；ART guest 的桥一连接一个会话）。
+        var port = _proxyPort?.Invoke() ?? 0;
+        if (port > 0)
+        {
+            var pp = await RoundTripAsync(new JsonObject { ["id"] = 0, ["op"] = "setProxyPort", ["port"] = port },
+                TimeSpan.FromSeconds(10), ct);
+            Log(pp["ok"]?.GetValue<bool>() == true ? $"已下发 proxy 端口 {port}" : $"proxy 端口下发失败: {pp["error"]}");
+        }
+    }
+
+    /// <summary>桥上行 UI 事件（ui-dialog/ui-dismiss/ui-toast）；宿主 MAUI 层订阅渲染。</summary>
+    public Action<JsonObject>? UiEvent { get; set; }
+
+    /// <summary>响应分发表：RoundTripAsync 注册、读循环按 id 完成之。</summary>
+    private readonly ConcurrentDictionary<int, TaskCompletionSource<JsonObject>> _pendingResponses = new();
+    private readonly SemaphoreSlim _stdinLock = new(1, 1);   // 仅保护 stdin 写
+
+    /// <summary>
+    /// 桥正在重置（上一次调用没回来）。1 = 重置中。
+    /// <para>为什么要有这个状态：桥的 <c>call</c> 在主循环里 <c>synchronized(LOCK)</c> 串行执行，
+    /// 一次超时说明它**还在里面跑**，后面每个请求都只能排队到自己那条超时。实测（2026-09-26）
+    /// 玩偶的 playerContent 卡 90s 期间，新6V 的 load 明明只要 2669ms，却跟着撞满 60s ——
+    /// 用户看到的就是「整个软件卡半分钟，然后满屏超时」。</para>
+    /// </summary>
+    private int _resetting;
+
+    /// <summary>桥会话代际（ResetBridge 递增）：在飞的 EnsureBridgeAsync 用它识别
+    /// 「长等待（冷启动探针）期间会话已被重置」——拿到的旧实例/链接一律作废，
+    /// 防止旧 QemuHostRuntime 被复活成孤儿 qemu（2026-09-27 多 qemu 事故）。</summary>
+    private int _bridgeEpoch;
+
+    /// <summary>会话级加载失败负缓存（站点键 → 失败原因）：命中直接快速失败，不反复烧桥。
+    /// 只记结构性失败（VerifyError/类不存在等）；桥重置时清空。</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _loadFailedSites = new();
+
+    /// <summary>
+    /// 把当前桥会话判废并后台重开：期间请求快速失败，重开后 <see cref="_loadedSites"/> 已清空，
+    /// 下一次调用会在新桥（或重启后的 ART guest）上真跑。
+    /// </summary>
+    private void ResetBridge(string why)
+    {
+        if (Interlocked.CompareExchange(ref _resetting, 1, 0) != 0) return;
+        // 代际 +1（同步、先于后台 Shutdown）：在飞的 EnsureBridgeAsync 在长等待（冷启动
+        // 探针可到分钟级）后发现自己拿的是上一代会话 → 主动放弃，绝不复活旧 VM。
+        Interlocked.Increment(ref _bridgeEpoch);
+        Log($"桥无响应（{why}）→ 重置爬虫引擎：丢掉当前桥会话，期间请求立刻报错，不再让后面的一条条排队等超时");
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                Shutdown();
+                _loadedSites.Clear();
+                _loadFailedSites.Clear();
+                Log("爬虫引擎已重置，下一次调用会重新起桥（ART guest 约 15s）");
+            }
+            catch (Exception ex)
+            {
+                Log($"桥重置失败：{ex.GetType().Name} {ex.Message}");
+            }
+            finally
+            {
+                Volatile.Write(ref _resetting, 0);
+            }
+        });
+    }
+
+    /// <summary>常驻读桥输出（JRE 的 stdout 或 ART 的 socket 流）：按 id 分发响应、按 ev 分发 UI 事件。</summary>
+    private async Task ReadLoopAsync()
+    {
+        var rd = _stdout;
+        if (rd is null) return;
+        try
+        {
+            while (true)
+            {
+                var raw = await rd.ReadLineAsync();
+                if (raw == null) break;
+                var line = raw.Trim();
+                if (line.Length == 0) continue;
+                JsonObject? obj;
+                try { obj = JsonNode.Parse(line)!.AsObject(); }
+                catch { continue; }
+
+                // 桥主动上行的 UI 事件（ui-dialog / ui-dismiss / ui-toast）
+                if (obj.ContainsKey("ev"))
+                {
+                    // prefs-sync：guest（tmpfs）的偏好落盘上行 —— 存宿主盘，下次 VM 冷启回灌
+                    if (obj["ev"]?.GetValue<string>() == "prefs-sync")
+                    {
+                        try
+                        {
+                            var pname = obj["name"]?.GetValue<string>() ?? "default";
+                            var xml = obj["xml"]?.GetValue<string>() ?? "";
+                            var dir = Path.Combine(_workDir, "guest-prefs");
+                            Directory.CreateDirectory(dir);
+                            File.WriteAllText(Path.Combine(dir, pname + ".xml"), xml);
+                            Log($"guest 偏好同步落盘：{pname}（{xml.Length}B）");
+                        }
+                        catch { }
+                    }
+                    try { UiEvent?.Invoke(obj); } catch { }
+                    continue;
+                }
+
+                var id = obj["id"]?.GetValue<int>() ?? int.MinValue;
+                if (_pendingResponses.TryRemove(id, out var tcs))
+                    _ = tcs.TrySetResult(obj);
+                else
+                    Log($"桥上行未匹配响应 id={id}: {line[..Math.Min(line.Length, 120)]}");
+            }
+        }
+        catch { }
+        Log("桥 stdout 读循环退出");
+        FailAllPending("Java 桥进程崩溃退出，引擎已自动重启——请稍候重试该站点");
+    }
+
+    /// <summary>桥进程死亡（stdout EOF）：pending 请求立即失败并触发引擎重置。
+    /// 为什么必须（2026-09-27 实测）：Guard 壳真实类初始化 SIGSEGV 带走整个桥，
+    /// load 的应答永远不会来——不清的话上层干等 60s 超时 + 4s 生死探针才报「不可用」，
+    /// UI 就是一分钟白屏；清了之后秒级报错，且下一次调用自动重新起桥。
+    /// ART 链路的 IsUp 只看 socket.Connected 与 VM 进程，桥崩后两者仍真、不会自动
+    /// 重拉，必须 ResetBridge 清态。它自带 _resetting 防重入：正常收尾/超时重置
+    /// 杀桥导致的 EOF 在这里直接 return，不会二次重置。</summary>
+    private void FailAllPending(string why)
+    {
+        foreach (var kv in _pendingResponses)
+            if (_pendingResponses.TryRemove(kv.Key, out var tcs))
+                _ = tcs.TrySetException(new InvalidOperationException(why));
+        ResetBridge("读循环退出（桥进程死亡）");
+    }
+
+    /// <summary>宿主回传对话框用户操作（which≥0=列表项，-1/-2/-3=肯定/否定/中性按钮）。</summary>
+    public async Task SendUiResultAsync(int seq, int which)
+    {
+        if (_stdin is null) return;
+        var req = new JsonObject { ["id"] = -1, ["op"] = "ui-result", ["seq"] = seq, ["which"] = which };
+        await _stdinLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await _stdin.WriteLineAsync(req.ToJsonString().AsMemory()).ConfigureAwait(false);
+            await _stdin.FlushAsync().ConfigureAwait(false);
+        }
+        finally { _stdinLock.Release(); }
+    }
+
+    /// <summary>
+    /// 读取 jar 侧 SharedPreferences（MemPrefs 全量内容）：网盘 Cookie/Token 登录态。
+    /// Guard 系网盘源的 proxyInput/do=xx 推送写它、Cloud_* 类读它——「已登录+启用中」
+    /// 对话框按它渲染状态。桥未启动返回 null。
+    /// </summary>
+    public async Task<JsonArray?> GetPrefsAsync()
+    {
+        try
+        {
+            await EnsureBridgeAsync(CancellationToken.None).ConfigureAwait(false);
+            var resp = await RoundTripAsync(new JsonObject { ["id"] = Interlocked.Increment(ref _id), ["op"] = "get-prefs" },
+                TimeSpan.FromSeconds(10), CancellationToken.None).ConfigureAwait(false);
+            if (resp["ok"]?.GetValue<bool>() != true) return null;
+            return resp["result"]?.GetValue<string>() is { } s ? JsonNode.Parse(s) as JsonArray : null;
+        }
+        catch (Exception ex)
+        {
+            Log($"get-prefs 失败: {ex.Message}");
+            return null;
+        }
+    }
+
+    private async Task<JsonObject> RoundTripAsync(JsonObject req, TimeSpan timeout, CancellationToken ct,
+        bool resetOnTimeout = true)
+    {
+        var expectId = req["id"]?.GetValue<int>()
+            ?? throw new InvalidOperationException("桥请求缺少 id");
+        if (Volatile.Read(ref _resetting) != 0)
+            throw new InvalidOperationException("爬虫引擎正在重置（上一次调用无响应），请稍后重试");
+        var tcs = new TaskCompletionSource<JsonObject>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pendingResponses[expectId] = tcs;
+        try
+        {
+            // 先注册再写（响应可能在写返回前就到）——读循环按 id 完成之
+            await _stdinLock.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                await _stdin!.WriteLineAsync(req.ToJsonString().AsMemory(), ct).ConfigureAwait(false);
+                await _stdin.FlushAsync(ct).ConfigureAwait(false);
+            }
+            finally { _stdinLock.Release(); }
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(timeout);
+            try { return await tcs.Task.WaitAsync(timeoutCts.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                // 握手那条 ping 不触发重置：它本来就是"桥还没起来"的信号，交给连接流程自己收尾。
+                var op = req["op"]?.GetValue<string>() ?? "";
+                if (op != "ping" && op != "exit" && resetOnTimeout)
+                {
+                    // 先探桥生死再决定重置：call 已异步化（CALL_POOL），ping 能穿透慢 call——
+                    // ping 得通说明桥活着、只是该调用慢（实测聚合网盘源 detailContent 71s 才完成），
+                    // 杀桥重置（15s 起桥 + 全站重载）纯属双输；探针也无应答才是真死，走重置。
+                    if (await PingBridgeAliveAsync(TimeSpan.FromSeconds(4)).ConfigureAwait(false))
+                        throw new TimeoutException(
+                            $"线路爬虫（{InFlightTag}）{timeout.TotalSeconds:F0}s 无响应，但桥仍存活——该线路服务端极慢，建议换线路（id={expectId}）");
+                    ResetBridge($"op={op} id={expectId}{InFlightTag} 在 {timeout.TotalSeconds:F0}s 内没回来且探针无应答");
+                }
+                throw new TimeoutException(BuildTimeoutMessage(op, timeout, expectId));
+            }
+        }
+        finally { _pendingResponses.TryRemove(expectId, out _); }
+    }
+
+    /// <summary>正在桥上执行的调用（site.method）：超时/重置日志能直接指出卡死的是谁。
+    /// 典型现场（2026-09-26 实测）：聚合网盘源的 detailContent 串行探测阿里/夸克/UC/百度等
+    /// 网盘接口，其中一个挂死 → 桥全局锁被占 → 整桥 90s 无响应。</summary>
+    private volatile string _inFlight = "";
+
+    private string InFlightTag => _inFlight.Length > 0 ? $"（{_inFlight}）" : "";
+
+    /// <summary>超时报错要给用户出路：call 超时几乎都是爬虫内部对网盘 API 的请求挂死
+    /// （桥全局锁被占），引擎已自动重置，剩下的动作是换线路；其余 op 保持原口径。</summary>
+    private string BuildTimeoutMessage(string op, TimeSpan timeout, int id)
+    {
+        if (op != "call") return $"Java 桥响应超时（{timeout.TotalSeconds:F0}s，id={id}）";
+        var what = _inFlight.Length > 0 ? $"线路爬虫（{_inFlight}）" : "线路爬虫";
+        return $"{what} {timeout.TotalSeconds:F0}s 无响应——常见于网盘接口被限流或挂起；引擎已自动重置，请换其它线路或稍后重试（id={id}）";
+    }
+
+    private async Task<string> CallAsync(VodSiteInfo site, string method, JsonArray args, CancellationToken ct,
+        TimeSpan? timeout = null, bool resetOnTimeout = true)
+    {
+        await EnsureBridgeAsync(ct);
+        var jar = await EnsureConvertedJarAsync(site, ct);
+        await EnsureSiteLoadedAsync(site, jar, ct);
+        _lastSite = site;   // spider 稍后发起的 /proxy 回调不带 siteKey，靠它定位
+
+        _inFlight = $"{site.Key}.{method}";
+        try
+        {
+            var req = new JsonObject
+            {
+                ["id"] = Interlocked.Increment(ref _id),
+                ["op"] = "call",
+                ["site"] = site.Key,
+                ["method"] = method,
+                ["args"] = args,
+            };
+            var resp = await RoundTripAsync(req, timeout ?? TimeSpan.FromSeconds(90), ct, resetOnTimeout);
+            if (resp["ok"]?.GetValue<bool>() != true)
+                throw new InvalidOperationException($"spider {site.Key}.{method}: {resp["error"]}");
+            return resp["result"]?.GetValue<string>() ?? "{}";
+        }
+        finally { _inFlight = ""; }
+    }
+
+    // ═══════════ ISpiderProxyRuntime（宿主本地 /proxy 回调 → 桥 proxy op） ═══════════
+
+    /// <summary>
+    /// 处理宿主本地 <c>/proxy?…</c> 回调：转给桥进程的 <c>proxy</c> op，由爬虫自身的
+    /// <c>proxy(Map)</c> 产生响应体（TVBox <c>ApiConfig.proxyLocal</c> 语义）。
+    /// <para>Guard 系网盘源（csp_MDriveGuard 等）在 detailContent 内部就会请求
+    /// <c>do=config</c> 端点取「云盘配置」JSON——此前桌面桥没有 proxy 通道，宿主回 502 文本，
+    /// 爬虫内 Gson 解析炸 <c>Expected BEGIN_OBJECT but was STRING</c> → 整个 detailContent 失败，
+    /// 用户点「登入自己网盘」进的是播放页而非配置页（2026-09-24 实测）。</para>
+    /// <para>响应体经临时文件回传（对齐 Android 端 SpiderProxyBridge：stdout 每行一条 JSON，
+    /// body 内联会被转义/体积问题拖垮）；无法处理返回 null（调用方回 502）。</para>
+    /// </summary>
+    public async Task<(int Status, string Mime, byte[]? Body)?> ProxyAsync(
+        IReadOnlyDictionary<string, string> query, CancellationToken ct = default)
+    {
+        // 按 siteKey 定位站点（SpiderProxyServer 分派时携带）；spider 自己发起的请求
+        // （如 detailContent 内部的 do=config）不带该参数 → 回退最近调用站点（对齐 Dex 版 _lastUsed）
+        var key = query.GetValueOrDefault("siteKey");
+        var site = string.IsNullOrEmpty(key) ? null : SiteRegistry.Find(key);
+        site ??= _lastSite;
+        if (site is null)
+        {
+            Log("proxy 回调：siteKey 缺失且无最近站点");
+            return null;
+        }
+        try
+        {
+            await EnsureBridgeAsync(ct).ConfigureAwait(false);
+            var jarPath = await EnsureConvertedJarAsync(site, ct).ConfigureAwait(false);
+            await EnsureSiteLoadedAsync(site, jarPath, ct).ConfigureAwait(false);
+
+            // ART guest：爬虫自带的 /proxy 就在 guest 里跑着（桥的 Art.serveProxy），宿主经 slirp
+            // 隧道直接要字节。行协议那条 proxy op 靠 outFile 回传响应体，而 outFile 是 Windows 路径，
+            // guest 里的 Linux 进程写出来的东西宿主读不到（2026-09-26 实测）。
+            if (ArtGuestMode && _art?.ProxyBase is { } tunnel)
+                return await ProxyViaTunnelAsync(tunnel, site.Key, query, ct).ConfigureAwait(false);
+
+            var q = new JsonObject();
+            foreach (var kv in query) q[kv.Key] = kv.Value ?? "";
+            var outPath = Path.Combine(Path.GetTempPath(), $"spproxy-{Guid.NewGuid():N}.bin");
+            var req = new JsonObject
+            {
+                ["id"] = Interlocked.Increment(ref _id),
+                ["op"] = "proxy",
+                ["site"] = site.Key,
+                ["query"] = q,
+                ["outFile"] = outPath,
+            };
+            var resp = await RoundTripAsync(req, TimeSpan.FromSeconds(60), ct).ConfigureAwait(false);
+            if (resp["ok"]?.GetValue<bool>() != true)
+            {
+                Log($"proxy 回调失败（do={query.GetValueOrDefault("do")}）: {resp["error"]}");
+                return ((int)502, "text/plain", (byte[]?)null);
+            }
+            var head = resp["result"]?.GetValue<string>() ?? "";
+            var parts = head.Split('|');
+            if (parts.Length != 3 || !int.TryParse(parts[0], out var status))
+            {
+                Log($"proxy 回调：返回头异常 {head}");
+                return ((int)502, "text/plain", (byte[]?)null);
+            }
+            byte[]? body = null;
+            var len = long.TryParse(parts[2], out var l) ? l : 0;
+            if (len > 0 && File.Exists(outPath)) body = await File.ReadAllBytesAsync(outPath, ct).ConfigureAwait(false);
+            try { if (File.Exists(outPath)) File.Delete(outPath); } catch { }
+            Log($"proxy 回调 ok：do={query.GetValueOrDefault("do")} → {status} {parts[1]} {body?.Length ?? 0}B");
+            return (status, parts[1], body);
+        }
+        catch (Exception ex)
+        {
+            Log($"proxy 回调异常：{ex.GetType().Name}: {ex.Message}");
+            return ((int)502, "text/plain", (byte[]?)null);
+        }
+    }
+
+    /// <summary>宿主→ART guest 的 /proxy 隧道客户端（一次请求一次应答，超时按爬虫取流的慢样子给）。</summary>
+    private static readonly HttpClient TunnelHttp =
+        new(new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(5) })
+        { Timeout = TimeSpan.FromSeconds(120) };
+
+    /// <summary>
+    /// 把爬虫的 proxy 回调原样交给 guest 里那个由壳自己应答的服务
+    /// （<c>bridge.Art.serveProxy</c> 起的，内部就是 jar 的 <c>Proxy.proxy → Init.proxyInvoke</c>）。
+    /// </summary>
+    private async Task<(int Status, string Mime, byte[]? Body)?> ProxyViaTunnelAsync(
+        string baseUrl, string siteKey, IReadOnlyDictionary<string, string> query, CancellationToken ct)
+    {
+        var q = new Dictionary<string, string>(query) { ["site"] = siteKey };
+        var url = baseUrl + "/proxy?" + string.Join("&",
+            q.Select(kv => Uri.EscapeDataString(kv.Key) + "=" + Uri.EscapeDataString(kv.Value ?? "")));
+        using var resp = await TunnelHttp.GetAsync(url, ct).ConfigureAwait(false);
+        var body = await resp.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+        Log($"proxy 隧道：{siteKey} do={query.GetValueOrDefault("do")} → {(int)resp.StatusCode} {body.Length}B");
+        return ((int)resp.StatusCode,
+            resp.Content.Headers.ContentType?.MediaType ?? "text/plain", body);
+    }
+
+    /// <summary>
+    /// 桥侧要加载的类名：默认取 api 去掉 <c>csp_</c> 前缀；
+    /// 换了 jar/解了 Guard 壳后以 <see cref="_nonGuardClass"/> 的映射为准。
+    /// </summary>
+    private string classNameOf(VodSiteInfo site) =>
+        _nonGuardClass.TryGetValue(site.Key, out var alt)
+            ? alt
+            : site.Api.StartsWith("csp_", StringComparison.OrdinalIgnoreCase) ? site.Api[4..] : site.Api;
+
+    private async Task EnsureSiteLoadedAsync(VodSiteInfo site, string jarPath, CancellationToken ct)
+    {
+        if (_loadedSites.TryGetValue(site.Key, out _)) return;
+        // 会话级负缓存：结构性加载失败（VerifyError 等，重试也不会好）不再反复烧桥——
+        // 实测 Wogg/Douban 每轮搜索都要白跑 5~7s 的 load。重置引擎时清空，给重试机会。
+        if (_loadFailedSites.TryGetValue(site.Key, out var failedWhy))
+            throw new InvalidOperationException($"站点 {site.Key} 此前加载失败，本轮跳过：{failedWhy}");
+        var className = classNameOf(site);
+        var req = new JsonObject
+        {
+            ["id"] = Interlocked.Increment(ref _id),
+            ["op"] = "load",
+            ["site"] = site.Key,
+            ["className"] = className,
+            ["ext"] = await PrepareExtAsync(site, ct),
+            ["jars"] = new JsonArray(jarPath),
+        };
+        // ART guest：桥在 guest 里，rawJar 由 ART 直接吃（classes.dex）、壳自己 System.load()
+        // 那个 arm64 ftyguard so 并解出真 dex（2026-09-25 实测：装载 3272ms、homeContent 183ms）。
+        // ⇒ 不下发 shellJar/realJar 这两个宿主转换产物，也不启动独立 Guard VM。
+        if (ArtGuestMode)
+        {
+            // guest 读不到宿主的盘：换成宿主 jar 服务的 URL，桥里 Art.materialize() 取回归档
+            var raw = _rawJars.TryGetValue(site.Key, out var rp) && File.Exists(rp) ? rp : jarPath;
+            // 纯 .class jar（无 classes.dex，如 fty.jar 一族）guest 的 ART 吃不了：先 d8 转 dex 再供
+            var serve = IsPureClassJar(raw) ? await EnsureDexJarAsync(raw, ct) : raw;
+            _jarServer ??= new CatClawVideo.Core.Services.QemuGuest.ArtJarServer(_log);
+            var url = _jarServer.UrlFor(Path.GetFileName(serve).Replace("raw-", "").Replace(".jar", ""), serve);
+            req["jars"] = new JsonArray(url);
+            req["rawJar"] = url;
+            Log($"{site.Name}: ART guest 取 jar ← {url}");
+        }
+        // 壳框架模式（Guard 包，宿主 JRE 那条路）：className 用壳名（MyDriveGuard），壳/原始/解壳三 jar 下发——
+        // 壳框架的「已登录+启用中」对话框/扫码/网盘管理原生运行，UI 经 UiBridge 上行宿主渲染
+        else if (_convertedJars.TryGetValue(site.Key, out _) &&
+            _shellJars.TryGetValue(site.Key, out var shellJar) && File.Exists(shellJar))
+        {
+            req["className"] = className.EndsWith("Guard", StringComparison.Ordinal) ? className : className + "Guard";
+            req["shellJar"] = shellJar;
+            req["rawJar"] = _rawJars.TryGetValue(site.Key, out var rj) ? rj : "";
+            req["realJar"] = jarPath;
+
+            // 宿主 JRE 那条路才需要独立 Guard VM（2026-09-24 拍板架构）：解密/签名/proxyInvoke 走
+            // Guard VM 里的 ftyguard so；VM 就绪才下发 guardPort，缺失则桥的 GuardSession 直接报错
+            // （unidbg 已退出运行时，2026-09-25）。
+            if (!string.IsNullOrEmpty(req["rawJar"]?.GetValue<string>()) &&
+                CatClawVideo.Core.Services.QemuGuest.GuardRuntime.Engine is { } guard)
+            {
+                try
+                {
+                    var rawJarPath = req["rawJar"]!.GetValue<string>()!;
+                    var jarHash = Convert.ToHexString(
+                        SHA256.HashData(Encoding.UTF8.GetBytes(site.Jar?.Split(";md5;")[0] ?? site.Jar ?? "")))[..24].ToLowerInvariant();
+                    guard.RegisterJar(jarHash, rawJarPath);
+                    if (await guard.EnsureLoadedAsync(jarHash, ct).ConfigureAwait(false))
+                    {
+                        req["guardPort"] = CatClawVideo.Core.Services.QemuGuest.QemuGuardEngine.GuardPort;
+                        Log($"Guard QEMU 通道就绪（jar {jarHash}，端口 {req["guardPort"]}）");
+                    }
+                    else
+                    {
+                        Log("Guard QEMU 通道未就绪（guardPort 不下发，ARM 调用将明确报错）");
+                    }
+                }
+                catch (Exception gex)
+                {
+                    Log($"Guard QEMU 通道异常（guardPort 不下发，ARM 调用将明确报错）: {gex.Message}");
+                }
+            }
+        }
+        var resp = await RoundTripAsync(req, TimeSpan.FromSeconds(60), ct);
+        if (resp["ok"]?.GetValue<bool>() != true)
+        {
+            // 加载失败必须留痕：此前只 log 成功分支，导致「站点没反应」无从查因
+            Log($"站点 {site.Key} 加载失败（类名 {className}，jar {Path.GetFileName(jarPath)}）: {resp["error"]}");
+            // ⚠ 壳框架模式失败（壳 dex 的 OLLVM 混淆代码在桌面 JVM 有未桩化的运行时依赖，
+            //   如 merge.Ku 的解密器 NPE）→ **自动降级**真实类模式（去 Guard 后缀 + 解壳 jar）：
+            //   壳框架的弹窗/扫码虽丢失，但站点本体恢复可用（2026-09-24 止损）。
+            if (req.ContainsKey("shellJar"))
+            {
+                _shellJars.TryRemove(site.Key, out _);
+                _rawJars.TryRemove(site.Key, out _);
+                _loadedSites.TryRemove(site.Key, out _);
+                var realName = className.EndsWith("Guard", StringComparison.Ordinal)
+                    ? className[..^"Guard".Length] : className;
+                var req2 = new JsonObject
+                {
+                    ["id"] = Interlocked.Increment(ref _id),
+                    ["op"] = "load",
+                    ["site"] = site.Key,
+                    ["className"] = realName,
+                    ["ext"] = PrepareExtAsync(site, ct).GetAwaiter().GetResult(),
+                    ["jars"] = new JsonArray(jarPath),
+                };
+                var resp2 = await RoundTripAsync(req2, TimeSpan.FromSeconds(60), ct);
+                if (resp2["ok"]?.GetValue<bool>() == true)
+                {
+                    _loadedSites[site.Key] = true;
+                    Log($"站点 {site.Key} 已降级为真实类模式加载（壳框架不可用）");
+                    return;
+                }
+                Log($"站点 {site.Key} 真实类降级也失败: {resp2["error"]}");
+            }
+            _loadFailedSites[site.Key] = resp["error"]?.GetValue<string>() ?? "";
+            throw new InvalidOperationException($"spider {site.Key} 加载失败: {resp["error"]}");
+        }
+        _loadedSites[site.Key] = true;
+        _loadFailedSites.TryRemove(site.Key, out _);
+        Log($"站点 {site.Key} 已加载");
+    }
+
+    // ═══════════ jar 转换管线 ═══════════
+
+    private async Task<string> EnsureConvertedJarAsync(VodSiteInfo site, CancellationToken ct)
+    {
+        if (_convertedJars.TryGetValue(site.Key, out var cached) && File.Exists(cached))
+        {
+            // 缓存复用：壳框架 jar 按命名规则推断（ConvertJarAsync 已转换过则文件在）
+            if (!_shellJars.ContainsKey(site.Key) && !string.IsNullOrEmpty(site.Jar))
+            {
+                var h = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(site.Jar.Split(";md5;")[0])))[..24].ToLowerInvariant();
+                var sh = Path.Combine(_convertedDir, h + "-shell.jar");
+                if (File.Exists(sh))
+                {
+                    _shellJars[site.Key] = sh;
+                    _rawJars[site.Key] = Path.Combine(_convertedDir, "raw-" + h + ".jar");
+                }
+            }
+            return cached;
+        }
+
+        var jarUrl = site.Jar ?? "";
+        var semi = jarUrl.IndexOf(";md5;", StringComparison.OrdinalIgnoreCase);
+        var expectMd5 = semi > 0 ? jarUrl[(semi + 5)..].Trim() : null;
+        if (semi > 0) jarUrl = jarUrl[..semi];
+        if (string.IsNullOrEmpty(jarUrl))
+            throw new InvalidOperationException($"站点 {site.Name} 缺少 spider jar 地址");
+
+        var configured = site.Api.StartsWith("csp_", StringComparison.OrdinalIgnoreCase) ? site.Api[4..] : site.Api;
+
+        var conv = await ConvertJarAsync(jarUrl, expectMd5, ct, null, downloadOnly: ArtGuestMode);
+        if (conv is { } ok)
+        {
+            // Guard 外壳类名带 Guard 后缀，真实 dex 里不带（DouDouGuard → DouDou）。
+            // 判定依据必须是「dex 里实际存在哪个类」，不能靠「原包是否 IsGuarded」推断 ——
+            // 离线导入/复用手工解好的产物时，那份 raw 已经不含 .so/.guard，IsGuarded 会误判成
+            // 非 Guard 包，于是按 DouDouGuard 去加载 → 必然 ClassNotFoundException（实测踩过）。
+            // ⚠ 壳框架模式（shellJar 可用）**保留 Guard 名**：壳框架内部经 DexNative 桩取真实类，
+            //   其「已登录+启用中」对话框/扫码 UI 只在壳框架里——去掉后缀就丢了（2026-09-24）。
+            if (configured.EndsWith("Guard", StringComparison.Ordinal))
+            {
+                var hasShell = ok.ShellJar is not null;
+                var real = configured[..^"Guard".Length];
+                // 纯 .class jar 的类按 zip 条目名查（JarHasClass 搜 dex 字节，对它恒 false）
+                bool ClassExists(string cn) => ok.DexSource is { } src
+                    && (IsPureClassJar(src) ? JarHasClassFile(src, cn) : JarHasClass(src, cn));
+                if (!hasShell && !ClassExists(configured) && ClassExists(real))
+                {
+                    _nonGuardClass[site.Key] = real;
+                    Log($"{site.Name}: 真实类名 {configured} → {real}");
+                }
+                if (hasShell)
+                {
+                    _shellJars[site.Key] = ok.ShellJar;
+                    if (ok.RawJar is { } rj) _rawJars[site.Key] = rj;
+                    Log($"{site.Name}: 壳框架模式（{Path.GetFileName(ok.ShellJar)}）");
+                }
+            }
+            _convertedJars[site.Key] = ok.Path;
+            // ART 模式：ok.Path 就是原始 jar（没转换），后面的 load 请求要拿它喂 guest
+            if (ArtGuestMode) _rawJars[site.Key] = ok.Path;
+            return ok.Path;
+        }
+
+        // ── 解壳不可用/失败：换同族非 Guard 构建 ──
+        // 非 Guard 版里真实类名同样不带 Guard 后缀（SixVGuard → SixV）。
+        var alt = configured.EndsWith("Guard", StringComparison.Ordinal)
+            ? configured[..^"Guard".Length]
+            : configured;
+        Log($"{site.Name} 的 spider jar 是 Guard 加固包且未能解壳；改试非 Guard 同族 jar（目标类 {alt}）…");
+
+        foreach (var fb in NonGuardFallbackJars)
+        {
+            var c = await ConvertJarAsync(fb, null, ct, alt);
+            if (c is null) continue;
+            _nonGuardClass[site.Key] = alt;
+            _convertedJars[site.Key] = c.Value.Path;
+            Log($"{site.Name}: 已改用非 Guard jar（{fb}），类名 {configured} → {alt}");
+            return c.Value.Path;
+        }
+
+        throw new NotSupportedException(
+            $"{site.Name} 的 spider jar 是 Guard 加固包，仅 ART guest 能解壳（当前不可用）且未找到提供 {alt} 的非 Guard 替代 jar");
+    }
+
+    /// <summary>
+    /// 一次 jar 转换的结果。
+    /// <para><paramref name="DexSource"/> 是**含 classes*.dex 的那份 jar**（普通包=下载原件，
+    /// Guard 包=解壳产物）；调用方据此查真实类名。为 null 表示 raw 文件缺失、无法查证。</para>
+    /// </summary>
+    /// <summary>Path=真实类转换产物；DexSource=转换输入（解壳产物/原始 jar）；RawJar=原始 Guard jar（含解密 so，壳框架用）；ShellJar=壳 dex 转换产物（壳框架类）。</summary>
+    private readonly record struct JarConversion(string Path, string? DexSource, string? RawJar = null, string? ShellJar = null);
+
+    // ═══════════ 纯 .class jar 的 d8 预转换（ART guest 专用）═══════════
+
+    private static string? _d8JarPath;
+    private static string? _androidJarPath;
+    private readonly ConcurrentDictionary<string, string> _dexJars = new();
+
+    /// <summary>
+    /// jar 里只有 .class 没有 .dex —— TVBox 生态的「纯 java 构建」（fty.jar 一族）。
+    /// guest 的 ART 只吃 dex，这类 jar 必须先经 d8 转换才能进 guest。
+    /// </summary>
+    private static bool IsPureClassJar(string jarPath)
+    {
+        try
+        {
+            bool hasClass = false;
+            using var zip = System.IO.Compression.ZipFile.OpenRead(jarPath);
+            foreach (var e in zip.Entries)
+            {
+                var n = e.FullName;
+                if (n.EndsWith(".dex", StringComparison.OrdinalIgnoreCase)) return false;
+                if (n.EndsWith(".class", StringComparison.OrdinalIgnoreCase)) hasClass = true;
+            }
+            return hasClass;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>Android SDK 的 d8（<c>build-tools/*/lib/d8.jar</c>，版本取最高）与配套 android.jar。</summary>
+    private static string? FindSdkTool(out string? androidJar)
+    {
+        androidJar = null;
+        var roots = new List<string>();
+        void AddRoot(string? p) { if (!string.IsNullOrEmpty(p) && Directory.Exists(p)) roots.Add(p); }
+        AddRoot(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Android", "Sdk"));
+        AddRoot(Environment.GetEnvironmentVariable("ANDROID_HOME"));
+        AddRoot(Environment.GetEnvironmentVariable("ANDROID_SDK_ROOT"));
+        AddRoot(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Android", "android-sdk"));
+        foreach (var root in roots)
+        {
+            var bt = Path.Combine(root, "build-tools");
+            if (!Directory.Exists(bt)) continue;
+            string? best = null;
+            Version? bestV = null;
+            foreach (var d in Directory.GetDirectories(bt))
+            {
+                var cand = Path.Combine(d, "lib", "d8.jar");
+                if (!File.Exists(cand)) continue;
+                var v = Version.TryParse(Path.GetFileName(d), out var pv) ? pv : new Version(0, 0);
+                if (bestV is null || v > bestV) { best = cand; bestV = v; }
+            }
+            if (best is null) continue;
+            var pf = Path.Combine(root, "platforms");
+            if (Directory.Exists(pf))
+            {
+                androidJar = Directory.GetDirectories(pf)
+                    .Select(d => (Path: d, Ver: int.TryParse(Path.GetFileName(d)["android-".Length..], out var n) ? n : -1))
+                    .Where(x => x.Ver > 0)
+                    .OrderByDescending(x => x.Ver)
+                    .Select(x => Path.Combine(x.Path, "android.jar"))
+                    .FirstOrDefault(File.Exists);
+            }
+            return best;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// 纯 .class jar → dex jar（d8），产物缓存在 converted 目录（按内容哈希命名，跨启动复用）。
+    /// <para>guest 的 ART 吃不了 .class 字节码；转换产物的 android.* 引用在 guest 里经
+    /// 桩优先链（ui_stub.dex）解析到 JRE 同款桩，UI/偏好行为与宿主 JRE 链路一致。</para>
+    /// <para>⚠️ d8 直接吃 jar 输入（不解包）：dex2jar 产物里有仅大小写不同的重复条目，
+    /// 解到 Windows 大小写不敏感的盘上会互相覆盖丢类；类数超 64K 时 d8 会产出
+    /// classes2.dex…，重打包时全部收进去。</para>
+    /// </summary>
+    private async Task<string> EnsureDexJarAsync(string rawJar, CancellationToken ct)
+    {
+        if (_dexJars.TryGetValue(rawJar, out var hit) && File.Exists(hit)) return hit;
+
+        var java = FindJavaExe() ?? throw new InvalidOperationException(
+            "ART guest 加载纯 .class jar 需要 java 运行时（本机未找到 java.exe）");
+        _d8JarPath ??= FindSdkTool(out _androidJarPath);
+        var d8 = _d8JarPath ?? throw new InvalidOperationException(
+            "ART guest 加载纯 .class jar 需要 Android build-tools 的 d8（未找到 build-tools/*/lib/d8.jar）");
+
+        var h = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(rawJar))).ToLowerInvariant()[..24];
+        var outJar = Path.Combine(_convertedDir, h + "-d8.jar");
+        if (File.Exists(outJar)) return _dexJars[rawJar] = outJar;
+
+        var work = Path.Combine(_convertedDir, "d8-" + h);
+        var outDir = Path.Combine(work, "out");
+        Directory.CreateDirectory(outDir);
+        try
+        {
+            var t0 = Environment.TickCount64;
+            var psi = new ProcessStartInfo
+            {
+                FileName = java,
+                UseShellExecute = false,
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
+                CreateNoWindow = true,
+            };
+            psi.ArgumentList.Add("-Xmx1g");
+            psi.ArgumentList.Add("-cp");
+            psi.ArgumentList.Add(d8);
+            psi.ArgumentList.Add("com.android.tools.r8.D8");
+            psi.ArgumentList.Add("--min-api");
+            psi.ArgumentList.Add("28");
+            psi.ArgumentList.Add("--release");
+            psi.ArgumentList.Add("--output");
+            psi.ArgumentList.Add(outDir);
+            psi.ArgumentList.Add(rawJar);
+            if (!string.IsNullOrEmpty(_androidJarPath))
+            {
+                psi.ArgumentList.Add("--lib");
+                psi.ArgumentList.Add(_androidJarPath);
+            }
+
+            Log($"d8 转换（{Path.GetFileName(rawJar)}，{new FileInfo(rawJar).Length / 1024}KB）…");
+            using var p = Process.Start(psi) ?? throw new InvalidOperationException("d8 进程启动失败");
+            var err = await p.StandardError.ReadToEndAsync(ct);
+            await p.WaitForExitAsync(ct);
+            if (p.ExitCode != 0)
+                throw new InvalidOperationException(
+                    $"d8 失败（exit {p.ExitCode}）: {err[..Math.Min(err.Length, 2000)]}");
+
+            // d8 可能按 64K 限制拆多个 dex（classes.dex/classes2.dex/...），全部收进输出 jar
+            var dexFiles = Directory.GetFiles(outDir, "*.dex");
+            if (dexFiles.Length == 0) throw new InvalidOperationException("d8 没产出任何 dex");
+            using (var outZip = System.IO.Compression.ZipFile.Open(outJar, System.IO.Compression.ZipArchiveMode.Create))
+            {
+                foreach (var df in dexFiles)
+                {
+                    var entry = outZip.CreateEntry(Path.GetFileName(df), System.IO.Compression.CompressionLevel.Optimal);
+                    using var es = entry.Open();
+                    using var src = File.OpenRead(df);
+                    await src.CopyToAsync(es, ct);
+                }
+            }
+            Log($"d8 完成：{dexFiles.Length} 个 dex → {Path.GetFileName(outJar)}"
+                + $"（{(new FileInfo(outJar).Length / 1024)}KB，{Environment.TickCount64 - t0}ms）");
+            return _dexJars[rawJar] = outJar;
+        }
+        finally
+        {
+            try { Directory.Delete(work, recursive: true); } catch { }
+        }
+    }
+
+    /// <summary>
+    /// 下载 → 校验 → Guard 解壳 → dex2jar 转换。
+    /// <para>返回转换后的 java jar；**返回 null 表示这个 jar 在本平台不可用**</para>
+    /// （Guard 且解壳失败/解壳器缺失，或 <paramref name="requireClass"/> 指定的类不在其中），
+    /// 由调用方决定换哪个 jar —— 用 null 而不是抛异常，是为了让「换 jar」成为正常流程而不是错误路径。</para>
+    /// </summary>
+    /// <param name="downloadOnly">ART guest 模式：<b>只取原始 jar</b>，不做解壳也不做 dex2jar
+    /// —— 壳在 guest 里由真 ART + arm64 so 自己解，宿主这两步纯属白费（2026-09-25 实测）。</param>
+    /// <summary>下载 spider jar 到 <paramref name="rawPath"/>（订阅里常见「伪装成 jpg」的走私）。</summary>
+    private async Task FetchRawJarAsync(string rawPath, string jarUrl, string? expectMd5, CancellationToken ct)
+    {
+        Log($"下载 spider jar: {jarUrl[..Math.Min(80, jarUrl.Length)]}");
+        using var resp = await _http.GetAsync(jarUrl, ct);
+        resp.EnsureSuccessStatusCode();
+        var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
+        // 伪装 jpg：剥前导字节定位 PK
+        for (int i = 0; i + 1 < bytes.Length && i < 4096; i++)
+            if (bytes[i] == 0x50 && bytes[i + 1] == 0x4B) { if (i > 0) bytes = bytes[i..]; break; }
+
+        if (expectMd5 is not null)
+        {
+            var actual = Convert.ToHexString(MD5.HashData(bytes)).ToLowerInvariant();
+            if (!actual.Equals(expectMd5, StringComparison.OrdinalIgnoreCase))
+                Log($"jar md5 不匹配（期望 {expectMd5} 实际 {actual}）");
+        }
+        await File.WriteAllBytesAsync(rawPath, bytes, ct);
+    }
+
+    private async Task<JarConversion?> ConvertJarAsync(string jarUrl, string? expectMd5, CancellationToken ct,
+        string? requireClass, bool downloadOnly = false)
+    {
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(jarUrl)))[..24].ToLowerInvariant();
+        var rawPath = Path.Combine(_convertedDir, "raw-" + hash + ".jar");
+        var outPath = Path.Combine(_convertedDir, hash + "-java.jar");
+        // 转换产物必须落**可写目录**（_convertedDir = %APPDATA%\...\javabridge\converted）。
+        // 原先写 _bridgeDir/converted：安装版是 Program Files，创建即被拒
+        // （2026-09-19 用户实测报错原文：Access to the path '...\JavaBridge\converted' is denied.）
+        Directory.CreateDirectory(_convertedDir);
+
+        // 已转换过：但**仍要按需校验类是否存在** —— 同一个 jar 对不同站点可能「有的类在、有的不在」
+        // （实测：非 Guard fty.jar 有 SixV 却没有 JPJ）。直接用缓存会让缺失的类漏到 load 阶段，
+        // 报成 ClassNotFoundException，掩盖「该站无替代实现」这个真实结论。
+        if (File.Exists(outPath) && !downloadOnly)
+        {
+            // 查类名要查**含 classes.dex 的那份**：Guard 包的 raw 只有外壳 stub，
+            // 真实类在解壳产物里（复用缓存时同样适用）
+            var src = File.Exists(rawPath) && IsGuarded(rawPath)
+                ? Path.Combine(_convertedDir, "raw-" + hash + "-unpacked.jar")
+                : rawPath;
+            if (!File.Exists(src)) src = File.Exists(rawPath) ? rawPath : null;
+            if (requireClass is not null && src is not null && !JarHasClass(src, requireClass))
+            {
+                Log($"缓存 jar 不含类 {requireClass}: {Path.GetFileName(outPath)}");
+                return null;
+            }
+            // 缓存命中也要留痕：此前静默返回，遇到「没下载没解壳却又没反应」时无从查因
+            Log($"复用已转换 jar: {Path.GetFileName(outPath)}");
+            var cachedShell = await EnsureShellJarAsync(rawPath, hash, ct).ConfigureAwait(false);
+            return new JarConversion(outPath, src,
+                File.Exists(rawPath) ? rawPath : null,
+                cachedShell);
+        }
+
+        if (!File.Exists(rawPath)) await FetchRawJarAsync(rawPath, jarUrl, expectMd5, ct).ConfigureAwait(false);
+        if (downloadOnly) return new JarConversion(rawPath, rawPath, rawPath, null);
+
+        // ── 纯 .class jar（无 classes.dex，如 dex2jar 解壳产物）：JRE 的 URLClassLoader 直接吃
+        //    .class，不需要也不能过 dex2jar（对 .class 输入必炸，2026-09-26 seed 对照实验实测）。
+        //    类存在性按 zip 条目名查（JarHasClass 搜的是 dex 字节，纯 .class 灌不进去）。
+        if (IsPureClassJar(rawPath))
+        {
+            if (requireClass is not null && !JarHasClassFile(rawPath, requireClass))
+            {
+                Log($"跳过不含类 {requireClass} 的纯 .class jar: {Path.GetFileName(rawPath)}");
+                return null;
+            }
+            Log($"纯 .class jar 直接使用（跳过 dex2jar）: {Path.GetFileName(rawPath)}");
+            return new JarConversion(rawPath, rawPath, rawPath, null);
+        }
+
+        // ── Guard 加固（assets 下有 .so native 解密器 + .guard 密文）：只有 ART guest 能解 ──
+        string? shellJar = null;
+        var dexSource = rawPath;
+        if (IsGuarded(rawPath))
+        {
+            // Guard 加固包**只有 QEMU guest 能解**（2026-09-26 退役 unidbg 离线解壳器）：
+            // 它自建一套 Android 桩，结果"看着对而语义不同"，随包还多占 33MB。
+            // ART 模式下这段根本到不了（ConvertJarAsync 用 downloadOnly 提前返回），
+            // 真到了说明本机没开 guest —— 明确说清楚，别再静默退回非 Guard 同族 jar。
+            if (!ArtGuestMode)
+            {
+                Log($"跳过 Guard 加固 jar：解壳只能在 ART guest 里做（缺 art_initrd.gz 或设了 CATCLAW_NO_ART=1）: {Path.GetFileName(rawPath)}");
+                return null;
+            }
+        }
+
+        if (requireClass is not null && !JarHasClass(dexSource, requireClass))
+        {
+            Log($"跳过不含类 {requireClass} 的 jar: {Path.GetFileName(rawPath)}");
+            return null;
+        }
+
+        // dex2jar 转换（普通 jar 直接用原件；Guard 包用解壳后的明文 dex）
+        await ConvertDex2JarAsync(dexSource, outPath, ct).ConfigureAwait(false);
+        Log($"jar 转换完成: {Path.GetFileName(outPath)}");
+        return new JarConversion(outPath, dexSource, rawPath, shellJar);
+    }
+
+    /// <summary>
+    /// 壳框架 jar 就绪（缓存命中直接返回）：原始 Guard jar 的壳 dex 过 dex2jar，
+    /// 并剔除 DexNative.class（桌面由桥内置替身接 GuardSession）。失败返回 null（回退真实类模式）。
+    /// </summary>
+    private async Task<string?> EnsureShellJarAsync(string rawPath, string hash, CancellationToken ct)
+    {
+        if (!IsGuarded(rawPath)) return null;
+        var shellJar = Path.Combine(_convertedDir, hash + "-shell.jar");
+        if (File.Exists(shellJar)) return shellJar;
+        try
+        {
+            await ConvertDex2JarAsync(rawPath, shellJar, ct).ConfigureAwait(false);
+            StripEntry(shellJar, "com/github/catvod/spider/DexNative.class");
+            Log($"壳框架 jar 转换完成: {Path.GetFileName(shellJar)}");
+            return shellJar;
+        }
+        catch (Exception ex)
+        {
+            Log($"壳框架 jar 转换失败（回退真实类模式）: {ex.Message}");
+            try { File.Delete(shellJar); } catch { }
+            return null;
+        }
+    }
+
+    /// <summary>dex2jar 转换（共用）：dexSource（jar/dex）→ outPath。失败抛异常。</summary>
+    private async Task ConvertDex2JarAsync(string dexSource, string outPath, CancellationToken ct)
+    {        var psi = new ProcessStartInfo
+        {
+            FileName = _javaExe,
+            // classpath 与工作目录都走绝对路径：工具在只读程序目录里，工作目录却在可写区
+            Arguments = $"-cp \"{Path.Combine(_bridgeDir, "vendor", "dex2jar", "*")}\" com.googlecode.dex2jar.tools.Dex2jarCmd \"{dexSource}\" -o \"{outPath}\" --force",
+            WorkingDirectory = _workDir,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            // 与所有批处理型 java 工具一致：一律给「立即 EOF 的 stdin」，
+            // 杜绝「从 GUI 宿主继承到永不 EOF 的管道 → 等 stdin 卡死」这一类问题
+            RedirectStandardInput = true,
+        };
+        using var p = Process.Start(psi) ?? throw new InvalidOperationException("dex2jar 启动失败");
+        try { p.StandardInput.Close(); } catch { }
+        await p.WaitForExitAsync(ct);
+        if (p.ExitCode != 0 || !File.Exists(outPath))
+            throw new InvalidOperationException($"dex2jar 转换失败: {Path.GetFileName(dexSource)}");
+    }
+
+    /// <summary>从 zip 产物里剔除一个条目（壳 jar 剔除 DexNative.class——桌面由桥内置替身接 GuardSession）。</summary>
+    private static void StripEntry(string jarPath, string entryName)
+    {
+        using var fs = new FileStream(jarPath, FileMode.Open, FileAccess.ReadWrite);
+        using var archive = new System.IO.Compression.ZipArchive(fs, System.IO.Compression.ZipArchiveMode.Update);
+        var e = archive.GetEntry(entryName);
+        e?.Delete();
+    }
+
+
+    /// <summary>
+    /// 判断 jar 的 dex 里是否定义了某个类（传**简单类名**，如 <c>SixV</c>）。
+    /// <para>dex 的 type descriptor（<c>Lcom/foo/Bar;</c>）在字符串池里以**明文 MUTF-8** 存放，
+    /// 所以直接按字节搜完整描述符即可 —— 完整描述符误命中概率可忽略，无需完整解析 dex。</para>
+    /// <para>⚠️ 必须搜**完整描述符**：只搜 <c>SixV</c> 这样的简单名会落空，
+    /// 因为 dex 里存的是 <c>Lcom/github/catvod/spider/SixV;</c>。
+    /// 候选前缀与桥的类名解析顺序一致（见 JavaBridge <c>bridge.Server.load</c>）：
+    /// <c>com.github.catvod.spider.</c> → <c>com.github.catvod.crawler.</c> → 裸名。</para>
+    /// </summary>
+    private static bool JarHasClass(string jarPath, string className)
+    {
+        try
+        {
+            string[] candidates =
+            [
+                $"Lcom/github/catvod/spider/{className};",
+                $"Lcom/github/catvod/crawler/{className};",
+                $"L{className};",
+            ];
+            var needles = candidates.Select(Encoding.UTF8.GetBytes).ToArray();
+
+            using var zip = System.IO.Compression.ZipFile.OpenRead(jarPath);
+            foreach (var e in zip.Entries)
+            {
+                var n = e.FullName;
+                if (!n.StartsWith("classes", StringComparison.OrdinalIgnoreCase) || !n.EndsWith(".dex", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                using var s = e.Open();
+                using var ms = new MemoryStream();
+                s.CopyTo(ms);
+                var span = ms.GetBuffer().AsSpan(0, (int)ms.Length);
+                foreach (var needle in needles)
+                    if (span.IndexOf(needle) >= 0) return true;
+            }
+        }
+        catch { }
+        return false;
+    }
+    /// <summary>纯 .class jar 的类存在性：按 zip 条目名查（桥的类名解析顺序同 JarHasClass）。</summary>
+    private static bool JarHasClassFile(string jarPath, string className)
+    {
+        try
+        {
+            string[] candidates =
+            [
+                $"com/github/catvod/spider/{className}.class",
+                $"com/github/catvod/crawler/{className}.class",
+                $"{className}.class",
+            ];
+            using var zip = System.IO.Compression.ZipFile.OpenRead(jarPath);
+            foreach (var e in zip.Entries)
+                if (candidates.Contains(e.FullName, StringComparer.Ordinal)) return true;
+        }
+        catch { }
+        return false;
+    }
+
+    private static bool IsGuarded(string jarPath)
+    {
+        try
+        {
+            using var zip = System.IO.Compression.ZipFile.OpenRead(jarPath);
+            bool hasSo = false, hasGuard = false;
+            foreach (var e in zip.Entries)
+            {
+                var lower = e.FullName.ToLowerInvariant();
+                if (lower.StartsWith("assets/") && lower.EndsWith(".so")) hasSo = true;
+                if (lower.EndsWith(".guard")) hasGuard = true;
+            }
+            return hasSo && hasGuard;
+        }
+        catch { return false; }
+    }
+
+    // ═══════════ ext 认证预处理 ═══════════
+
+    /// <summary>ext global 含 username/password 而缺 token 时，自动登录 {server}/api/auth/login 注入 token。
+    /// 凭据来源：site.Ext 自带，或本地凭据文件 %APPDATA%\CatClawVideo\spider-creds.json
+    /// （格式 {"host:port": {"username":"..","password":".."}}）。</summary>
+    private async Task<string> PrepareExtAsync(VodSiteInfo site, CancellationToken ct)
+    {
+        var ext = site.Ext ?? "";
+        if (string.IsNullOrWhiteSpace(ext) || !ext.TrimStart().StartsWith("[")) return ext;
+        try
+        {
+            var arr = JsonNode.Parse(ext)!.AsArray();
+            if (arr.Count == 0) return ext;
+            var global = arr[0] as JsonObject;
+            if (global == null || global["type"]?.GetValue<string>() != "global") return ext;
+
+            var hasToken = global.ContainsKey("token") && !string.IsNullOrEmpty(global["token"]?.GetValue<string>());
+            var user = global["username"]?.GetValue<string>();
+            var pass = global["password"]?.GetValue<string>();
+
+            // 本地凭据文件兜底（按 server host 匹配，统一走 SpiderCredentials 存储）
+            var creds = SpiderCredentials.Load();
+            var servers = arr.OfType<JsonObject>()
+                .Where(o => o["server"] != null)
+                .Select(o => o["server"]!.GetValue<string>().TrimEnd('/'))
+                .Distinct().ToList();
+
+            if ((string.IsNullOrEmpty(user) || string.IsNullOrEmpty(pass)) && creds.Count > 0)
+            {
+                foreach (var server in servers)
+                {
+                    var host = new Uri(server).Authority;
+                    if (creds.TryGetValue(host, out var c))
+                    {
+                        user ??= c.User;
+                        pass ??= c.Pass;
+                        global["username"] = user;
+                        global["password"] = pass;
+                        break;
+                    }
+                }
+            }
+
+            if (string.IsNullOrEmpty(user) || string.IsNullOrEmpty(pass) || hasToken) return ext;
+
+            foreach (var server in servers)
+            {
+                try
+                {
+                    var resp = await _http.PostAsync(server + "/api/auth/login",
+                        new StringContent(JsonSerializer.Serialize(new { username = user, password = pass }),
+                            Encoding.UTF8, "application/json"), ct);
+                    var body = await resp.Content.ReadAsStringAsync(ct);
+                    var token = JsonNode.Parse(body)?["data"]?["token"]?.GetValue<string>();
+                    if (!string.IsNullOrEmpty(token))
+                    {
+                        global["token"] = token;
+                        Log($"已为 {server} 注入认证 token");
+                        break;
+                    }
+                }
+                catch { }
+            }
+            return arr.ToJsonString();
+        }
+        catch { return ext; }
+    }
+}
