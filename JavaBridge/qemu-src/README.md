@@ -636,12 +636,12 @@ python ctrlserver2.py "TASK MAGNET magnet:?xt=urn:btih:<HASH>&dn=<URL编码的�
 
 | 部件 | 位置 |
 |---|---|
-| 引擎（`IPreferredMagnetEngine` 实现） | `CatClawVideo.Core/Services/QemuThunder/QemuThunderEngine.cs` |
+| 引擎（`IPreferredMagnetEngine` 实现） | `CatClawVideo.Core/Services/QemuGuest/QemuGuestEngine.cs` |
 | 控制端（≡ ctrlserver2.py 的 HTTP 服务） | 同目录 `QemuControlServer.cs`（裸 `TcpListener`，避 http.sys 的 URL ACL） |
 | QEMU 进程管理 | 同目录 `QemuHostRuntime.cs`（Job Object 防孤儿进程、stdout 走日志并过滤 jni 噪声） |
 | 种子解析（bencode） | 同目录 `Bencode.cs` |
 | 引擎链（QEMU → 网盘兜底 → 内置 BT） | `CatClawVideo.Core/Providers/ChainedMagnetEngine.cs` |
-| 运行时（142MB；图形栈已裁） | `CatClawVideo.Maui/ThunderRuntime/`（csproj Windows 条件分发，溯源见 PROVENANCE.md） |
+| 运行时（142MB；图形栈已裁） | `CatClawVideo.Maui/QemuGuest/`（csproj Windows 条件分发，溯源见 PROVENANCE.md） |
 | 注册 | `MauiProgram.cs` 的 Windows 分支 |
 
 **验收（2026-09-16 05:05）**：C# 宿主全链路 ≡ 实验装置，两轮全通过
@@ -652,7 +652,7 @@ python ctrlserver2.py "TASK MAGNET magnet:?xt=urn:btih:<HASH>&dn=<URL编码的�
 ```bash
 cd CatClawVideo/JavaBridge/qemu-src/hosttest
 dotnet run -c Release -- "<runtimeDir>" "magnet:?xt=urn:btih:<HASH>" [preferName]
-# runtimeDir 例：D:\Code\_scratch_tb\qemu-runtime（= ThunderRuntime 的源目录）
+# runtimeDir 例：D:\Code\_scratch_tb\qemu-runtime（= QemuGuest 的源目录）
 # 退出码 0 = 全链路通过
 ```
 
@@ -682,7 +682,7 @@ dotnet run -c Release -- "<runtimeDir>" "magnet:?xt=urn:btih:<HASH>" [preferName
 | guest 代理 accept **串行** | 第二条连接被完全饿死（12s 零字节） | 播放器一旦并行连接就卡死 |
 | 小分块读被连接开销拖垮 | 1MB/块中位 229ms（≈4.4MB/s）；64KB/块 <0.5MB/s | 有效吞吐低于码率 → 断流 |
 
-**修复**：`CatClawVideo.Core/Services/QemuThunder/QemuStreamProxy.cs` —— 宿主侧读前缓存代理：
+**修复**：`CatClawVideo.Core/Services/QemuGuest/QemuStreamProxy.cs` —— 宿主侧读前缓存代理：
 
 - 对**播放器**：普通本地 HTTP（Range / keep-alive / 任意并发连接随便用），数据从内存缓存出；
 - 对**上游**：只用一条长连接按 32MB 切片顺序续拉（吸收 210ms 重武装开销），

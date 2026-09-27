@@ -13,7 +13,7 @@ namespace CatClawVideo.Core.Providers;
 /// <summary>
 /// jar/dex 爬虫运行时（桌面）：<b>两条链路共用同一套行协议</b> ——
 /// <list type="bullet">
-///   <item><b>ART guest（默认，装了 <c>ThunderRuntime/art_initrd.gz</c> 就启用）</b>：QEMU 里跑真
+///   <item><b>ART guest（默认，装了 <c>QemuGuest/art_initrd.gz</c> 就启用）</b>：QEMU 里跑真
 ///   Android 9 的 ART，桥与 TVBox/壳 jar 都在里面，<b>ARM 原生码就地执行</b>。
 ///   2026-09-26 实测荐片┃多线全链路：detail 0.5s/4347B → player 1.8s 拿到真 m3u8。</item>
 ///   <item><b>宿主 JRE（回落/纯 .class 的 java 源）</b>：常驻 Java 桥进程，spider jar 经 dex2jar
@@ -71,10 +71,10 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     /// 桥的行协议改为走 TCP，<see cref="_stdin"/>/<see cref="_stdout"/> 直接架在 socket 流上，
     /// 因此请求/响应/事件分发那套代码两条链路完全共用。
     /// </summary>
-    private CatClawVideo.Core.Services.QemuThunder.QemuArtGuest? _art;
+    private CatClawVideo.Core.Services.QemuGuest.QemuArtGuest? _art;
 
     /// <summary>ART guest 的 jar 供给服务（guest 读不到宿主的盘，只能经 slirp 用 http 取）。</summary>
-    private CatClawVideo.Core.Services.QemuThunder.ArtJarServer? _jarServer;
+    private CatClawVideo.Core.Services.QemuGuest.ArtJarServer? _jarServer;
     private readonly SemaphoreSlim _ioLock = new(1, 1);
     private int _id;
 
@@ -121,9 +121,9 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     // ── x86 mini guest（实验性，2026-09-27）——
     //    CATCLAW_X86_GUEST=1 时 ART guest 切到 x86_64 架构（Waydroid Android 13 子集 +
     //    Debian 6.1 内核 + WHPX 硬件加速），联调进行中（JavaBridge/qemu-src/tools/x86guest/）。
-    //    ⚠ 默认关：aarch64 现网行为零变化；开关打开且 x86 运行时（ThunderRuntime\x86guest\
+    //    ⚠ 默认关：aarch64 现网行为零变化；开关打开且 x86 运行时（QemuGuest\x86guest\
     //    下的内核/initrd + qemu-system-x86_64.exe）齐全时才生效，否则回落 aarch64。
-    private CatClawVideo.Core.Services.QemuThunder.GuestArch? _guestArchOverride;
+    private CatClawVideo.Core.Services.QemuGuest.GuestArch? _guestArchOverride;
     private string? _guestKernelFile;
     private string? _guestInitrdFile;
     private string? _guestQemuExe;
@@ -140,21 +140,21 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         _workDir = workDir ?? AppPaths.Sub("javabridge");
         _convertedDir = Path.Combine(_workDir, "converted");
         // ── ART guest（2026-09-25 定案：ARM 原生码 + TVBox/壳 jar 的 dex 全进 QEMU 里的真 ART）──
-        // 装了 ThunderRuntime\art_initrd.gz 就默认走这条；两条链路的取舍/延迟对比用 CATCLAW_NO_ART=1 关掉。
-        ArtRuntimeDir = Path.Combine(AppContext.BaseDirectory, "ThunderRuntime");
-        ArtGuestMode = CatClawVideo.Core.Services.QemuThunder.QemuArtGuest.IsAvailable(ArtRuntimeDir)
+        // 装了 QemuGuest\art_initrd.gz 就默认走这条；两条链路的取舍/延迟对比用 CATCLAW_NO_ART=1 关掉。
+        ArtRuntimeDir = Path.Combine(AppContext.BaseDirectory, "QemuGuest");
+        ArtGuestMode = CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.IsAvailable(ArtRuntimeDir)
                        && Environment.GetEnvironmentVariable("CATCLAW_NO_ART") != "1";
         // x86 mini guest 实验开关（2026-09-27，联调中）：仅当 x86 运行时齐全才切架构
         if (Environment.GetEnvironmentVariable("CATCLAW_X86_GUEST") == "1")
         {
-            _guestArchOverride = CatClawVideo.Core.Services.QemuThunder.GuestArch.X86_64;
+            _guestArchOverride = CatClawVideo.Core.Services.QemuGuest.GuestArch.X86_64;
             _guestKernelFile = @"x86guest\vmlinuz-6.1.0-50-amd64";
             _guestInitrdFile = @"x86guest\art_initrd_x64.gz";
             _guestQemuExe = "qemu-system-x86_64.exe";
         }
         // 启动就把走哪条桥链路写进日志：两条链路的差异只会以"某个站点不对"的形式浮现，
         // 不写明模式的话排障第一步会变成猜。
-        Log($"桥链路：{(ArtGuestMode ? "ART guest（" + ArtRuntimeDir + '\\' + CatClawVideo.Core.Services.QemuThunder.QemuArtGuest.InitrdName + '）' : "宿主 JRE")}"
+        Log($"桥链路：{(ArtGuestMode ? "ART guest（" + ArtRuntimeDir + '\\' + CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.InitrdName + '）' : "宿主 JRE")}"
             + (Environment.GetEnvironmentVariable("CATCLAW_NO_ART") == "1" ? "（CATCLAW_NO_ART=1 手动关掉）" : "")
             + (Environment.GetEnvironmentVariable("CATCLAW_X86_GUEST") == "1" ? "（CATCLAW_X86_GUEST=1 实验性 x86 mini guest）" : ""));
         // 桥可用 = bridge.jar + deps（能跑非 Guard 的 jar 爬虫）；Guard 解壳能力单独判定
@@ -500,13 +500,13 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
             if (IsBridgeReady) return;   // 排队期间别的调用已把桥拉起来
             if (ArtGuestMode)
             {
-                _art ??= new CatClawVideo.Core.Services.QemuThunder.QemuArtGuest(ArtRuntimeDir, _log)
+                _art ??= new CatClawVideo.Core.Services.QemuGuest.QemuArtGuest(ArtRuntimeDir, _log)
                 {
                     // x86 mini guest 实验开关（CATCLAW_X86_GUEST=1）：切架构 + 覆盖内核/
                     // initrd/引擎文件名；缺省 null → ArtGuest 内部走 aarch64 缺省，现网零变化
-                    GuestArch = _guestArchOverride ?? CatClawVideo.Core.Services.QemuThunder.GuestArch.Arm64,
+                    GuestArch = _guestArchOverride ?? CatClawVideo.Core.Services.QemuGuest.GuestArch.Arm64,
                     KernelFileName = _guestKernelFile ?? "pkg_kernel",
-                    GuestInitrdName = _guestInitrdFile ?? CatClawVideo.Core.Services.QemuThunder.QemuArtGuest.InitrdName,
+                    GuestInitrdName = _guestInitrdFile ?? CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.InitrdName,
                     GuestQemuExeName = _guestQemuExe ?? "qemu-system-aarch64.exe",
                 };
                 var link = await _art.ConnectAsync(ct).ConfigureAwait(false);
@@ -998,7 +998,7 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
             var raw = _rawJars.TryGetValue(site.Key, out var rp) && File.Exists(rp) ? rp : jarPath;
             // 纯 .class jar（无 classes.dex，如 fty.jar 一族）guest 的 ART 吃不了：先 d8 转 dex 再供
             var serve = IsPureClassJar(raw) ? await EnsureDexJarAsync(raw, ct) : raw;
-            _jarServer ??= new CatClawVideo.Core.Services.QemuThunder.ArtJarServer(_log);
+            _jarServer ??= new CatClawVideo.Core.Services.QemuGuest.ArtJarServer(_log);
             var url = _jarServer.UrlFor(Path.GetFileName(serve).Replace("raw-", "").Replace(".jar", ""), serve);
             req["jars"] = new JsonArray(url);
             req["rawJar"] = url;
@@ -1018,7 +1018,7 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
             // Guard VM 里的 ftyguard so；VM 就绪才下发 guardPort，缺失则桥的 GuardSession 直接报错
             // （unidbg 已退出运行时，2026-09-25）。
             if (!string.IsNullOrEmpty(req["rawJar"]?.GetValue<string>()) &&
-                CatClawVideo.Core.Services.QemuThunder.GuardRuntime.Engine is { } guard)
+                CatClawVideo.Core.Services.QemuGuest.GuardRuntime.Engine is { } guard)
             {
                 try
                 {
@@ -1028,7 +1028,7 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
                     guard.RegisterJar(jarHash, rawJarPath);
                     if (await guard.EnsureLoadedAsync(jarHash, ct).ConfigureAwait(false))
                     {
-                        req["guardPort"] = CatClawVideo.Core.Services.QemuThunder.QemuGuardEngine.GuardPort;
+                        req["guardPort"] = CatClawVideo.Core.Services.QemuGuest.QemuGuardEngine.GuardPort;
                         Log($"Guard QEMU 通道就绪（jar {jarHash}，端口 {req["guardPort"]}）");
                     }
                     else

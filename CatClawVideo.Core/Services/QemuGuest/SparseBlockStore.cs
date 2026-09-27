@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
-namespace CatClawVideo.Core.Services.QemuThunder;
+namespace CatClawVideo.Core.Services.QemuGuest;
 
 /// <summary>
 /// 稀疏块存储 —— 宿主与 guest 之间的**零拷贝数据面**。

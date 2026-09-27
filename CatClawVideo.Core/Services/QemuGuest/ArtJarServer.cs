@@ -2,7 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 
-namespace CatClawVideo.Core.Services.QemuThunder;
+namespace CatClawVideo.Core.Services.QemuGuest;
 
 /// <summary>
 /// 给 ART guest 供 jar 的最小 HTTP 文件服务（回环监听，guest 经 slirp 用 <c>10.0.2.2:&lt;port&gt;</c> 取）。

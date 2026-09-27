@@ -57,7 +57,7 @@ ssh root@10.0.0.108 "bash /root/x86guest/continue_x86.sh"
 ## 分发布局（启用时）
 
 ```
-ThunderRuntime/
+QemuGuest/
 ├─ qemu-system-aarch64.exe / qemu-system-x86_64.exe（依赖 DLL 完全重合，实测）
 ├─ pkg_kernel / pkg_initrd.gz          （aarch64 迅雷，不动）
 ├─ art_initrd.gz / art_initrd_x64.gz   （双 guest initrd）

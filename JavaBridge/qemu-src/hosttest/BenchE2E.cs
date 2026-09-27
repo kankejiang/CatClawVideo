@@ -16,7 +16,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
-using CatClawVideo.Core.Services.QemuThunder;
+using CatClawVideo.Core.Services.QemuGuest;
 using Microsoft.Win32.SafeHandles;
 
 internal static class BenchE2E

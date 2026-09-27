@@ -567,7 +567,7 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
         //   换算成时间。这个值是诚实的：引擎供不上数据时它停住不动。
         try
         {
-            var proxy = CatClawVideo.Core.Services.QemuThunder.QemuStreamProxy.Current;
+            var proxy = CatClawVideo.Core.Services.QemuGuest.QemuStreamProxy.Current;
             if (proxy is not null && proxy.TotalBytes > 0)
             {
                 var dur = session.NaturalDuration;
@@ -619,7 +619,7 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
         {
             try
             {
-                var proxy = CatClawVideo.Core.Services.QemuThunder.QemuStreamProxy.Current;
+                var proxy = CatClawVideo.Core.Services.QemuGuest.QemuStreamProxy.Current;
                 return proxy?.ReaderStarving ?? false;
             }
             catch { return false; }

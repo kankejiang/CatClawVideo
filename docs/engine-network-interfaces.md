@@ -18,7 +18,7 @@ QEMU 11.1.0 的 `-object help` 里有 **`filter-dump`** —— 挂在 `netdev` �
 报文写成标准 pcap，**不需要装 npcap/Wireshark、不需要管理员权限**：
 
 ```bash
-# 在 ThunderRuntime/ 目录下（相对路径 -L share / -kernel pkg_kernel 需要它）
+# 在 QemuGuest/ 目录下（相对路径 -L share / -kernel pkg_kernel 需要它）
 qemu-system-aarch64.exe -M virt -cpu max -m 5120 -smp 4 -nographic \
   -L share -kernel pkg_kernel -initrd pkg_initrd.gz \
   -append "console=ttyAMA0 rdinit=/init loglevel=4" \

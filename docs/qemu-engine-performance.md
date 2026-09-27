@@ -15,7 +15,7 @@
 
 ## 1. 引擎是什么
 
-从 `ThunderRuntime/pkg_initrd.gz`（QEMU guest 的 initrd）中提取：
+从 `QemuGuest/pkg_initrd.gz`（QEMU guest 的 initrd）中提取：
 
 | 文件 | 体积 | 备注 |
 |---|---|---|
@@ -163,7 +163,7 @@ if (!src.Episodes[i].Url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCas
 | 目的 | 命令 |
 |---|---|
 | 数据面直读基准（宿主侧，不需 QEMU） | `hosttest/bin/Release/net11.0/ThunderHostTest.exe xfer <镜像> <块大小> <次数>` |
-| 端到端引擎基准（真实 QEMU） | `ThunderHostTest.exe xfer-e2e <ThunderRuntime 目录> <块大小> <次数> <控制口>` |
+| 端到端引擎基准（真实 QEMU） | `ThunderHostTest.exe xfer-e2e <QemuGuest 目录> <块大小> <次数> <控制口>` |
 | qemu-user 对照 | 宿主 Linux 上 `qemu-aarch64-static <arm64 静态二进制> ...`（需先 `apt install qemu-user-static`） |
 
 ## 附录 B：测量注意事项（踩过的坑）

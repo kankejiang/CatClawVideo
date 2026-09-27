@@ -6,7 +6,7 @@
 //       guest 侧 harness（ctrlloop.c 等改动后经 Linux 主机 NDK 交叉编译出的 aarch64 二进制）
 //       也可经本工具直接替换进 initrd（/harness）。
 //
-// 用法: dotnet run repack_initrd.cs <ThunderRuntime 目录> [新 harness 二进制路径]
+// 用法: dotnet run repack_initrd.cs <QemuGuest 目录> [新 harness 二进制路径]
 //   读取 <dir>\pkg_initrd.xz（或 .gz），输出 <dir>\pkg_initrd.gz（覆盖）。
 //   补丁项（在 REPLACEMENTS 里维护，逐条「原串→新串」全文替换 /init）：
 //     - tmpfs size=1500m → size=3500m（1500m 会在下载 ~1.57GB 时写满，任务 err=114010 死亡）

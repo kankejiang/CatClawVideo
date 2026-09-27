@@ -89,30 +89,30 @@ public static class MauiProgram
             cacheDir: CatClawVideo.Core.AppPaths.LocalSub("drpy2"),
             log: m => System.Diagnostics.Debug.WriteLine(m));
         // 磁力下载引擎（Windows 下方赋值；Android 恒 null → 磁力下载任务提示不支持）
-        CatClawVideo.Core.Services.QemuThunder.QemuThunderEngine? magnetDownloadEngine = null;
+        CatClawVideo.Core.Services.QemuGuest.QemuGuestEngine? magnetDownloadEngine = null;
 
 #if !ANDROID
 
         // PC「迅雷磁力播放」双引擎（链式：前者失败才试后者，全部失败回落内置 BT）：
         //  ① QEMU 本地迅雷引擎（首选）：ARM64 Android 迅雷 SDK 跑在 QEMU 里，走 P2SP 私有网络，
-        //     公共磁力也能满速边下边播；无需登录。运行时随包分发在 ThunderRuntime/
+        //     公共磁力也能满速边下边播；无需登录。运行时随包分发在 QemuGuest/
         //     （缺失/启动失败判未就绪、自动跳过）。链路与移植说明：JavaBridge/qemu-src/README.md。
         //  ② 迅雷网盘 API（兜底）：云添加 → 迅雷服务器下载 → 取直链；需登录，未登录判未就绪。
         // 为什么不是直接用迅雷下载 SDK：那套安卓 SDK 在 PC 上跑不起来（引导域名被沉 127.0.0.2），
         // 所以 ① 用 QEMU 承载原生跑；② 走官方网盘 API。
-        var qemuThunder = new CatClawVideo.Core.Services.QemuThunder.QemuThunderEngine(
-            Path.Combine(AppContext.BaseDirectory, "ThunderRuntime"), BtFileLog.Write);
+        var qemuThunder = new CatClawVideo.Core.Services.QemuGuest.QemuGuestEngine(
+            Path.Combine(AppContext.BaseDirectory, "QemuGuest"), BtFileLog.Write);
         // 磁力点播磁盘缓存：播放数据 4MB 分块落盘 + LRU 超限清理，已看区间重进/换集直接磁盘秒供。
         // 上限由设置页控制（默认 20GB，档位 5/10/20/30/50），持久化在 Preferences；
         // 启动时灌进 Core 的 StreamCachePrefs，引擎在超限清理时实时读取（改完即时生效，无需重启）。
-        var cacheGbPref = Preferences.Default.Get("stream_cache_gb", (int)CatClawVideo.Core.Services.QemuThunder.StreamCachePrefs.DefaultGb);
-        CatClawVideo.Core.Services.QemuThunder.StreamCachePrefs.CapGb = cacheGbPref;
+        var cacheGbPref = Preferences.Default.Get("stream_cache_gb", (int)CatClawVideo.Core.Services.QemuGuest.StreamCachePrefs.DefaultGb);
+        CatClawVideo.Core.Services.QemuGuest.StreamCachePrefs.CapGb = cacheGbPref;
         qemuThunder.StreamCacheRoot = CatClawVideo.Core.AppPaths.Sub("btcache");
         // 数据面块设备：guest 把引擎吐出的字节按偏移写进宿主镜像，供数时直读同一文件
         //（实测 2454~2926 MB/s，绕开 SLIRP 的 40MB/s 与 harness 转发的 18.9MB/s）。
         // 稀疏镜像，写多少占多少；环境异常时引擎会自动退化为纯 HTTP 通道。
         qemuThunder.BlockDeviceRoot = CatClawVideo.Core.AppPaths.Sub("btcache/hub");
-        BtFileLog.Write($"[缓存] 上限 {CatClawVideo.Core.Services.QemuThunder.StreamCachePrefs.CapGb}GB（设置页可调）");
+        BtFileLog.Write($"[缓存] 上限 {CatClawVideo.Core.Services.QemuGuest.StreamCachePrefs.CapGb}GB（设置页可调）");
         CatClawVideo.Core.Interfaces.MagnetEngines.Thunder = new CatClawVideo.Core.Providers.ChainedMagnetEngine(
             qemuThunder, new CatClawVideo.Core.Providers.ThunderPanEngine());
         // 磁力下载也走同一个迅雷引擎（下载管理页的磁力任务：引擎独占下载 → 媒体口导出本机）
@@ -137,9 +137,9 @@ public static class MauiProgram
         // ftyguard so）跑在独立 QEMU 实例里，桥进程经 hostfwd 直连；so 弹的对话框/二维码经
         // 控制口上行由 SpiderUiHost 渲染（jar 框架全权负责登录 UX，宿主只做 UI 接入）。
         // 不预热（首个 Guard 站点加载时懒启动），运行时缺失则 Guard 解密通道不可用（ARM 调用明确报错）。
-        var qemuGuard = new CatClawVideo.Core.Services.QemuThunder.QemuGuardEngine(
-            Path.Combine(AppContext.BaseDirectory, "ThunderRuntime"), BtFileLog.Write);
-        CatClawVideo.Core.Services.QemuThunder.GuardRuntime.Attach(qemuGuard);
+        var qemuGuard = new CatClawVideo.Core.Services.QemuGuest.QemuGuardEngine(
+            Path.Combine(AppContext.BaseDirectory, "QemuGuest"), BtFileLog.Write);
+        CatClawVideo.Core.Services.QemuGuest.GuardRuntime.Attach(qemuGuard);
 #endif
 
         // TVBox 系爬虫（ProxyOrigin 等）会把播放地址拼成 http://127.0.0.1:<port>/proxy?...

@@ -13,9 +13,9 @@
 |---|---|---|---|
 | **P1** | **响应体短读**：先声明 `Content-Length` 却提前 `break` | 播放「结束」/自动退出，**不可恢复** | `QemuStreamProxy.cs:838-840` + `:888` |
 | **P2** | `BodyStallMs` 是**从未接线**的死常量 | 上游停滞时无限挂住，把 P1 逼出来 | `QemuStreamProxy.cs:25` + `:675` |
-| **P3** | 看门狗只在 `ReaderStarving` 时判 | 播放器放弃后断粮永不被发现 | `QemuThunderEngine.cs:1200` |
-| **P4** | 块设备容量写死 **16GB** | >16GB 的片静默退化纯 HTTP（4578 → 40 MB/s） | `QemuThunderEngine.cs:127` |
-| **D1** | **QEMU 死亡无人知**：`Exited` 只打日志，下载轮询不看进程 | 进度冻结后**空转到 180 分钟**才报超时 | `QemuHostRuntime.cs:189` + `QemuThunderEngine.cs:370` |
+| **P3** | 看门狗只在 `ReaderStarving` 时判 | 播放器放弃后断粮永不被发现 | `QemuGuestEngine.cs:1200` |
+| **P4** | 块设备容量写死 **16GB** | >16GB 的片静默退化纯 HTTP（4578 → 40 MB/s） | `QemuGuestEngine.cs:127` |
+| **D1** | **QEMU 死亡无人知**：`Exited` 只打日志，下载轮询不看进程 | 进度冻结后**空转到 180 分钟**才报超时 | `QemuHostRuntime.cs:189` + `QemuGuestEngine.cs:370` |
 | **D2** | 重启后任务只降级 `Paused`，不自动续跑 | 大文件跑到 80% 崩掉后需手动逐个继续 | `DownloadManager.cs:958` |
 
 ★ **内存持续增长与中断是同一件事的两面**，见 §2。
@@ -79,7 +79,7 @@ FFmpeg 对远端 Cues 的 seek 会退化成「Soft-seeking by draining 1.9GB」�
 
 ### 2.3 已排除（**不是**泄漏，别再往这查）
 
-- `_streamProxy` 的 3 处置空（`QemuThunderEngine.cs:645 / 685 / 805`）**都同时调了 `Dispose()`**
+- `_streamProxy` 的 3 处置空（`QemuGuestEngine.cs:645 / 685 / 805`）**都同时调了 `Dispose()`**
 - 块设备镜像是**磁盘稀疏文件**（`SparseBlockStore.cs:22/92`，`FSCTL_SET_SPARSE` + `SetLength`），不占内存
 
 ---

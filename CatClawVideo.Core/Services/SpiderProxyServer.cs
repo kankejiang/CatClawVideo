@@ -24,7 +24,7 @@ namespace CatClawVideo.Core.Services;
 ///   <item><c>do=饭太硬</c> / <c>/proxy/</c> 前缀 — 同上，按同一套处理。</item>
 /// </list>
 ///
-/// <para>用裸 <see cref="TcpListener"/> 而不是 HttpListener：与 <see cref="QemuThunder.QemuControlServer"/>
+/// <para>用裸 <see cref="TcpListener"/> 而不是 HttpListener：与 <see cref="QemuGuest.QemuControlServer"/>
 /// 一致，避开 Windows http.sys 的 URL ACL（非管理员注册前缀会 Access Denied），
 /// 且播放器发来的请求本身就是极简 HTTP。</para>
 /// </summary>

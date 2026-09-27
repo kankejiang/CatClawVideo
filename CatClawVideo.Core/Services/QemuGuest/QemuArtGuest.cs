@@ -2,7 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 
-namespace CatClawVideo.Core.Services.QemuThunder;
+namespace CatClawVideo.Core.Services.QemuGuest;
 
 /// <summary>
 /// ART guest：在 QEMU(TCG) 里启一套<b>真 Android ART</b>，桥（<c>bridge.GuestMain</c>）跑在 guest 内
@@ -23,7 +23,7 @@ namespace CatClawVideo.Core.Services.QemuThunder;
 /// </summary>
 public sealed class QemuArtGuest : IDisposable
 {
-    /// <summary>产品 initrd 名（放在 <c>ThunderRuntime</c> 目录下，与 pkg_initrd.gz 并存）。</summary>
+    /// <summary>产品 initrd 名（放在 <c>QemuGuest</c> 目录下，与 pkg_initrd.gz 并存）。</summary>
     public const string InitrdName = "art_initrd.gz";
 
     /// <summary>guest 架构：Arm64（现网 TCG 调优组合）或 X86_64（WHPX mini guest，2026-09-27）。

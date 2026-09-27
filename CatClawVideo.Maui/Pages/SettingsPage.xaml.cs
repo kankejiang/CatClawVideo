@@ -463,24 +463,24 @@ public partial class SettingsPage : ContentView, ITabView, IRemoteKeyHandler
         try
         {
             return (long)Preferences.Default.Get("stream_cache_gb",
-                (int)Core.Services.QemuThunder.StreamCachePrefs.DefaultGb);
+                (int)Core.Services.QemuGuest.StreamCachePrefs.DefaultGb);
         }
-        catch { return Core.Services.QemuThunder.StreamCachePrefs.DefaultGb; }
+        catch { return Core.Services.QemuGuest.StreamCachePrefs.DefaultGb; }
     }
 
     private void ShiftCache(int dir)
     {
         try
         {
-            var opts = Core.Services.QemuThunder.StreamCachePrefs.OptionsGb;
+            var opts = Core.Services.QemuGuest.StreamCachePrefs.OptionsGb;
             int idx = Array.IndexOf(opts, ReadCacheGb());
-            if (idx < 0) idx = Array.IndexOf(opts, Core.Services.QemuThunder.StreamCachePrefs.DefaultGb);
+            if (idx < 0) idx = Array.IndexOf(opts, Core.Services.QemuGuest.StreamCachePrefs.DefaultGb);
 
             idx = Math.Clamp(idx + dir, 0, opts.Length - 1);
             var gb = opts[idx];
 
             Preferences.Default.Set("stream_cache_gb", (int)gb);
-            Core.Services.QemuThunder.StreamCachePrefs.SetGb(gb);
+            Core.Services.QemuGuest.StreamCachePrefs.SetGb(gb);
             _cacheStep?.SetText(gb, "GB");
             DiagLog.Write($"[缓存] 上限改为 {gb}GB");
         }

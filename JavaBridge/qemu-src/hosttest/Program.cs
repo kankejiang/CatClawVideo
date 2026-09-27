@@ -1,4 +1,4 @@
-// 控制台测试装置：脱离 MAUI 驱动 QemuThunderEngine 走磁力全链路 / 量化取流性能。
+// 控制台测试装置：脱离 MAUI 驱动 QemuGuestEngine 走磁力全链路 / 量化取流性能。
 //
 // 用法:
 //   dotnet run --project hosttest -- <runtimeDir> <magnet> [preferName]
@@ -28,7 +28,7 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
-using CatClawVideo.Core.Services.QemuThunder;
+using CatClawVideo.Core.Services.QemuGuest;
 
 var argList = args.ToList();
 var mode = argList.Count > 0 && (argList[0] == "bench" || argList[0] == "proxy-bench" || argList[0] == "download" || argList[0] == "seektest" || argList[0] == "rangetest" || argList[0] == "playtest" || argList[0] == "xfer" || argList[0] == "xfer-e2e" || argList[0] == "guard" || argList[0] == "art") ? argList[0] : "";
@@ -279,7 +279,7 @@ var prefer = argList.Count > 2 ? argList[2] : null;
 Log($"运行时目录: {runtimeDir}（就绪={QemuHostRuntime.IsPresent(runtimeDir)}）");
 if (!QemuHostRuntime.IsPresent(runtimeDir)) return 1;
 
-using var engine = new QemuThunderEngine(runtimeDir, Log);
+using var engine = new QemuGuestEngine(runtimeDir, Log);
 Log($"引擎 IsReady={engine.IsReady}");
 
 // ═══ 下载模式：磁力 → 选中文件独占下载 → 媒体口导出本机 ═══

@@ -149,13 +149,13 @@
 
 ## 六、复用资产（别重写）
 
-`TvBoxParseEngine`（parse 语义已对齐）· `GoLiveProxy.WrapForLive`/`HeaderQuery`（头参数编解码的唯一出口）· `M3u8Purifier`（清洗只在代理里调一次）· `SpiderProxyServer`（`do=`/`go=`/`/cache` 三段分发，`BindPorts` 可覆盖端口）· `WindowsWebSniffer`/`AndroidWebSniffer` · `QemuThunder`/`BtStreamService`（磁力比 TVBox 强，别动）· 台架 `D:\Code\_scratch_tb\parity-check`（改这三块之前先跑它）。
+`TvBoxParseEngine`（parse 语义已对齐）· `GoLiveProxy.WrapForLive`/`HeaderQuery`（头参数编解码的唯一出口）· `M3u8Purifier`（清洗只在代理里调一次）· `SpiderProxyServer`（`do=`/`go=`/`/cache` 三段分发，`BindPorts` 可覆盖端口）· `WindowsWebSniffer`/`AndroidWebSniffer` · `QemuGuest`/`BtStreamService`（磁力比 TVBox 强，别动）· 台架 `D:\Code\_scratch_tb\parity-check`（改这三块之前先跑它）。
 
 ---
 
 ## 七、并发施工的现场记录（2026-09-26 00:03–00:12）
 
-另一会话在改 QEMU 侧时，`CatClawVideo.Core/Services/QemuThunder/QemuHostRuntime.cs` 被**重复插入了同一个 `NetDevice` 属性块**（两份逐字节相同的声明，`error CS0102`），整个解决方案因此编不过去。核对 <c>git diff</c> 后确认：该属性与其调用点（`"-device", NetDevice`）都是他们这次新增的意图，重复纯属插入工具把同一块写了两遍 —— 删掉其中一份是**语义不变**的（两份完全相同，删哪份结果都一样），故由本会话修掉以恢复可编译状态。他们的重构意图与调用点改动全部保留。
+另一会话在改 QEMU 侧时，`CatClawVideo.Core/Services/QemuGuest/QemuHostRuntime.cs` 被**重复插入了同一个 `NetDevice` 属性块**（两份逐字节相同的声明，`error CS0102`），整个解决方案因此编不过去。核对 <c>git diff</c> 后确认：该属性与其调用点（`"-device", NetDevice`）都是他们这次新增的意图，重复纯属插入工具把同一块写了两遍 —— 删掉其中一份是**语义不变**的（两份完全相同，删哪份结果都一样），故由本会话修掉以恢复可编译状态。他们的重构意图与调用点改动全部保留。
 
 ## 八、本会话最后一次真机冒烟（2026-09-26 01:42–01:45，Mi 11 / 93ea7079）
 

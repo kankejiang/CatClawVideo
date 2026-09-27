@@ -125,7 +125,7 @@ G 的分布（54–56）与 A 的分布（60–70）**完全不重叠** ⇒ 这�
 
 ## 4. 建议的改动
 
-`CatClawVideo.Core/Services/QemuThunder/QemuHostRuntime.cs` 的启动参数：
+`CatClawVideo.Core/Services/QemuGuest/QemuHostRuntime.cs` 的启动参数：
 
 ```diff
 -"-M", "virt", "-cpu", "max", "-m", "5120", "-smp", SmpCount.ToString(), "-nographic",
@@ -355,7 +355,7 @@ python D:\Code\_qemu_bench\build_bench_initramfs.py `
 fsutil file createnew D:\Code\_qemu_bench\payload.bin 4294967296
 python D:\Code\_qemu_bench\serve_payload.py D:\Code\_qemu_bench\payload.bin 18099
 python D:\Code\_qemu_bench\make_bench_initrd.py `
-       <ThunderRuntime>\pkg_initrd.gz D:\Code\_qemu_bench\bench_engine.gz
+       <QemuGuest>\pkg_initrd.gz D:\Code\_qemu_bench\bench_engine.gz
 . D:\Code\_qemu_bench\run_engine_smp.ps1      # vCPU 扩展曲线（§6.2）
 . D:\Code\_qemu_bench\run_multi_instance.ps1  # 多实例并发（§7）
 ```

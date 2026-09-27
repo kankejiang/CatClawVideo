@@ -1,4 +1,4 @@
-namespace CatClawVideo.Core.Services.QemuThunder;
+namespace CatClawVideo.Core.Services.QemuGuest;
 
 /// <summary>
 /// 磁力点播磁盘缓存上限的**全局偏好**（设置页可调）。

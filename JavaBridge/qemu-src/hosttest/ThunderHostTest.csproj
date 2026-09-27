@@ -10,7 +10,7 @@
     <InvariantGlobalization>false</InvariantGlobalization>
   </PropertyGroup>
   <ItemGroup>
-    <!-- 直接引用 Core：QemuThunder 的四个文件是纯 BCL 实现，脱离 MAUI 就能跑完整链路 -->
+    <!-- 直接引用 Core：QemuGuest 的四个文件是纯 BCL 实现，脱离 MAUI 就能跑完整链路 -->
     <ProjectReference Include="../../../CatClawVideo.Core/CatClawVideo.Core.csproj" />
   </ItemGroup>
 </Project>

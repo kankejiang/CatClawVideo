@@ -2,7 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 
-namespace CatClawVideo.Core.Services.QemuThunder;
+namespace CatClawVideo.Core.Services.QemuGuest;
 
 /// <summary>guest 上报的一条事件（对应 /report?ev=…）。</summary>
 public sealed record QemuReport(string Ev, long Id, int St, int Err, long Done, long Total, string Msg);

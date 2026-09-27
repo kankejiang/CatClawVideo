@@ -3,7 +3,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 
-namespace CatClawVideo.Core.Services.QemuThunder;
+namespace CatClawVideo.Core.Services.QemuGuest;
 
 /// <summary>
 /// 宿主侧「读前缓存代理」：把 QEMU 引擎取流路径的三个固有代价挡在播放器视线之外 ——

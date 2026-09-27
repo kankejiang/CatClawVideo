@@ -4,7 +4,7 @@ using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace CatClawVideo.Core.Services.QemuThunder;
+namespace CatClawVideo.Core.Services.QemuGuest;
 
 /// <summary>QEMU guest 架构：决定机器型/加速后端/串口/引擎文件名。</summary>
 public enum GuestArch
@@ -17,7 +17,7 @@ public enum GuestArch
 /// <summary>
 /// QEMU 运行时进程管理（Windows）：把 ARM64 Android 迅雷下载引擎跑在 QEMU 里。
 ///
-/// <para><b>运行时目录</b>（扁平布局，随应用打包到 <c>ThunderRuntime/</c>）：
+/// <para><b>运行时目录</b>（扁平布局，随应用打包到 <c>QemuGuest/</c>）：
 /// <c>qemu-system-aarch64.exe</c> + 全部 DLL + <c>share/</c> + <c>pkg_kernel</c> + <c>pkg_initrd.xz</c>。
 /// initrd 里烧死了控制口 18080 / 代理口 20080（guest → 10.0.2.2 回连宿主），媒体口由宿主
 /// 经 hostfwd 映射（可用 <see cref="MediaPort"/> 变化，不能占用）。</para>

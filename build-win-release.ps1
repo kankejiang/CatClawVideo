@@ -160,18 +160,18 @@ if (-not (Test-Path "$publishDir\CatClawVideo.Maui.exe")) {
 }
 
 # [1.4/2] ART guest 运行时注入：JavaBridge/qemu-src/tools/mk_art_initrd.py 产出的 art_initrd.gz
-#         （gz 约 226MB / cpio 584.9MB）落在 ThunderRuntime\ 下才会被 csproj 的 ThunderRuntime\** 带进包。
+#         （gz 约 226MB / cpio 584.9MB）落在 QemuGuest\ 下才会被 csproj 的 QemuGuest\** 带进包。
 #         仓库带 gitee 远端，所以这份大文件**不入库**（见 .gitignore），只从本地生成目录拷进发布目录。
 #         ⚠ 缺它 = 安装版没有 ART 链路，Guard 加固站点全数不可用 —— 所以缺件时显式告警，不静默出包。
 $artInitrd = @(
     "JavaBridge\qemu-src\art\art_initrd.gz",
-    "CatClawVideo.Maui\ThunderRuntime\art_initrd.gz"
+    "CatClawVideo.Maui\QemuGuest\art_initrd.gz"
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 if ($artInitrd) {
-    New-Item -ItemType Directory -Force -Path "$publishDir\ThunderRuntime" | Out-Null
-    Copy-Item $artInitrd "$publishDir\ThunderRuntime\art_initrd.gz" -Force
-    $mb = [math]::Round((Get-Item "$publishDir\ThunderRuntime\art_initrd.gz").Length / 1MB, 1)
-    Write-Msg "  ART guest：art_initrd.gz（$mb MB）已注入 $publishDir\ThunderRuntime\" -Color Green
+    New-Item -ItemType Directory -Force -Path "$publishDir\QemuGuest" | Out-Null
+    Copy-Item $artInitrd "$publishDir\QemuGuest\art_initrd.gz" -Force
+    $mb = [math]::Round((Get-Item "$publishDir\QemuGuest\art_initrd.gz").Length / 1MB, 1)
+    Write-Msg "  ART guest：art_initrd.gz（$mb MB）已注入 $publishDir\QemuGuest\" -Color Green
 } else {
     Write-Msg "  ⚠ 没找到 art_initrd.gz：本次安装包**不含 ART guest**，Guard 站点将不可用。" -Color Yellow
     Write-Msg "     生成：python JavaBridge/qemu-src/tools/mk_art_initrd.py --sys28 <API28 /system> --links <链接表> --tvbox <TVBox apk>" -Color Yellow

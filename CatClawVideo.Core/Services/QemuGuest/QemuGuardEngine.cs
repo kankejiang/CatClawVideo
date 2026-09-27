@@ -5,12 +5,12 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json.Nodes;
 
-namespace CatClawVideo.Core.Services.QemuThunder;
+namespace CatClawVideo.Core.Services.QemuGuest;
 
 /// <summary>
 /// Guard 解密 VM（独立 QEMU 实例）：把 ftyguard*.so 的解密/签名/proxyInvoke（ARM 原生）
 /// 跑在 guest 里，桥进程（JavaSpiderRuntime 的 x64 JVM）经 hostfwd 直连 harness 的
-/// 行式 TCP 服务调用。与迅雷引擎（<see cref="QemuThunderEngine"/>）完全独立的进程与控制口，
+/// 行式 TCP 服务调用。与迅雷引擎（<see cref="QemuGuestEngine"/>）完全独立的进程与控制口，
 /// 互不影响生命周期。
 ///
 /// <para><b>链路</b>（2026-09-24 与用户对齐的最终架构）：
@@ -55,7 +55,7 @@ public sealed class QemuGuardEngine : IDisposable
     {
         _runtimeDir = runtimeDir;
         _log = log;
-        // 与 QemuThunderEngine 对齐：迅雷 VM 早就注册了这条，Guard VM 漏了 ——
+        // 与 QemuGuestEngine 对齐：迅雷 VM 早就注册了这条，Guard VM 漏了 ——
         // 实测关应用后 Guard VM（18481 那台）活了下来，迅雷 VM 没有（2026-09-25）。
         AppDomain.CurrentDomain.ProcessExit += (_, _) => Dispose();
     }

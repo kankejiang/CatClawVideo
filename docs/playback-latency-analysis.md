@@ -50,7 +50,7 @@ public static boolean play(String url, ThunderCallback callback) {
 ### 2.3 猫爪 QEMU 侧的固定开销（代码）
 
 ```csharp
-// QemuThunderEngine.cs
+// QemuGuestEngine.cs
 if (_runtime is null || !_runtime.IsRunning) {
     if (!await _runtime.StartAsync(ct)) return false;                  // QEMU 冷启动
     var ready = await _server.WaitFirstPollAsync(TimeSpan.FromSeconds(90));  // guest 首次取任务

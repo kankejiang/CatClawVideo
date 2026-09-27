@@ -12,7 +12,7 @@
 //   dotnet run -c Release --project hosttest -- xfer [imagePath] [capacityMB] [fillMB]
 //     默认 %TEMP%\catclaw-xfer-bench.img / 容量 2048MB / 预填 512MB
 using System.Diagnostics;
-using CatClawVideo.Core.Services.QemuThunder;
+using CatClawVideo.Core.Services.QemuGuest;
 
 internal static class BenchXfer
 {

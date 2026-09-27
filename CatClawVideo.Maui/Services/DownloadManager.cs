@@ -228,14 +228,14 @@ public class DownloadManager : IDisposable
 
     private readonly HttpClient _http;
     /// <summary>迅雷磁力引擎（仅 Windows 注入；磁力下载=引擎独占下载+经媒体口导出本机）</summary>
-    private readonly CatClawVideo.Core.Services.QemuThunder.QemuThunderEngine? _thunder;
+    private readonly CatClawVideo.Core.Services.QemuGuest.QemuGuestEngine? _thunder;
     /// <summary>排队任务等待"并发槽位空出"的通知信号</summary>
     private readonly SemaphoreSlim _slotWake = new(0);
 
     /// <summary>
     /// 磁力任务的**单并发闸**（与 HTTP 下载的 <see cref="_active"/><see cref="ConcurrentLimit"/> 分离）。
     ///
-    /// <para>迅雷引擎是**单 VM 单会话**：新任务会把 <c>QemuThunderEngine._session</c> 顶掉，
+    /// <para>迅雷引擎是**单 VM 单会话**：新任务会把 <c>QemuGuestEngine._session</c> 顶掉，
     /// 正在跑的旧任务随即判定「会话被替换」失败。而 <c>ConcurrentLimit</c>（默认 2）是为 HTTP
     /// 下载设计的，两个磁力同时进来必然互顶 —— 表现为「暂停后恢复提示引擎被占用」
     /// （2026-09-20 用户实测）。故磁力永远串行，与用户设置的并发数无关。</para>
@@ -270,7 +270,7 @@ public class DownloadManager : IDisposable
     /// <summary>单个任务进度/状态变化时触发</summary>
     public event Action<DownloadTaskItem>? TaskUpdated;
 
-    public DownloadManager(CatClawVideo.Core.Services.QemuThunder.QemuThunderEngine? thunderEngine = null)
+    public DownloadManager(CatClawVideo.Core.Services.QemuGuest.QemuGuestEngine? thunderEngine = null)
     {
         _thunder = thunderEngine;
         _http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
@@ -565,7 +565,7 @@ public class DownloadManager : IDisposable
             //
             // 2026-09-20 用户实测「暂停后恢复提示引擎被占用」的真因之一：并发槽位
             // （默认 2）是按 HTTP 下载设计的，对磁力**不适用** —— 两个磁力任务同时进来时，
-            // 后到的会把 QemuThunderEngine._session 顶掉（单 VM 单会话），先到的随即
+            // 后到的会把 QemuGuestEngine._session 顶掉（单 VM 单会话），先到的随即
             // 判定「会话被替换」返回 false，界面报「引擎被播放占用」。
             // 这里给磁力单独一道**单并发闸**，与 HTTP 的 _active/ConcurrentLimit 完全分开：
             // 无论用户把并发设成几，磁力永远串行。

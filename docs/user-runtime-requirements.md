@@ -13,7 +13,7 @@
 |---|---|---|
 | .NET 运行时 | **不需要** | 出包脚本 `build-win-release.ps1:146` 用 `-p:SelfContained=true` |
 | Windows App SDK 运行时 | **不需要** | `CatClawVideo.Maui.csproj:28` `WindowsAppSDKSelfContained=true`；产物实测含 `CoreMessagingXP.dll` / `MRM.dll` / `Microsoft.UI.*.dll` |
-| QEMU（磁力播放引擎） | **不需要** | `ThunderRuntime/`（QEMU + `pkg_kernel` + `pkg_initrd.gz`，约 **144MB**）随包 |
+| QEMU（磁力播放引擎） | **不需要** | `QemuGuest/`（QEMU + `pkg_kernel` + `pkg_initrd.gz`，约 **144MB**）随包 |
 | **Java（jar 类爬虫源）** | **不需要**（2026-09-22 起） | `JavaBridge/jre/`（jlink 自 Microsoft OpenJDK 21，约 **62MB**）随包；`JavaSpiderRuntime.FindJavaExe()` 优先用它 |
 | VC++ 2015-2022 运行库 | **不需要**（安装时自动装，缺则装、有则跳过） | 见 §3 |
 
@@ -86,7 +86,7 @@ avfilter-11         → MSVCP140 · VCRUNTIME140 · VCRUNTIME140_1
 # 1) 产物里这几样必须都在
 $o = "CatClawVideo.Maui\bin\win-release\publish"
 "JavaBridge\jre\bin\java.exe"   # Java 运行时（jar 爬虫源）
-"ThunderRuntime\qemu-system-aarch64.exe"  # 磁力播放引擎
+"QemuGuest\qemu-system-aarch64.exe"  # 磁力播放引擎
 Test-Path "$o\coreclr.dll"      # 非空 = self-contained（不依赖用户装 .NET）
 ```
 

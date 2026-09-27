@@ -16,7 +16,10 @@ n_img = len(props)
 
 extra = {
     'ro.product.cpu.abi': 'arm64-v8a', 'ro.product.cpu.abilist': 'arm64-v8a',
-    'ro.product.cpu.abilist64': 'aarch64', 'ro.product.cpu.abilist32': '',
+    # ⚠ 必须是 arm64-v8a：这是 Android 的 ABI 名，aarch64 是内核/DTS 名。
+# 写错的后果（2026-09-26 装机版实测）：jar 按 abilist64 里找 "arm64" 找不到，
+# 就去 load 32 位的 v7 壳 → dlopen failed: "...libFishGuard-v7-....so" is 32-bit instead of 64-bit。
+'ro.product.cpu.abilist64': 'arm64-v8a', 'ro.product.cpu.abilist32': '',
     'ro.dalvik.vm.native.bridge': '0', 'dalvik.vm.isa.arm64.variant': 'generic',
     'dalvik.vm.isa.arm64.features': 'default', 'persist.sys.dalvik.vm.lib.2': 'libart.so',
     'ro.zygote': 'zygote64_32', 'dalvik.vm.stack-trace-dir': '/data/anr',

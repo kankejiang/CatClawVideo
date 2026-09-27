@@ -4,7 +4,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using CatClawVideo.Core.Interfaces;
 
-namespace CatClawVideo.Core.Services.QemuThunder;
+namespace CatClawVideo.Core.Services.QemuGuest;
 
 /// <summary>
 /// Windows 磁力优先引擎：在 QEMU 里跑 ARM64 Android 迅雷下载引擎（P2SP 私有网络）。
@@ -21,7 +21,7 @@ namespace CatClawVideo.Core.Services.QemuThunder;
 ///
 /// <para>⚠ 单 VM 单会话：新任务会把 guest 代理重新武装到新引擎端口，正在播放的旧流会断——与 Android 迅雷一致。</para>
 /// </summary>
-public sealed class QemuThunderEngine : IPreferredMagnetEngine, IPlaybackSessionLease, IDisposable
+public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLease, IDisposable
 {
     /// <summary>控制口：烧死在 initrd 里（guest 每秒回连宿主 10.0.2.2:18080），改不了。</summary>
     /// <summary>默认控制口（多实例时各用各的，见构造参数）</summary>
@@ -76,7 +76,7 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IPlaybackSession
 
     /// <summary>引擎实例：同 runtime 可跑多个（播放/下载各一），靠控制口/initrd/媒体口/日志名隔离。
     /// 各实例的 VM 懒启动互不干扰 → 「边下边播」天然成立（下载 VM 与播放 VM 并行）。</summary>
-    public QemuThunderEngine(string runtimeDir, Action<string>? log = null,
+    public QemuGuestEngine(string runtimeDir, Action<string>? log = null,
         int ctrlPort = 18080, int mediaPortBase = PreferredMediaPort,
         string initrdName = "pkg_initrd.gz", string consoleTag = "",
         int monitorPortBase = PreferredMonitorPort)
@@ -329,7 +329,7 @@ public sealed class QemuThunderEngine : IPreferredMagnetEngine, IPlaybackSession
     public async Task<(bool Ok, string Reason)> DownloadToFileExAsync(string magnet, string preferName,
         Func<string, string> destPathFor, Action<long, long>? progress, CancellationToken ct)
     {
-        if (!IsReady) { Log("磁力下载不可用：迅雷引擎运行时缺失"); return (false, "迅雷引擎运行时缺失（ThunderRuntime 未部署）"); }
+        if (!IsReady) { Log("磁力下载不可用：迅雷引擎运行时缺失"); return (false, "迅雷引擎运行时缺失（QemuGuest 未部署）"); }
 
         Session? s = null;
         await _gate.WaitAsync(ct).ConfigureAwait(false);

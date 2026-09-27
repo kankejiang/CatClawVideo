@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace CatClawVideo.Core.Services.QemuThunder;
+namespace CatClawVideo.Core.Services.QemuGuest;
 
 /// <summary>种子内单个文件条目。</summary>
 public sealed record TorrentEntry(int Index, long Size, string Rel);
