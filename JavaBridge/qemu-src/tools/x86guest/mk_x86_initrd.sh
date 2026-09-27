@@ -54,6 +54,26 @@ if [ -d "$NDK" ]; then
 else
     echo "WARN: 缺 ndk_translation prebuilts，Guard 源不可用"
 fi
+# ── arm64 专用 linker 配置（决定性，2026-09-27）──
+# ndk 的 arm64 linker64 按自身 ISA 找 /system/etc/ld.config.arm64.txt，找不到才回落
+# /linkerconfig/ld.config.txt（x86 内容）→ 搜到 x86 libc++ → EM 不符 FATAL。
+# 这份只给 arm64 侧：搜索路径全指 arm64 子目录；x86 linker 继续用 /linkerconfig 那份，互不干扰。
+cat > $R/system/etc/ld.config.arm64.txt <<'ARM64CFG'
+dir.system = /system/bin
+dir.system = /system/xbin
+
+[system]
+namespace.default.isolated = false
+namespace.default.search.paths = /system/lib64/arm64
+namespace.default.permitted.paths = /system/lib64/arm64:/system/lib64:/system/bin:/data:/data/catclaw
+
+namespace.sphal.isolated = false
+namespace.sphal.visible = true
+namespace.sphal.search.paths = /system/lib64/arm64
+namespace.sphal.permitted.paths = /system/lib64/arm64:/data:/data/catclaw
+ARM64CFG
+echo "arm64 linker 配置已生成"
+
 # ⚠ 移除 dex2oat64：13 在 boot 镜像缺失时会现场调 dex2oat 生成 boot classpath 镜像，
 #   而那个镜像要求 linker namespace 与 APEX 元数据一致（com_android_art），极简 rootfs
 #   无法满足 → 反复 abort（2026-09-27 实测 4 轮）。移除后 ART 无条件 imageless+JIT，

@@ -175,6 +175,13 @@ int main(int argc, char **argv) {
         bool (*InitNB)(JNIEnv*, const char*) =
             (bool (*)(JNIEnv*, const char*)) dlsym(nbl, "InitializeNativeBridge");
         fflush(stdout);
+        /* PreInitialize：拉起 arm64 bridge 进程（app_process64）准备环境——
+         * 官方顺序 Load → PreInitialize → Initialize。wrapper 的 arm64 linker64 现在读
+         * /system/etc/ld.config.arm64.txt（mk 生成），依赖解析不再误中 x86 库。 */
+        bool (*PreNB)(const char*, const char*) =
+            (bool (*)(const char*, const char*)) dlsym(nbl, "PreInitializeNativeBridge");
+        if (PreNB) printf("artlaunch: PreInitializeNativeBridge = %d\n", PreNB("/data/catclaw", "arm64"));
+        fflush(stdout);
 if (InitNB) printf("artlaunch: InitializeNativeBridge = %d\n", InitNB(env, "arm64"));
         else printf("artlaunch: 无 InitializeNativeBridge 符号\n");
         fflush(stdout);
@@ -188,6 +195,22 @@ if (InitNB) printf("artlaunch: InitializeNativeBridge = %d\n", InitNB(env, "arm6
         if (reg) printf("artlaunch: boot natives 注册 %d 个\n", reg(env));
         else printf("artlaunch: 没有 catclaw_register_boot_natives（LD_PRELOAD 没生效？）\n");
         if ((*env)->ExceptionCheck(env)) { printf("artlaunch: 注册阶段有异常\n"); (*env)->ExceptionDescribe(env); (*env)->ExceptionClear(env); }
+    /* 自测：注册后立即经 JNI 调 SystemProperties.get——验证注册在 ART 侧真的生效 */
+    {
+        jclass sp = (*env)->FindClass(env, "android/os/SystemProperties");
+        jmethodID g = sp ? (*env)->GetStaticMethodID(env, sp, "get", "(Ljava/lang/String;)Ljava/lang/String;") : NULL;
+        if (g) {
+            jstring k = (*env)->NewStringUTF(env, "ro.dalvik.vm.native.bridge");
+            jstring r = (jstring) (*env)->CallStaticObjectMethod(env, sp, g, k);
+            const char *rs = r ? (*env)->GetStringUTFChars(env, r, 0) : "(null)";
+            printf("artlaunch: 自测 SystemProperties.get = %s\n", rs);
+            if (r) (*env)->ReleaseStringUTFChars(env, r, rs);
+        } else {
+            printf("artlaunch: 自测 GetStaticMethodID 失败\n");
+            if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionDescribe(env); (*env)->ExceptionClear(env); }
+        }
+        fflush(stdout);
+    }
     }
 
     char slash[192];

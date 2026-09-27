@@ -113,3 +113,18 @@ ndk_translation（ChromeOS sdk_gphone_x86_64:13 官方抽取，supremegamers 仓
 下次正道：读 google/ndk_translation 开源 mirror 的 loader 路径逻辑（arm64 目录的约定
 或开关属性），或为 arm64 wrapper 单独生成一份 ld.config（双架构分离——ndk runner
 对 config 文件名的约定需从源码确认）。
+### 2026-09-27 再续：arm64 专用 ld.config 打通半程
+
+- 找到 ndk arm64 linker64 的 config 选择链（strings 实锤）：/system/etc/ld.config.arm64.txt
+  优先于 /linkerconfig/ld.config.txt（x86 内容）——按 ISA 分离配置是官方机制
+- 第一版 arm64 config 解析失败（`section "system" not found`——缺 [system] 段头），补上后：
+  PreNB=1 → ndk Initialized → 桥可用 → **主线程 SystemProperties.get 自测成功**
+- 卡点再进一层：主线程注册生效，但经 DexClassLoader 加载的 app dex 类调用同一
+  native_get 仍报 No implementation found——嫌疑指向 ndk 侧 classloader namespace
+  （arm64 类加载器命名空间）对 boot 类 native 注册表的可见性，或 ChromeOS 容器
+  的 mount ns 假设。配置已对齐 Bliss/ChromeOS 公开资料，差异在完整系统环境。
+
+三条路线的成本评估：
+A. 继续啃 ndk（需拿到 ChromeOS 官方系统镜像抽完整调好的 /system 对照；或逆向闭源 loader）
+B. 双 guest 路由落地（x86 跑非 Guard 源原生速度 + aarch64 兜 Guard；工程量小、价值立现）
+C. 等待/寻找 ndk_translation 的社区完整实践（Waydroid/Bliss 社区跟进）
