@@ -497,8 +497,11 @@ public final class Art {
         System.err.println("[art] DexClassLoader " + f.getName() + " 就绪"
                 + (sys != Art.class.getClassLoader() ? "（parent=桩优先链）" : ""));
         Class<?> cls = loader.loadClass("com.github.catvod.spider." + className);
+        System.err.println("[art] step#3 loadClass ok: " + cls.getName());
         Object ctx = spiderCtx();
+        System.err.println("[art] step#4 spiderCtx ok: " + (ctx == null ? "null" : ctx.getClass().getName()));
         bindInit(loader, ctx);
+        System.err.println("[art] step#5 bindInit ok");
         // 登记站点键：爬虫自建的回调 URL 里 site= 用的是它自己的类名，两个键都要能找回这个站点。
         // 应答本身走 Server.proxyDispatch（与宿主 JRE 的 proxy op 同源：实例 proxy → Cloud_<do>
         // → proxyInput → 静态 Proxy.proxy）。以前这里只登记第 ④ 步，网盘系 do=input/quark 全 502。
@@ -509,22 +512,27 @@ public final class Art {
         // 找不到就把端口记成 -1，于是给播放器的地址变成 http://127.0.0.1:-1/proxy?…（2026-09-26 装机台架实测）。
         // 这一步不能依赖宿主下发 setProxyPort —— 宿主没接本地代理服务时根本不发。
         listenProxy(TVBOX_PORT);
-        System.err.println("[art] " + site + "：proxy 自回调已就位");
+        System.err.println("[art] step#6 proxy 自回调已就位");
         Object sp = cls.getDeclaredConstructor().newInstance();
+        System.err.println("[art] step#7 newInstance ok: " + sp.getClass().getName());
         // 与 TVBox JarLoader.getSpider 的调用序列一致：siteKey → initApi → init。
         // initApi 的实例必须取自**桩命名空间**（stub Spider 的 initApi 参数是桩 SpiderApi，
         // 灌 boot 副本会 ICCE），宿主经 setStubHostProxyPort 同步端口到该副本。
         try { cls.getField("siteKey").set(sp, site); } catch (Throwable ignored) { }
+        System.err.println("[art] step#8 siteKey ok");
         try {
             Class<?> apiCls = sys.loadClass("com.github.catvod.crawler.SpiderApi");
             Method ia = findMethod(cls, "initApi", 1);
             if (ia != null) ia.invoke(sp, apiCls.getDeclaredConstructor().newInstance());
         } catch (NoSuchMethodException ignored) { }
+        System.err.println("[art] step#9 initApi ok");
         long t0 = System.currentTimeMillis();
         try {
             // 参数类型可能解析到桩命名空间（Class 身份与 boot 不同），不能 getMethod(Context.class, ...)
             Method m = findMethod(cls, "init", 2);
+            System.err.println("[art] step#10 调 " + className + ".init(Context, ext) —— 崩溃若在此后即壳的 init 触发");
             if (m != null) m.invoke(sp, ctx, ext == null ? "" : ext);
+            System.err.println("[art] step#11 init 返回");
         } catch (NoSuchMethodException ignored) { }
         System.err.println("[art] spider " + className + " init 完成 ("
                 + (System.currentTimeMillis() - t0) + "ms)");
@@ -635,6 +643,24 @@ public final class Art {
     }
 
     /**
+     * Unsafe 绕构造器造真类实例（零副作用，字段全默认）；失败返回 null。
+     * 供 App 桩造系统服务对象用（真 ContextImpl 的 SystemServiceRegistry 在 guest 里不存在）。
+     */
+    static Object forged(String cn) {
+        try {
+            Class<?> c = Class.forName(cn);
+            Class<?> unsafeCls = Class.forName("sun.misc.Unsafe");
+            java.lang.reflect.Field uf = unsafeCls.getDeclaredField("theUnsafe");
+            uf.setAccessible(true);
+            Object unsafe = uf.get(null);
+            java.lang.reflect.Method alloc = unsafeCls.getMethod("allocateInstance", Class.class);
+            return alloc.invoke(unsafe, (Object) c);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
      * 真 {@code ContextWrapper.getCacheDir()} 要 ActivityThread，guest 里没有 ActivityThread，
      * 所以整棵 Context 树靠覆写给出（漏哪个就在哪个上 NPE —— P3 实测 {@code getSharedPreferences} 就是）。
      */
@@ -704,6 +730,56 @@ public final class Art {
                     prefs.put(name, p);
                 }
                 return p;
+            }
+        }
+
+        /**
+         * ⚠ 壳的 native 经 JNI 回调 {@code Context.getSystemService}：真 ContextWrapper 走
+         * mBase（guest 里是 null）→ 抛 NPE → JNI 调用返回 NULL → 转译执行的 ARM 代码
+         * 不判空直接解引用 → **SIGSEGV(fault addr=0)**（§6.6 实锤：崩溃前唯一的信号就是它）。
+         *
+         * <p>所以这里**绝不返回 null**：按服务名造「真类的 Unsafe 伪实例」（零副作用），
+         * 未知服务退化为非 null 占位对象并打日志 —— 日志会指出下一步该补哪个服务。
+         * JRE 桩环境（非 ART）行为完全不变。</p>
+         */
+        @Override public Object getSystemService(String name) {
+            if (!onArt()) return super.getSystemService(name);
+            try {
+                String cn = sysServiceClass(name);
+                Object o = cn == null ? null : forged(cn);
+                if (o != null)
+                    System.err.println("[art] getSystemService(" + name + ") → " + cn + " 伪实例");
+                else if (cn != null)
+                    System.err.println("[art] getSystemService 造桩失败: " + name + " (" + cn + ")");
+                else
+                    System.err.println("[art] getSystemService 未支持（占位返回）: " + name);
+                return o != null ? o : new Object();
+            } catch (Throwable t) {
+                System.err.println("[art] getSystemService 异常: " + name + " " + t);
+                return new Object();
+            }
+        }
+
+        /** 常见服务名 → 真系统服务类（用 Unsafe 造实例）；null = 未知，走占位。 */
+        private static String sysServiceClass(String name) {
+            if (name == null) return null;
+            switch (name) {
+                case "connectivity":  return "android.net.ConnectivityManager";
+                case "wifi":          return "android.net.wifi.WifiManager";
+                case "telephony":     return "android.telephony.TelephonyManager";
+                case "activity":      return "android.app.ActivityManager";
+                case "power":         return "android.os.PowerManager";
+                case "storage":       return "android.os.storage.StorageManager";
+                case "battery":       return "android.os.BatteryManager";
+                case "sensor":        return "android.hardware.SensorManager";
+                case "window":        return "android.view.WindowManager";
+                case "audio":         return "android.media.AudioManager";
+                case "notification":  return "android.app.NotificationManager";
+                case "keyguard":      return "android.app.KeyguardManager";
+                case "vibrator":      return "android.os.Vibrator";
+                case "input_method":  return "android.view.inputmethod.InputMethodManager";
+                case "layout_inflater": return "android.view.LayoutInflater";
+                default: return null;
             }
         }
     }

@@ -20,16 +20,111 @@
 #include <signal.h>
 #include <stdbool.h>
 #include <unistd.h>
+#include <ucontext.h>
+#include <fcntl.h>
 
 /* libsigchain 要求**主程序**导出这三个符号（实测 tombstone：
  *   #01 libsigchain.so AddSpecialSignalHandlerFn+20
  *   #02 libart.so art::FaultManager::Init()+140
  *   → "SetSpecialSignalHandlerFn is not exported by the main executable." → abort）
  * app_process64 是靠链接期带上 libsigchain 拿到的；这里自己实现，语义等价：记下 ART 的
- * handler 并真的 sigaction 上去，返回前一个。 */
+ * handler 并真的 sigaction 上去，返回前一个。
+ *
+ * ⚠ 必须是**多 handler 链**（2026-09-27 修正）：单槽实现只保留最后一个注册者，
+ * 而 ART 的 FaultManager 与 ndk 转译器**都会**注册 SIGSEGV —— 槽位互相覆盖导致
+ * 处理链断裂：guest fault 经 ndk 修正上下文后恢复到一个无效 PC → 立刻再次 fault
+ * → 循环（内核打印 ip=fffffffffffffb17、error 15，同 PC 反复出现就是这么来的）。
+ * 真 libsigchain 的语义：后注册者先处理，谁返回 true（已处理）就停止。 */
 #define SIGCHAIN_MAX 32
+#define SIGCHAIN_SLOTS 4          /* 每个信号最多挂几个 special handler */
 typedef bool (*chain_fn)(int, siginfo_t *, void *);
-static chain_fn g_chain[SIGCHAIN_MAX];
+static chain_fn g_chain[SIGCHAIN_MAX][SIGCHAIN_SLOTS];
+static int g_nchain[SIGCHAIN_MAX];
+
+/* 注册（头插：后注册者先拿到信号；去重；超限丢弃） */
+static void chain_add(int signal, chain_fn fn) {
+    if (signal < 0 || signal >= SIGCHAIN_MAX || !fn) return;
+    for (int i = 0; i < g_nchain[signal]; i++)
+        if (g_chain[signal][i] == fn) return;          // 已注册
+    if (g_nchain[signal] >= SIGCHAIN_SLOTS) return;
+    for (int i = SIGCHAIN_SLOTS - 1; i > 0; i--) g_chain[signal][i] = g_chain[signal][i - 1];
+    g_chain[signal][0] = fn;
+    g_nchain[signal]++;
+}
+
+static void chain_remove(int signal, chain_fn fn) {
+    if (signal < 0 || signal >= SIGCHAIN_MAX || !fn) return;
+    for (int i = 0; i < g_nchain[signal]; i++) {
+        if (g_chain[signal][i] != fn) continue;
+        for (int j = i; j + 1 < g_nchain[signal]; j++) g_chain[signal][j] = g_chain[signal][j + 1];
+        g_nchain[signal]--;
+        return;
+    }
+}
+
+/* 崩溃点定位：在信号里直接查 /proc/self/maps，打印 PC 落在哪个模块+偏移（纯 syscall，
+ * 异步信号安全；不要在这里用 stdio/malloc）。壳 so 是运行时解密加载的，启动时的
+ * maps 不完整——所以必须现场解析。 */
+static unsigned long hexval(const char *s, int n) {
+    unsigned long v = 0;
+    for (int i = 0; i < n; i++) {
+        char c = s[i];
+        unsigned d = (unsigned)((c >= '0' && c <= '9') ? c - '0' : (c >= 'a' && c <= 'f') ? c - 'a' + 10 : 0);
+        v = (v << 4) | (unsigned long) d;
+    }
+    return v;
+}
+
+static void dump_map_for(unsigned long pc) {
+    int fd = open("/proc/self/maps", O_RDONLY);
+    if (fd < 0) return;
+    /* ART 进程的 maps 很长（上千行），缓冲必须大——否则后加载的壳 so / 转译代码区读不到，
+     * 命中不到区间就等于白抓（第一次就是 16KB 太小）。 */
+    static char buf[262144];   /* 256KB：ART 的 maps 上千行，缓冲不够就只能眼睁睁看它截断 */
+    static char line[512];
+    int total = 0;
+    for (;;) {
+        ssize_t r = read(fd, buf + total, (size_t)((int) sizeof buf - 1 - total));
+        if (r <= 0) break;
+        total += (int) r;
+        if (total >= (int) sizeof buf - 1) break;
+    }
+    close(fd);
+    buf[total] = 0;
+    if (total == 0 || total >= (int) sizeof buf - 1) {
+        static const char w[] = "[sig] 崩溃点: maps 读取异常/截断，未匹配\n";
+        write(2, w, sizeof w - 1);
+        return;
+    }
+    for (int p = 0; p < total; ) {
+        int e = p;
+        while (e < total && buf[e] != '\n') e++;
+        int len = e - p;
+        if (len > 0 && len < (int) sizeof line) {
+            memcpy(line, buf + p, (size_t) len);
+            line[len] = 0;
+            int dash = -1, sp = -1;
+            for (int k = 0; k < len; k++) {
+                if (line[k] == '-' && dash < 0) dash = k;
+                else if (line[k] == ' ' && dash >= 0) { sp = k; break; }
+            }
+            if (dash > 0 && sp > dash) {
+                unsigned long lo = hexval(line, dash);
+                unsigned long hi = hexval(line + dash + 1, sp - dash - 1);
+                if (lo && pc >= lo && pc < hi) {
+                    static const char tag[] = "[sig] 崩溃点: ";
+                    write(2, tag, sizeof tag - 1);
+                    write(2, line, (size_t) len);
+                    write(2, "\n", 1);
+                    return;   // 命中即收（break 会掉到末尾再打一行"未匹配"，误导排查）
+                }
+            }
+        }
+        p = e + 1;
+    }
+    static const char w[] = "[sig] 崩溃点: 未匹配任何 maps 区间（PC 可能在转译 JIT 区/已卸载）\n";
+    write(2, w, sizeof w - 1);
+}
 
 /* 信号哨兵（2026-09-27）：壳真实类首调转译代码后 SIGSEGV 无 dump 直接 139 死，
  * trampoline 包住注册进来的 handler，记信号号/故障码/故障地址后转发。
@@ -42,16 +137,23 @@ static int g_siglog;   /* main 开头读一次环境变量，信号处理内不�
 
 static void sig_trampoline(int sig, siginfo_t *info, void *ctx) {
     if (g_siglog) {
-        char buf[96];
+        /* 崩溃 PC：定位「信号落在哪个模块」的关键——配合启动时的 /proc/self/maps 读偏移量 */
+        unsigned long pc = 0;
+        if (ctx) {
+            ucontext_t *uc = (ucontext_t *) ctx;
+            pc = (unsigned long) uc->uc_mcontext.gregs[REG_RIP];
+        }
+        char buf[128];
         static const char hex[] = "0123456789abcdef";
         uintptr_t a = (uintptr_t) info->si_addr;
-        buf[0] = '['; buf[1] = 's'; buf[2] = 'i'; buf[3] = 'g'; buf[4] = ']';
-        buf[5] = ' ';
-        int n = 6;
-        /* 固定格式 "s=<sig> c=<code> a=0x<hex16>\n"——只用 write，异步信号安全 */
+        int n = 0;
+        const char *tag = "[sig] ";
+        while (*tag) buf[n++] = *tag++;
+        /* 固定格式 "s=<sig> c=<code> a=0x<addr> pc=0x<pc>\n"——只用 write，异步信号安全 */
         buf[n++] = 's'; buf[n++] = '=';
-        if (sig > 9) { buf[n++] = (char) ('0' + sig / 10); sig %= 10; }
-        buf[n++] = (char) ('0' + sig);
+        int s = sig;
+        if (s > 9) { buf[n++] = (char) ('0' + s / 10); s %= 10; }
+        buf[n++] = (char) ('0' + s);
         buf[n++] = ' '; buf[n++] = 'c'; buf[n++] = '=';
         int c = info->si_code;
         if (c < 0) { buf[n++] = '-'; c = -c; }
@@ -60,23 +162,30 @@ static void sig_trampoline(int sig, siginfo_t *info, void *ctx) {
         buf[n++] = ' '; buf[n++] = 'a'; buf[n++] = '=';
         for (int i = 15; i >= 0; i--) buf[n + (15 - i)] = hex[(a >> (i * 4)) & 0xf];
         n += 16;
+        buf[n++] = ' '; buf[n++] = 'p'; buf[n++] = 'c'; buf[n++] = '=';
+        for (int i = 15; i >= 0; i--) buf[n + (15 - i)] = hex[(pc >> (i * 4)) & 0xf];
+        n += 16;
         buf[n++] = '\n';
         write(2, buf, n);
+        if (pc) dump_map_for(pc);
     }
-    chain_fn real = g_chain[sig];
-    if (real) real(sig, info, ctx);
-    else _exit(128 + sig);   /* 没有真 handler：显式留退出码 */
+    /* 依次问链上的 handler：谁返回 true（已处理）就停 —— 真 libsigchain 语义 */
+    for (int i = 0; i < g_nchain[sig]; i++) {
+        chain_fn h = g_chain[sig][i];
+        if (h && h(sig, info, ctx)) return;
+    }
+    _exit(128 + sig);   /* 无人处理：显式留退出码（默认动作等价） */
 }
 
 chain_fn SetSpecialSignalHandlerFn(int signal, struct sigaction *sa) {
     if (signal < 0 || signal >= SIGCHAIN_MAX || !sa) return NULL;
-    chain_fn old = g_chain[signal];
-    g_chain[signal] = (chain_fn) sa->sa_sigaction;
+    chain_fn old = g_nchain[signal] > 0 ? g_chain[signal][0] : NULL;
+    chain_add(signal, (chain_fn) sa->sa_sigaction);
     struct sigaction tramp;
     memcpy(&tramp, sa, sizeof tramp);
     tramp.sa_sigaction = sig_trampoline;
     struct sigaction dummy;
-    sigaction(signal, &tramp, &dummy);
+    sigaction(signal, &tramp, &dummy);   /* 进程级 handler 始终是 trampoline（它负责遍历链） */
     return old;
 }
 
@@ -85,7 +194,7 @@ chain_fn AddSpecialSignalHandlerFn(int signal, struct sigaction *sa) {
 }
 
 void RemoveSpecialSignalHandlerFn(int signal, chain_fn handler) {
-    if (signal >= 0 && signal < SIGCHAIN_MAX && g_chain[signal] == handler) g_chain[signal] = NULL;
+    chain_remove(signal, handler);
 }
 
 
