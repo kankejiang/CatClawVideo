@@ -368,54 +368,24 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     private readonly ConcurrentDictionary<string, string> _rawJars = new();
 
     /// <summary>
-    /// 查找系统里的 java.exe，取**版本最高**的那个（随包 <c>JavaBridge/jre</c> 存在时短路返回，见下）。
-    /// <para>扫描顺序：JAVA_HOME → <c>C:\Program Files\Java\*</c> → <c>C:\Program Files\Microsoft\jdk-*</c> → PATH。
-    /// 取最高版本是通用兜底策略：bridge.jar 是 major 61（--release 17），太老的 JDK 跑不了新字节码；
-    /// 本机常见「PATH 里 17、JAVA_HOME 里 21」或同时装两套 JDK，按目录名版本号排序取最大。</para>
+    /// 查找 java.exe：<b>只认随包</b> <c>JavaBridge/jre/bin/java.exe</c>（jlink 自 Microsoft
+    /// OpenJDK 21），**不回落系统 Java**（JAVA_HOME/Program Files/PATH 扫描已废弃，git 历史可查）。
+    /// <para>为什么不回落（2026-09-28 JRE 退役语义）：JRE 桥只是 ART guest 桥的回落路径，
+    /// 静默借用用户系统 Java 会出现「ART 失败被系统 Java 意外救回」的漂移行为，排障时症状
+    /// 不可复现；随包缺失 → 恒 null → JRE 桥与 d8 转换给明确报错，行为确定。
+    /// 版本可控的理由不变：bridge.jar 是 major 61（--release 17），随包运行时永远满足。</para>
     /// </summary>
     public static string? FindJavaExe()
     {
-        // ★ 随包的精简运行时**优先**（JavaBridge/jre，jlink 自 Microsoft OpenJDK 21，MIT 许可）。
-        //   两个理由：
-        //   ① 开箱即用 —— 装了这份就不要求用户自备 Java（2026-09-22 用户反馈：最常见根因就是机器上没 Java）。
-        //   ② 版本可控 —— bridge.jar 现在是 **major 61（--release 17**，为了能在 QEMU guest 的
-        //      Alpine OpenJDK 17 里跑同一份字节码），但 unpacker.jar 仍是 65，所以运行时下限并没有降；
-        //      随包运行时永远满足，短路返回、不与系统 Java 比大小。
         if (FindBridgeDir() is { } bundledDir)
         {
             var bundled = Path.Combine(bundledDir, "jre", "bin", "java.exe");
             if (File.Exists(bundled)) return bundled;
         }
 
-        var candidates = new List<(int Major, string Path)>();
-        void Consider(string? p)
-        {
-            if (string.IsNullOrEmpty(p) || !File.Exists(p)) return;
-            var dir = new DirectoryInfo(Path.GetDirectoryName(p)!);
-            var m = Regex.Match(dir.Name, @"(\d+)");
-            candidates.Add((m.Success ? int.Parse(m.Groups[1].Value) : 0, p));
-        }
-
-        var home = Environment.GetEnvironmentVariable("JAVA_HOME");
-        if (!string.IsNullOrEmpty(home)) Consider(Path.Combine(home, "bin", "java.exe"));
-
-        foreach (var root in new[] { @"C:\Program Files\Java", @"C:\Program Files\Microsoft", @"C:\Program Files\Android\openjdk" })
-        {
-            if (!Directory.Exists(root)) continue;
-            foreach (var dir in Directory.GetDirectories(root))
-                Consider(Path.Combine(dir, "bin", "java.exe"));
-        }
-
-        var pathVar = Environment.GetEnvironmentVariable("PATH") ?? "";
-        foreach (var d in pathVar.Split(';', StringSplitOptions.RemoveEmptyEntries))
-        {
-            try { Consider(Path.Combine(d.Trim(), "java.exe")); }
-            catch { }
-        }
-
-        return candidates.Count == 0
-            ? null
-            : candidates.OrderByDescending(c => c.Major).First().Path;
+        System.Diagnostics.Debug.WriteLine(
+            "[jvm] 随包 jre 缺失且不回落系统 Java（FindJavaExe=null，JRE 桥/d8 转换不可用）");
+        return null;
     }
 
     /// <summary>
