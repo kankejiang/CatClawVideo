@@ -499,21 +499,51 @@ x86 guest（WHPX 单 QEMU 实例）
 验收脚本（`tools/x86guest/`）：`restart_merged.sh`（冒烟）/ `merged_full_run.sh`（全链路）/
 `bridge_ping.py` / `blk_check.py` / `verify_merged.py` / `timed_restart.sh`（桥就绪计时）。
 
-### 6.10 启动提速 + 镜像瘦身专项（2026-09-28 侦察完毕，待实施）
+### 6.10 启动提速专项：boot 镜像加载打通（2026-09-28 破案 + 已实施）
 
-> 用户目标：ART guest 冷启动 41~46s → 更快；安装包 374MB → 更小。两者由同一专项解决。
+> 用户目标：ART guest 冷启动 41~46s → 更快。长期卡点「image 回退 imageless」已破案并修复。
 
-**启动时间实测分解**（108 内核时钟 + 宿主墙钟）：
-内核 + initrd 解包 **6.6s**（zstd 后解压更快）→ **ART boot ~36s（大头）** → 站点 + homeContent ~5s。
-ART boot 慢的实锤：`Could not create image space ... Cannot relocate ... Only the zygote can
-create the global boot image` → **imageless running，每次启动全量 JIT**。
+**破案链**（每步都有 108 实机证据）：
 
-**boot 镜像三连实测**（init.tmpl.sh，均已留痕）：`CATCLAW_BCP_LOCATIONS`（位置对齐）/
-`+ -Xnorelocate` / `+ -Xzygote` —— 全部仍走 relocate→imageless。**根因 = boot.oat 的 dex
-checksum 与当前 jar 对不齐**（framework jar 是符号链接布局 + 历史裁剪动过内容）。
-**正解 = 离线 dex2oat 用当前 jar 自产配套 boot 镜像**（自产自销校验必过），产物进 initrd 后
-init.tmpl.sh 的 `CATCLAW_BCP_LOCATIONS + -Xnorelocate` 立即生效（已就位），预计 ART boot
-36s → 15~20s。
+1. **真根因 ≠ checksum，而是 artlaunch 的「选项注入顺序」bug**：
+   `args.nOptions = n` 先定格，而 `CATCLAW_JVM_EXTRA` 的注入循环在其后——extra 选项
+   （-Xnorelocate/-Xzygote/-verbose:startup）写进了 opts[] 且 printf 照打，**但从未进入
+   nOptions → ART 从未收到**。此前「三连实测全部无效」就是在跟这个 bug 搏斗（选项一次
+   都没到过 ART）。修复：注入移到 nOptions 定格之前（opts[8]→[16] 顺带修掉越界隐患）。
+2. **修复后实测**（用 `-verbose:startup` 当探针）：`Runtime::Init -verbose:startup enabled`
+   / `Runtime::Start entering` 首次出现 → **通道打通**；`-Xnorelocate` 生效 →
+   `ShouldRelocate()=false` → image 走 Step 2.a **原位加载**（不再走「relocate 到
+   dalvik-cache，仅 zygote 可做」的失败路径）→ `Could not create image space` 归零。
+3. **布局**：ART 推导 image 路径 = `/system/framework/boot.art`（BCP 首 jar 目录 + boot.art）
+   → framework/ 根放 boot*.art 的**符号链接**（指向 arm64/ 实体），boot.oat/.vdex 留 arm64/。
+4. **image 生效的副作用**：ART 对桥 classpath（/gb.dex、/tvbox.apk）**现场 quicken 编译**
+   （调 /system/bin/dex2oat，实测 +14.6s：gb 0.37s + tvbox 14.25s）。**已改为预置**——离线
+   编 quicken oat（108 上 qemu-user 跑 dex2oatd，与 boot 编译同姿势：
+   `--boot-image=/system/framework/boot.art --compiler-filter=quicken`），4 个文件
+   （gb.dex/gb.vdex/tvbox.apk@classes.dex/tvbox.apk@classes.vdex）放
+   `art-tree/data/dalvik-cache/arm64/`（initrd 的 /data 是 ramfs，冷启动即在位）。
+
+**验收数据**（108，桥 ping→pong 口径）：
+
+| 配置 | 桥就绪 | dex2oat 现场 | image |
+|---|---|---|---|
+| imageless 基线 | 39.1~41.0s | 无 | 回退 |
+| image + 现场 quicken | 53.1s | 14.6s | 加载 |
+| **image + 预置 oat（定稿）** | **41.0s** | **0 次** | **加载** |
+
+注：冷启动时间与 imageless 基本持平——**收益在运行期**（classpath 走 quickened 字节码，
+imageless 是原始 dex 解释执行）+ image 类结构直接可用。后续优化方向：libartd(debug) →
+libart(本机 release) 去掉 image 加载期 debug 校验开销；boot 镜像换 quicken 滤镜（本次
+verify）压缩类初始化路径。
+
+**遗留 / 注意事项**：
+
+- 预置 oat 的 checksum 与 boot.oat 绑定——**boot 镜像重编后必须重跑预置 oat**（顺序：
+  boot 编译 → 预置 oat → 打包）。
+- `CATCLAW_BCP_LOCATIONS`（把 .art 当 dex location 的错位语义）在成功配置下保留勿动。
+- 108 参考脚本：`tools/x86guest/step6f_fullrebuild.sh`（boot 全量编译）、
+  `step6P_build_artlaunch.sh`（artlaunch 重编+部署+验证）、`step7a/b/c`（预置 oat
+  编译/部署/验证）、`step5_boot_test.sh`（重打包 + timed 冷启动 + 桥 pong）。
 
 **initrd 585MB 分布侦察**（zstd 版前，Top 可裁项）：
 | 项 | 大小 | 判定 |

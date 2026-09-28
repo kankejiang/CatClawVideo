@@ -141,7 +141,14 @@ static void sig_trampoline(int sig, siginfo_t *info, void *ctx) {
         unsigned long pc = 0;
         if (ctx) {
             ucontext_t *uc = (ucontext_t *) ctx;
+            /* 平台相关：x86_64 走 gregs（REG_RIP），aarch64 直接取 mcontext.pc。
+             * ⚠ 哨兵段是 2026-09-27 加给 x86 mini guest 的，aarch64 侧一直没重编过
+             *   （2026-09-28 首次重编 aarch64 时此处在 aarch64 下编不过，实锤）。 */
+#if defined(__x86_64__)
             pc = (unsigned long) uc->uc_mcontext.gregs[REG_RIP];
+#elif defined(__aarch64__)
+            pc = (unsigned long) uc->uc_mcontext.pc;
+#endif
         }
         char buf[128];
         static const char hex[] = "0123456789abcdef";
@@ -349,7 +356,7 @@ int main(int argc, char **argv) {
     if (!bcp) bcp = BCP;
     const char *bcp_loc = getenv("CATCLAW_BCP_LOCATIONS");
     snprintf(bcp_opt, sizeof bcp_opt, "-Xbootclasspath:%s", bcp);
-    JavaVMOption opts[8];
+    JavaVMOption opts[16];
     int n = 0;
     opts[n++].optionString = cpopt;
     opts[n++].optionString = bcp_opt;
@@ -358,22 +365,19 @@ int main(int argc, char **argv) {
         opts[n++].optionString = loc_opt;
     }
 
-    JavaVMInitArgs args;
-    memset(&args, 0, sizeof args);
-    args.version = JNI_VERSION_1_6;
-    args.nOptions = n;
-    args.options = opts;
-    args.ignoreUnrecognized = JNI_TRUE;
-
     /* CATCLAW_JVM_EXTRA：宿主按需追加 JVM 选项（空格分隔，如
      * "-Xnoimage-dex2oat -Xnodex2oat"——13 无预编译 boot 镜像时 ART 会现场调 dex2oat
      * 生成 boot 镜像，而那个镜像要求 linker namespace 与 apex 元数据一致，极简 rootfs
-     * 里配不齐 → 两个选项都传，走纯 interpreter+JIT，原生 CPU 上开销可接受）。 */
+     * 里配不齐 → 两个选项都传，走纯 interpreter+JIT，原生 CPU 上开销可接受）。
+     * ⚠ 注入必须发生在 `args.nOptions = n;` 定格【之前】：旧版把本块放在 args 赋值
+     *   【之后】，nOptions 不含 extra 选项 → ART 从未看到 -Xnorelocate/-Xzygote/
+     *   -verbose:startup 等（printf「附加 JVM 选项」照打，纯属自欺——2026-09-28 实锤，
+     *   坑掉整轮 boot image 调试：所有选项实验全部白做）。 */
     {
         const char *extra = getenv("CATCLAW_JVM_EXTRA");
         if (extra) {
             char *dup = strdup(extra);
-            for (char *tok = strtok(dup, " "); tok != NULL && n < 12; tok = strtok(NULL, " ")) {
+            for (char *tok = strtok(dup, " "); tok != NULL && n < 16; tok = strtok(NULL, " ")) {
                 opts[n].optionString = tok;
                 printf("artlaunch: 附加 JVM 选项 %s\n", tok);
                 n++;
@@ -381,6 +385,13 @@ int main(int argc, char **argv) {
             fflush(stdout);
         }
     }
+
+    JavaVMInitArgs args;
+    memset(&args, 0, sizeof args);
+    args.version = JNI_VERSION_1_6;
+    args.nOptions = n;
+    args.options = opts;
+    args.ignoreUnrecognized = JNI_TRUE;
 
     JavaVM *vm = NULL;
     JNIEnv *env = NULL;
