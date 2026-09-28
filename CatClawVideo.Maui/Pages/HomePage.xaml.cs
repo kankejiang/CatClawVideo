@@ -106,15 +106,22 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
         var siteCount = SiteRegistry.Playable.Count();
         var elapsed = (DateTime.UtcNow - _coldStartUtc).TotalSeconds;
 
-        // ── 进度条（假进度，按实测耗时标定）──
-        // 冷启动大头 = ART guest 41~46s：把「引擎阶段」锚定到 45s 走到 ~85%，先快后慢
-        //（elapsed/55 线性爬升 + 0.15 起跳，前 10s 观感推进明显、后期放缓不死等）；
-        // 订阅未就绪钉在 5%；数据上屏瞬间充满（淡出前的收尾）。
-        double p = siteCount == 0
-            ? 0.05
-            : Math.Min(0.85, 0.15 + elapsed / 55.0);
-        if (_vm.Categories.Count > 0) p = 1.0;
-        _ = ColdStartProgress.ProgressTo(p, 380, Easing.Linear);
+        // ── 进度条 + 百分比（分段锚定实测阶段，冷启动各段耗时来自 108/本机日志）──
+        // · 0~8s   内核解包 + init（快）：        5% → 30%（用户要的前段「0 1 2 3 4 10 20」快推）
+        // · 8~45s  ART boot（36s 大头，慢）：    30% → 80%
+        // · >45s   桥收尾/站点加载：              80% → 97% 极慢爬（每秒 ~0.35%，观感仍在推进）
+        // · 数据上屏（分类就绪）：                 瞬间 100% → 淡出
+        // 是假进度（无真实百分比信号），但各段与实测一致，不会 40s 卡在同一个数上。
+        double p;
+        if (siteCount == 0) p = 5;
+        else if (elapsed <= 8) p = 5 + elapsed / 8.0 * 25;
+        else if (elapsed <= 45) p = 30 + (elapsed - 8) / 37.0 * 50;
+        else p = Math.Min(97, 80 + (elapsed - 45) * 0.35);
+
+        if (_vm.Categories.Count > 0) p = 100;
+        p = Math.Round(p, 0, MidpointRounding.AwayFromZero);
+        ColdStartPct.Text = $"{p:0}%";
+        _ = ColdStartProgress.ProgressTo(p / 100.0, 380, Easing.Linear);
 
         ColdStartStatus.Text = siteCount == 0
             ? "正在恢复订阅与站点…"
@@ -123,7 +130,12 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
                 // Android 的 jar 桥是进程内 DexClassLoader（没有 QEMU），冷启动只是 dex 加载，秒级
                 ? "正在启动爬虫运行时…"
 #else
-                ? "正在启动视频引擎（QEMU ART 冷启动，约 40 秒）…"
+                ? elapsed switch
+                {
+                    < 8 => "正在启动视频引擎（内核加载）…",
+                    < 45 => "正在启动视频引擎（ART 运行时，约 40 秒）…",
+                    _ => "正在加载首页数据…",
+                }
 #endif
                 : "正在加载首页数据…";
     }

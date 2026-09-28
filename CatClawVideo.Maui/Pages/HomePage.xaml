@@ -174,9 +174,12 @@
                 <ActivityIndicator IsRunning="True" WidthRequest="30" HeightRequest="30"
                                    HorizontalOptions="Center"
                                    Color="{DynamicResource PrimaryColor}" />
-                <!-- 进度条：时间驱动的渐进曲线（冷启动锚定 ~45s 到 85%，数据就绪瞬间充满）。
-                     是"假进度"（无真实百分比信号），但按实测耗时标定，观感可信。 -->
-                <ProgressBar x:Name="ColdStartProgress" Progress="0.02" WidthRequest="420" HeightRequest="5"
+                <!-- 百分比数字 + 进度条：分段锚定实测阶段（内核解包快 / ART boot 慢），
+                     数字随 tick 跳动给「在动」的实感；数据上屏瞬间 100%。 -->
+                <Label x:Name="ColdStartPct" Text="0%" FontSize="24" FontAttributes="Bold"
+                       HorizontalOptions="Center"
+                       TextColor="{DynamicResource TextPrimaryColor}" />
+                <ProgressBar x:Name="ColdStartProgress" Progress="0.01" WidthRequest="420" HeightRequest="5"
                              HorizontalOptions="Center"
                              ProgressColor="{DynamicResource PrimaryColor}" />
                 <Label x:Name="ColdStartStatus" FontSize="13.5" MaxLines="2" WidthRequest="460"
