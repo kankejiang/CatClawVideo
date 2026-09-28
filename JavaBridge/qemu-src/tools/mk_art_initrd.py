@@ -230,7 +230,7 @@ def build_initrd(a):
             add("system/framework/" + f, ("arm64/" + f).encode("utf-8"), 0o120777)
             n_boot += 1
     else:
-        print("⚠ 缺 art/bootimg/arm64——guest 将回退 imageless（启动慢 + 运行期原始 dex 解释）")
+        print("[警告] 缺 art/bootimg/arm64——guest 将回退 imageless（启动慢 + 运行期原始 dex 解释）")
 
     # ── 预置 quicken oat：image 生效后 ART 会现场调 /system/bin/dex2oat 编桥 classpath
     #    （实测 +14.6s），预置即免；/data 是 initrd ramfs，冷启动即在位。──
@@ -243,7 +243,7 @@ def build_initrd(a):
             put("data/dalvik-cache/arm64/" + f, os.path.join(preoat, f))
             n_preoat += 1
     else:
-        print("⚠ 缺 art/dalvik-preinit/arm64——首启将现场 quicken（+14.6s）")
+        print("[警告] 缺 art/dalvik-preinit/arm64——首启将现场 quicken（+14.6s）")
 
     init = io.open(os.path.join(ART, "init.tmpl.sh"), encoding="utf-8").read().replace("\r\n", "\n")
     add("init", init.encode(), 0o100755)
