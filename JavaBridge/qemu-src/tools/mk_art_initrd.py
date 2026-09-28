@@ -4,12 +4,19 @@
 产物放进 <c>CatClawVideo.Maui/ThunderRuntime/</c>，宿主 <c>QemuArtGuest</c> 检测到它就启用 ART 链路
 （判据：<c>qemu-system-aarch64.exe</c> + <c>pkg_kernel</c> + <c>art_initrd.gz</c> 三件齐全）。
 
-两条硬规矩（都是 2026-09-25 实测踩出来的，别再撞）：
+三条硬规矩（前两条 2026-09-25 实测踩出来的，别再撞；第 3 条 2026-09-28 boot 镜像破案）：
 1. <b>桥的 dex 必须去掉「TVBox 与壳 jar 自己定义的类</b>」：guest 的 classpath 是
    <c>DexClassLoader</c> 的 parent，parent-first 下我们手写的替身会顶掉真 native
    （症状：桥里 <c>DexNative 方法 11 个，native 0 个</c>）。规则见 <c>gb_excluded()</c>。
 2. <b>端口不能烧进 initrd</b>：/init 从 kernel cmdline 的 <c>guardport=</c> 取
    （宿主 QemuHostRuntime 已经带这条），否则两个 VM 并存必撞号。
+3. <b>原厂 boot 镜像必须剔除、改放自产三件套</b>：sys28 树里 Google 的
+   <c>framework/{,arm64/}boot*.{art,oat,vdex,rel}</c> 在 framework jar 裁剪后 checksum
+   已失效（且 .art.rel 要求 zygote 重定位，我们不是 zygote）——打包时过滤，
+   由 <c>art/bootimg/arm64/</c>（自产 45 件：15 dex × art/oat/vdex）+ framework 根
+   <b>相对符号链接</b>替代；<c>-Xnorelocate</c> 原位加载（init.tmpl.sh，详见 docs §6.10）。
+   预置 quicken oat 在 <c>art/dalvik-preinit/arm64/</c>（免去 image 生效后 ART 现场编
+   桥 classpath 的 +14.6s）——<b>两者与 boot.oat/gb.dex 互相绑定，重编须同批更新</b>。
 
 用法（在 D:\\Code 下）：
     python CatClawVideo/JavaBridge/qemu-src/tools/mk_art_initrd.py ^
@@ -124,6 +131,20 @@ def build_ui_stub_dex(bridge_jar, out_dex, java, d8, android_jar, workdir):
 # 放到 -Xbootclasspath 最前面，想抢回 android.app.AlertDialog 的类名 —— ART 对 boot classpath
 # 里的重复类不是"先到先得"，`android.app.Dialog` 仍解析到 framework.jar（探针 op 里 fillSpec=无）。
 
+def is_stock_boot(rel):
+    """原厂 boot 镜像条目（system/framework/{,arm64/}boot*.{art,oat,vdex,rel}）。
+    裁剪后的 framework jar 令其 checksum 失效、.art.rel 又要求 zygote 重定位——一律
+    剔除，改由 art/bootimg/ 的自产三件套 + framework 根符号链接替代（docs §6.10）。"""
+    if not rel.startswith("system/framework/"):
+        return False
+    tail = rel[len("system/framework/"):]
+    if tail.startswith("arm64/"):
+        tail = tail[6:]
+    if not tail.startswith("boot") or "/" in tail:
+        return False
+    return tail.rsplit(".", 1)[-1] in ("art", "oat", "vdex", "rel")
+
+
 def build_initrd(a):
     ents = [e for e in RC.read_cpio(gzip.decompress(io.open(a.base, "rb").read()))
             if e[0] not in ("init", "TRAILER!!!", ".") and not e[0].startswith("system/")]
@@ -141,6 +162,7 @@ def build_initrd(a):
     # /system 里的绝对符号链接（framework/arm64/*.vdex → /system/framework/*.vdex）
     # 必须作为 cpio 符号条目写：rdump 到 Windows 上会变成打不开的真链接，
     # 少了它们 patchoat 报 "boot.vdex does not exist"。
+    stock_boot_skipped = 0
     if os.path.isfile(a.links):
         for ln in io.open(a.links, encoding="utf-8", newline=""):
             ln = ln.strip()
@@ -148,6 +170,9 @@ def build_initrd(a):
                 continue
             rel, tgt = ln.split("\t", 1)
             rel = "system/" + rel.lstrip("./").replace("\\", "/")
+            if is_stock_boot(rel):   # 原厂 boot 的 arm64→根 vdex 链：方向与自产布局相反，剔除
+                stock_boot_skipped += 1
+                continue
             dirs_of(rel)
             ents.append((rel, 0o120777, 0, 0, 1, 0, 0, 0, 0, 0, tgt.encode()))
     skipped = 0
@@ -164,6 +189,9 @@ def build_initrd(a):
             rel = "system/" + os.path.relpath(fp, a.sys28).replace("\\", "/")
             if rel in EXCLUDE_SYSTEM:
                 excluded += 1
+                continue
+            if is_stock_boot(rel):   # 原厂 boot（checksum 失效）——由 art/bootimg/ 自产替代
+                stock_boot_skipped += 1
                 continue
             try:
                 data = io.open(fp, "rb").read()
@@ -190,6 +218,33 @@ def build_initrd(a):
         for i in z.infolist():
             if i.filename.startswith("lib/arm64-v8a/"):
                 add("data/catclaw/art/lib/" + i.filename.split("/")[-1], z.read(i.filename))
+    # ── 自产 boot 镜像（2026-09-28，docs §6.10）：45 实体（15 dex × art/oat/vdex）进
+    #    system/framework/arm64/，framework 根放同名【相对】符号链接——ART 推导 image
+    #    路径 = 「BCP 首 jar 目录 + boot.art」= /system/framework/boot.art，根链接命中即
+    #    原位加载；配合 init.tmpl.sh 的 -Xnorelocate（须 artlaunch 带选项注入修复）。
+    bootimg = os.path.join(ART, "bootimg", "arm64")
+    n_boot = 0
+    if os.path.isdir(bootimg):
+        for f in sorted(os.listdir(bootimg)):
+            put("system/framework/arm64/" + f, os.path.join(bootimg, f))
+            add("system/framework/" + f, ("arm64/" + f).encode("utf-8"), 0o120777)
+            n_boot += 1
+    else:
+        print("⚠ 缺 art/bootimg/arm64——guest 将回退 imageless（启动慢 + 运行期原始 dex 解释）")
+
+    # ── 预置 quicken oat：image 生效后 ART 会现场调 /system/bin/dex2oat 编桥 classpath
+    #    （实测 +14.6s），预置即免；/data 是 initrd ramfs，冷启动即在位。──
+    #    ⚠ 与 boot.oat / gb.dex / tvbox.apk 三者 checksum 绑定：任一重编须重跑预置
+    #    （顺序：boot 编译 → 预置 oat → 打包；108 工具 tools/x86guest/step7a/b/c）。
+    preoat = os.path.join(ART, "dalvik-preinit", "arm64")
+    n_preoat = 0
+    if os.path.isdir(preoat):
+        for f in sorted(os.listdir(preoat)):
+            put("data/dalvik-cache/arm64/" + f, os.path.join(preoat, f))
+            n_preoat += 1
+    else:
+        print("⚠ 缺 art/dalvik-preinit/arm64——首启将现场 quicken（+14.6s）")
+
     init = io.open(os.path.join(ART, "init.tmpl.sh"), encoding="utf-8").read().replace("\r\n", "\n")
     add("init", init.encode(), 0o100755)
 
@@ -206,8 +261,10 @@ def build_initrd(a):
         blob = gzip.compress(raw, 6, mtime=0)
         kind = "gzip-6"
     io.open(a.out, "wb").write(blob)
-    print("art_initrd: cpio %.1fMB → %s %.1fMB（%s），/system 跳过 %d 个打不开的文件、裁剪 %d 个无用件"
-          % (len(raw) / 1048576, kind, os.path.getsize(a.out) / 1048576, a.out, skipped, excluded))
+    print("art_initrd: cpio %.1fMB → %s %.1fMB（%s），/system 跳过 %d 个打不开的文件、"
+          "裁剪 %d 个无用件、剔除原厂 boot %d 个；自产 boot 镜像 %d 件 + 预置 oat %d 件"
+          % (len(raw) / 1048576, kind, os.path.getsize(a.out) / 1048576, a.out,
+             skipped, excluded, stock_boot_skipped, n_boot, n_preoat))
 
 
 def main():

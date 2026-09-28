@@ -527,14 +527,29 @@ x86 guest（WHPX 单 QEMU 实例）
 
 | 配置 | 桥就绪 | dex2oat 现场 | image |
 |---|---|---|---|
-| imageless 基线 | 39.1~41.0s | 无 | 回退 |
+| imageless 基线（含污染，见下） | 39.1~41.0s | 无 | 回退 |
 | image + 现场 quicken | 53.1s | 14.6s | 加载 |
-| **image + 预置 oat（定稿）** | **41.0s** | **0 次** | **加载** |
+| image + 预置 oat（art-tree 测，含污染） | 41.0s | 0 次 | 加载 |
+| **产品版 initrd（定稿）** | **11.1s（×3 稳定）** | **0 次** | **加载** |
 
-注：冷启动时间与 imageless 基本持平——**收益在运行期**（classpath 走 quickened 字节码，
-imageless 是原始 dex 解释执行）+ image 类结构直接可用。后续优化方向：libartd(debug) →
-libart(本机 release) 去掉 image 加载期 debug 校验开销；boot 镜像换 quicken 滤镜（本次
-verify）压缩类初始化路径。
+**⭐ 11.1s 破案（2026-09-29 凌晨，产品化回归）**：此前"41s 基线"是**污染样本**——
+art-tree 的 init 被 merge 流程写入过**迅雷段**、且树里带 `/harness`（来自 pkg 基座的非
+system 条目），迅雷段在无控制端的测试里执行 → harness 反复「退出码 1 → 2s 重启」重试
+循环，占用 TCG CPU 把 ART 启动拖慢 ~30s。二分实验实锤：产品内容+树版 init = 41.0s；
+产品内容+树版 jar = 9.1s。**真实成绩 = 11.1s**（此前的 39~53s 系列数据全部含 harness
+干扰或 imageless 回退，作废）。收益 = image 原位加载 + quickened 字节码 + 预置 oat
+（三项叠加，ART 段从 ~36s 压到 ~6s）。
+
+**产品化实施（2026-09-29）**：写入 `mk_art_initrd.py` 第 3 条硬规矩——原厂 boot 镜像
+（sys28 树里 Google 的 60 件 + TSV 链接）打包时剔除，改放 `art/bootimg/arm64/`（自产
+45 件：15 dex × art/oat/vdex）+ framework 根 45 相对符号链接 + `art/dalvik-preinit/arm64/`
+（4 件预置 oat）；`art/artlaunch` 与 `artlaunch.x64` 更新为修复版（选项注入顺序 + aarch64
+signal 分支）。验收脚本：`step8b_prod_smoke.sh`（产品版冷启动回归）。
+合并版（art_initrd_merged.gz）同步再生成：桥 pong + harness 回连 + SDK vod.sock 数据面
+全通过（启动时间未精确计时，因迅雷段设计上就在跑，留待后续评估）。
+
+**剩余优化方向**：libartd(debug) → libart(release) 去 image 加载期 debug 校验开销；
+boot 镜像换 quicken 滤镜（本次 verify）压缩类初始化路径。
 
 **遗留 / 注意事项**：
 
