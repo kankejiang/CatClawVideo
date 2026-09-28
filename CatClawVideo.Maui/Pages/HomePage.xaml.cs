@@ -95,7 +95,15 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
         {
             _coldStartTimer?.Stop();
             _coldStartTimer = null;
-            MainThread.BeginInvokeOnMainThread(() => _ = FadeOutColdStartOverlayAsync());
+            // 就绪 ≠ 立刻消失：先跳 100%（用户要求「一下子加载到 100% 再进程序」），
+            // 停 ~0.5s 让最后一帧可见，再淡出。直接淡出会让数字永远停在 80 多。
+            MainThread.BeginInvokeOnMainThread(async () =>
+            {
+                ColdStartPct.Text = "100%";
+                _ = ColdStartProgress.ProgressTo(1.0, 150, Easing.Linear);
+                await Task.Delay(500);
+                await FadeOutColdStartOverlayAsync();
+            });
             return;
         }
         MainThread.BeginInvokeOnMainThread(ApplyColdStartStatus);
