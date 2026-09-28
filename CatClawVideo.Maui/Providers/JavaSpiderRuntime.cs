@@ -752,6 +752,12 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     /// <summary>宿主 JRE 那条路：起 java.exe 跑 bridge.Server，标准流当协议通道。</summary>
     private async Task StartJvmBridgeAsync(CancellationToken ct)
     {
+        // JRE 退役（2026-09-28）：javaExe 可为空（MauiProgram 不再因缺 jre 顶掉 ART 桥）——
+        // 走到这条路（ART 桥起不来的回落）时给明确原因，而不是 Process.Start 的隐晦异常。
+        if (string.IsNullOrEmpty(_javaExe))
+            throw new InvalidOperationException(
+                "未找到宿主 Java（JavaBridge\\jre\\bin\\java.exe）：JRE 回落桥不可用。"
+                + "ART guest（QemuGuest）是 jar 源的主运行时，请确认其完整（art_initrd_merged.gz 等）。");
         var psi = new ProcessStartInfo
         {
             FileName = _javaExe,

@@ -218,11 +218,14 @@ public static class MauiProgram
         _ = Task.Run(async () => { try { await thunder.EnsureReadyAsync(); } catch { } });
 
 #else
-        // 桌面 JVM 桥：JavaBridge 目录 + 系统 java.exe（缺一则不可用）
+        // 桌面桥：JavaBridge 目录（**java.exe 可缺**，2026-09-28 JRE 退役可行性前提）——
+        // jar 源的主路径是 ART guest 桥（寄生在本类，guest 里真 ART，不需要宿主 Java）；
+        // 宿主 JRE 桥只是回落路径。⚠ 不能因缺 jre 换 NullSpiderRuntime——那会把 ART 桥
+        // 一起顶掉（jar 源全灭）。javaExe 传空串：JRE 桥启动时给明确错误，ART 桥不受影响。
         var bridgeDir = CatClawVideo.Core.Providers.JavaSpiderRuntime.FindBridgeDir();
         var javaExe = CatClawVideo.Core.Providers.JavaSpiderRuntime.FindJavaExe();
-        CatClawVideo.Core.Interfaces.ISpiderRuntime jarRuntime = bridgeDir != null && javaExe != null
-            ? new CatClawVideo.Core.Providers.JavaSpiderRuntime(bridgeDir, javaExe, m =>
+        CatClawVideo.Core.Interfaces.ISpiderRuntime jarRuntime = bridgeDir != null
+            ? new CatClawVideo.Core.Providers.JavaSpiderRuntime(bridgeDir, javaExe ?? "", m =>
             {
                 // Windows 桌面没有控制台，Debug.WriteLine 不挂调试器就抓不到 →
                 // 同时落 %APPDATA%\CatClawVideo\home-debug.log，排障 Guard 解壳/桥加载要看这段
