@@ -630,9 +630,22 @@ ART 12/13 verifier 对 OLLVM 混淆 dex 的已知硬拒形态；Android 9（aarc
    playerContent 已验收通过；x86 的 dex2oat 是本机原生指令集，无需 qemu-user——
    构建比 aarch64 更简单。产物对齐后 imageless 的 verifier 行为差异随之消失。
    ⚠ 预置 oat 的 checksum 与 boot.oat 绑定（重编 boot 必须重跑预置 oat）。
-2. verifier 绕行选项继续挖掘（`-Xverifyopt:_` 在 libart 中存在，取值集合
-   `{verifier, preverify, nopostverify_rosalloc, nogcstress}` 未解析）。
-3. 终极兜底：x86 线保持 opt-in（现状），Guard 源走 aarch64。
+
+**2026-09-29 构建进展（108 + Windows 双侧，工具已入库 `tools/x86guest/`）**：
+- dex2oat64 在 Waydroid `system.img` 的扁平 apex（`system/apex/com.android.art/bin/`，
+  release 版 1.1MB，链接树内 libart-compiler/libartbase 等；mk 脚本曾刻意 `rm -f` 它）
+- dex2oat64 参数坑（逐个踩实）：ART 13 **无 `--multi-image`**（单镜像）、**无
+  `--image-classes`/`--profile`**（默认全类入镜像）、**必须显式 `--base=0x70000000`**
+  （「Non-zero --base not specified for boot image」）
+- chroot 里 dex2oat64 在 `Runtime::CreateResolutionMethod` 的 LinearAlloc 首次分配即
+  `mmap(MAP_32BIT) ENOMEM` abort——低 2GB 被 dex2oat 自己的 2GB LinearAlloc 预留
+  （fixed 0x12c00000）+ 64MB 预留（0xec00000）占满；strace 包裹无效（与 aarch64
+  qemu-user 时代不同）。⇒ 放弃宿主 chroot 路线，改走 **guest 内原生构建**（真实
+  Android 环境，模拟器首启同款流程）：构建版 initrd（`guest_build_init.sh`：标准初始化
+  → dex2oat boot+预置 oat → busybox httpd 暴露产物，宿主经 hostfwd 拉取），
+  `pack_build.sh` 打包、`build_boot_x86.sh` 留作宿主侧参考
+- 阻塞：108 SSH 连续会话后拒连（kex reset，疑似限流/负载），待恢复后继续
+  （pack_build.sh 已推送到 108 /root/x86guest/，重入即可）
 
 **排障工具沉淀**：`extract_initrd.py` 解包 + `replace_initrd.py` 改 /init 重打包
 （注意 compresslevel=1）；`WhpxProbe` 探测；桥调试泵驱动 call/fetch。
