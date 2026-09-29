@@ -669,6 +669,30 @@ ART 12/13 verifier 对 OLLVM 混淆 dex 的已知硬拒形态；Android 9（aarc
 （注意 compresslevel=1）；`WhpxProbe` 探测；桥调试泵驱动 call/fetch；
 `build_bootimg_inject.py` 自包含 cpio newc 读写 + ELF 偏移换算（补丁 libart 用）。
 
+## 6.13 磁力链路（2026-09-29，进行中）
+
+- **架构定案（用户拍板）**：磁力 harness 与爬虫桥**同 VM**（合并模式），禁双 QEMU。
+  C# 侧接线本来就有（`QemuThunderEngine.ExternalVmProvider` ← `EnsureThunderVmAsync`），
+  但被 `CanProvideThunderVm => false` 写死禁用；已解禁 + 纯桥 VM 在跑时**重启为合并配置**
+  （不再回退引擎自起——x86 没有 thunder-only initrd，自起会拿 aarch64 包 panic）。
+- **迅雷 SDK 只有 ARM 版** → ARM harness + 引擎库放 x86 initrd，**qemu-aarch64-static
+  用户态转译**跑（ndk_translation 路线 harness 秒退不可用，expA 实测）。108 已全链路
+  验证：qemu-user 跑 ARM harness + 引擎，真实磁力 BT 边下边播通过（787MB/206 首块正确）。
+- **资产打包**：`build_thunder_assets.sh`（108）→ thunder_assets.cpio.gz（23M）：
+  harness + qemu-aarch64-static + thunder-arm/（ARM linker+lib64，供 -L 前缀取解释器）
+  + data/catclaw/art/lib/（引擎库）+ thunder-data/（setting.cfg/Identify2.txt）。
+  init 迅雷段由注入器插入（thunderport= 缺省时休眠）。
+- **boot 组件构建脚本**（`build_bootimg_x108.sh`）当晚连环踩坑修复：dex2oat64 忘套
+  qemu 前缀（=chroot 原生死法复现）、cp「同一文件」在 set -e 下误杀、`tail` 管道吞报错、
+  守门阈值误杀（boot.art 实际 896KB）、中止时 trap 未注册导致挂载泄漏累积（/proc rm 出
+  20 万行错误）。全部修复后 boot/gb/tvbox 三段 exit=0。
+- **验证器补丁受阻**：libart `ClassVerifier::VerifyClass` 入口恒返 kSoftFailure/kNoFailure
+  都在「未验证类执行」时 SIGSEGV（libart+0x163dbc，与 -Xusejit 开关无关）——入口补丁
+  跳过了调用方契约副作用。补丁已默认关闭（PATCH_LIBART=1 启用），netdisk 已回退到
+  已验证可用态。**下一步**：guest 加调试后门（nc shell）→ /proc/<artlaunch>/fd 找
+  InMemoryDexClassLoader 的 memfd → dump 解密后的 spider dex → dexdump 分析
+  ProxyOrigin.getan@0x192 → 定位 ART13 误拒的确切字节码模式再定挂钩点。
+
 ---
 
 ## 7. 未完成任务

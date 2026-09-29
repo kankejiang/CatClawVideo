@@ -27,6 +27,7 @@ Z = r"d:/Code/CatClawVideo/CatClawVideo.Maui/QemuGuest/x86guest"
 BAK = os.path.join(Z, "art_initrd_x64_pristine.gz")
 NEW = os.path.join(Z, "bootimg_artifacts.cpio.gz")
 OUT = os.path.join(Z, "art_initrd_x64_bootimg.gz")
+THUNDER = os.path.join(Z, "thunder_assets.cpio.gz")  # 磁力资产（可选，缺=不带磁力）
 if len(sys.argv) == 4:
     BAK, NEW, OUT = sys.argv[1:4]
 
@@ -75,7 +76,9 @@ def write_cpio_newc(entries, out):
 
 # ── libart 验证器补丁 ────────────────────────────────────────────────────────
 VERIFY_CLASS_VADDR = 0x871f40   # art::verifier::ClassVerifier::VerifyClass（Waydroid ART13 libart.so）
-SOFTFAIL = bytes.fromhex("b801000000c3")  # mov eax,1(=kSoftFailure) ; ret
+# 恒返 kNoFailure(0)：类直接标记 verified 走正常装载路径。⚠ 不能返 kSoftFailure(1)——
+# 软失败路径要求验证器先填好的副作用（dex cache / 状态机）缺失时 SIGSEGV（2026-09-29 实测）。
+SOFTFAIL = bytes.fromhex("b800000000c3")  # mov eax,0(=kNoFailure) ; ret
 
 def patch_libart(data):
     e_phoff = int.from_bytes(data[0x20:0x28], "little")
@@ -136,19 +139,23 @@ def main():
               or e[0].startswith(("system/framework/x86_64/", "data/dalvik-cache/x86_64/"))
               or e[0] == "system/framework/boot.art"]
 
-    # libart 软失败补丁
+    # libart 软失败补丁：⚠ 2026-09-29 晚实测 kSoftFailure/kNoFailure 两个变体都在
+    # 「未验证类执行」时 SIGSEGV（libart+0x163dbc，与 JIT 开关无关）——补丁跳过了
+    # VerifyClass 的调用方契约副作用。默认关闭，待符号化定位正确挂钩点后再启用。
     patched = None
-    for i, e in enumerate(inject):
-        if e[0] == "apex/com.android.art/lib64/libart.so":
-            inject[i] = e[:6] + (patch_libart(bytearray(e[6])),) + e[7:]
-            patched = True
-    if patched is None:  # 生产树里的 libart 打补丁
-        merged_tmp = [(e[0], e) for e in prod]
-        for i, (n, e) in enumerate(merged_tmp):
-            if n == "apex/com.android.art/lib64/libart.so":
-                merged_tmp[i] = (n, e[:6] + (patch_libart(bytearray(e[6])),) + e[7:])
+    if os.environ.get("PATCH_LIBART") == "1":
+        for i, e in enumerate(inject):
+            if e[0] == "apex/com.android.art/lib64/libart.so":
+                inject[i] = e[:6] + (patch_libart(bytearray(e[6])),) + e[7:]
                 patched = True
-        prod = [e for _, e in merged_tmp]
+        if patched is None:  # 生产树里的 libart 打补丁
+            merged_tmp = [(e[0], e) for e in prod]
+            for i, (n, e) in enumerate(merged_tmp):
+                if n == "apex/com.android.art/lib64/libart.so":
+                    merged_tmp[i] = (n, e[:6] + (patch_libart(bytearray(e[6])),) + e[7:])
+                    patched = True
+            prod = [e for _, e in merged_tmp]
+    print("③ libart 补丁:", "已应用" if patched else "跳过（PATCH_LIBART=1 启用）")
     print("③ 注入条目:", len(inject),
           "| framework 组件:", len([e for e in inject if e[0].startswith("system/framework/x86_64/")]),
           "| 缓存:", len([e for e in inject if e[0].startswith("data/dalvik-cache/x86_64/")]))
@@ -176,6 +183,60 @@ def main():
     init = init.replace(old_line, new_line)
     merged[init_i] = merged[init_i][:6] + (init,) + merged[init_i][7:]
     print("④ init 已打 bootimg 补丁（-Xnorelocate + -Ximage 15 组件全列）")
+
+    # ── 磁力资产（可选）：ARM harness + qemu-aarch64-static + 引擎库 + init 迅雷段 ──
+    if os.path.exists(THUNDER):
+        print("④b 合并磁力资产 ...")
+        with gzip.open(THUNDER, "rb") as g:
+            thunder_entries = read_cpio_newc(g.read())
+        tn = {e[0] for e in thunder_entries}
+        merged = [e for e in merged if e[0] not in tn] + thunder_entries
+        print("   磁力条目:", len(thunder_entries))
+        if b"[thunder]" not in init:
+            thunder_sh = (
+                '\n# ── 迅雷段（合并磁力）：cmdline thunderport= 存在时拉起 ARM harness ──\n'
+                '# ARM harness + 迅雷 SDK（只有 ARM 版）在 x86 guest 里经 qemu-aarch64-static\n'
+                '# 用户态转译跑（108 已实测：引擎初始化/BT 边下边播全链路通）。ndk_translation\n'
+                '# 路线（expA）harness 秒退不可用。thunderport 缺省时本段整体休眠（纯桥 VM 零开销）。\n'
+                'TP=$(getarg thunderport)\n'
+                'if [ -n "$TP" ] && [ -x /harness ]; then\n'
+                '    export CTRL_HOST="10.0.2.2"          # SLIRP 宿主侧（控制端 QemuGuestEngine）\n'
+                '    export CTRL_PORT="$TP"\n'
+                '    export PROXY_PORT="20080"            # guest 媒体代理口（宿主 hostfwd -:20080 对准它）\n'
+                '    export P2SP_SECS="0" DL_SECS="0"\n'
+                '    export BLK_DEV="$(getarg blkdev)"    # 数据面块设备；缺位时 harness 回退纯转发\n'
+                '    export QCO="${QCO:-1}"\n'
+                '    # ARM bionic 引擎库优先（x86 的 /system/lib64 是错误架构，bionic 会跳过继续找）\n'
+                '    export LD_LIBRARY_PATH=/data/catclaw/art/lib:/thunder-arm/system/lib64\n'
+                '    SD=$(getarg swapdev)\n'
+                '    if [ -n "$SD" ] && [ -b "$SD" ]; then\n'
+                '        $BB mkswap "$SD" 2>/dev/null\n'
+                '        $BB swapon "$SD" 2>/dev/null && echo "[thunder] swap on $SD"\n'
+                '    fi\n'
+                '    i=0\n'
+                '    while [ $i -lt 30 ] && ! $BB ifconfig eth0 2>/dev/null | $BB grep -q 10.0.2.15; do\n'
+                '        $BB sleep 1; i=$((i+1))\n'
+                '    done\n'
+                '    $BB mkdir -p /thunder-data 2>/dev/null\n'
+                '    # 监督循环：harness 退出（崩溃/宿主 EXIT 重置）→ 2s 后拉起；引擎任务表随进程清空，\n'
+                '    # /thunder-data 是 VM 级 tmpfs、块设备数据在宿主镜像 —— 都不随进程死。\n'
+                '    (\n'
+                '      while true; do\n'
+                '        /qemu-aarch64-static -L /thunder-arm /harness >>/thunder.log 2>&1\n'
+                '        echo "[thunder] harness 退出（code=$?），2s 后重启（引擎任务表清空）"\n'
+                '        $BB sleep 2\n'
+                '      done\n'
+                '    ) &\n'
+                '    echo "[thunder] harness 监督循环已起（CTRL_PORT=$TP BLK_DEV=${BLK_DEV:-无}，日志 /thunder.log）"\n'
+                'fi\n').encode("utf-8")
+            anchor = b'LD_PRELOAD=/proppreload.so /system/bin/artlaunch'
+            if anchor not in init:
+                raise SystemExit("!! init 的 artlaunch 锚点未找到，迅雷段插入失败")
+            init = init.replace(anchor, thunder_sh + b"\n" + anchor, 1)
+            merged[init_i] = merged[init_i][:6] + (init,) + merged[init_i][7:]
+            print("   init 迅雷段已插入（qemu-aarch64 转译 harness）")
+    else:
+        print("④b （无磁力资产，跳过 thunder 注入）")
 
     print("⑤ 重打包 ...")
     buf = io.BytesIO()

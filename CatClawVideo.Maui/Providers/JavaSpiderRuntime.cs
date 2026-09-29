@@ -228,25 +228,33 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     /// <summary>合并 initrd 文件名（与 <c>QemuArtGuest.MergedInitrdName</c> 同约定）。</summary>
     public const string ThunderMergeInitrdName = "art_initrd_merged.gz";
 
+    /// <summary>x86 合并磁力的门探测：initrd 已由 build_bootimg_inject.py 注入迅雷资产
+    /// （ARM harness + qemu-aarch64-static + 引擎库 + init 迅雷段），文件在即磁力可用。</summary>
+    public const string X86ThunderCapableInitrdName = @"x86guest\art_initrd_x64.gz";
+
     /// <summary>能否提供迅雷外部 VM：<b>恒 false</b>（2026-09-29 x86 唯一化——合并 initrd 是
     /// aarch64 专属产物，随 aarch64 线退役；迅雷引擎回落自起 VM 模式，其 aarch64 运行时
     /// 若不在（安装版已剔除）则进一步回落内置 BT）。</summary>
-    public bool CanProvideThunderVm => false;
+    /// <summary>x86 合并磁力可用（2026-09-29）：initrd 已注入迅雷资产（ARM harness 经
+    /// qemu-aarch64-static 转译 + 引擎库 + init 迅雷段），磁力与桥共用同一个 ART VM。</summary>
+    public bool CanProvideThunderVm => true;
 
-    /// <summary>给迅雷引擎（<c>QemuGuestEngine</c> 外部 VM 模式）提供租约：确保 ART VM（合并
-    /// initrd）起来并返回租约；不可用/起不来返回 null（引擎回落自起 VM 模式）。</summary>
+    /// <summary>给迅雷引擎（<c>QemuGuestEngine</c> 外部 VM 模式）提供租约：确保 ART VM（含
+    /// 迅雷段）起来并返回租约；不可用/起不来返回 null（引擎回落自起 VM 模式）。</summary>
     public async Task<CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.ThunderLease?> EnsureThunderVmAsync(
         CancellationToken ct = default)
     {
         if (!CanProvideThunderVm) return null;
         CatClawVideo.Core.Services.QemuGuest.QemuArtGuest art;
         lock (_artCreateLock) { _art ??= CreateArtGuest(); art = _art; }
-        // VM 已按「纯桥」配置在跑（上一次创建时合并配置还没注入？）：中途换 initrd/换盘不可能，
-        // 本轮让位自起 VM 模式（合并配置只在建 VM 前生效）。
+        // VM 已按「纯桥」配置在跑：磁力与桥必须同 VM（2026-09-29 用户定案，杜绝第二台 QEMU）
+        // ——重启为合并配置。桥会话随之重建（进行中的 jar 请求失败一次，站点下次点击即恢复；
+        // 网盘登录态在 guest tmpfs，会随 VM 重启丢一次登录）。
         if (art.IsVmRunning && !art.ThunderMerged)
         {
-            Log("合并迅雷：ART VM 已按纯桥配置运行 —— 本次回自起 VM 模式（下次冷启动生效）");
-            return null;
+            Log("合并迅雷：ART VM 正按纯桥配置运行 —— 重启为合并配置（磁力与桥同 VM，桥会话重建）");
+            Shutdown();
+            lock (_artCreateLock) { _art = CreateArtGuest(); art = _art; }
         }
         ApplyThunderMerge(art);
         if (!await art.EnsureVmRunningAsync(ct).ConfigureAwait(false))
@@ -275,11 +283,14 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         var art = new CatClawVideo.Core.Services.QemuGuest.QemuArtGuest(ArtRuntimeDir, _log)
         {
             GuestArch = CatClawVideo.Core.Services.QemuGuest.GuestArch.X86_64,
-            KernelFileName = _guestKernelFile ?? "pkg_kernel",
-            GuestInitrdName = _guestInitrdFile ?? CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.InitrdName,
+            // ★ x86 内核/initrd 显式默认（x86 唯一化后不再依赖 CATCLAW_X86_GUEST=1 环境变量：
+            //   旧缺省 pkg_kernel/art_initrd.gz 是 aarch64 文件名，env 未设时 VM 起不来）
+            KernelFileName = _guestKernelFile ?? @"x86guest\vmlinuz-6.1.0-50-amd64",
+            GuestInitrdName = _guestInitrdFile ?? @"x86guest\art_initrd_x64.gz",
             GuestQemuExeName = _guestQemuExe ?? "qemu-system-x86_64.exe",
         };
-        // 不灌迅雷合并配置：x86 initrd 无迅雷段（合并方案随 aarch64 线退役，见 CanProvideThunderVm）
+        // 迅雷合并配置（ThunderMerged/ThunderPort/BlockDeviceRoot）由 EnsureThunderVmAsync
+        // 在磁力播放前按需注入（x86 initrd 已含迅雷段，注入器 build_bootimg_inject.py 打入）
         return art;
     }
 

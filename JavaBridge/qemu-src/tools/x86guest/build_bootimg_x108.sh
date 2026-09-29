@@ -17,13 +17,25 @@ ISA=x86_64
 QEMU=/usr/bin/qemu-x86_64-static
 [ -x $QEMU ] || { echo "缺 $QEMU（apt install qemu-user-static）"; exit 1; }
 
-# ── 0) 全新 rootfs（含生产 init；mk 末尾会打 baseline initrd，无妨）+ dex2oat64 恢复 ──
+# ── 0) 前置清理：历史运行泄漏的挂载（中止时 trap 未必已注册）——必须在 mk 的 rm 之前 ──
+R2=$R
+for i in 1 2 3 4 5; do
+  mount | grep -q 'x86guest/rootfs' || break
+  umount -l $R2/proc $R2/sys $R2/dev 2>/dev/null
+  sleep 1
+done
+mount | grep -q 'x86guest/rootfs' && { echo "rootfs 挂载清不掉，中止"; exit 1; }
+rm -rf $R2
+trap 'umount -l $R/proc $R/sys $R/dev 2>/dev/null' EXIT
+
+# ── 0b) 全新 rootfs（含生产 init；mk 末尾会打 baseline initrd，无妨）+ dex2oat64 恢复 ──
 bash $W/mk_x86_initrd.sh > /dev/null 2>&1 || bash $W/mk_x86_initrd.sh
 mkdir -p $W/mnt2
 umount $W/mnt2 2>/dev/null || true
 mount -o loop,ro $W/system.img $W/mnt2
-cp $W/mnt2/system/apex/com.android.art/bin/dex2oat64 $R/apex/com.android.art/bin/
-cp $W/mnt2/system/apex/com.android.art/lib64/*.so $R/apex/com.android.art/lib64/
+# mk 可能已用硬链接铺过 apex（cp 报「同一文件」= 源目的同 inode，set -e 下会误杀脚本）
+cp -f $W/mnt2/system/apex/com.android.art/bin/dex2oat64 $R/apex/com.android.art/bin/ 2>/dev/null || true
+cp -f $W/mnt2/system/apex/com.android.art/lib64/*.so $R/apex/com.android.art/lib64/ 2>/dev/null || true
 umount $W/mnt2
 cp $QEMU $R/usr/bin/ 2>/dev/null || { mkdir -p $R/usr/bin; cp $QEMU $R/usr/bin/; }
 
@@ -35,7 +47,6 @@ mount -t tmpfs tmpfs $R/dev
 mknod -m 666 $R/dev/null c 1 3 2>/dev/null || true
 mknod -m 666 $R/dev/urandom c 1 9 2>/dev/null || true
 mkdir -p $R/dev/socket $R/data/local/tmp
-trap 'umount $R/proc $R/sys $R/dev 2>/dev/null' EXIT
 
 # ── 2) boot 全量编译（BCP 15 项，verify 滤镜，multi-image，qemu-user -j4）──
 cat > $R/bb_boot.sh <<'EOF'
@@ -52,7 +63,10 @@ BCP="$JL/core-oj.jar:$JL/core-libart.jar:$JL/core-icu4j.jar:$JL/okhttp.jar:$JL/b
 mkdir -p $JL/x86_64
 rm -f $JL/x86_64/boot*.art $JL/x86_64/boot*.oat $JL/x86_64/boot*.vdex
 # 不传 --boot-image：首次构建无镜像可用（ART13 该参数没有 no-image 伪值，传了 usage error）
-/apex/com.android.art/bin/dex2oat64 \
+# ⚠ 必须经 qemu-x86_64-static 转译：裸跑（chroot 原生）= LinearAlloc 低 2GB mmap ENOMEM
+#   abort exit=134（2026-09-29 晚实测复现，正是当年 chroot 路线的死法）
+Q=/usr/bin/qemu-x86_64-static
+$Q -L / /apex/com.android.art/bin/dex2oat64 \
   --runtime-arg -Xbootclasspath:$BCP \
   --runtime-arg -Xnorelocate \
   --runtime-arg -Xms32m --runtime-arg -Xmx1024m \
@@ -77,11 +91,16 @@ rm -f $JL/x86_64/boot*.art $JL/x86_64/boot*.oat $JL/x86_64/boot*.vdex
   --dex-file=$FW/android.test.base.jar --dex-location=$FW/android.test.base.jar \
   -j4
 echo "boot exit=$?"
+# 守门：boot.art 空/缺失（dex2oat 崩）时禁止继续（预置 oat 对坏镜像无意义）
+# （正常 boot.art ≈ 896KB，阈值取 500KB）
+[ -s $JL/x86_64/boot.art ] && [ $(stat -c %s $JL/x86_64/boot.art) -gt 500000 ] || { echo "!! boot.art 缺失/过小，中止"; exit 1; }
 ls -la $JL/x86_64/ | head -6
 EOF
 chmod +x $R/bb_boot.sh
 echo "═══ boot 全量编译（qemu-user，约 5 分钟）═══"
-chroot $R /bin/busybox sh -c "/bb_boot.sh" 2>&1 | tail -4
+# ⚠ 不要用 tail 管道截断——dex2oat 的报错就在全量输出里（2026-09-29 晚：0 字节产物 +
+#   报错被 tail 吃掉，白跑一轮）
+chroot $R /bin/busybox sh -c "/bb_boot.sh" 2>&1
 
 # ── 3) 预置 oat：gb.dex + tvbox.apk quicken（对刚产出的真实 boot image）──
 cat > $R/bb_preoat.sh <<'EOF'
@@ -116,7 +135,7 @@ ls -la /data/dalvik-cache/x86_64/
 EOF
 chmod +x $R/bb_preoat.sh
 echo "═══ 预置 oat（约 2 分钟）═══"
-chroot $R /bin/busybox sh -c "/bb_preoat.sh" 2>&1 | tail -8
+chroot $R /bin/busybox sh -c "/bb_preoat.sh" 2>&1
 
 # ── 4) 只打产物目录（干净卸载后；init 注入与 libart 补丁在 Windows 侧 injector 做）──
 umount $R/proc $R/sys $R/dev 2>/dev/null || true

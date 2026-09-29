@@ -241,12 +241,15 @@ public static class MauiProgram
         {
             CatClawVideo.Maui.Services.SpiderUiHost.Attach(desktopJar);
 
-            // ★ 迅雷引擎合并（2026-09-27，docs 交接 §6.9）：装了 art_initrd_merged.gz 时，
-            //   迅雷引擎不再自起 QEMU —— 与爬虫桥共用同一个 ART VM（媒体口 / 数据盘 / swap
-            //   全租用，省 ~2.5GB RAM 与一次内核冷启动）。配置在建 VM 前注入；缺合并 initrd
-            //   时 ExternalVm* 为 null，迅雷引擎维持原状（自起 aarch64 VM）。
-            if (File.Exists(Path.Combine(AppContext.BaseDirectory, "QemuGuest",
-                    CatClawVideo.Core.Providers.JavaSpiderRuntime.ThunderMergeInitrdName)))
+            // ★ 迅雷引擎合并（2026-09-27 §6.9；2026-09-29 扩展 x86）：aarch64 看
+            //   art_initrd_merged.gz；x86 看 x86guest\art_initrd_x64.gz（注入器已把迅雷资产
+            //   —— ARM harness(qemu-aarch64 转译)/引擎库/init 迅雷段 —— 打进同一 initrd）。
+            //   启用后迅雷引擎不自起 QEMU：与爬虫桥共用同一个 ART VM（媒体口/数据盘/swap 全租用）。
+            var thunderGate = File.Exists(Path.Combine(AppContext.BaseDirectory, "QemuGuest",
+                    CatClawVideo.Core.Providers.JavaSpiderRuntime.ThunderMergeInitrdName))
+                || File.Exists(Path.Combine(AppContext.BaseDirectory, "QemuGuest",
+                    CatClawVideo.Core.Providers.JavaSpiderRuntime.X86ThunderCapableInitrdName));
+            if (thunderGate)
             {
                 desktopJar.ThunderMerge = new CatClawVideo.Core.Providers.JavaSpiderRuntime.ThunderMergeConfig(
                     CatClawVideo.Core.Services.QemuGuest.QemuGuestEngine.CtrlPort,
