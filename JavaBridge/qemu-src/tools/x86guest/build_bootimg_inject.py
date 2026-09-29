@@ -4,9 +4,11 @@
 initrd，并打两个补丁——init 的 -Ximage 镜像启用块、libart 验证器软失败补丁。
 
 用法：python build_bootimg_inject.py [生产initrd] [构建产物initrd] [输出initrd]
-默认：QemuGuest/x86guest/{art_initrd_x64.gz(生产), art_initrd_x64_broken344.bak(产物源),
-      art_initrd_x64_bootimg.gz(输出)}
-     产物源 = build_bootimg_x108.sh 的输出（其 /init 是构建版，只取 boot/cache 条目）。
+默认：QemuGuest/x86guest/{art_initrd_x64_pristine.gz(未打补丁的生产 initrd),
+      bootimg_artifacts.cpio.gz(108 构建产物，scp 回来), art_initrd_x64_bootimg.gz(输出)}
+⚠ 生产 initrd 必须用 pristine 版（本库留档 art_initrd_x64_pristine.gz）：补丁后的 init
+  里 JVM_EXTRA 行已变、libart 已补，重复注入会在第④步报「JVM_EXTRA 行不匹配」。
+  108 重出 pristine：bash mk_x86_initrd.sh 后取 art_initrd_x64.gz（未注入版）。
 
 背景（2026-09-29，verifier 修复全程）：
 · 108 chroot 与 guest 内原生 dex2oat 都在 Runtime::CreateResolutionMethod 的 LinearAlloc
@@ -22,8 +24,8 @@ initrd，并打两个补丁——init 的 -Ximage 镜像启用块、libart 验�
 import gzip, io, os, sys
 
 Z = r"d:/Code/CatClawVideo/CatClawVideo.Maui/QemuGuest/x86guest"
-BAK = os.path.join(Z, "art_initrd_x64.gz")
-NEW = os.path.join(Z, "art_initrd_x64_broken344.bak")
+BAK = os.path.join(Z, "art_initrd_x64_pristine.gz")
+NEW = os.path.join(Z, "bootimg_artifacts.cpio.gz")
 OUT = os.path.join(Z, "art_initrd_x64_bootimg.gz")
 if len(sys.argv) == 4:
     BAK, NEW, OUT = sys.argv[1:4]
