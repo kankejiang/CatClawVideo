@@ -131,37 +131,24 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         ArtGuestMode = (CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.IsAvailable(ArtRuntimeDir)
                         || File.Exists(Path.Combine(ArtRuntimeDir, ThunderMergeInitrdName)))
                        && Environment.GetEnvironmentVariable("CATCLAW_NO_ART") != "1";
-        // ── guest 架构路由（2026-09-29 转正）──
-        // x86_64 + WHPX（硬件虚拟化）是产品默认目标：同源 jar 的解析从 TCG 的 71~90s 降到
-        // 秒级、桥冷启动 11.1s → 3.9s（本机实测）；aarch64 TCG（软件模拟）回落保底。
-        //   · CATCLAW_X86_GUEST=1  强制 x86（联调语义保留，覆盖探测）
-        //   · CATCLAW_NO_X86=1     强制 aarch64（逃生口）
-        //   · 都未设：WHPX 可用 **且 x86 运行时三件套齐全** → 默认 x86；否则 aarch64。
-        //     不做「x86 引擎在、WHPX 不在也走 x86」的兜底：那种机器上 QEMU 会静默回落
-        //     x86-TCG，拿着为 WHPX 配的 vCPU 数跑软件模拟，慢且日志看不出来——不如直接
-        //     走已按 TCG 调优的 aarch64（docs/qemu-tcg-tuning.md）。
+        // ── guest 架构路由（2026-09-29）──
+        // 默认 aarch64 TCG（现网已验收）。x86_64 + WHPX 硬件虚拟化**显式 opt-in**：
+        //   · CATCLAW_X86_GUEST=1 且 x86 三件套齐全 → x86（联调/尝鲜）
+        //   · 其余一律 aarch64。
+        // ⚠ 2026-09-29 真机验收实测：x86 WHPX 下桥就绪 3.0s（TCG 39s），Guard 壳
+        //   load/home/detail 全通，**但玩偶 playerContent 撞 ART 13 verifier 硬拒**
+        //   （ProxyOrigin.getan「同名 Drawable 寄存器冲突」，-Xverify:softfail/none 均
+        //   无效——ART 12+ 移除了运行时禁用验证）。修复方向 = §6.10 的 boot 镜像 +
+        //   预置 oat x86 化（aarch64 在 AOT 模式下同 jar 已验收通过）。转正待该卡点清零。
+        // WhpxProbe 探测保留（后续「WHPX 不可用引导」用）。
         bool X86AssetsPresent() =>
             File.Exists(Path.Combine(ArtRuntimeDir, "qemu-system-x86_64.exe"))
             && File.Exists(Path.Combine(ArtRuntimeDir, @"x86guest\vmlinuz-6.1.0-50-amd64"))
             && File.Exists(Path.Combine(ArtRuntimeDir, @"x86guest\art_initrd_x64.gz"));
-        if (Environment.GetEnvironmentVariable("CATCLAW_NO_X86") == "1")
+        if (Environment.GetEnvironmentVariable("CATCLAW_X86_GUEST") == "1")
         {
-            _x86Why = null;
-        }
-        else if (Environment.GetEnvironmentVariable("CATCLAW_X86_GUEST") == "1")
-        {
-            _x86Why = "CATCLAW_X86_GUEST=1 强制（" + (X86AssetsPresent() ? "运行时齐全" : "⚠ 运行时缺失，起 VM 会失败回落") + "）";
-        }
-        else if (CatClawVideo.Core.Services.QemuGuest.WhpxProbe.IsAvailable() && X86AssetsPresent())
-        {
-            _x86Why = "WHPX 可用（硬件虚拟化），产品默认";
-        }
-        else if (CatClawVideo.Core.Services.QemuGuest.WhpxProbe.IsAvailable())
-        {
-            Log("x86 guest 未启用：WHPX 可用但 x86 运行时（QemuGuest\\qemu-system-x86_64.exe / x86guest\\）不齐——走 aarch64");
-        }
-        if (_x86Why is not null)
-        {
+            _x86Why = "CATCLAW_X86_GUEST=1 显式启用（"
+                + (X86AssetsPresent() ? "运行时齐全；注意：Guard 网盘源 playerContent 有 ART 13 verifier 卡点" : "⚠ 运行时缺失，起 VM 会失败回落") + "）";
             _guestArchOverride = CatClawVideo.Core.Services.QemuGuest.GuestArch.X86_64;
             _guestKernelFile = @"x86guest\vmlinuz-6.1.0-50-amd64";
             _guestInitrdFile = @"x86guest\art_initrd_x64.gz";

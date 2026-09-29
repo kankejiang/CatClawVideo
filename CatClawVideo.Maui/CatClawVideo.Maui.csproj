@@ -260,13 +260,14 @@
 		     （ThunderMerge 总是注入，ArtGuestMode 判定已兼容 merged）。出包由
 		     build-win-release.ps1 [1.4/2] 注入 merged。 -->
 		<Content Remove="QemuGuest\art_initrd.gz" />
-		<!-- x86 mini guest（2026-09-29 转正，随包）：qemu-system-x86_64.exe（24.3MB）+
+		<!-- x86 mini guest（2026-09-29 起随包，默认仍 aarch64）：qemu-system-x86_64.exe（24.3MB）+
 		     QemuGuest\x86guest\（vmlinuz-6.1.0-50-amd64 + art_initrd_x64.gz，约 286MB）。
-		     宿主按「WHPX 可用 + x86 三件套齐全」默认路由到 x86（硬件虚拟化），
-		     aarch64 TCG（软件模拟）回落保底；强制/逃生口 = CATCLAW_X86_GUEST / CATCLAW_NO_X86
-		     （见 JavaSpiderRuntime 构造函数）。Guard 壳全链路（解密→真实 dex→加载→解析→播放）
-		     已验收（docs/交接-x86迷你guest.md §6.5-6.8；2026-09-29 本机真机复核通过，
-		     桥就绪 3.9s vs aarch64 TCG 11.1s）。
+		     启用方式：CATCLAW_X86_GUEST=1 且三件套齐全（见 JavaSpiderRuntime 构造函数路由）。
+		     本机 WHPX 真机状态（2026-09-29）：桥就绪 3.0s（aarch64 TCG 39s），Guard 壳
+		     load/home/detail 全通；**唯玩偶 playerContent 撞 ART 13 verifier 硬拒**
+		     （ProxyOrigin.getan 同名 Drawable 寄存器冲突，softfail/none 开关均无效）。
+		     修复方向 = §6.10 的 boot 镜像 + 预置 oat x86 化（aarch64 在 AOT 模式下同源
+		     调用已验收），清零后再把默认路由切到 x86（docs/交接-x86迷你guest.md §6.11）。
 		     ⚠ x86guest\ 的 initrd 不入库（>100MB，.gitignore）：构建机上没有该文件时
 		     publish 自动退化为「仅 aarch64」，出包脚本会告警。 -->
 	</ItemGroup>

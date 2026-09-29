@@ -117,20 +117,18 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         ArtRuntimeDir = Path.Combine(AppContext.BaseDirectory, "QemuGuest");
         ArtGuestMode = CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.IsAvailable(ArtRuntimeDir)
                        && Environment.GetEnvironmentVariable("CATCLAW_NO_ART") != "1";
-        // ── guest 架构路由（2026-09-29 转正，与 Maui 副本同语义）──
-        // x86_64 + WHPX 默认；aarch64 TCG 回落。CATCLAW_X86_GUEST=1 强制 x86、
-        // CATCLAW_NO_X86=1 强制 aarch64；未设时 WHPX 可用且 x86 三件套齐全 → x86。
+        // ── guest 架构路由（2026-09-29，与 Maui 副本同语义）──
+        // 默认 aarch64 TCG；x86_64 + WHPX 仅在 CATCLAW_X86_GUEST=1 且三件套齐全时启用
+        // （Guard 网盘源 playerContent 在 x86 imageless 模式有 ART 13 verifier 硬拒卡点，
+        // 修复方向 = boot 镜像 + 预置 oat x86 化，见 docs/交接-x86迷你guest.md §6.11）。
         bool X86AssetsPresent() =>
             File.Exists(Path.Combine(ArtRuntimeDir, "qemu-system-x86_64.exe"))
             && File.Exists(Path.Combine(ArtRuntimeDir, @"x86guest\vmlinuz-6.1.0-50-amd64"))
             && File.Exists(Path.Combine(ArtRuntimeDir, @"x86guest\art_initrd_x64.gz"));
-        if (Environment.GetEnvironmentVariable("CATCLAW_NO_X86") != "1"
-            && (Environment.GetEnvironmentVariable("CATCLAW_X86_GUEST") == "1"
-                || (CatClawVideo.Core.Services.QemuGuest.WhpxProbe.IsAvailable() && X86AssetsPresent())))
+        if (Environment.GetEnvironmentVariable("CATCLAW_X86_GUEST") == "1")
         {
-            _x86Why = Environment.GetEnvironmentVariable("CATCLAW_X86_GUEST") == "1"
-                ? "CATCLAW_X86_GUEST=1 强制"
-                : "WHPX 可用（硬件虚拟化），产品默认";
+            _x86Why = "CATCLAW_X86_GUEST=1 显式启用"
+                + (X86AssetsPresent() ? "" : "（⚠ 运行时缺失，起 VM 会失败回落）");
             _guestArchOverride = CatClawVideo.Core.Services.QemuGuest.GuestArch.X86_64;
             _guestKernelFile = @"x86guest\vmlinuz-6.1.0-50-amd64";
             _guestInitrdFile = @"x86guest\art_initrd_x64.gz";

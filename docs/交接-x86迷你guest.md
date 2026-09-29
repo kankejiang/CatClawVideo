@@ -597,6 +597,46 @@ boot 镜像换 quicken 滤镜（本次 verify）压缩类初始化路径。
 6. ⏳ 全链路回归：桥 ping / 站点 / 磁力（合并）/ Guard——AOT 与 imageless 行为差异重点盯
    Guard 解壳与 DexClassLoader（线程域/注册时序结论在 AOT 下需复验）。
 
+### 6.11 Windows 宿主 WHPX 真机验收——唯余 playerContent 的 ART 13 verifier 硬拒（2026-09-29）
+
+**环境**：本机（Windows 11，Hyper-V 全开 + HypervisorPlatform 功能当日补开）。
+**结果**：桥就绪 **3.0s**（同机 aarch64 TCG 39.2s）；Guard 壳（SixVGuard/WoGGGuard）
+loadClass/newInstance/init 全通；homeContent 0.96s、**detailContent 2.6s**
+（aarch64 TCG 同源调用 71~90s——**加速 ~30 倍**，x86 线的核心价值实锤）。
+**唯一卡点**：玩偶 playerContent →
+
+```
+VerifyError: Verifier rejected class com.github.catvod.spider.ProxyOrigin:
+void ProxyOrigin.getan() failed to verify: [0x192] register v4 has type
+Reference: android.graphics.drawable.Drawable but expected Reference: android.graphics.drawable.Drawable
+(declaration of 'com.github.catvod.spider.ProxyOrigin' appears in /data/cache/sharedb/config.db)
+调用栈：WoGG.playerContent → Pan.playerContent → ProxyOrigin.getan
+```
+
+**已排除**：
+- libartd（debug ART）——artlaunch 实证 dlopen 的是 release libart.so；
+- `-Xverify:softfail` / `-Xverify:none`——均注入成功但无效（ART 12+ 移除了运行时
+  禁用验证；选项字符串实证存在于 libart，值语义不认 softfail）；
+- 桥 classpath 双 loader 冲突——gb.dex/tvbox.apk 里均无 ProxyOrigin 定义（strings 实证）；
+- 本机此前「3.9s 桥就绪」实为 x86-TCG（HypervisorPlatform 未开、QEMU 静默回落）——
+  WHPX 真跑通以本节数据为准。
+
+**定性**：`Reference: X but expected X` 同名打印 = 两个 RegType 描述符相同但不兼容
+（Precise/Unresolved 前缀在 Dump 中有独立样式，本轮报错两边都是普通 Reference）——
+ART 12/13 verifier 对 OLLVM 混淆 dex 的已知硬拒形态；Android 9（aarch64 现网）无此行为。
+
+**修复方向（按优先级）**：
+1. **boot 镜像 + 预置 oat x86 化**（§6.10 模式）：aarch64 在 AOT 模式下同源 jar 的
+   playerContent 已验收通过；x86 的 dex2oat 是本机原生指令集，无需 qemu-user——
+   构建比 aarch64 更简单。产物对齐后 imageless 的 verifier 行为差异随之消失。
+   ⚠ 预置 oat 的 checksum 与 boot.oat 绑定（重编 boot 必须重跑预置 oat）。
+2. verifier 绕行选项继续挖掘（`-Xverifyopt:_` 在 libart 中存在，取值集合
+   `{verifier, preverify, nopostverify_rosalloc, nogcstress}` 未解析）。
+3. 终极兜底：x86 线保持 opt-in（现状），Guard 源走 aarch64。
+
+**排障工具沉淀**：`extract_initrd.py` 解包 + `replace_initrd.py` 改 /init 重打包
+（注意 compresslevel=1）；`WhpxProbe` 探测；桥调试泵驱动 call/fetch。
+
 ---
 
 ## 7. 未完成任务
@@ -610,13 +650,16 @@ boot 镜像换 quicken 滤镜（本次 verify）压缩类初始化路径。
 - [x] 非 Guard 源原生速度验收（2026-09-27 晚 ✅，见 §6.7——load/调用链毫秒级）
 - [x] 壳初始化后段 SIGSEGV 空指针（根因 = initrd 缺 ui_stub.dex，补齐后全链路通——见 §0 速览）
 - [x] **迅雷引擎与 ART guest 合并**（2026-09-27 晚 108 实机全链路验收通过，见 §6.9）
-- [x] **guest 架构自动路由 + 转正装配**（2026-09-29）：WHPX 探测（WhpxProbe，WHvGetCapability）
-      + x86 三件套检查 → 默认 x86 硬件虚拟化，aarch64 TCG 回落；CATCLAW_X86_GUEST 强制 /
-      CATCLAW_NO_X86 逃生口；迅雷合并按架构门控（x86 initrd 无迅雷段 → 走独立自起 VM）；
-      csproj 恢复 x86 组件随包（+310MB）。本机真机复核：桥就绪 3.9s（TCG 11.1s）、
-      Guard 壳类（SixVGuard）loadClass/newInstance/init 全通过
-- [ ] WHPX 不可用用户的一键启用引导（设置页，DISM VirtualMachinePlatform）
+- [x] **guest 架构路由装配 + WHPX 探测**（2026-09-29）：WhpxProbe（WHvGetCapability，DLL 名
+      WinHvPlatform.dll——系统里没有叫 whpx.dll 的文件，初版误写已修）；迅雷合并按架构门控
+      （x86 initrd 无迅雷段 → 走独立自起 VM）；csproj 恢复 x86 组件随包（+310MB）。
+      本机真机：x86 WHPX 桥就绪 3.0s（aarch64 TCG 39.2s），Guard 壳 load/home/detail 全通。
+      ⚠ **默认路由保持 aarch64**：playerContent 卡点未清（见 §6.11），x86 仅 CATCLAW_X86_GUEST=1
+      显式启用
+- [ ] WHPX 不可用用户的一键启用引导（设置页，DISM HypervisorPlatform——注意功能名是
+      HypervisorPlatform 不是 VirtualMachinePlatform，后者本机本就开着）
 - [ ] **Guard 源真机终验收**：真实订阅 x86 模式下玩偶 detailContent 71.6s → 秒级对照 + 播放 + 磁力
+      （detail 已实测 2.6s ✅；playerContent 卡 §6.11）
 - [ ] 镜像裁剪第二轮：framework boot 分件与 framework-res.apk（需动 boot classpath，风险高一档）
 - [ ] proppreload 表清理：native_get(String) 单参版在 13 里非 native（注册必失败，可删）；
       native_find_prop 已改名 native_find(String)J（handle 语义，需重写）
