@@ -49,6 +49,13 @@ Name: "desktopicon"; Description: "创建桌面快捷方式(&D)"; GroupDescripti
 ;   ⚠ 另测过再排掉 ThunderRuntime 的 libgtk-3-0/libaom/libSvtAv1Enc-4/libjxl（`-nographic` 看似不用），
 ;     只再多省 7.9MB，而它们在 QEMU 的导入表里、被加载期硬要求，收益不抵风险 ⇒ **不排**。
 Source: "{#MyPublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "*.pdb,*.xml,*.lib,onnxruntime.dll,DirectML.dll,Microsoft.ML.OnnxRuntime.dll,Microsoft.Windows.AI.*"
+; ★ 瘦身批次 1（2026-09-29，在 csproj 侧 Content Remove，不占本文件 Excludes）：
+;   QemuGuest\qemu-system-x86_64.exe（24.3MB）——x86 mini guest 实验专用，三件套校验
+;   本就过不了（x86guest\ 内核+initrd 未随包），运行时安全回落宿主 JRE 桥。
+;   实测：publish 目录 778.7→754.4MB（-24.3MB 全额兑现）；但**安装包只 374.3→373.1MB（-1.2MB）**——
+;   根因：SolidCompression=yes 下 x86 引擎与 aarch64 引擎同源构建、内容高度重合，
+;   solid LZMA 已把相似数据去重，删掉第二份的增量收益天然小。
+;   ⇒ 教训：solid 压缩下，批次裁剪要优先挑「不与随包其它内容相似」的文件才有实际收益。
 ; VC++ 2015-2022 运行库（x64）。放到 {tmp} 并在装完后删除，不往用户机器上留垃圾文件。
 ; ⚠ 必须是**完整包**（约 24MB），不能是 VS Package Cache 里那种 600KB 的下载器桩（离线装不上）。
 Source: "installer\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
