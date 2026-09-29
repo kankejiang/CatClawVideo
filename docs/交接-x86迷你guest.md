@@ -686,12 +686,18 @@ ART 12/13 verifier 对 OLLVM 混淆 dex 的已知硬拒形态；Android 9（aarc
   qemu 前缀（=chroot 原生死法复现）、cp「同一文件」在 set -e 下误杀、`tail` 管道吞报错、
   守门阈值误杀（boot.art 实际 896KB）、中止时 trap 未注册导致挂载泄漏累积（/proc rm 出
   20 万行错误）。全部修复后 boot/gb/tvbox 三段 exit=0。
-- **验证器补丁受阻**：libart `ClassVerifier::VerifyClass` 入口恒返 kSoftFailure/kNoFailure
-  都在「未验证类执行」时 SIGSEGV（libart+0x163dbc，与 -Xusejit 开关无关）——入口补丁
-  跳过了调用方契约副作用。补丁已默认关闭（PATCH_LIBART=1 启用），netdisk 已回退到
-  已验证可用态。**下一步**：guest 加调试后门（nc shell）→ /proc/<artlaunch>/fd 找
-  InMemoryDexClassLoader 的 memfd → dump 解密后的 spider dex → dexdump 分析
-  ProxyOrigin.getan@0x192 → 定位 ART13 误拒的确切字节码模式再定挂钩点。
+- **验证器补丁受阻 → 根因改判（2026-09-29 深夜，关键转折）**：libart
+  `ClassVerifier::VerifyClass` 入口恒返 kSoftFailure/kNoFailure 两变体、且补丁**关闭**时，
+  SIGSEGV 全部落在同一 pc——objdump 定位 = **`nterp_op_invoke_virtual`**（ART13 nterp
+  快速解释器的 invoke-virtual 例程）！⇒ 根因不是验证器，是 **nterp 解释 OLLVM 混淆的
+  spider 字节码即崩**：aarch64（ART9）没有 nterp（mterp 全功能解释器）所以同 dex 无事；
+  ART13 x86_64 默认 nterp，前提假设被 OLLVM 码踩穿。boot image 生效后更多类通过验证
+  进入 nterp 执行，命中面变大（时崩时不崩的来源）。验证器补丁已默认关闭（PATCH_LIBART=1）。
+- **下一步（磁力收尾）**：禁 nterp 强制 mterp——a) 查 ART13 是否有运行时开关；
+  b) 无则 libart 补丁改打「nterp 入口安装点」（让 spider 类装 mterp 入口而非 nterp；
+    类符号定位：崩点 0x363dbc = nterp_op_invoke_virtual，同段有 nterp_get_method/
+    nterp_op_invoke_super）；c) 或对 config.db dex 做字节级规整。合并 VM 接线已全通
+  （同 VM 重启、thunderport=、数据盘/swap、租约、控制端就绪均实测），只差解释器这一层。
 
 ---
 
