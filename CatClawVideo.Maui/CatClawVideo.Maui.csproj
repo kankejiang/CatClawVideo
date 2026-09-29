@@ -248,28 +248,32 @@
 	</Target>
 
 	<!-- QEMU guest 运行时（Windows 专用）：随应用分发到 QemuGuest/。
-	     宿主编排从 AppContext.BaseDirectory\QemuGuest 加载（见 Core/Services/QemuGuest）；
-	     承载迅雷引擎与站点/网盘/荐片的 ART 桥（aarch64 TCG / x86_64 WHPX 双架构，2026-09-27）。
+	     宿主编排从 AppContext.BaseDirectory\QemuGuest 加载（见 Core/Services/QemuGuest）。
+	     2026-09-29 定稿：**x86 mini 唯一**（Android 13 x86_64 ART，WHPX 硬件虚拟化优先，
+	     无虚拟化时 QEMU 回落 x86-TCG）；aarch64 ART guest 整线退役、随包剔除——
+	     迅雷引擎本体是 aarch64 的，其独立 VM 运行时（pkg_kernel/pkg_initrd.gz）随之剔除，
+	     磁力自动回落内置 BT（既有兜底路径）。
 	     目录缺失时构建不报错，引擎判未就绪、磁力自动回落内置 BT。 -->
 	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">
 		<None Remove="QemuGuest\**" />
 		<Content Include="QemuGuest\**">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</Content>
-		<!-- 纯桥版 initrd（226MB）不进包：merged（合并版）是它的超集且运行时恒用合并模式
-		     （ThunderMerge 总是注入，ArtGuestMode 判定已兼容 merged）。出包由
-		     build-win-release.ps1 [1.4/2] 注入 merged。 -->
+		<!-- aarch64 线退役（2026-09-29）：以下内容不进包。源目录文件保留（本地开发/
+		     历史对照用），回滚 = 删除本组 Remove 即可恢复随包。 -->
+		<Content Remove="QemuGuest\qemu-system-aarch64.exe" />
 		<Content Remove="QemuGuest\art_initrd.gz" />
-		<!-- x86 mini guest（2026-09-29 起随包，默认仍 aarch64）：qemu-system-x86_64.exe（24.3MB）+
-		     QemuGuest\x86guest\（vmlinuz-6.1.0-50-amd64 + art_initrd_x64.gz，约 286MB）。
-		     启用方式：CATCLAW_X86_GUEST=1 且三件套齐全（见 JavaSpiderRuntime 构造函数路由）。
-		     本机 WHPX 真机状态（2026-09-29）：桥就绪 3.0s（aarch64 TCG 39s），Guard 壳
-		     load/home/detail 全通；**唯玩偶 playerContent 撞 ART 13 verifier 硬拒**
-		     （ProxyOrigin.getan 同名 Drawable 寄存器冲突，softfail/none 开关均无效）。
-		     修复方向 = §6.10 的 boot 镜像 + 预置 oat x86 化（aarch64 在 AOT 模式下同源
-		     调用已验收），清零后再把默认路由切到 x86（docs/交接-x86迷你guest.md §6.11）。
-		     ⚠ x86guest\ 的 initrd 不入库（>100MB，.gitignore）：构建机上没有该文件时
-		     publish 自动退化为「仅 aarch64」，出包脚本会告警。 -->
+		<Content Remove="QemuGuest\art_initrd_merged.gz" />
+		<Content Remove="QemuGuest\pkg_kernel" />
+		<Content Remove="QemuGuest\pkg_initrd.gz" />
+		<!-- x86 mini guest（唯一运行时）：qemu-system-x86_64.exe（24.3MB）+
+		     QemuGuest\x86guest\（vmlinuz-6.1.0-50-amd64 + art_initrd_x64.gz，约 286MB）
+		     + share\（SeaBIOS 等 BIOS blob，x86 q35 机器必需）+ 全部共享依赖 DLL。
+		     加速器：WHPX 可用即硬件虚拟化（WhpxProbe 探测），否则 x86-TCG。
+		     ⚠ 已知卡点：Guard 网盘源 playerContent 撞 ART 13 verifier 硬拒
+		     （docs/交接-x86迷你guest.md §6.11），修复 = boot 镜像 + 预置 oat x86 化。
+		     ⚠ x86guest\ 的 initrd 不入库（>100MB，.gitignore）：构建机缺件时 publish
+		     退化、应用启动会报「缺 x86 运行时」（出包脚本会告警）。 -->
 	</ItemGroup>
 
 	<!-- JavaBridge（jar 爬虫桥）：随应用分发到 JavaBridge/，让**安装版**也能找到桥

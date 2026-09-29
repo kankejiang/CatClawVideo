@@ -159,40 +159,18 @@ if (-not (Test-Path "$publishDir\CatClawVideo.Maui.exe")) {
     Pause-And-Exit 1
 }
 
-# [1.4/2] ART guest 运行时注入：优先「合并版」art_initrd_merged.gz（桥+迅雷同 guest，2026-09-27
-#         合并方案，见 docs/交接-x86迷你guest.md §6.9）；找不到再退纯桥 art_initrd.gz
-#         （mk_art_initrd.py 产出，gz 约 226MB / cpio 584.9MB）。落在 QemuGuest\ 下才会被
-#         csproj 的 QemuGuest\** 带进包。两个 initrd 均 >100MB 不入库（见 .gitignore），
-#         只从本地生成目录拷进发布目录。
-#         ⚠ 两者都缺 = 安装版没有 ART 链路，Guard 加固站点全数不可用 —— 所以缺件时显式告警，不静默出包。
-$artInitrd = @(
-    "CatClawVideo.Maui\QemuGuest\art_initrd_merged.gz",
-    "JavaBridge\qemu-src\art\art_initrd_merged.gz",
-    "CatClawVideo.Maui\QemuGuest\art_initrd.gz",
-    "JavaBridge\qemu-src\art\art_initrd.gz"
-) | Where-Object { Test-Path $_ } | Select-Object -First 1
-if ($artInitrd) {
-    New-Item -ItemType Directory -Force -Path "$publishDir\QemuGuest" | Out-Null
-    $dstName = Split-Path $artInitrd -Leaf
-    Copy-Item $artInitrd "$publishDir\QemuGuest\$dstName" -Force
-    $mb = [math]::Round((Get-Item "$publishDir\QemuGuest\$dstName").Length / 1MB, 1)
-    $mode = if ($dstName -like "*merged*") { "合并版（桥+迅雷）" } else { "纯桥版" }
-    Write-Msg "  ART guest：$dstName（$mb MB，$mode）已注入 $publishDir\QemuGuest\" -Color Green
-} else {
-    Write-Msg "  ⚠ 没找到 art_initrd*.gz：本次安装包**不含 ART guest**，Guard 站点将不可用。" -Color Yellow
-    Write-Msg "     生成：python JavaBridge/qemu-src/tools/mk_art_initrd.py --sys28 <API28 /system> --links <链接表> --tvbox <TVBox apk>" -Color Yellow
-}
+# [1.4/2] aarch64 ART guest 注入已废止（2026-09-29 x86 mini 唯一化）：merged/纯桥 initrd、
+#         pkg_kernel/pkg_initrd.gz（aarch64 迅雷基座）全部不进包，csproj 侧 Content Remove。
+#         x86 initrd（QemuGuest\x86guest\art_initrd_x64.gz）由 csproj Content Include 自动带上。
 
-# [1.45/2] x86 mini guest 随包检查（2026-09-29 转正）：csproj 恢复 QemuGuest\x86guest\ 与
-#          qemu-system-x86_64.exe 的 Content Include 后，publish 自动带上（源目录就位即随包）。
-#          x86guest\ 的 initrd 不入库（>100MB）：构建机缺件时 publish 退化为「仅 aarch64」，
-#          宿主路由自动回落不报错 —— 但要显式提醒，不静默出小包。
+# [1.45/2] x86 mini guest 随包检查：initrd 不入库（>100MB），构建机缺件 = 安装包没有可用的
+#          jar 爬虫运行时（x86 唯一、无回落）—— 显式告警，不静默出废包。
 $x86Initrd = "$publishDir\QemuGuest\x86guest\art_initrd_x64.gz"
 if (Test-Path $x86Initrd) {
     $x86mb = [math]::Round((Get-Item $x86Initrd).Length / 1MB, 1)
-    Write-Msg "  x86 mini guest：x86guest\ 运行时已随包（initrd $x86mb MB，WHPX 硬件虚拟化）" -Color Green
+    Write-Msg "  x86 mini guest：x86guest\ 运行时已随包（initrd $x86mb MB）" -Color Green
 } else {
-    Write-Msg "  ⚠ x86 mini guest 资产缺失（QemuGuest\x86guest\art_initrd_x64.gz）：本包仅 aarch64 TCG，x86 用户自动回落" -Color Yellow
+    Write-Msg "  ⚠⚠ x86 mini guest 资产缺失（QemuGuest\x86guest\art_initrd_x64.gz）：x86 是唯一运行时，此包 jar 爬虫链路整体不可用！" -Color Yellow
     Write-Msg "     （x86guest\ 资产不入库，需在构建机 QemuGuest\x86guest\ 就位：vmlinuz-6.1.0-50-amd64 + art_initrd_x64.gz）" -Color Yellow
 }
 

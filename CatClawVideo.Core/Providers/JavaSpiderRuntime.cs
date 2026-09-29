@@ -115,34 +115,30 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         // ARM 原生码 + TVBox/壳 jar 的 dex 全进 QEMU 里的真 ART。宿主 JRE 回落桥退役后，
         // CATCLAW_NO_ART=1 的语义从「切回落」变成「整体禁用 jar 爬虫链路」（排障用）。
         ArtRuntimeDir = Path.Combine(AppContext.BaseDirectory, "QemuGuest");
-        ArtGuestMode = CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.IsAvailable(ArtRuntimeDir)
-                       && Environment.GetEnvironmentVariable("CATCLAW_NO_ART") != "1";
-        // ── guest 架构路由（2026-09-29，与 Maui 副本同语义）──
-        // 默认 aarch64 TCG；x86_64 + WHPX 仅在 CATCLAW_X86_GUEST=1 且三件套齐全时启用
-        // （Guard 网盘源 playerContent 在 x86 imageless 模式有 ART 13 verifier 硬拒卡点，
-        // 修复方向 = boot 镜像 + 预置 oat x86 化，见 docs/交接-x86迷你guest.md §6.11）。
+        // 可用性 = x86 三件套齐全（2026-09-29 起 aarch64 ART guest 整线退役，x86 唯一）
         bool X86AssetsPresent() =>
             File.Exists(Path.Combine(ArtRuntimeDir, "qemu-system-x86_64.exe"))
             && File.Exists(Path.Combine(ArtRuntimeDir, @"x86guest\vmlinuz-6.1.0-50-amd64"))
             && File.Exists(Path.Combine(ArtRuntimeDir, @"x86guest\art_initrd_x64.gz"));
-        if (Environment.GetEnvironmentVariable("CATCLAW_X86_GUEST") == "1")
-        {
-            _x86Why = "CATCLAW_X86_GUEST=1 显式启用"
-                + (X86AssetsPresent() ? "" : "（⚠ 运行时缺失，起 VM 会失败回落）");
-            _guestArchOverride = CatClawVideo.Core.Services.QemuGuest.GuestArch.X86_64;
-            _guestKernelFile = @"x86guest\vmlinuz-6.1.0-50-amd64";
-            _guestInitrdFile = @"x86guest\art_initrd_x64.gz";
-            _guestQemuExe = "qemu-system-x86_64.exe";
-        }
+        ArtGuestMode = X86AssetsPresent()
+                       && Environment.GetEnvironmentVariable("CATCLAW_NO_ART") != "1";
+        _guestArchOverride = CatClawVideo.Core.Services.QemuGuest.GuestArch.X86_64;
+        _guestKernelFile = @"x86guest\vmlinuz-6.1.0-50-amd64";
+        _guestInitrdFile = @"x86guest\art_initrd_x64.gz";
+        _guestQemuExe = "qemu-system-x86_64.exe";
+        _x86Why = X86AssetsPresent()
+            ? (CatClawVideo.Core.Services.QemuGuest.WhpxProbe.IsAvailable()
+                ? "WHPX 硬件虚拟化"
+                : "TCG 软件模拟（开启「虚拟机监控程序平台」功能可提速）")
+            : "x86 运行时缺失";
         // 启动就把桥链路状态写进日志：链路差异只会以"某个站点不对"的形式浮现，
         // 不写明模式的话排障第一步会变成猜。
         Log(ArtGuestMode
-            ? $"桥链路：ART guest（{(_x86Why is not null ? "x86_64 · " + _x86Why : "aarch64 · TCG 软件模拟")}；"
-              + (_x86Why is not null ? @"x86guest\art_initrd_x64.gz" : CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.InitrdName) + "）"
+            ? $"桥链路：ART guest（x86_64 · {_x86Why}；x86guest\\art_initrd_x64.gz）"
             : "桥链路：未启用 —— " + (Environment.GetEnvironmentVariable("CATCLAW_NO_ART") == "1"
                 ? "CATCLAW_NO_ART=1 显式禁用"
-                : "缺 QemuGuest 运行时")
-              + "；jar 爬虫链路不可用（宿主 JRE 回落桥已于 2026-09-29 退役）");
+                : "缺 x86 运行时（QemuGuest\\qemu-system-x86_64.exe / x86guest\\）")
+              + "；jar 爬虫链路不可用");
         // 桥可用 = bridge.jar + vendor/deps（JavaBridge 部署完整性检查；deps 里的 okhttp 等
         // 是 jar 爬虫的硬依赖）。Guard 解壳能力单独判定（2026-09-16 拆分：此前把 dex2jar 也
         // 算进来，缺它就把全部 jar 源判死 —— 用户实测 46 个源整体消失；dex2jar 现已随 JRE 桥退役）。
@@ -462,12 +458,11 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
             if (IsBridgeReady) return;   // 排队期间别的调用已把桥拉起来
             _art ??= new CatClawVideo.Core.Services.QemuGuest.QemuArtGuest(ArtRuntimeDir, _log)
             {
-                // x86 mini guest 实验开关（CATCLAW_X86_GUEST=1）：切架构 + 覆盖内核/
-                // initrd/引擎文件名；缺省 null → ArtGuest 内部走 aarch64 缺省，现网零变化
-                GuestArch = _guestArchOverride ?? CatClawVideo.Core.Services.QemuGuest.GuestArch.Arm64,
+                // x86_64 唯一架构（2026-09-29 aarch64 线退役）
+                GuestArch = CatClawVideo.Core.Services.QemuGuest.GuestArch.X86_64,
                 KernelFileName = _guestKernelFile ?? "pkg_kernel",
                 GuestInitrdName = _guestInitrdFile ?? CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.InitrdName,
-                GuestQemuExeName = _guestQemuExe ?? "qemu-system-aarch64.exe",
+                GuestQemuExeName = _guestQemuExe ?? "qemu-system-x86_64.exe",
             };
             var link = await _art.ConnectAsync(ct).ConfigureAwait(false);
             if (link is null)

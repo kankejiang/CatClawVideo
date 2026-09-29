@@ -654,8 +654,10 @@ ART 12/13 verifier 对 OLLVM 混淆 dex 的已知硬拒形态；Android 9（aarc
       WinHvPlatform.dll——系统里没有叫 whpx.dll 的文件，初版误写已修）；迅雷合并按架构门控
       （x86 initrd 无迅雷段 → 走独立自起 VM）；csproj 恢复 x86 组件随包（+310MB）。
       本机真机：x86 WHPX 桥就绪 3.0s（aarch64 TCG 39.2s），Guard 壳 load/home/detail 全通。
-      ⚠ **默认路由保持 aarch64**：playerContent 卡点未清（见 §6.11），x86 仅 CATCLAW_X86_GUEST=1
-      显式启用
+      ⚠ **2026-09-29 用户拍板：x86 mini 唯一化**——aarch64 ART guest 整线退役（随包剔除
+      引擎/merged/pkg initrd/pkg_kernel；宿主路由无回落分支，CATCLAW_X86_GUEST 废止）。
+      迅雷引擎随 aarch64 剔除 → 磁力回落内置 BT；aarch64 本地文件保留（回滚 = 删 csproj
+      Remove 组）。playerContent 卡点（§6.11）成为**阻塞性问题**，修复优先级最高
 - [ ] WHPX 不可用用户的一键启用引导（设置页，DISM HypervisorPlatform——注意功能名是
       HypervisorPlatform 不是 VirtualMachinePlatform，后者本机本就开着）
 - [ ] **Guard 源真机终验收**：真实订阅 x86 模式下玩偶 detailContent 71.6s → 秒级对照 + 播放 + 磁力

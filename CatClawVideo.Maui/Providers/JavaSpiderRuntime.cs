@@ -121,53 +121,34 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         // ⚠ 绝不回落到 bridgeDir：安装版那是 Program Files，写它就是本次故障。
         _workDir = workDir ?? AppPaths.Sub("javabridge");
         _convertedDir = Path.Combine(_workDir, "converted");
-        // ── ART guest（2026-09-25 定案；2026-09-29 起是**唯一**链路）——
-        // ARM 原生码 + TVBox/壳 jar 的 dex 全进 QEMU 里的真 ART。宿主 JRE 回落桥退役后，
-        // CATCLAW_NO_ART=1 的语义从「切回落」变成「整体禁用 jar 爬虫链路」（排障用）。
+        // ── ART guest（x86 mini，2026-09-29 起是**唯一**运行时）──
+        // Android 13 x86_64 ART 跑在 QEMU（WHPX 硬件虚拟化优先，无虚拟化自动回落 x86-TCG）。
+        // aarch64 ART guest 整线退役（随包剔除），CATCLAW_NO_ART=1 = 整体禁用 jar 爬虫链路（排障）。
         ArtRuntimeDir = Path.Combine(AppContext.BaseDirectory, "QemuGuest");
-        // 合并 initrd（art_initrd_merged.gz）= art_initrd.gz 的超集（桥 + 迅雷引擎同 guest，
-        // 见 §6.9）：只部署了合并版时也走 ART 链路（桥用合并 initrd）。两者都在时由合并
-        // 配置注入与否决定（QemuArtGuest.ThunderMerged 分支）。
-        ArtGuestMode = (CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.IsAvailable(ArtRuntimeDir)
-                        || File.Exists(Path.Combine(ArtRuntimeDir, ThunderMergeInitrdName)))
-                       && Environment.GetEnvironmentVariable("CATCLAW_NO_ART") != "1";
-        // ── guest 架构路由（2026-09-29）──
-        // 默认 aarch64 TCG（现网已验收）。x86_64 + WHPX 硬件虚拟化**显式 opt-in**：
-        //   · CATCLAW_X86_GUEST=1 且 x86 三件套齐全 → x86（联调/尝鲜）
-        //   · 其余一律 aarch64。
-        // ⚠ 2026-09-29 真机验收实测：x86 WHPX 下桥就绪 3.0s（TCG 39s），Guard 壳
-        //   load/home/detail 全通，**但玩偶 playerContent 撞 ART 13 verifier 硬拒**
-        //   （ProxyOrigin.getan「同名 Drawable 寄存器冲突」，-Xverify:softfail/none 均
-        //   无效——ART 12+ 移除了运行时禁用验证）。修复方向 = §6.10 的 boot 镜像 +
-        //   预置 oat x86 化（aarch64 在 AOT 模式下同 jar 已验收通过）。转正待该卡点清零。
-        // WhpxProbe 探测保留（后续「WHPX 不可用引导」用）。
+        // 可用性 = x86 三件套齐全（引擎 + x86guest 内核/initrd）
         bool X86AssetsPresent() =>
             File.Exists(Path.Combine(ArtRuntimeDir, "qemu-system-x86_64.exe"))
             && File.Exists(Path.Combine(ArtRuntimeDir, @"x86guest\vmlinuz-6.1.0-50-amd64"))
             && File.Exists(Path.Combine(ArtRuntimeDir, @"x86guest\art_initrd_x64.gz"));
-        if (Environment.GetEnvironmentVariable("CATCLAW_X86_GUEST") == "1")
-        {
-            _x86Why = "CATCLAW_X86_GUEST=1 显式启用（"
-                + (X86AssetsPresent() ? "运行时齐全；注意：Guard 网盘源 playerContent 有 ART 13 verifier 卡点" : "⚠ 运行时缺失，起 VM 会失败回落") + "）";
-            _guestArchOverride = CatClawVideo.Core.Services.QemuGuest.GuestArch.X86_64;
-            _guestKernelFile = @"x86guest\vmlinuz-6.1.0-50-amd64";
-            _guestInitrdFile = @"x86guest\art_initrd_x64.gz";
-            _guestQemuExe = "qemu-system-x86_64.exe";
-        }
+        ArtGuestMode = X86AssetsPresent()
+                       && Environment.GetEnvironmentVariable("CATCLAW_NO_ART") != "1";
+        _guestArchOverride = CatClawVideo.Core.Services.QemuGuest.GuestArch.X86_64;
+        _guestKernelFile = @"x86guest\vmlinuz-6.1.0-50-amd64";
+        _guestInitrdFile = @"x86guest\art_initrd_x64.gz";
+        _guestQemuExe = "qemu-system-x86_64.exe";
+        _x86Why = X86AssetsPresent()
+            ? (CatClawVideo.Core.Services.QemuGuest.WhpxProbe.IsAvailable()
+                ? "WHPX 硬件虚拟化"
+                : "TCG 软件模拟（开启「虚拟机监控程序平台」功能可提速）")
+            : "x86 运行时缺失";
         // 启动就把桥链路状态写进日志：链路差异只会以"某个站点不对"的形式浮现，
         // 不写明模式的话排障第一步会变成猜。
-        var isX86 = _x86Why is not null;
-        var initrdDesc = isX86
-            ? @"x86guest\art_initrd_x64.gz"
-            : File.Exists(Path.Combine(ArtRuntimeDir, ThunderMergeInitrdName))
-                ? ThunderMergeInitrdName + "，含迅雷引擎"
-                : CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.InitrdName;
         Log(ArtGuestMode
-            ? $"桥链路：ART guest（{(isX86 ? "x86_64 · " + _x86Why : "aarch64 · TCG 软件模拟")}；{initrdDesc}）"
+            ? $"桥链路：ART guest（x86_64 · {_x86Why}；x86guest\\art_initrd_x64.gz）"
             : "桥链路：未启用 —— " + (Environment.GetEnvironmentVariable("CATCLAW_NO_ART") == "1"
                 ? "CATCLAW_NO_ART=1 显式禁用"
-                : "缺 QemuGuest 运行时")
-              + "；jar 爬虫链路不可用（宿主 JRE 回落桥已于 2026-09-29 退役）");
+                : "缺 x86 运行时（QemuGuest\\qemu-system-x86_64.exe / x86guest\\）")
+              + "；jar 爬虫链路不可用");
         // 桥可用 = bridge.jar + vendor/deps（JavaBridge 部署完整性检查；deps 里的 okhttp 等
         // 是 jar 爬虫的硬依赖）。Guard 解壳能力单独判定（2026-09-16 拆分：此前把 dex2jar 也
         // 算进来，缺它就把全部 jar 源判死 —— 用户实测 46 个源整体消失；dex2jar 现已随 JRE 桥退役）。
@@ -247,15 +228,10 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     /// <summary>合并 initrd 文件名（与 <c>QemuArtGuest.MergedInitrdName</c> 同约定）。</summary>
     public const string ThunderMergeInitrdName = "art_initrd_merged.gz";
 
-    /// <summary>能否提供迅雷外部 VM（同步探针：ART 链路可用 + 配置已注入 + 合并 initrd 在）。
-    /// 三缺一 → 迅雷引擎回落自起 VM 模式。
-    /// ⚠ 架构门控：合并 initrd 是 aarch64 专属（x86 guest 的 initrd 无迅雷段，2026-09-27
-    /// 定案时 x86 的迅雷走独立转译路线、资产未做）——x86 模式恒 false，让迅雷引擎自起
-    /// aarch64 VM，否则会白等一个永远不会来的 harness 回连。</summary>
-    public bool CanProvideThunderVm =>
-        ArtGuestMode && ThunderMerge is not null
-        && _guestArchOverride != CatClawVideo.Core.Services.QemuGuest.GuestArch.X86_64
-        && File.Exists(Path.Combine(ArtRuntimeDir, ThunderMergeInitrdName));
+    /// <summary>能否提供迅雷外部 VM：<b>恒 false</b>（2026-09-29 x86 唯一化——合并 initrd 是
+    /// aarch64 专属产物，随 aarch64 线退役；迅雷引擎回落自起 VM 模式，其 aarch64 运行时
+    /// 若不在（安装版已剔除）则进一步回落内置 BT）。</summary>
+    public bool CanProvideThunderVm => false;
 
     /// <summary>给迅雷引擎（<c>QemuGuestEngine</c> 外部 VM 模式）提供租约：确保 ART VM（合并
     /// initrd）起来并返回租约；不可用/起不来返回 null（引擎回落自起 VM 模式）。</summary>
@@ -293,21 +269,17 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         art.BlockDeviceRoot = ThunderMerge.BlockDeviceRoot;
     }
 
-    /// <summary>创建 ART guest 实例（统一带架构路由与迅雷合并配置；懒创建唯一入口）。</summary>
+    /// <summary>创建 ART guest 实例（x86_64 唯一架构；懒创建唯一入口）。</summary>
     private CatClawVideo.Core.Services.QemuGuest.QemuArtGuest CreateArtGuest()
     {
         var art = new CatClawVideo.Core.Services.QemuGuest.QemuArtGuest(ArtRuntimeDir, _log)
         {
-            // 架构路由（见构造函数）：x86_64（WHPX 默认/强制）或 aarch64（TCG 回落）
-            GuestArch = _guestArchOverride ?? CatClawVideo.Core.Services.QemuGuest.GuestArch.Arm64,
+            GuestArch = CatClawVideo.Core.Services.QemuGuest.GuestArch.X86_64,
             KernelFileName = _guestKernelFile ?? "pkg_kernel",
             GuestInitrdName = _guestInitrdFile ?? CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.InitrdName,
-            GuestQemuExeName = _guestQemuExe ?? "qemu-system-aarch64.exe",
+            GuestQemuExeName = _guestQemuExe ?? "qemu-system-x86_64.exe",
         };
-        // 合并配置只灌 aarch64（x86 initrd 无迅雷段，见 CanProvideThunderVm 门控注释）
-        if ((_guestArchOverride ?? CatClawVideo.Core.Services.QemuGuest.GuestArch.Arm64)
-            == CatClawVideo.Core.Services.QemuGuest.GuestArch.Arm64)
-            ApplyThunderMerge(art);
+        // 不灌迅雷合并配置：x86 initrd 无迅雷段（合并方案随 aarch64 线退役，见 CanProvideThunderVm）
         return art;
     }
 
