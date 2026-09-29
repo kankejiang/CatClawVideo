@@ -218,21 +218,19 @@ public static class MauiProgram
         _ = Task.Run(async () => { try { await thunder.EnsureReadyAsync(); } catch { } });
 
 #else
-        // 桌面桥：JavaBridge 目录（**java.exe 可缺**，2026-09-28 JRE 退役可行性前提）——
-        // jar 源的主路径是 ART guest 桥（寄生在本类，guest 里真 ART，不需要宿主 Java）；
-        // 宿主 JRE 桥只是回落路径。⚠ 不能因缺 jre 换 NullSpiderRuntime——那会把 ART 桥
-        // 一起顶掉（jar 源全灭）。javaExe 传空串：JRE 桥启动时给明确错误，ART 桥不受影响。
+        // 桌面桥（2026-09-29 JRE 全退役）：JavaBridge 目录只用于部署完整性检查，
+        // 桥唯一跑在 ART guest 里（guest 里真 ART，不需要宿主任何 Java）。
+        // ⚠ 不能因缺 JavaBridge 换 NullSpiderRuntime——那会把 ART 桥一起顶掉（jar 源全灭）。
         var bridgeDir = CatClawVideo.Core.Providers.JavaSpiderRuntime.FindBridgeDir();
-        var javaExe = CatClawVideo.Core.Providers.JavaSpiderRuntime.FindJavaExe();
         CatClawVideo.Core.Interfaces.ISpiderRuntime jarRuntime = bridgeDir != null
-            ? new CatClawVideo.Core.Providers.JavaSpiderRuntime(bridgeDir, javaExe ?? "", m =>
+            ? new CatClawVideo.Core.Providers.JavaSpiderRuntime(bridgeDir, m =>
             {
                 // Windows 桌面没有控制台，Debug.WriteLine 不挂调试器就抓不到 →
                 // 同时落 %APPDATA%\CatClawVideo\home-debug.log，排障 Guard 解壳/桥加载要看这段
                 System.Diagnostics.Debug.WriteLine(m);
                 DiagLog.Write(m);
             },
-            // 桥进程启动后下发 proxy 端口：Guard 系网盘源（MDrive 等）靠 SpiderApi.getPort()
+            // 桥起来后下发 proxy 端口：Guard 系网盘源（MDrive 等）靠 SpiderApi.getPort()
             // 拼「云盘配置」数据端点（对齐 Android 的 TvBoxCompatBridge.SetProxyPort）
             proxyPort: () => spiderProxy.Port)
             : new CatClawVideo.Core.Providers.NullSpiderRuntime("jvm-dex");

@@ -53,12 +53,12 @@ async Task<int> ArtBenchAsync(List<string> a)
     var apiName = a.Count > 3 ? a[3] : "csp_MyDriveGuard";
     var cls = apiName.StartsWith("csp_") ? apiName[4..] : apiName;
 
-    var rt = new CatClawVideo.Core.Providers.JavaSpiderRuntime(bDir, javaExe: "java", log: Log,
+    var rt = new CatClawVideo.Core.Providers.JavaSpiderRuntime(bDir, log: Log,
         workDir: Path.Combine(Path.GetTempPath(), "catclaw-artbench"));
     rt.ArtRuntimeDir = rtDir;
     rt.ArtGuestMode = true;
     // 构造期那行「桥链路」是按 AppContext.BaseDirectory 判的，台架是覆盖属性后才生效的，
-    // 所以这里补一行真实链路，否则日志会把人往「宿主 JRE」的方向带（2026-09-26 踩过）。
+    // 所以这里补一行真实链路，免得日志把人带偏（2026-09-26 踩过）。
     Log("实际桥链路：ART guest（台架覆盖 ArtRuntimeDir）");
     var site = new CatClawVideo.Core.Models.VodSiteInfo
     {

@@ -1,9 +1,10 @@
 # 用户端运行环境要求
 
-> 结论：**两个平台都不需要用户安装任何开发环境**（.NET / Windows App SDK / QEMU / Java 全部随包）。
+> 结论：**两个平台都不需要用户安装任何开发环境**（.NET / Windows App SDK / QEMU 全部随包；
+> jar 爬虫桥跑在随包 QEMU 的 ART guest 里，**Java 运行时 2026-09-29 起连随包都不要了**）。
 > 唯一未随包的第三方依赖是 **VC++ 运行库**，见 §3 —— 这是待修项。
 >
-> 核查日期：2026-09-22　方法：读 csproj / 出包脚本 + **实测构建产物**（不是转述发行说明）。
+> 核查日期：2026-09-22（2026-09-29 更新 Java 项）　方法：读 csproj / 出包脚本 + **实测构建产物**（不是转述发行说明）。
 
 ---
 
@@ -13,8 +14,8 @@
 |---|---|---|
 | .NET 运行时 | **不需要** | 出包脚本 `build-win-release.ps1:146` 用 `-p:SelfContained=true` |
 | Windows App SDK 运行时 | **不需要** | `CatClawVideo.Maui.csproj:28` `WindowsAppSDKSelfContained=true`；产物实测含 `CoreMessagingXP.dll` / `MRM.dll` / `Microsoft.UI.*.dll` |
-| QEMU（磁力播放引擎） | **不需要** | `QemuGuest/`（QEMU + `pkg_kernel` + `pkg_initrd.gz`，约 **144MB**）随包 |
-| **Java（jar 类爬虫源）** | **不需要**（2026-09-22 起） | `JavaBridge/jre/`（jlink 自 Microsoft OpenJDK 21，约 **62MB**）随包；`JavaSpiderRuntime.FindJavaExe()` 优先用它 |
+| QEMU（磁力播放引擎 **和 jar 类爬虫桥**） | **不需要** | `QemuGuest/`（QEMU + `pkg_kernel` + `art_initrd_merged.gz`）随包 |
+| **Java（jar 类爬虫源）** | **不需要**（2026-09-22 起免安装；**2026-09-29 起连随包 JRE 也退役**） | 桥只跑在 QEMU 的 ART guest 里（真 ART 就地执行 jar/dex，见 `JavaSpiderRuntime` 类注释）；宿主不再有任何 Java 进程，`JavaBridge/jre/`（62MB）已撤出安装包 |
 | VC++ 2015-2022 运行库 | **不需要**（安装时自动装，缺则装、有则跳过） | 见 §3 |
 
 **系统门槛**：**Windows 10 1809（`10.0.17763`）及以上 · x64**
@@ -85,9 +86,10 @@ avfilter-11         → MSVCP140 · VCRUNTIME140 · VCRUNTIME140_1
 ```powershell
 # 1) 产物里这几样必须都在
 $o = "CatClawVideo.Maui\bin\win-release\publish"
-"JavaBridge\jre\bin\java.exe"   # Java 运行时（jar 爬虫源）
-"QemuGuest\qemu-system-aarch64.exe"  # 磁力播放引擎
-Test-Path "$o\coreclr.dll"      # 非空 = self-contained（不依赖用户装 .NET）
+"QemuGuest\qemu-system-aarch64.exe"     # QEMU 引擎（磁力播放 + jar 爬虫桥）
+"QemuGuest\art_initrd_merged.gz"        # ART guest（桥/壳 jar 在里面跑，2026-09-29 起唯一链路）
+"JavaBridge\bridge.jar"                 # 桥部署完整性检查（执行体在 ART guest initrd 里）
+Test-Path "$o\coreclr.dll"              # 非空 = self-contained（不依赖用户装 .NET）
 ```
 
 应用内：**设置页 → 诊断日志**，看这两行即可判定 spider 运行时就绪情况：
@@ -96,5 +98,6 @@ Test-Path "$o\coreclr.dll"      # 非空 = self-contained（不依赖用户装 .
 [源] 站点合计=N 可播=M jar桥=True js=True 桥目录=…
 ```
 
-> 若 `jar桥=False`：说明 `JavaBridge/bridge.jar` 或 `JavaBridge/jre/bin/java.exe` 没随包/被删 ——
-> 正常情况下**不该出现**（Java 已随包）。此时对应站点会显示「爬虫源 · 需 spider 运行时」。
+> 若 `jar桥=False`：说明 `JavaBridge/bridge.jar` 没随包/被删 —— 正常情况下**不该出现**。
+> `jar桥=True` 但站点全挂时看 `[art-vm]` 日志：2026-09-29 起桥唯一跑在 ART guest 里，
+> 缺 `QemuGuest` 运行时或 VM 起不来都会给明确报错（宿主 JRE 回落桥已退役）。
