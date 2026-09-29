@@ -111,16 +111,18 @@ export TMPDIR=/data/local/tmp
 sleep 1
 mkdir -p /data/dalvik-cache/$ISA
 D2O=/apex/com.android.art/bin/dex2oat64
+# ★ --boot-image 必须指真实文件（$JL/$ISA/boot.art）：javalib 根的 boot.art 软链是
+#   pack 阶段才建的，preoat 时不存在 → 指它会像无镜像一样直接 SIGABRT（2026-09-29 实测）。
 \$D2O --runtime-arg -Xbootclasspath:$BCP --runtime-arg -Xnorelocate \\
   --runtime-arg -Xms32m --runtime-arg -Xmx1024m \\
   --android-root=/ --instruction-set=$ISA --instruction-set-features=default \\
-  --compiler-filter=quicken --boot-image=$JL/boot.art \\
+  --compiler-filter=quicken --boot-image=$JL/$ISA/boot.art \\
   --dex-file=/gb.dex --oat-file=/data/dalvik-cache/$ISA/gb.dex --output-vdex=/data/dalvik-cache/$ISA/gb.vdex -j4
 echo "gb exit=\$?"
 \$D2O --runtime-arg -Xbootclasspath:$BCP --runtime-arg -Xnorelocate \\
   --runtime-arg -Xms32m --runtime-arg -Xmx1024m \\
   --android-root=/ --instruction-set=$ISA --instruction-set-features=default \\
-  --compiler-filter=quicken --boot-image=$JL/boot.art \\
+  --compiler-filter=quicken --boot-image=$JL/$ISA/boot.art \\
   --dex-file=/tvbox.apk --oat-file=/data/dalvik-cache/$ISA/tvbox.apk@classes.dex --output-vdex=/data/dalvik-cache/$ISA/tvbox.apk@classes.vdex -j4
 echo "tvbox exit=\$?"
 EOF

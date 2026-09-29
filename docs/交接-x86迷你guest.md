@@ -637,18 +637,37 @@ ART 12/13 verifier 对 OLLVM 混淆 dex 的已知硬拒形态；Android 9（aarc
 - dex2oat64 参数坑（逐个踩实）：ART 13 **无 `--multi-image`**（单镜像）、**无
   `--image-classes`/`--profile`**（默认全类入镜像）、**必须显式 `--base=0x70000000`**
   （「Non-zero --base not specified for boot image」）
-- chroot 里 dex2oat64 在 `Runtime::CreateResolutionMethod` 的 LinearAlloc 首次分配即
-  `mmap(MAP_32BIT) ENOMEM` abort——低 2GB 被 dex2oat 自己的 2GB LinearAlloc 预留
-  （fixed 0x12c00000）+ 64MB 预留（0xec00000）占满；strace 包裹无效（与 aarch64
-  qemu-user 时代不同）。⇒ 放弃宿主 chroot 路线，改走 **guest 内原生构建**（真实
-  Android 环境，模拟器首启同款流程）：构建版 initrd（`guest_build_init.sh`：标准初始化
-  → dex2oat boot+预置 oat → busybox httpd 暴露产物，宿主经 hostfwd 拉取），
-  `pack_build.sh` 打包、`build_boot_x86.sh` 留作宿主侧参考
-- 阻塞：108 SSH 连续会话后拒连（kex reset，疑似限流/负载），待恢复后继续
-  （pack_build.sh 已推送到 108 /root/x86guest/，重入即可）
+
+**✅ 2026-09-29 verifier 修复验收通过（玩偶 playerContent 1947ms 拿真链）**，最终管线
+（工具：`build_bootimg_x108.sh` 108 侧构建 + `build_bootimg_inject.py` Windows 侧注入）：
+
+1. **dex2oat 只能走 qemu-user**（108 上 `qemu-x86_64-static`，chroot 原生与 guest 内原生
+   全灭）：chroot 与 guest 内原生都在 `Runtime::CreateResolutionMethod` 的 LinearAlloc
+   首次分配 `mmap ENOMEM` abort——低 2GB 被 dex2oat 自身 2GB（fixed 0x12c00000）+64MB
+   （0xec00000）预留占满，strace 无效、guest 内同款死法。qemu-user 的 guest 地址空间由
+   qemu 管理，低址分配不再撞预留 → boot 全量编译 exit=0（multi-image 45 件，约 5 分钟）。
+   ⚠ 108 ssh 被高频短连接打到拒连（kex reset）——操作必须合并成单脚本批量执行。
+2. **guest 内构建版 initrd 路线废弃**：`guest_build_init.sh`/`pack_build.sh` 保留在库
+   （`--boot-image` 无 no-image 伪值、失败要 dump /fakelogd.log 已修正），但产物链最终
+   没走它（dex2oat 在 guest 内必崩）。
+3. **注入器**（`build_bootimg_inject.py`，Windows 本地，自包含 cpio newc 读写）：
+   - 组件必须放 **`/system/framework/x86_64/`**（ART13 默认推导位 = /system/framework/
+     boot.art + 组件 <dir>/<isa>/；javalib/x86_64 是错的——runtime 不看 BCP_LOCATIONS）
+   - init 补丁：`CATCLAW_JVM_EXTRA="-Xnorelocate -Xcheck:jni -Ximage:<15 组件全列>"`
+     ——**-Ximage 整体覆盖默认 spec**（AOSP boot.art+boot-framework.art+双 prof 布局与
+     我们的 multi-image 集对不上）；`-Xbootclasspath-locations` 不重定向镜像（三轮实测）
+   - locations 顺序必须与 BCP 15 项一一对应（shell glob 字母序不行）
+   - **libart 验证器补丁**：`ClassVerifier::VerifyClass`（0x871f40）入口
+     `mov eax,1; ret`（恒返 kSoftFailure）——ART13 验证器对 OLLVM 混淆 spider dex 的
+     同名类型误拒（Drawable vs Drawable）是硬失败，`-Xverify:{softfail,none}` 被 ART13
+     无视（deprecated）、`ro.debuggable=1` libart 不读（那是框架层给 zygote 的）；
+     补丁后类照常加载走解释器，boot image 编译代码不受影响（预热 45s→3s 保持）
+4. **预置 oat 用真实路径**：`--boot-image=/system/javalib/x86_64/boot.art`（构建期不存在
+   javalib 根软链）；boot 重编必须重跑预置 oat（checksum 绑定）。
 
 **排障工具沉淀**：`extract_initrd.py` 解包 + `replace_initrd.py` 改 /init 重打包
-（注意 compresslevel=1）；`WhpxProbe` 探测；桥调试泵驱动 call/fetch。
+（注意 compresslevel=1）；`WhpxProbe` 探测；桥调试泵驱动 call/fetch；
+`build_bootimg_inject.py` 自包含 cpio newc 读写 + ELF 偏移换算（补丁 libart 用）。
 
 ---
 

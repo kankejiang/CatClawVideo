@@ -33,6 +33,8 @@ BCP="$JL/core-oj.jar:$JL/core-libart.jar:$JL/core-icu4j.jar:$JL/okhttp.jar:$JL/b
 D2O=/apex/com.android.art/bin/dex2oat64
 
 echo "[build] boot 全量编译开始（-j4）"
+# 注：不传 --boot-image（首次构建无镜像可用；ART13 该参数没有 no-image 伪值，
+# 传了直接 usage error exit=1，2026-09-29 实测）。真实报错走 LOG→logd→/fakelogd.log。
 $D2O --runtime-arg -Xbootclasspath:$BCP \
   --runtime-arg -Xnorelocate \
   --runtime-arg -Xms32m --runtime-arg -Xmx1536m \
@@ -54,30 +56,41 @@ $D2O --runtime-arg -Xbootclasspath:$BCP \
   --dex-file=$FW/android.hidl.base-V1.0-java.jar --dex-location=$FW/android.hidl.base-V1.0-java.jar \
   --dex-file=$FW/android.hidl.manager-V1.0-java.jar --dex-location=$FW/android.hidl.manager-V1.0-java.jar \
   --dex-file=$FW/android.test.base.jar --dex-location=$FW/android.test.base.jar \
-  -j4
-echo "[build] boot exit=$?"
+  -j4 2>/out/err-boot.log
+rc=$?
+[ $rc -ne 0 ] && $BB cat /out/err-boot.log
+echo "[build] boot exit=$rc"
 $BB ls -la $JL/x86_64/ | head -12
 
 echo "[build] gb.dex 预置 oat（quicken）"
+# boot image 用真实文件路径（上一步刚产出的），而非 §6.10 的「首 jar 目录 + boot.art」
+# 运行时推导位 —— 那个软链是打包阶段才建的，构建期不存在。
 $D2O --runtime-arg -Xbootclasspath:$BCP --runtime-arg -Xnorelocate \
   --runtime-arg -Xms32m --runtime-arg -Xmx1024m \
   --android-root=/ --instruction-set=x86_64 --instruction-set-features=default \
-  --compiler-filter=quicken --boot-image=$JL/boot.art \
-  --dex-file=/gb.dex --oat-file=/data/dalvik-cache/x86_64/gb.dex --output-vdex=/data/dalvik-cache/x86_64/gb.vdex -j4
-echo "[build] gb exit=$?"
+  --compiler-filter=quicken --boot-image=$JL/x86_64/boot.art \
+  --dex-file=/gb.dex --oat-file=/data/dalvik-cache/x86_64/gb.dex --output-vdex=/data/dalvik-cache/x86_64/gb.vdex -j4 2>/out/err-gb.log
+rc=$?
+[ $rc -ne 0 ] && $BB cat /out/err-gb.log
+echo "[build] gb exit=$rc"
 
 echo "[build] tvbox.apk 预置 oat（quicken）"
 $D2O --runtime-arg -Xbootclasspath:$BCP --runtime-arg -Xnorelocate \
   --runtime-arg -Xms32m --runtime-arg -Xmx1024m \
   --android-root=/ --instruction-set=x86_64 --instruction-set-features=default \
-  --compiler-filter=quicken --boot-image=$JL/boot.art \
-  --dex-file=/tvbox.apk --oat-file=/data/dalvik-cache/x86_64/tvbox.apk@classes.dex --output-vdex=/data/dalvik-cache/x86_64/tvbox.apk@classes.vdex -j4
-echo "[build] tvbox exit=$?"
+  --compiler-filter=quicken --boot-image=$JL/x86_64/boot.art \
+  --dex-file=/tvbox.apk --oat-file=/data/dalvik-cache/x86_64/tvbox.apk@classes.dex --output-vdex=/data/dalvik-cache/x86_64/tvbox.apk@classes.vdex -j4 2>/out/err-tvbox.log
+rc=$?
+[ $rc -ne 0 ] && $BB cat /out/err-tvbox.log
+echo "[build] tvbox exit=$rc"
 
 # 产物集中 + HTTP 暴露（宿主经 hostfwd 取）
 $BB mkdir -p /out/boot /out/cache
 $BB cp $JL/x86_64/boot*.art $JL/x86_64/boot*.oat $JL/x86_64/boot*.vdex /out/boot/ 2>/dev/null
 $BB cp /data/dalvik-cache/x86_64/* /out/cache/ 2>/dev/null
+# dex2oat 的真实报错走 LOG→logd→fakelogd：一并暴露给宿主
+$BB cp /fakelogd.log /out/ 2>/dev/null
+$BB cp /out/err-*.log /out/ 2>/dev/null || true
 echo "[build] 产物清单："
 $BB ls -la /out/boot /out/cache
 echo "=== CatClaw x86 BOOTIMG BUILD done ==="
