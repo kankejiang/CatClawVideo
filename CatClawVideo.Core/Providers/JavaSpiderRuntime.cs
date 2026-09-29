@@ -99,6 +99,8 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     private string? _guestKernelFile;
     private string? _guestInitrdFile;
     private string? _guestQemuExe;
+    /// <summary>选中 x86 的原因（写进桥链路日志，排障不再猜）；null = 走 aarch64。</summary>
+    private string? _x86Why;
 
     public JavaSpiderRuntime(string bridgeDir, Action<string>? log = null,
         string? workDir = null, Func<int>? proxyPort = null)
@@ -115,9 +117,20 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         ArtRuntimeDir = Path.Combine(AppContext.BaseDirectory, "QemuGuest");
         ArtGuestMode = CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.IsAvailable(ArtRuntimeDir)
                        && Environment.GetEnvironmentVariable("CATCLAW_NO_ART") != "1";
-        // x86 mini guest 实验开关（2026-09-27，联调中）：仅当 x86 运行时齐全才切架构
-        if (Environment.GetEnvironmentVariable("CATCLAW_X86_GUEST") == "1")
+        // ── guest 架构路由（2026-09-29 转正，与 Maui 副本同语义）──
+        // x86_64 + WHPX 默认；aarch64 TCG 回落。CATCLAW_X86_GUEST=1 强制 x86、
+        // CATCLAW_NO_X86=1 强制 aarch64；未设时 WHPX 可用且 x86 三件套齐全 → x86。
+        bool X86AssetsPresent() =>
+            File.Exists(Path.Combine(ArtRuntimeDir, "qemu-system-x86_64.exe"))
+            && File.Exists(Path.Combine(ArtRuntimeDir, @"x86guest\vmlinuz-6.1.0-50-amd64"))
+            && File.Exists(Path.Combine(ArtRuntimeDir, @"x86guest\art_initrd_x64.gz"));
+        if (Environment.GetEnvironmentVariable("CATCLAW_NO_X86") != "1"
+            && (Environment.GetEnvironmentVariable("CATCLAW_X86_GUEST") == "1"
+                || (CatClawVideo.Core.Services.QemuGuest.WhpxProbe.IsAvailable() && X86AssetsPresent())))
         {
+            _x86Why = Environment.GetEnvironmentVariable("CATCLAW_X86_GUEST") == "1"
+                ? "CATCLAW_X86_GUEST=1 强制"
+                : "WHPX 可用（硬件虚拟化），产品默认";
             _guestArchOverride = CatClawVideo.Core.Services.QemuGuest.GuestArch.X86_64;
             _guestKernelFile = @"x86guest\vmlinuz-6.1.0-50-amd64";
             _guestInitrdFile = @"x86guest\art_initrd_x64.gz";
@@ -126,8 +139,8 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         // 启动就把桥链路状态写进日志：链路差异只会以"某个站点不对"的形式浮现，
         // 不写明模式的话排障第一步会变成猜。
         Log(ArtGuestMode
-            ? $"桥链路：ART guest（{ArtRuntimeDir}\\{CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.InitrdName}）"
-              + (Environment.GetEnvironmentVariable("CATCLAW_X86_GUEST") == "1" ? "（CATCLAW_X86_GUEST=1 实验性 x86 mini guest）" : "")
+            ? $"桥链路：ART guest（{(_x86Why is not null ? "x86_64 · " + _x86Why : "aarch64 · TCG 软件模拟")}；"
+              + (_x86Why is not null ? @"x86guest\art_initrd_x64.gz" : CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.InitrdName) + "）"
             : "桥链路：未启用 —— " + (Environment.GetEnvironmentVariable("CATCLAW_NO_ART") == "1"
                 ? "CATCLAW_NO_ART=1 显式禁用"
                 : "缺 QemuGuest 运行时")

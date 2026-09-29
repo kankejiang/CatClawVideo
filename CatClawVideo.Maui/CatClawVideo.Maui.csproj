@@ -260,17 +260,15 @@
 		     （ThunderMerge 总是注入，ArtGuestMode 判定已兼容 merged）。出包由
 		     build-win-release.ps1 [1.4/2] 注入 merged。 -->
 		<Content Remove="QemuGuest\art_initrd.gz" />
-		<!-- qemu-system-x86_64.exe（24.3MB）：x86 mini guest 实验专用（CATCLAW_X86_GUEST=1 才引用，
-		     且要求 x86guest\ 内核+initrd 齐套——本就未随包，三件套本就过不了）。移除后行为不变：
-		     开关打开时 StartVmLockedAsync 三件套校验失败 → ConnectAsync 返回 null → 回落宿主 JRE 桥，
-		     不会崩（QemuArtGuest.cs 缺件即 return false，JavaSpiderRuntime.cs:513「起不来 → 回落宿主 JRE」；
-		     2026-09-29 瘦身批次 1）。 -->
-		<Content Remove="QemuGuest\qemu-system-x86_64.exe" />
-		<!-- x86 mini guest 组件（QemuGuest\x86guest\：vmlinuz + art_initrd_x64.gz，约 285MB）
-		     本次发布不含：实验性（CATCLAW_X86_GUEST=1 才启用）且播放链路未完成验收
-		     （壳真实类 playerContent 的 VerifyError 卡点，见 docs/交接-x86迷你guest.md §6）。
-		     修好验收后再随包发布 —— 删掉本 Remove 即可恢复。 -->
-		<Content Remove="QemuGuest\x86guest\**" />
+		<!-- x86 mini guest（2026-09-29 转正，随包）：qemu-system-x86_64.exe（24.3MB）+
+		     QemuGuest\x86guest\（vmlinuz-6.1.0-50-amd64 + art_initrd_x64.gz，约 286MB）。
+		     宿主按「WHPX 可用 + x86 三件套齐全」默认路由到 x86（硬件虚拟化），
+		     aarch64 TCG（软件模拟）回落保底；强制/逃生口 = CATCLAW_X86_GUEST / CATCLAW_NO_X86
+		     （见 JavaSpiderRuntime 构造函数）。Guard 壳全链路（解密→真实 dex→加载→解析→播放）
+		     已验收（docs/交接-x86迷你guest.md §6.5-6.8；2026-09-29 本机真机复核通过，
+		     桥就绪 3.9s vs aarch64 TCG 11.1s）。
+		     ⚠ x86guest\ 的 initrd 不入库（>100MB，.gitignore）：构建机上没有该文件时
+		     publish 自动退化为「仅 aarch64」，出包脚本会告警。 -->
 	</ItemGroup>
 
 	<!-- JavaBridge（jar 爬虫桥）：随应用分发到 JavaBridge/，让**安装版**也能找到桥

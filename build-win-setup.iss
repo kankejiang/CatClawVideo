@@ -56,6 +56,7 @@ Source: "{#MyPublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdi
 ;   根因：SolidCompression=yes 下 x86 引擎与 aarch64 引擎同源构建、内容高度重合，
 ;   solid LZMA 已把相似数据去重，删掉第二份的增量收益天然小。
 ;   ⇒ 教训：solid 压缩下，批次裁剪要优先挑「不与随包其它内容相似」的文件才有实际收益。
+;   （同日撤销：x86 mini guest 转正，引擎与 x86guest\ 恢复随包 +310MB——本条留作教训存档。）
 ; VC++ 2015-2022 运行库（x64）。放到 {tmp} 并在装完后删除，不往用户机器上留垃圾文件。
 ; ⚠ 必须是**完整包**（约 24MB），不能是 VS Package Cache 里那种 600KB 的下载器桩（离线装不上）。
 Source: "installer\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall

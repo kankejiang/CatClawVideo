@@ -608,12 +608,15 @@ boot 镜像换 quicken 滤镜（本次 verify）压缩类初始化路径。
 - [x] ndk 转译 classloader/线程域问题（2026-09-27 连环攻破，见 §6.5——线程域假设被否，
       真因是注册时序/namespace 判定/g_runtime_callbacks 三连）
 - [x] 非 Guard 源原生速度验收（2026-09-27 晚 ✅，见 §6.7——load/调用链毫秒级）
-- [ ] 壳初始化后段 SIGSEGV 空指针（取证完成，见 §6.6——补齐极简环境缺的框架支撑）
+- [x] 壳初始化后段 SIGSEGV 空指针（根因 = initrd 缺 ui_stub.dex，补齐后全链路通——见 §0 速览）
 - [x] **迅雷引擎与 ART guest 合并**（2026-09-27 晚 108 实机全链路验收通过，见 §6.9）
-- [ ] 双 guest 路由的 C# 实现（按源分流）——暂缓（非 Guard 已原生，Guard 待 §6.6 突破）
+- [x] **guest 架构自动路由 + 转正装配**（2026-09-29）：WHPX 探测（WhpxProbe，WHvGetCapability）
+      + x86 三件套检查 → 默认 x86 硬件虚拟化，aarch64 TCG 回落；CATCLAW_X86_GUEST 强制 /
+      CATCLAW_NO_X86 逃生口；迅雷合并按架构门控（x86 initrd 无迅雷段 → 走独立自起 VM）；
+      csproj 恢复 x86 组件随包（+310MB）。本机真机复核：桥就绪 3.9s（TCG 11.1s）、
+      Guard 壳类（SixVGuard）loadClass/newInstance/init 全通过
 - [ ] WHPX 不可用用户的一键启用引导（设置页，DISM VirtualMachinePlatform）
-- [ ] 发行打包（build-win-release.ps1 带 x86 组件，预计 +300MB）
-- [ ] Guard 转译打通后的真机验收：玩偶 detailContent 71.6s → 秒级对照
+- [ ] **Guard 源真机终验收**：真实订阅 x86 模式下玩偶 detailContent 71.6s → 秒级对照 + 播放 + 磁力
 - [ ] 镜像裁剪第二轮：framework boot 分件与 framework-res.apk（需动 boot classpath，风险高一档）
 - [ ] proppreload 表清理：native_get(String) 单参版在 13 里非 native（注册必失败，可删）；
       native_find_prop 已改名 native_find(String)J（handle 语义，需重写）

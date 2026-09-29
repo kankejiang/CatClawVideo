@@ -183,6 +183,19 @@ if ($artInitrd) {
     Write-Msg "     生成：python JavaBridge/qemu-src/tools/mk_art_initrd.py --sys28 <API28 /system> --links <链接表> --tvbox <TVBox apk>" -Color Yellow
 }
 
+# [1.45/2] x86 mini guest 随包检查（2026-09-29 转正）：csproj 恢复 QemuGuest\x86guest\ 与
+#          qemu-system-x86_64.exe 的 Content Include 后，publish 自动带上（源目录就位即随包）。
+#          x86guest\ 的 initrd 不入库（>100MB）：构建机缺件时 publish 退化为「仅 aarch64」，
+#          宿主路由自动回落不报错 —— 但要显式提醒，不静默出小包。
+$x86Initrd = "$publishDir\QemuGuest\x86guest\art_initrd_x64.gz"
+if (Test-Path $x86Initrd) {
+    $x86mb = [math]::Round((Get-Item $x86Initrd).Length / 1MB, 1)
+    Write-Msg "  x86 mini guest：x86guest\ 运行时已随包（initrd $x86mb MB，WHPX 硬件虚拟化）" -Color Green
+} else {
+    Write-Msg "  ⚠ x86 mini guest 资产缺失（QemuGuest\x86guest\art_initrd_x64.gz）：本包仅 aarch64 TCG，x86 用户自动回落" -Color Yellow
+    Write-Msg "     （x86guest\ 资产不入库，需在构建机 QemuGuest\x86guest\ 就位：vmlinuz-6.1.0-50-amd64 + art_initrd_x64.gz）" -Color Yellow
+}
+
 # [1.5/2] 生成 resources.pri（.NET 11 下 MakePri 不会自动把应用 PRI 写进 publish 目录，
 #         缺失会导致安装后启动即退（0xC000027B / 静默退出）。
 #         实测 2026-09-13：CatClawVideo 的 publish 输出确实缺该文件，

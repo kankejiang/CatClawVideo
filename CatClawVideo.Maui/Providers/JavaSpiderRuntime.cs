@@ -109,6 +109,8 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     private string? _guestKernelFile;
     private string? _guestInitrdFile;
     private string? _guestQemuExe;
+    /// <summary>选中 x86 的原因（写进桥链路日志，排障不再猜）；null = 走 aarch64。</summary>
+    private string? _x86Why;
 
     public JavaSpiderRuntime(string bridgeDir, Action<string>? log = null,
         string? workDir = null, Func<int>? proxyPort = null)
@@ -129,8 +131,36 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         ArtGuestMode = (CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.IsAvailable(ArtRuntimeDir)
                         || File.Exists(Path.Combine(ArtRuntimeDir, ThunderMergeInitrdName)))
                        && Environment.GetEnvironmentVariable("CATCLAW_NO_ART") != "1";
-        // x86 mini guest 实验开关（2026-09-27，联调中）：仅当 x86 运行时齐全才切架构
-        if (Environment.GetEnvironmentVariable("CATCLAW_X86_GUEST") == "1")
+        // ── guest 架构路由（2026-09-29 转正）──
+        // x86_64 + WHPX（硬件虚拟化）是产品默认目标：同源 jar 的解析从 TCG 的 71~90s 降到
+        // 秒级、桥冷启动 11.1s → 3.9s（本机实测）；aarch64 TCG（软件模拟）回落保底。
+        //   · CATCLAW_X86_GUEST=1  强制 x86（联调语义保留，覆盖探测）
+        //   · CATCLAW_NO_X86=1     强制 aarch64（逃生口）
+        //   · 都未设：WHPX 可用 **且 x86 运行时三件套齐全** → 默认 x86；否则 aarch64。
+        //     不做「x86 引擎在、WHPX 不在也走 x86」的兜底：那种机器上 QEMU 会静默回落
+        //     x86-TCG，拿着为 WHPX 配的 vCPU 数跑软件模拟，慢且日志看不出来——不如直接
+        //     走已按 TCG 调优的 aarch64（docs/qemu-tcg-tuning.md）。
+        bool X86AssetsPresent() =>
+            File.Exists(Path.Combine(ArtRuntimeDir, "qemu-system-x86_64.exe"))
+            && File.Exists(Path.Combine(ArtRuntimeDir, @"x86guest\vmlinuz-6.1.0-50-amd64"))
+            && File.Exists(Path.Combine(ArtRuntimeDir, @"x86guest\art_initrd_x64.gz"));
+        if (Environment.GetEnvironmentVariable("CATCLAW_NO_X86") == "1")
+        {
+            _x86Why = null;
+        }
+        else if (Environment.GetEnvironmentVariable("CATCLAW_X86_GUEST") == "1")
+        {
+            _x86Why = "CATCLAW_X86_GUEST=1 强制（" + (X86AssetsPresent() ? "运行时齐全" : "⚠ 运行时缺失，起 VM 会失败回落") + "）";
+        }
+        else if (CatClawVideo.Core.Services.QemuGuest.WhpxProbe.IsAvailable() && X86AssetsPresent())
+        {
+            _x86Why = "WHPX 可用（硬件虚拟化），产品默认";
+        }
+        else if (CatClawVideo.Core.Services.QemuGuest.WhpxProbe.IsAvailable())
+        {
+            Log("x86 guest 未启用：WHPX 可用但 x86 运行时（QemuGuest\\qemu-system-x86_64.exe / x86guest\\）不齐——走 aarch64");
+        }
+        if (_x86Why is not null)
         {
             _guestArchOverride = CatClawVideo.Core.Services.QemuGuest.GuestArch.X86_64;
             _guestKernelFile = @"x86guest\vmlinuz-6.1.0-50-amd64";
@@ -139,10 +169,14 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         }
         // 启动就把桥链路状态写进日志：链路差异只会以"某个站点不对"的形式浮现，
         // 不写明模式的话排障第一步会变成猜。
-        var mergedOnDisk = File.Exists(Path.Combine(ArtRuntimeDir, ThunderMergeInitrdName));
+        var isX86 = _x86Why is not null;
+        var initrdDesc = isX86
+            ? @"x86guest\art_initrd_x64.gz"
+            : File.Exists(Path.Combine(ArtRuntimeDir, ThunderMergeInitrdName))
+                ? ThunderMergeInitrdName + "，含迅雷引擎"
+                : CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.InitrdName;
         Log(ArtGuestMode
-            ? $"桥链路：ART guest（{ArtRuntimeDir}\\{(mergedOnDisk ? ThunderMergeInitrdName + "，含迅雷引擎" : CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.InitrdName)}）"
-              + (Environment.GetEnvironmentVariable("CATCLAW_X86_GUEST") == "1" ? "（CATCLAW_X86_GUEST=1 实验性 x86 mini guest）" : "")
+            ? $"桥链路：ART guest（{(isX86 ? "x86_64 · " + _x86Why : "aarch64 · TCG 软件模拟")}；{initrdDesc}）"
             : "桥链路：未启用 —— " + (Environment.GetEnvironmentVariable("CATCLAW_NO_ART") == "1"
                 ? "CATCLAW_NO_ART=1 显式禁用"
                 : "缺 QemuGuest 运行时")
@@ -227,9 +261,13 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     public const string ThunderMergeInitrdName = "art_initrd_merged.gz";
 
     /// <summary>能否提供迅雷外部 VM（同步探针：ART 链路可用 + 配置已注入 + 合并 initrd 在）。
-    /// 三缺一 → 迅雷引擎回落自起 VM 模式。</summary>
+    /// 三缺一 → 迅雷引擎回落自起 VM 模式。
+    /// ⚠ 架构门控：合并 initrd 是 aarch64 专属（x86 guest 的 initrd 无迅雷段，2026-09-27
+    /// 定案时 x86 的迅雷走独立转译路线、资产未做）——x86 模式恒 false，让迅雷引擎自起
+    /// aarch64 VM，否则会白等一个永远不会来的 harness 回连。</summary>
     public bool CanProvideThunderVm =>
         ArtGuestMode && ThunderMerge is not null
+        && _guestArchOverride != CatClawVideo.Core.Services.QemuGuest.GuestArch.X86_64
         && File.Exists(Path.Combine(ArtRuntimeDir, ThunderMergeInitrdName));
 
     /// <summary>给迅雷引擎（<c>QemuGuestEngine</c> 外部 VM 模式）提供租约：确保 ART VM（合并
@@ -268,19 +306,21 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         art.BlockDeviceRoot = ThunderMerge.BlockDeviceRoot;
     }
 
-    /// <summary>创建 ART guest 实例（统一带 x86 实验 override 与迅雷合并配置；懒创建唯一入口）。</summary>
+    /// <summary>创建 ART guest 实例（统一带架构路由与迅雷合并配置；懒创建唯一入口）。</summary>
     private CatClawVideo.Core.Services.QemuGuest.QemuArtGuest CreateArtGuest()
     {
         var art = new CatClawVideo.Core.Services.QemuGuest.QemuArtGuest(ArtRuntimeDir, _log)
         {
-            // x86 mini guest 实验开关（CATCLAW_X86_GUEST=1）：切架构 + 覆盖内核/
-            // initrd/引擎文件名；缺省 null → ArtGuest 内部走 aarch64 缺省，现网零变化
+            // 架构路由（见构造函数）：x86_64（WHPX 默认/强制）或 aarch64（TCG 回落）
             GuestArch = _guestArchOverride ?? CatClawVideo.Core.Services.QemuGuest.GuestArch.Arm64,
             KernelFileName = _guestKernelFile ?? "pkg_kernel",
             GuestInitrdName = _guestInitrdFile ?? CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.InitrdName,
             GuestQemuExeName = _guestQemuExe ?? "qemu-system-aarch64.exe",
         };
-        ApplyThunderMerge(art);
+        // 合并配置只灌 aarch64（x86 initrd 无迅雷段，见 CanProvideThunderVm 门控注释）
+        if ((_guestArchOverride ?? CatClawVideo.Core.Services.QemuGuest.GuestArch.Arm64)
+            == CatClawVideo.Core.Services.QemuGuest.GuestArch.Arm64)
+            ApplyThunderMerge(art);
         return art;
     }
 
