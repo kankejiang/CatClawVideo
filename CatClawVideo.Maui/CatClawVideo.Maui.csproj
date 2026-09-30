@@ -266,6 +266,16 @@
 		<Content Remove="QemuGuest\art_initrd_merged.gz" />
 		<Content Remove="QemuGuest\pkg_kernel" />
 		<Content Remove="QemuGuest\pkg_initrd.gz" />
+		<!-- x86guest 的**出包实验件**不随包（2026-09-30 量的体积账）：
+		     art_initrd_x64_bootimg.gz 324.5MB + art_initrd_x64_pristine.gz 291.9MB
+		     + bootimg_artifacts.cpio.gz 10.5MB + thunder_assets.cpio.gz 23.2MB
+		     = 650.1MB 死重，而运行时真正读的只有 x86guest\art_initrd_x64.gz（297.8MB，已 .gitignore）。
+		     这四个只是 JavaBridge/qemu-src/tools/x86guest/build_bootimg_inject.py 的**构建期输入**
+		     （它按源目录绝对路径读，不看 bin/），所以 Remove 只影响 publish，不影响出包脚本。 -->
+		<Content Remove="QemuGuest\x86guest\art_initrd_x64_bootimg.gz" />
+		<Content Remove="QemuGuest\x86guest\art_initrd_x64_pristine.gz" />
+		<Content Remove="QemuGuest\x86guest\bootimg_artifacts.cpio.gz" />
+		<Content Remove="QemuGuest\x86guest\thunder_assets.cpio.gz" />
 		<!-- x86 mini guest（唯一运行时）：qemu-system-x86_64.exe（24.3MB）+
 		     QemuGuest\x86guest\（vmlinuz-6.1.0-50-amd64 + art_initrd_x64.gz，约 286MB）
 		     + share\（SeaBIOS 等 BIOS blob，x86 q35 机器必需）+ 全部共享依赖 DLL。

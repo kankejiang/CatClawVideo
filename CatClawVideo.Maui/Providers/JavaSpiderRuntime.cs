@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Net.Sockets;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
@@ -196,10 +197,36 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
                         try
                         {
                             var req = System.Text.Json.Nodes.JsonNode.Parse(t)!.AsObject();
-                            var resp = await RoundTripAsync(req, TimeSpan.FromSeconds(300), CancellationToken.None).ConfigureAwait(false);
+                            string payload;
+                            if (req["op"]?.GetValue<string>() == "host")
+                            {
+                                // 宿主方法直通（2026-09-30）：op=call 只把请求丢给桥，**绕过了宿主的
+                                // playerContent 后处理** —— 壳流地址改写、Guard 端口守卫、PlayAddress
+                                // 判据全在生产方法里。结果就是「桥侧全绿、宿主侧仍坏」这类缺陷
+                                // 无头测不出来（当天真踩了一次：?gp= 接错位置）。
+                                // op=host 走真实方法；site 传完整 VodSiteInfo JSON（台架从 sites-cache.json 取）。
+                                var hsite = System.Text.Json.JsonSerializer
+                                    .Deserialize<VodSiteInfo>(req["site"]!.ToJsonString())!;
+                                var a = req["args"]?.AsArray() ?? new JsonArray();
+                                string Arg(int i) => i < a.Count ? a[i]!.GetValue<string>() : "";
+                                payload = req["method"]?.GetValue<string>() switch
+                                {
+                                    "homeContent" => await HomeContentAsync(hsite, CancellationToken.None),
+                                    "categoryContent" => await CategoryContentAsync(hsite, Arg(0), Arg(1)),
+                                    "detailContent" => await DetailContentAsync(hsite, Arg(0), CancellationToken.None),
+                                    "searchContent" => await SearchContentAsync(hsite, Arg(0), Arg(1), CancellationToken.None),
+                                    "playerContent" => await PlayerContentAsync(hsite, Arg(0), Arg(1), CancellationToken.None),
+                                    _ => throw new ArgumentException("op=host 不认的方法: " + req["method"]),
+                                };
+                            }
+                            else
+                            {
+                                payload = (await RoundTripAsync(req, TimeSpan.FromSeconds(300),
+                                    CancellationToken.None).ConfigureAwait(false)).ToJsonString();
+                            }
                             sw.Stop();
                             await File.AppendAllTextAsync(outPath,
-                                $"### {DateTime.Now:HH:mm:ss} <- {t}\n{sw.ElapsedMilliseconds}ms {resp.ToJsonString()}\n").ConfigureAwait(false);
+                                $"### {DateTime.Now:HH:mm:ss} <- {t}\n{sw.ElapsedMilliseconds}ms {payload}\n").ConfigureAwait(false);
                             Log($"[dbg] {t[..Math.Min(t.Length, 70)]} → {sw.ElapsedMilliseconds}ms");
                         }
                         catch (Exception ex)
@@ -509,14 +536,51 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
             }
         }
         var raw = await CallAsync(site, "playerContent", new JsonArray(flag ?? "", id), ct).ConfigureAwait(false);
-        if (ArtGuestMode && raw.Contains("127.0.0.1:6678") && _art is { ProxyTunnelPort: > 0 } art)
+        // ⚠ 端口**不能只认 6678**（2026-09-30 「狂怒者：荣誉之战」实测）：壳自己的端口发现会顺延
+        //   —— `[SpiderDebug] Found local server port 6679`，因为同一个 guest 里先后装载过别的
+        //   Guard 壳，6678 被前一个（还活着的）服务占着；而 §6.8 的「Guard 端口守卫」force 重装载
+        //   恰恰会再产生一个新服务，端口只会往上飘。只匹配 6678 的改写整条不触发 ⇒
+        //   播放器直接连宿主回环上的 6679（没人监听）：`[tcp] Connection to tcp://127.0.0.1:6679
+        //   failed: -138`（5.6s 后失败），表现就是「网盘源点了没反应」。
+        //   现在：任意 127.0.0.1:<p> 的 /proxy/play/ 都换成宿主隧道端口，并把真端口用 ?gp= 带给
+        //   guest 桥（桥按 gp 透传，见 JavaBridge/src/bridge/Art.java streamPassThrough）。
+        if (ArtGuestMode && raw.Contains("/proxy/play/") && _art is { ProxyTunnelPort: > 0 } art)
         {
-            Log($"{site.Name}: 壳流地址端口改写 6678 → {art.ProxyTunnelPort}");
+            var rewritten = RewriteShellStreamPorts(raw, art.ProxyTunnelPort);
+            if (rewritten != raw)
+            {
+                Log($"{site.Name}: 壳流地址改写 → 隧道 {art.ProxyTunnelPort}（原端口见 gp 参数）");
+                _ = DiagnoseGuestPortsAsync(ct);
+                return rewritten;
+            }
+        }
+        if (ArtGuestMode && raw.Contains("127.0.0.1:6678") && _art is { ProxyTunnelPort: > 0 } art2)
+        {
+            Log($"{site.Name}: 壳流地址端口改写 6678 → {art2.ProxyTunnelPort}");
             _ = DiagnoseGuestPortsAsync(ct);
-            return raw.Replace("127.0.0.1:6678", "127.0.0.1:" + art.ProxyTunnelPort);
+            return raw.Replace("127.0.0.1:6678", "127.0.0.1:" + art2.ProxyTunnelPort);
         }
         return raw;
     }
+
+    /// <summary>
+    /// 把壳播放地址里的 guest 端口换成宿主隧道端口，并把真端口用 <c>gp=&lt;端口&gt;</c> 追加到
+    /// <b>整条 URL 末尾</b>（桥按它透传，见 JavaBridge/src/bridge/Art.java streamPassThrough）。
+    /// 兼容 JSON 里两种斜杠写法（<c>/</c> 与转义 <c>\/</c>）。
+    /// <para>⚠ <b>gp 必须落在末尾</b>：第一版把 <c>?gp=</c> 直接接在 <c>/proxy/play</c> 之后，
+    /// 等于把 <c>/&lt;盘&gt;/&lt;目录&gt;/&lt;文件&gt;</c> 整段变成了查询串 —— 桥剥掉 query 后只剩
+    /// <c>/proxy/play</c>，文件名丢失（2026-09-30 由 <c>_scratch_tb/gp-check/rewrite_check.py</c>
+    /// 拿真样本抓出来；无头台架自己拼 URL，所以当时没暴露）。</para>
+    /// </summary>
+    private static string RewriteShellStreamPorts(string raw, int tunnel) =>
+        System.Text.RegularExpressions.Regex.Replace(raw,
+            @"127\.0\.0\.1:(\d{2,5})(\\?/proxy\\?/play)([^\x22]*)",
+            m =>
+            {
+                var tail = m.Groups[3].Value;
+                var sep = tail.Contains("?") ? "&" : "?";
+                return $"127.0.0.1:{tunnel}{m.Groups[2].Value}{tail}{sep}gp={m.Groups[1].Value}";
+            });
 
     /// <summary>guest 监听端口盘点（/proc/net/tcp）——诊断壳的流服务是否真的在听。</summary>
     private async Task DiagnoseGuestPortsAsync(CancellationToken ct)
@@ -651,10 +715,23 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
                     throw new InvalidOperationException("爬虫引擎连续重置，请稍后重试");
                 }
                 if (link is null)
+                {
+                    // ⚠ 冷启期间这条几乎必然命中一次（2026-09-30 实测 16:25:42.756）：
+                    // guest 的启动权有 ownership 仲裁，别的调用方正在拉 VM 时 ConnectAsync **让位返回 null**，
+                    // 旧写法当场抛「ART guest 起不来」⇒ 首屏 jar 源第一次必失败，
+                    // 首页因此回退自动探测（表现成「每次重启都不回上次那个站点」，见调试报告 §八）。
+                    // 现在与「会话被并发接管」同一策略：等一轮再试，仍拿不到才报错。
+                    if (attempt < 2)
+                    {
+                        Log($"ART guest 本轮未拿到会话（另一路正在拉 VM），2s 后重试（第 {attempt + 1} 次）");
+                        await Task.Delay(2000, ct).ConfigureAwait(false);
+                        continue;
+                    }
                     // 起不来不再有 JRE 可回落：ArtGuestMode 保持不变（下次调用还会重试），
                     // 失败原因直接抛给调用方（QemuArtGuest 已写 [art-vm] 明细日志）。
                     throw new InvalidOperationException(
                         "ART guest 起不来（详见 [art-vm] 日志）；宿主 JRE 回落桥已退役，jar 爬虫链路不可用");
+                }
                 if (!ReferenceEquals(art, _art) || IsBridgeReady)
                 {
                     // 并发调用方已接管（ownership 仲裁让位场景）→ 换流重试
@@ -724,7 +801,88 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
                 TimeSpan.FromSeconds(10), ct);
             Log(pp["ok"]?.GetValue<bool>() == true ? $"已下发 proxy 端口 {port}" : $"proxy 端口下发失败: {pp["error"]}");
         }
+
+        // x86 guest：Guard 解密服务（18481）——jar 的 FishConfig 扫码链路探测并调用它
+        //（aarch64 架构下由 App 的 Guard VM 提供；x86 模式无 Guard VM，改由本监听
+        //  桥接到 guest 内桥的 guard-decrypt op——壳内转译 SO 进程内解密）。
+        if (_guestArchOverride == CatClawVideo.Core.Services.QemuGuest.GuestArch.X86_64)
+        {
+            _ = Task.Run(() => GuardSvcLoopAsync(ct), ct);
+            Log("Guard 解密服务监听已启动（18481 → guest 内解密）");
+        }
     }
+
+    /// <summary>
+    /// Guard 解密服务（18481，仅 x86 guest 模式）：jar 的 FishConfig 扫码链路探测
+    /// 10.0.2.2:18481 并用行式协议调用（DECRYPT/ENCRYPT &lt;b64&gt; → OK &lt;b64&gt; / ERR &lt;msg&gt;）。
+    /// 每条请求转 guest 内桥的 guard-decrypt/guard-encrypt op（壳内转译 SO 进程内解密）。
+    /// </summary>
+    private async Task GuardSvcLoopAsync(CancellationToken ct)
+    {
+        TcpListener listener = null;
+        try
+        {
+            listener = new TcpListener(System.Net.IPAddress.Loopback, 18481);
+            listener.Start();
+        }
+        catch (Exception ex)
+        {
+            Log($"Guard 解密服务 18481 绑定失败: {ex.Message}");
+            return;
+        }
+        while (!ct.IsCancellationRequested)
+        {
+            TcpClient client;
+            try { client = await listener.AcceptTcpClientAsync(ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { break; }
+            catch (Exception) { continue; }
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    using var clientSocket = client;
+                    using var stream = clientSocket.GetStream();
+                    var reader = new StreamReader(stream, Encoding.UTF8);
+                    while (true)
+                    {
+                        var line = await reader.ReadLineAsync(ct).ConfigureAwait(false);
+                        if (line is null) break;
+                        line = line.Trim();
+                        if (line.Length == 0) continue;
+                        var sp = line.IndexOf(' ');
+                        var op = sp < 0 ? line : line[..sp];
+                        var data = sp < 0 ? "" : line[(sp + 1)..].Trim();
+                        string result;
+                        try
+                        {
+                            var resp = await RoundTripAsync(new JsonObject
+                            {
+                                ["id"] = Interlocked.Increment(ref _id),
+                                ["op"] = op.Equals("ENCRYPT", StringComparison.OrdinalIgnoreCase) ? "guard-encrypt" : "guard-decrypt",
+                                ["data"] = data,
+                            }, TimeSpan.FromSeconds(30), CancellationToken.None).ConfigureAwait(false);
+                            var resStr = resp["result"] is JsonNode rn && rn.GetValueKind() != System.Text.Json.JsonValueKind.Null ? rn.GetValue<string>() : null;
+                            if (resp["ok"]?.GetValue<bool>() == true && !string.IsNullOrEmpty(resStr))
+                                result = "OK " + resStr;
+                            else
+                                result = "ERR decrypt failed";
+                        }
+                        catch (Exception ex)
+                        {
+                            result = "ERR " + ex.Message;
+                        }
+                        var outBytes = Encoding.UTF8.GetBytes(result + "\r\n");
+                        await stream.WriteAsync(outBytes).ConfigureAwait(false);
+                        await stream.FlushAsync().ConfigureAwait(false);
+                    }
+                }
+                catch (Exception) { /* 客户端断开属正常 */ }
+            }, ct);
+        }
+    }
+
+    /// <summary>Guard 解密服务的监听引用（Dispose 时停）。</summary>
+    private TcpListener? _guardSvcListener;
 
     /// <summary>桥上行 UI 事件（ui-dialog/ui-dismiss/ui-toast）；宿主 MAUI 层订阅渲染。</summary>
     public Action<JsonObject>? UiEvent { get; set; }
@@ -917,8 +1075,15 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
                     // ping 得通说明桥活着、只是该调用慢（实测聚合网盘源 detailContent 71s 才完成），
                     // 杀桥重置（15s 起桥 + 全站重载）纯属双输；探针也无应答才是真死，走重置。
                     if (await PingBridgeAliveAsync(TimeSpan.FromSeconds(4)).ConfigureAwait(false))
+                    {
+                        // InFlightTag 自己带括号，别再套一层（实测症状：给用户看的原文写成
+                        // 「线路爬虫（（玩偶.playerContent））」，空的时候还剩一对空括号）。
+                        var who = _inFlight.Length > 0 ? $"线路爬虫（{_inFlight}）" : "线路爬虫";
                         throw new TimeoutException(
-                            $"线路爬虫（{InFlightTag}）{timeout.TotalSeconds:F0}s 无响应，但桥仍存活——该线路服务端极慢，建议换线路（id={expectId}）");
+                            $"{who} {timeout.TotalSeconds:F0}s 无响应，但桥仍存活"
+                            + "——该线路服务端极慢或已挂起；" + DriveLoginHint + "也可先换其它线路（"
+                            + $"id={expectId}）");
+                    }
                     ResetBridge($"op={op} id={expectId}{InFlightTag} 在 {timeout.TotalSeconds:F0}s 内没回来且探针无应答");
                 }
                 throw new TimeoutException(BuildTimeoutMessage(op, timeout, expectId));
@@ -935,13 +1100,26 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     private string InFlightTag => _inFlight.Length > 0 ? $"（{_inFlight}）" : "";
 
     /// <summary>超时报错要给用户出路：call 超时几乎都是爬虫内部对网盘 API 的请求挂死
-    /// （桥全局锁被占），引擎已自动重置，剩下的动作是换线路；其余 op 保持原口径。</summary>
+    /// （桥全局锁被占），引擎已自动重置，剩下的动作是换线路；其余 op 保持原口径。
+    /// <para>「多半是登录态失效」不是猜的（2026-09-30 两次现场）：未登录的优汐盘与被反复取直链的
+    /// 夸父盘症状完全一致 —— 宿主 90s 超时、桥还活着，而看门狗 dump 出的挂死线程名就是网盘的
+    /// 登录/刷新主机（<c>「OkHttp uop.quark.cn」</c>、<c>「OkHttp drive-pc.quark.cn」</c>）；
+    /// 同一分钟其它 HTTPS 都正常（homeContent 1376ms / categoryContent 363ms / detailContent 3194ms）
+    /// ⇒ 不是网络坏了。所以出路要写清楚：换线路 **或** 去「网盘配置」重新登录（扫码/粘 Cookie）。</para></summary>
     private string BuildTimeoutMessage(string op, TimeSpan timeout, int id)
     {
         if (op != "call") return $"Java 桥响应超时（{timeout.TotalSeconds:F0}s，id={id}）";
         var what = _inFlight.Length > 0 ? $"线路爬虫（{_inFlight}）" : "线路爬虫";
-        return $"{what} {timeout.TotalSeconds:F0}s 无响应——常见于网盘接口被限流或挂起；引擎已自动重置，请换其它线路或稍后重试（id={id}）";
+        return $"{what} {timeout.TotalSeconds:F0}s 无响应——常见于网盘接口被限流或挂起；"
+               + DriveLoginHint
+               + $"引擎已自动重置，请换其它线路或稍后重试（id={id}）";
     }
+
+    /// <summary>网盘线路挂死时给用户的下一步（<see cref="BuildTimeoutMessage"/> 与
+    /// 「桥仍存活」那条超时文案共用，避免两处各写一份）。</summary>
+    private const string DriveLoginHint =
+        "若是网盘线路，多半是「该盘登录态已失效」——请在该站的「网盘配置」里重新扫码或粘贴 Cookie；";
+
 
     private async Task<string> CallAsync(VodSiteInfo site, string method, JsonArray args, CancellationToken ct,
         TimeSpan? timeout = null, bool resetOnTimeout = true)
@@ -964,7 +1142,23 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
             };
             var resp = await RoundTripAsync(req, timeout ?? TimeSpan.FromSeconds(90), ct, resetOnTimeout);
             if (resp["ok"]?.GetValue<bool>() != true)
-                throw new InvalidOperationException($"spider {site.Key}.{method}: {resp["error"]}");
+            {
+                var why = resp["error"]?.GetValue<string>() ?? "";
+                // 自愈（2026-09-30）：桥侧 tryLock 到点说明这个站被上一条**无响应的网盘调用**占住
+                // （壳的 okhttp 没有读超时，那条线程中断不了）。不处理的话用户只能重启应用才能恢复。
+                // force 重装载会换掉桥侧站点锁 + 新建壳实例（实测 ~3.4s），然后重试一次这一次调用。
+                if (why.Contains("上一次调用仍未结束"))
+                {
+                    Log($"{site.Key}: 桥侧报该站被无响应调用占住 → force 重装载自愈，重试 {method}");
+                    await EnsureSiteLoadedAsync(site, jar, ct, force: true).ConfigureAwait(false);
+                    req["id"] = Interlocked.Increment(ref _id);
+                    resp = await RoundTripAsync(req, timeout ?? TimeSpan.FromSeconds(90), ct, resetOnTimeout);
+                    why = resp["ok"]?.GetValue<bool>() == true ? "" : (resp["error"]?.GetValue<string>() ?? "");
+                    if (why.Length > 0) throw new InvalidOperationException($"spider {site.Key}.{method}: {why}");
+                    return resp["result"]?.GetValue<string>() ?? "{}";
+                }
+                throw new InvalidOperationException($"spider {site.Key}.{method}: {why}");
+            }
             return resp["result"]?.GetValue<string>() ?? "{}";
         }
         finally { _inFlight = ""; }

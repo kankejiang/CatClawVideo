@@ -156,6 +156,16 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
     /// <summary>记失败原因（同时落日志；调用方拿 null 时读 <see cref="LastFailureReason"/>）。</summary>
     private void Fail(string why) { LastFailureReason = why; Log(why); }
 
+    /// <summary>给「返回 null 但没人写过原因」的路径兜底（上游已有具体原因时不覆盖）。
+    /// 为什么需要：调用方拿到 null 只看 <see cref="LastFailureReason"/>，为空就变成用户眼里的
+    /// 「点了没反应」——2026-09-30 17:20 的 T5 实测正是如此：中途 Stop 后重开返回 null，
+    /// 原因字段是空的，报告只能写「重开失败：(空)」。</summary>
+    private MagnetPlayback? SilentNull(string fallbackWhy)
+    {
+        if (string.IsNullOrEmpty(LastFailureReason)) Fail(fallbackWhy);
+        return null;
+    }
+
     /// <summary>磁力点播磁盘缓存根目录（null = 关闭，默认关）。由宿主注入（AppPaths.Sub("btcache")）：
     /// 播放数据 4MB 分块落盘，重看/换集回看直接磁盘秒供，不再依赖引擎 tmpfs（VM 重启即空）。</summary>
     public string? StreamCacheRoot { get; set; }
@@ -242,9 +252,11 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            if (!await EnsureStartedLockedAsync(ct).ConfigureAwait(false)) return null;
+            if (!await EnsureStartedLockedAsync(ct).ConfigureAwait(false))
+                return SilentNull("迅雷 VM/harness 没起来（QEMU 起不来或 harness 未回连控制口，详见 bt.log 的 [qemu]/[thunder] 行）");
             var s = await PrepareSessionLockedAsync(magnet, preferName, ct).ConfigureAwait(false);
-            if (s is null) return null;
+            if (s is null)
+                return SilentNull("磁力没解析出会话（种子未下完、引擎无源，或控制口被另一路引擎占用）");
 
             var pick = SelectFile(s.Files, preferName);
             var hash = ResolveInfoHashHex(magnet);
@@ -331,7 +343,7 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
                 await PollUntilAsync(() => s.Cancelled || s.Played || s.LastError is not null,
                     TimeSpan.FromSeconds(240), ct).ConfigureAwait(false);
                 if (s.Played) break;
-                if (s.Cancelled) return null;
+                if (s.Cancelled) return SilentNull("会话被取消（退出播放页或用户停止），未拿到播放地址");
 
                 var why = s.LastError ?? "等迅雷给出播放地址超时（240s）——任务未起来或一直无源";
                 if (IsTaskAlreadyExists(s) && _external is not null && dlTry < 2)
@@ -367,7 +379,11 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
             return new MagnetPlayback(hash, pick.Index, pick.Size, Path.GetFileName(pick.Name),
                 _streamProxy?.Url ?? MediaUrl(s.PlayUrlPath));
         }
-        catch (Exception ex) { Log($"TryOpen 异常：{ex.GetType().Name}: {ex.Message}"); return null; }
+        catch (Exception ex)
+        {
+            Log($"TryOpen 异常：{ex.GetType().Name}: {ex.Message}");
+            return SilentNull($"打开磁力时异常：{ex.GetType().Name}: {ex.Message}");
+        }
         finally { _gate.Release(); }
     }
 

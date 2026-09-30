@@ -319,7 +319,15 @@ public static class SpiderUiHost
                     // ——2026-09-24 用户实测「点清除却进推送页」正是这么来的。
                     if (await wAction.ConfigureAwait(true)) return;
                     var msg = PickMsg(acted);
-                    if (!string.IsNullOrWhiteSpace(msg)) await ShowToastAsync(msg!);
+                    if (!string.IsNullOrWhiteSpace(msg)) { await ShowToastAsync(msg!); return; }
+                    // 但「既没弹窗、又没回话」不能静默 return：2026-09-30 实测用户连点三次
+                    // 「扫码登录」毫无反应，日志里 `FishConfig.action(quark_scan) → `（空），
+                    // 而桥侧**一整天 0 条 ui-dialog 事件** —— jar 的二维码弹窗根本没送到宿主。
+                    // 静默等于把故障藏起来：这里给一句人话，并落到 jar 自己的 Cookie 推送页
+                    // （扫码走不通时这条是能用的登录路径）。
+                    await ShowToastAsync("扫码弹窗没从 jar 送到宿主（桥侧没有 UI 事件）——改用「粘贴 Cookie」登录")
+                        .ConfigureAwait(true);
+                    await GoCookiePageAsync(provider, site, item).ConfigureAwait(true);
                     return;
                 }
             }
@@ -331,13 +339,19 @@ public static class SpiderUiHost
             if (await wait.ConfigureAwait(true)) return;   // jar 已弹对话框/二维码（宿主已展示）
 
             // jar 没弹窗（QEMU so 未就绪等）→ 兜底：Cookie 推送页（jar 自己的 do=config HTML）
-            var url = $"http://127.0.0.1:{Core.Services.SpiderProxyServer.ActivePort}/proxy?do=config&url={Uri.EscapeDataString(item.Id)}";
-            var title = Uri.EscapeDataString(item.Title ?? "网盘配置");
-            await Shell.Current.GoToAsync($"webpage?title={title}&url={Uri.EscapeDataString(url)}").ConfigureAwait(true);
+            await GoCookiePageAsync(provider, site, item).ConfigureAwait(true);
         }
         catch (Exception ex)
         {
             DiagLog.Write($"[spider-ui] 网盘配置入口异常: {ex.Message}");
+        }
+
+        // jar 自带 do=config 的 Cookie 推送页（不是宿主适配，是 jar 自己的页面）
+        async Task GoCookiePageAsync(Core.Interfaces.IVodSourceProvider p, VodSiteInfo s, VodItem it)
+        {
+            var url = $"http://127.0.0.1:{Core.Services.SpiderProxyServer.ActivePort}/proxy?do=config&url={Uri.EscapeDataString(it.Id)}";
+            var title = Uri.EscapeDataString(it.Title ?? "网盘配置");
+            await Shell.Current.GoToAsync($"webpage?title={title}&url={Uri.EscapeDataString(url)}").ConfigureAwait(true);
         }
     }
 

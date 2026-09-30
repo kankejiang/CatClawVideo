@@ -114,6 +114,10 @@ public partial class HomeViewModel : ObservableObject
         // 用户首选站点优先（数据源弹窗选择后记忆）；拉取失败回退自动探测
         var preferredKey = Preferences.Default.Get(PreferredSiteKey, string.Empty);
         var preferred = sites.FirstOrDefault(s => s.Key == preferredKey);
+        // 留痕（2026-09-30）：这里以前是 `catch { }` —— 首选站点失败的原因整条被吞，
+        // 于是「每次重启都不回上次的站点」根本查不动。冷启动时爬虫桥（QEMU guest）
+        // 还在起（实测 桥就绪 15:59:57.3，而首屏 15:59:46.7 就开跑），jar 源这一步必然受影响。
+        DiagLog.Write($"[home] 首选 key={preferredKey} 命中={(preferred?.Name ?? "(不在可播列表)")}");
 
         var cats = new List<VodCategory>();
         VodSiteInfo? usedSite = null;
@@ -127,16 +131,30 @@ public partial class HomeViewModel : ObservableObject
             }
             else
             {
-                try
+                // 冷启动竞态（2026-09-30 实测）：爬虫桥（QEMU guest + ART）就绪要约 12s
+                // （16:25:38.1 首屏开跑 → 16:25:49.7 桥就绪），而 jar 源的取数路径在桥没起来时
+                // 是**快速失败**而不是等待：`InvalidOperationException: ART guest 起不来`。
+                // 旧代码一个 `catch { }` 把这句吞掉并立刻回退自动探测 ⇒ 用户看到的正是
+                // 「每次重启都不回上次那个站点，而是落到 🗂我的云盘┃配置」。
+                // 现在：留痕 + 有界重试（5 次 ×4s，覆盖 ~26s 冷启），全失败才回退探测。
+                for (var attempt = 1; attempt <= 5 && usedSite == null; attempt++)
                 {
-                    cats = await _provider.GetCategoriesAsync(preferred);
-                    if (cats.Count > 0)
+                    string why;
+                    try
                     {
-                        usedSite = preferred;
-                        _catsCache[preferred.Key] = cats;
+                        cats = await _provider.GetCategoriesAsync(preferred);
+                        if (cats.Count > 0)
+                        {
+                            usedSite = preferred;
+                            _catsCache[preferred.Key] = cats;
+                            break;
+                        }
+                        why = "分类为空";
                     }
+                    catch (Exception ex) { why = $"{ex.GetType().Name}: {ex.Message}"; }
+                    DiagLog.Write($"[home] 首选 {preferred.Name} 第 {attempt} 次取分类失败：{why}");
+                    if (attempt < 5) await Task.Delay(4000);
                 }
-                catch { }
             }
         }
 
