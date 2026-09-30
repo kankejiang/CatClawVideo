@@ -86,4 +86,7 @@ public class Resources {
         public float getDimension(int resId) { return 0f; }
         public int getDimensionPixelSize(int resId) { return 0; }
     }
+
+    // ── 自动补齐：jar 引用到但桩缺失的成员（android-33 签名，空实现）──
+    public static android.content.res.Resources getSystem() { return null; }
 }

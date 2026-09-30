@@ -38,11 +38,17 @@ rem real PackageManager in the ART guest, our stub in the JRE bridge. Without an
 rem we skip it: Art.App.getPackageManager() reflects and falls back, behavior unchanged.
 rem ⚠ Must run BEFORE the jar packaging below — otherwise the class stays in build/ and never
 rem   lands in bridge.jar → gb.dex → guest sees ClassNotFoundException (2026-09-26 probe).
+rem === guest supplement: classes that extend REAL android.* must be compiled against android.jar.
+rem API level MUST match the ART guest (Android 13 = API 33): android.view.Window's abstract-method
+rem set differs between releases, and a mismatch only shows up at runtime as AbstractMethodError
+rem inside the guest (2026-09-29: FakeWindow). So prefer android-33 over the newest platform.
 set ANDROID_JAR=
+if exist "%LOCALAPPDATA%\Android\Sdk\platforms\android-33\android.jar" set ANDROID_JAR=%LOCALAPPDATA%\Android\Sdk\platforms\android-33\android.jar
 if not defined ANDROID_JAR for /d %%D in ("%LOCALAPPDATA%\Android\Sdk\platforms\android-*") do set ANDROID_JAR=%%D\android.jar
 if exist "%ANDROID_JAR%" (
   echo guest supplement: %ANDROID_JAR%
-  "%JAVAC%" -encoding UTF-8 --release 17 -cp "%ANDROID_JAR%" -d build guest-src\bridge\GuestPackageManager.java || exit /b 5
+  dir /s /b guest-src\*.java > guest-sources.txt
+  "%JAVAC%" -encoding UTF-8 --release 17 -cp "%ANDROID_JAR%" -d build @guest-sources.txt || exit /b 5
 ) else (
   echo android.jar not found - GuestPackageManager skipped (guest PackageManager stub unavailable) >&2
 )

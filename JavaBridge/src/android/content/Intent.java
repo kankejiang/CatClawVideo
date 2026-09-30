@@ -18,4 +18,33 @@ public class Intent {
     public String getStringExtra(String name) { return null; }
     public String getAction() { return null; }
     public Uri getData() { return null; }
+
+    // ── 自动补齐：jar 引用到但桩缺失的成员（android-33 签名，空实现）──
+    public Intent(android.content.Intent p0) { }
+    public Intent(java.lang.String p0) { }
+    public android.content.Intent setDataAndType(android.net.Uri p0, java.lang.String p1) { return null; }
+    public android.content.Intent putExtra(java.lang.String p0, byte p1) { return null; }
+    public android.content.Intent putExtra(java.lang.String p0, char p1) { return null; }
+    public android.content.Intent putExtra(java.lang.String p0, short p1) { return null; }
+    public android.content.Intent putExtra(java.lang.String p0, long p1) { return null; }
+    public android.content.Intent putExtra(java.lang.String p0, float p1) { return null; }
+    public android.content.Intent putExtra(java.lang.String p0, double p1) { return null; }
+    public android.content.Intent putExtra(java.lang.String p0, java.lang.CharSequence p1) { return null; }
+    public android.content.Intent putExtra(java.lang.String p0, android.os.Parcelable p1) { return null; }
+    public android.content.Intent putExtra(java.lang.String p0, android.os.Parcelable[] p1) { return null; }
+    public android.content.Intent putExtra(java.lang.String p0, java.io.Serializable p1) { return null; }
+    public android.content.Intent putExtra(java.lang.String p0, boolean[] p1) { return null; }
+    public android.content.Intent putExtra(java.lang.String p0, byte[] p1) { return null; }
+    public android.content.Intent putExtra(java.lang.String p0, short[] p1) { return null; }
+    public android.content.Intent putExtra(java.lang.String p0, char[] p1) { return null; }
+    public android.content.Intent putExtra(java.lang.String p0, int[] p1) { return null; }
+    public android.content.Intent putExtra(java.lang.String p0, long[] p1) { return null; }
+    public android.content.Intent putExtra(java.lang.String p0, float[] p1) { return null; }
+    public android.content.Intent putExtra(java.lang.String p0, double[] p1) { return null; }
+    public android.content.Intent putExtra(java.lang.String p0, java.lang.String[] p1) { return null; }
+    public android.content.Intent putExtra(java.lang.String p0, java.lang.CharSequence[] p1) { return null; }
+    public android.content.Intent putExtra(java.lang.String p0, android.os.Bundle p1) { return null; }
+    public android.content.Intent addFlags(int p0) { return null; }
+    public android.content.Intent setClassName(android.content.Context p0, java.lang.String p1) { return null; }
+    public android.content.Intent setClassName(java.lang.String p0, java.lang.String p1) { return null; }
 }

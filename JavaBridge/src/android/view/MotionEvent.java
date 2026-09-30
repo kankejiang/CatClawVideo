@@ -15,4 +15,7 @@ public class MotionEvent {
     public float getRawY() { return 0f; }
     public long getEventTime() { return System.currentTimeMillis(); }
     public int getPointerCount() { return 1; }
+
+    // ── 自动补齐：jar 引用到但桩缺失的成员（android-33 签名，空实现）──
+    public int getActionMasked() { return 0; }
 }

@@ -105,9 +105,16 @@ def build_ui_stub_dex(bridge_jar, out_dex, java, d8, android_jar, workdir):
     os.makedirs(cls)
     kept = 0
     prefixes = ("android/", "com/github/catvod/crawler/")
+    # 与 build_gb_dex.py 的 build_ui_stub_dex 保持同步（2026-09-30）：只排除
+    # android/graphics/drawable/**（Drawable 与 boot 里的真类同名不同类，ART verifier 拒），
+    # 其余 android/graphics 值类（Bitmap/Color/Rect/Paint…）必须留在桩命名空间 ——
+    # guest 的 ART 没有 android.graphics 的 native，扫码二维码要靠桩 Bitmap 抓像素上行宿主。
+    skip = ()   # 与 build_gb_dex.py 同步：整个 graphics 族都留桩（见那边的实验说明）
     with zipfile.ZipFile(bridge_jar) as z:
         for n in z.namelist():
             if not (n.startswith(prefixes) and n.endswith(".class")):
+                continue
+            if n.startswith(skip):
                 continue
             p = os.path.join(cls, n.replace("/", os.sep))
             os.makedirs(os.path.dirname(p), exist_ok=True)

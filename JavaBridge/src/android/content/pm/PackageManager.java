@@ -36,4 +36,7 @@ public class PackageManager {
 
         public NameNotFoundException(String name) { super(name); }
     }
+
+    // ── 自动补齐：jar 引用到但桩缺失的成员（android-33 签名，空实现）──
+    public boolean hasSystemFeature(java.lang.String p0) { return false; }
 }

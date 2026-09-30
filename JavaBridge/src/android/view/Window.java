@@ -44,4 +44,11 @@ public class Window {
     public boolean isActive() { return true; }
 
     public void setBackgroundDrawable(android.graphics.drawable.Drawable drawable) { }
+
+    // ── 自动补齐：jar 引用到但桩缺失的成员（android-33 签名，空实现）──
+    public void setLayout(int p0, int p1) { }
+    public void setWindowAnimations(int p0) { }
+    public void addFlags(int p0) { }
+    public void setDimAmount(float p0) { }
+    public void setBackgroundDrawableResource(int p0) { }
 }

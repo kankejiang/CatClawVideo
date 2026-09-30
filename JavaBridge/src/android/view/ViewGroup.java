@@ -54,4 +54,10 @@ public class ViewGroup extends View {
         void onChildViewAdded(View parent, View child);
         void onChildViewRemoved(View parent, View child);
     }
+
+    // ── 自动补齐（第 2 批）：jar 引用到但桩缺失的成员 ──
+    public android.view.View findFocus() { return null; }
+    public void setClipChildren(boolean p0) { }
+    public void removeViewAt(int p0) { }
+    public int indexOfChild(android.view.View p0) { return 0; }
 }

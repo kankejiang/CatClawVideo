@@ -20,4 +20,7 @@ public abstract class Drawable {
     public void setTintList(android.content.res.ColorStateList tint) { }
     public void invalidateSelf() { }
     public void setVisible(boolean visible, boolean restart) { }
+
+    // ── 自动补齐：jar 引用到但桩缺失的成员（android-33 签名，空实现）──
+    public Drawable() { }
 }

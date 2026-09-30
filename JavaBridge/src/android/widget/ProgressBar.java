@@ -20,4 +20,9 @@ public class ProgressBar extends View {
     public boolean isIndeterminate() { return false; }
     public void setSecondaryProgress(int secondaryProgress) { }
     public void incrementProgressBy(int diff) { }
+
+    // ── 自动补齐：jar 引用到但桩缺失的成员（android-33 签名，空实现）──
+    public void setIndeterminateTintList(android.content.res.ColorStateList p0) { }
+    public void setProgressTintList(android.content.res.ColorStateList p0) { }
+    public void setProgressBackgroundTintList(android.content.res.ColorStateList p0) { }
 }

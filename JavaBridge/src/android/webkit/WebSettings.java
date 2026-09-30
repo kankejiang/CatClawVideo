@@ -19,4 +19,8 @@ public class WebSettings {
     public int getCacheMode() { return 0; }
     public void setTextZoom(int textZoom) { }
     public void setDefaultTextEncodingName(String encoding) { }
+
+    // ── 自动补齐：jar 引用到但桩缺失的成员（android-33 签名，空实现）──
+    public void setAllowContentAccess(boolean p0) { }
+    public void setBlockNetworkLoads(boolean p0) { }
 }

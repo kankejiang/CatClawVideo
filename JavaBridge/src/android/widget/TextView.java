@@ -97,4 +97,21 @@ public class TextView extends View {
     public void setCompoundDrawables(Drawable left, Drawable top, Drawable right, Drawable bottom) { }
     public void setCompoundDrawablesWithIntrinsicBounds(int l, int t, int r, int b) { }
     public void setCompoundDrawablePadding(int pad) { }
+
+    // ── 自动补齐：jar 引用到但桩缺失的成员（android-33 签名，空实现）──
+    public TextView(android.content.Context p0, android.util.AttributeSet p1, int p2) { }
+    public void setPadding(int p0, int p1, int p2, int p3) { }
+    public void setHintTextColor(android.content.res.ColorStateList p0) { }
+    public void setHint(int p0) { }
+    public void setOnEditorActionListener(android.widget.TextView.OnEditorActionListener p0) { }
+    public void setFilters(android.text.InputFilter[] p0) { }
+    public int getLineCount() { return 0; }
+    public void computeScroll() { }
+    public int getSelectionStart() { return 0; }
+    public int getSelectionEnd() { return 0; }
+    public void setCursorVisible(boolean p0) { }
+    public void addTextChangedListener(android.text.TextWatcher p0) { }
+    public void setScroller(android.widget.Scroller p0) { }
+
+    public interface OnEditorActionListener { boolean onEditorAction(android.widget.TextView v, int actionId, android.view.KeyEvent event); }
 }

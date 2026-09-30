@@ -196,14 +196,46 @@ public final class Art {
                     ((java.util.List<Object>) list).add(app());
                 }
             } catch (Throwable ignored) { }
-            // mActivities：空 ArrayMap（真类型，new 得起），壳遍历得 null Activity → 走降级
-            System.err.println("[art] inject#7 mActivities");
+            // mActivities：以前给的是空 ArrayMap —— 壳遍历它取 Activity 永远得 null，
+            // 于是 ProxyOrigin.getan() 里 activity.getWindow() 直接 NPE（2026-09-29 实测：
+            // WoGG.playerContent → Pan.playerContent → ProxyOrigin.getan）。这里改成
+            // 塞一条真实 ActivityClientRecord，activity 指向桥的伪 Activity（真 Activity
+            // 子类，getWindow() 返回 FakeWindow），让壳的 UI 支路能走完而不是炸。
+            System.err.println("[art] inject#7 mActivities（含伪 Activity）");
             try {
-                Object empty = Class.forName("android.util.ArrayMap").getDeclaredConstructor().newInstance();
-                setInstance(at, thread, "mActivities", empty);
+                Object map = Class.forName("android.util.ArrayMap").getDeclaredConstructor().newInstance();
+                setInstance(at, thread, "mActivities", map);
+                try {
+                    Object act = Class.forName("bridge.FakeActivity").getConstructor().newInstance();
+                    // 基 Context 直接反射填（不调 attachBaseContext：那条链上有 autofill 注册的 NPE）
+                    try {
+                        setInstance(Class.forName("android.content.ContextWrapper"), act, "mBase", app());
+                        System.err.println("[art]   伪 Activity.mBase = " + app().getClass().getName());
+                    } catch (Throwable tb) {
+                        System.err.println("[art]   伪 Activity.mBase 填充失败: " + rootOf(tb));
+                    }
+                    System.err.println("[art] 伪 Activity 已建: " + act.getClass().getName());
+                    Class<?> recCls = Class.forName("android.app.ActivityThread$ActivityClientRecord");
+                    Object rec = allocateQuiet(recCls);
+                    setInstance(recCls, rec, "activity", act);
+                    // 不用 android.os.Binder：guest 里没有 binder native 实现，new Binder() 直接
+                    // "No implementation found for getNativeBBinderHolder()"（2026-09-29 实测）。
+                    // ArrayMap 的键类型在运行时已擦除，用普通对象占位即可 —— 壳遍历的是 values。
+                    Object token = new Object();
+                    @SuppressWarnings("unchecked")
+                    java.util.Map<Object, Object> m = (java.util.Map<Object, Object>) map;
+                    m.put(token, rec);
+                    System.err.println("[art] mActivities 已注入 1 条 ActivityClientRecord（activity=伪 Activity）");
+                } catch (Throwable ta) {
+                    System.err.println("[art] 伪 Activity 注入失败（壳仍会取到 null）: " + ta
+                            + " / cause=" + rootOf(ta).getMessage());
+                    java.io.StringWriter sw = new java.io.StringWriter();
+                    rootOf(ta).printStackTrace(new java.io.PrintWriter(sw));
+                    System.err.println(sw.toString());
+                }
             } catch (Throwable ignored) { }
             System.err.println("[art] ActivityThread 伪实例已注入（sCurrentActivityThread/mApplication/"
-                    + "mInitialApplication=App, mActivities=空）");
+                    + "mInitialApplication=App, mActivities=1 条伪 Activity）");
         } catch (Throwable t) {
             Throwable c = rootOf(t);
             System.err.println("[art] ActivityThread 注入失败（壳的 Context 链将维持现状）: "
@@ -227,6 +259,20 @@ public final class Art {
         java.lang.reflect.Field f = clz.getDeclaredField(name);
         f.setAccessible(true);
         f.set(target, value);
+    }
+
+    /**
+     * 用 {@code Unsafe.allocateInstance} 绕过构造器造实例：真 framework 的内部类
+     * （如 {@code ActivityThread$ActivityClientRecord}）是隐藏 API，直接反射其构造会被
+     * hiddenapi 拦下，而 Unsafe 不走那条检查（与 inject#2 造 ActivityThread 同一招）。
+     */
+    private static Object allocateQuiet(Class<?> clz) throws Exception {
+        Class<?> unsafeCls = Class.forName("sun.misc.Unsafe");
+        java.lang.reflect.Field uf = unsafeCls.getDeclaredField("theUnsafe");
+        uf.setAccessible(true);
+        Object unsafe = uf.get(null);
+        java.lang.reflect.Method alloc = unsafeCls.getMethod("allocateInstance", Class.class);
+        return alloc.invoke(unsafe, (Object) clz);
     }
 
     /** 字段缺失/类型不符只告警不抛（真 framework 类与桩的字段集不一致是常态）。 */
@@ -381,47 +427,203 @@ public final class Art {
         }
     }
 
-    /** 壳的本地流中转服务端口（play URL 形如 http://127.0.0.1:6678/proxy/play/...）。 */
+    /** 壳的流服务端口（play URL 形如 http://127.0.0.1:6678/proxy/play/...）。 */
     static final int GUEST_STREAM_PORT = 6678;
 
     /**
-     * 壳的流中转透传：宿主播放器的 {@code GET /proxy/play/<盘>/<文件>}（Range 拖动）原样转给
-     * guest 内壳服务（127.0.0.1:6678），响应状态/关键头/body 流式写回 —— 206/Content-Range
-     * 原生过桥，播放器 seek 语义不变。壳服务没起或挂了时回 502（宿主报「源不受支持」可定位）。
+     * 单个端口的应答预算。两个数都来自实测：僵尸壳的服务「accept 了但一个字节都不回」（实测 0B 到对端关闭），
+     * 而真壳实例的首个请求要现去网盘换直链（实测快的时候 24~337ms，慢的时候 366ms），
+     * 2.5s 会误杀慢-but-正确的服务（实测把正确服务判死后剩下的扫描全 0B → 整条 502），所以给到 8s。
+     */
+    private static final int STREAM_PROBE_MS = 8000;
+
+    /** 上一次真正应答过播放路径的端口。多壳共存时壳自报的端口会说谎（见 streamPassThrough 注释），
+     *  这条缓存让「同一次播放的后续 Range 请求」不必再扫一遍。 */
+    private static volatile int sStreamPort = 0;
+
+    /** 一次壳流探测的结果：已读完响应头的 socket + 头字节。 */
+    private static final class StreamHit {
+        java.net.Socket sock;
+        java.io.InputStream body;
+        byte[] head;
+        int port;
+        String status;
+    }
+
+    /**
+     * 壳的流中转透传：宿主播放器的 {@code GET /proxy/play/<盘>/<文件>}（带 Range）转给 guest 内
+     * <b>真正持有这个播放会话的那个壳实例</b>，响应头与 body 原样过桥（206/Content-Range 不重构，
+     * 播放器 seek 语义不变）。
+     * <para><b>为什么不能直接信 URL 里的端口</b>（2026-09-30 「狂怒者：荣誉之战」实测）：一个 guest 里
+     * 装着 N 个 Guard 壳，就有 N 个流服务分别占着 6678…6686，而壳的端口发现（{@code adjustPort}）是
+     * 「从 6678 往上扫，谁应答就用谁」—— 它扫到的是<b>别的壳</b>的应答，于是 URL 写 6679、自己的服务
+     * 在 6686。实测逐端口探同一个播放路径：6679…6685 全部 connect 成功但 {@code recv 0B}，只有 6686
+     * 回 {@code HTTP/1.1 200 + 头}。所以这里按「谁对这个路径真的回话」选路，不按谁报的号。</para>
+     * <p>次序：① URL 带来的 {@code gp}（宿主改写播放地址时捎上的原端口，单壳时就是对的，省一次扫描）
+     * ② 上次应答过的缓存端口 ③ 都不应答就把 66xx 段所有在听的口并行扫一遍（实测 8 口 0.4s）。</p>
      */
     private static void streamPassThrough(java.io.OutputStream o, String reqLine, String path,
             java.util.Map<String, String> reqHeaders) {
-        java.net.HttpURLConnection uc = null;
+        StreamHit hit = null;
         try {
-            java.net.URL u = new java.net.URL("http", "127.0.0.1", GUEST_STREAM_PORT, path);
-            uc = (java.net.HttpURLConnection) u.openConnection();
-            uc.setConnectTimeout(5000);
-            uc.setReadTimeout(0);                       // 流式播放不限读超时（播放器拖动会主动断开）
-            String range = reqHeaders.get("range");
-            if (range != null) uc.setRequestProperty("Range", range);
-            uc.setRequestMethod(reqLine.startsWith("HEAD") ? "HEAD" : "GET");
-            int code = uc.getResponseCode();
-            java.io.InputStream body = code >= 400 ? uc.getErrorStream() : uc.getInputStream();
-            StringBuilder h = new StringBuilder("HTTP/1.1 ").append(code).append(" \r\n");
-            for (String k : new String[]{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"}) {
-                String v = uc.getHeaderField(k);
-                if (v != null) h.append(k).append(": ").append(v).append("\r\n");
+            int gp = GUEST_STREAM_PORT;
+            String clean = path;
+            int qi = path.indexOf('?');
+            if (qi >= 0) {
+                clean = path.substring(0, qi);
+                for (String kv : path.substring(qi + 1).split("&")) {
+                    if (!kv.startsWith("gp=")) continue;
+                    try { gp = Integer.parseInt(kv.substring(3).trim()); } catch (NumberFormatException ignored) { }
+                }
             }
-            h.append("Connection: close\r\n\r\n");
-            o.write(h.toString().getBytes("UTF-8"));
-            if (body != null && !reqLine.startsWith("HEAD")) {
-                byte[] buf = new byte[16384];
+            String range = reqHeaders.get("range");
+
+            hit = openStream(gp, reqLine, clean, range);
+            if (hit == null && sStreamPort > 0 && sStreamPort != gp) hit = openStream(sStreamPort, reqLine, clean, range);
+            if (hit == null) hit = sweepStreams(reqLine, clean, range, gp);
+            if (hit == null) {
+                writeText(o, 502, "guest 里没有壳流服务应答这个播放路径（gp=" + gp + "，66xx 全段扫描无响应）");
+                System.err.println("[art] 流透传无人应答 " + reqLine + " gp=" + gp);
+                return;
+            }
+            sStreamPort = hit.port;
+            o.write(hit.head);
+            if (!reqLine.startsWith("HEAD")) {
+                byte[] buf = new byte[65536];
                 int n;
-                while ((n = body.read(buf)) > 0) o.write(buf, 0, n);
+                while ((n = hit.body.read(buf)) > 0) o.write(buf, 0, n);
             }
             o.flush();
-            System.err.println("[art] 流透传 " + reqLine + " → " + code + (range == null ? "" : " Range=" + range));
+            System.err.println("[art] 流透传 " + reqLine + " → 端口 " + hit.port + " " + hit.status
+                    + (range == null ? "" : " Range=" + range));
         } catch (Throwable e) {
             System.err.println("[art] 流透传失败: " + e + "  " + reqLine);
             try { writeText(o, 502, String.valueOf(e.getMessage())); } catch (Throwable ignored) { }
         } finally {
-            if (uc != null) try { uc.disconnect(); } catch (Throwable ignored) { }
+            if (hit != null) try { hit.sock.close(); } catch (Throwable ignored) { }
         }
+    }
+
+    /** guest 里在听的壳流端口（/proc/net/tcp{,6} 的 st=0A），限定 66xx 段。 */
+    private static java.util.List<Integer> streamPorts() {
+        java.util.List<Integer> out = new java.util.ArrayList<>();
+        for (String f : new String[]{"/proc/net/tcp", "/proc/net/tcp6"}) {
+            try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.FileReader(f))) {
+                String ln;
+                while ((ln = br.readLine()) != null) {
+                    String[] p = ln.trim().split("\\s+");
+                    if (p.length > 3 && "0A".equals(p[3])) {
+                        int port = Integer.parseInt(p[1].split(":")[1], 16);
+                        if (port >= 6600 && port <= 6999 && !out.contains(port)) out.add(port);
+                    }
+                }
+            } catch (Throwable ignored) { }
+        }
+        java.util.Collections.sort(out);
+        return out;
+    }
+
+    /** 把 66xx 段所有在听的端口并行问一遍「这个播放路径你认不认」，谁先回 HTTP 头用谁。 */
+    private static StreamHit sweepStreams(String reqLine, String clean, String range, int gp) {
+        final java.util.List<Integer> ports = streamPorts();
+        ports.remove(Integer.valueOf(gp));
+        ports.remove(Integer.valueOf(sStreamPort));
+        if (ports.isEmpty()) return null;
+        final java.util.concurrent.BlockingQueue<StreamHit> q =
+                new java.util.concurrent.LinkedBlockingQueue<StreamHit>();
+        final java.util.List<java.net.Socket> opened =
+                java.util.Collections.synchronizedList(new java.util.ArrayList<java.net.Socket>());
+        for (final int port : ports) {
+            Thread t = new Thread(new Runnable() {
+                public void run() {
+                    StreamHit h = openStream(port, reqLine, clean, range, opened);
+                    if (h != null) q.offer(h);
+                }
+            });
+            t.setDaemon(true);
+            t.start();
+        }
+        StreamHit hit = null;
+        long end = System.currentTimeMillis() + STREAM_PROBE_MS + 800;
+        try {
+            while (hit == null && System.currentTimeMillis() < end) {
+                hit = q.poll(Math.max(50L, end - System.currentTimeMillis()),
+                        java.util.concurrent.TimeUnit.MILLISECONDS);
+            }
+        } catch (InterruptedException ignored) { }
+        // 落选的连接立刻关：留着就占住壳的 handler 线程，后面的请求更慢
+        for (java.net.Socket s : opened) {
+            if (hit != null && s == hit.sock) continue;
+            try { s.close(); } catch (Throwable ignored) { }
+        }
+        System.err.println("[art] 流扫描 " + ports + " → " + (hit == null ? "无人应答" : "命中 " + hit.port));
+        return hit;
+    }
+
+    private static StreamHit openStream(int port, String reqLine, String clean, String range) {
+        return openStream(port, reqLine, clean, range, null);
+    }
+
+    /** 向一个候选端口发真实播放请求并读响应头；头都不回（0B / 超时 / 非 HTTP）就算它不该这个会话。 */
+    private static StreamHit openStream(int port, String reqLine, String clean, String range,
+                                        java.util.List<java.net.Socket> track) {
+        java.net.Socket s = null;
+        try {
+            s = new java.net.Socket();
+            s.connect(new java.net.InetSocketAddress("127.0.0.1", port), 1500);
+            s.setSoTimeout(STREAM_PROBE_MS);
+            if (track != null) track.add(s);
+            StringBuilder rq = new StringBuilder();
+            rq.append(reqLine.startsWith("HEAD") ? "HEAD " : "GET ").append(clean).append(" HTTP/1.1\r\n")
+              .append("Host: 127.0.0.1:").append(port).append("\r\n")
+              // ⚠ User-Agent 不能省：壳的流 handler 会读 UA 做分支，缺它就在
+              //   `String.contains(...)` 上 NPE（实测 13ms 就挂断、一个字节都不回），
+              //   表现成「端口在听但没人应答」。旧实现走 HttpURLConnection 时它自带
+              //   `User-Agent: Java/17`，所以从没暴露过这个依赖。
+              .append("User-Agent: Dalvik/2.1.0 (Linux; U; Android 13; x86_64 Build/TQ2A.230505.002)\r\n")
+              .append("Accept: */*\r\nAccept-Encoding: identity\r\nConnection: close\r\n");
+            if (range != null) rq.append("Range: ").append(range).append("\r\n");
+            rq.append("\r\n");
+            java.io.OutputStream os = s.getOutputStream();
+            os.write(rq.toString().getBytes("UTF-8"));
+            os.flush();
+            java.io.InputStream in = s.getInputStream();
+            long t0 = System.currentTimeMillis();
+            byte[] head = readHead(in);
+            if (head == null) {
+                // 分不清「没应答」与「应答了但头不合法」，留一条现场（2026-09-30 排查 8s 预算下无一条命中）
+                System.err.println("[art] 探测 " + port + " 无 HTTP 头（" + (System.currentTimeMillis() - t0) + "ms）");
+                try { s.close(); } catch (Throwable ignored) { }
+                return null;
+            }
+            s.setSoTimeout(0);          // 头到手就别再限时：body 可能因为上游网盘直链慢而断续
+            StreamHit h = new StreamHit();
+            h.sock = s; h.body = in; h.head = head; h.port = port;
+            h.status = new String(head, "UTF-8").split("\r\n")[0];
+            return h;
+        } catch (Throwable e) {
+            System.err.println("[art] 探测 " + port + " 异常 " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            if (s != null) try { s.close(); } catch (Throwable ignored) { }
+            return null;
+        }
+    }
+
+    /** 读到 {@code \r\n\r\n} 为止（含）；连一个字节都没有、或不是 HTTP 头，都算「没应答」。 */
+    private static byte[] readHead(java.io.InputStream in) throws java.io.IOException {
+        java.io.ByteArrayOutputStream b = new java.io.ByteArrayOutputStream();
+        int c, matched = 0;
+        while ((c = in.read()) != -1) {
+            b.write(c);
+            char expect = "\r\n\r\n".charAt(matched);
+            if (c == expect) {
+                if (++matched == 4) break;
+            } else {
+                matched = c == '\r' ? 1 : 0;
+            }
+        }
+        if (b.size() == 0) return null;
+        byte[] head = b.toByteArray();
+        return new String(head, "UTF-8").startsWith("HTTP/") ? head : null;
     }
 
     static java.util.Map<String, String> query(String req) {

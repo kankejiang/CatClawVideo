@@ -206,4 +206,31 @@ public class View {
     public interface OnScrollChangeListener {
         void onScrollChange(View v, int scrollX, int scrollY, int oldScrollX, int oldScrollY);
     }
+
+    // ── 自动补齐（第 2 批）：jar 引用到但桩缺失的成员 ──
+    public boolean performLongClick() { return false; }
+    public boolean hasFocus() { return false; }
+    public boolean isFocused() { return false; }
+    public android.view.View findFocus() { return null; }
+    public void setNextFocusLeftId(int p0) { }
+    public void setNextFocusRightId(int p0) { }
+    public void setNextFocusUpId(int p0) { }
+    public void setNextFocusDownId(int p0) { }
+    public void setFocusable(int p0) { }
+    public boolean isAttachedToWindow() { return false; }
+    public void setLongClickable(boolean p0) { }
+    public boolean isFocusable() { return false; }
+    public android.view.View focusSearch(int p0) { return null; }
+    public java.util.ArrayList getFocusables(int p0) { return null; }
+    public void addFocusables(java.util.ArrayList p0, int p1) { }
+    public boolean isInTouchMode() { return false; }
+    public int getTop() { return 0; }
+    public int getLeft() { return 0; }
+    public boolean getGlobalVisibleRect(android.graphics.Rect p0) { return false; }
+    public void onDraw(android.graphics.Canvas p0) { }
+    public android.os.IBinder getWindowToken() { return null; }
+    public void setMeasuredDimension(int p0, int p1) { }
+    public int getSystemUiVisibility() { return 0; }
+    public static int generateViewId() { return 0; }
+    public android.view.ViewPropertyAnimator animate() { return null; }
 }

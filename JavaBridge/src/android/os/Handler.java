@@ -133,4 +133,7 @@ public class Handler {
         synchronized (SCHEDULED) { all = new ArrayList<>(SCHEDULED.values()); SCHEDULED.clear(); }
         for (ScheduledFuture<?> f : all) f.cancel(false);
     }
+
+    // ── 自动补齐（第 2 批）：jar 引用到但桩缺失的成员 ──
+    public Handler(android.os.Handler.Callback p0) { this(Looper.getMainLooper(), p0); }
 }

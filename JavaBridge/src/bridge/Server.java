@@ -38,7 +38,7 @@ public class Server {
     // 改为：call/load 提交线程池，call 按站点加锁 —— 同站点串行（jar 实例非线程安全），
     // 不同站点并行；loadFull 仍持全局 LOCK（load 是重活且 LOADERS 非线程安全）。
     // 响应按 id 乱序回写（宿主 RoundTripAsync 按 id 匹配，proxy op 当年已因同一理由异步化）。
-    private static final java.util.concurrent.ConcurrentHashMap<String, Object> SITE_LOCKS =
+    private static final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.locks.ReentrantLock> SITE_LOCKS =
             new java.util.concurrent.ConcurrentHashMap<>();
     /** stdout 写回互斥：call/load 异步化后多线程 println 会交错破坏行协议。 */
     private static final Object OUT_LOCK = new Object();
@@ -115,6 +115,10 @@ public class Server {
     }
 
     public static void main(String[] args) throws Exception {
+        // Guard 资源控制口：guest 内 harness 的 GLOAD 下发与 so/dex 条目服务（仅 spider guest 用）。
+        // 桌面直跑模式该端口被占用时静默失败不影响主流程。
+        try { bridge.GuardCtrl.start(); } catch (Throwable ig) { }
+
         // 把 AES/*/PKCS7 别名到 PKCS5（标准 JVM 不提供 PKCS7 命名）→ 否则爬虫的接口加解密直接失败。
         // ART 里不装：conscrypt 自带的 BC 原生就认 PKCS7Padding，我们的包装反而会盖掉真实现。
         if (!Art.onArt()) Pkcs7Provider.install();
@@ -135,7 +139,11 @@ public class Server {
         //   协议响应按 id 匹配（宿主 RoundTripAsync），异步乱序输出安全。
         java.util.concurrent.ExecutorService proxyPool = java.util.concurrent.Executors.newFixedThreadPool(4);
         // call/load 的执行池：daemon —— op=exit 时主循环退出，未完成的调用随 JVM 一起收
-        CALL_POOL = java.util.concurrent.Executors.newFixedThreadPool(4, r -> {
+        // ⚠ 必须是**可扩**池，不能固定 4 条（2026-09-30 实测）：壳的网盘调用没有读超时，
+        //   一条 hang 死的 playerContent 会**永久**占住一条池线程；固定 4 条时
+        //   「点 4 次没登录的盘」就把整条桥（连别的站点）一起堵死。
+        //   改成 cached 后毒化范围收敛到那一个站（配合 call 里的 tryLock 10s 立刻回错误）。
+        CALL_POOL = java.util.concurrent.Executors.newCachedThreadPool(r -> {
             Thread t = new Thread(r, "bridge-call");
             t.setDaemon(true);
             return t;
@@ -222,6 +230,20 @@ public class Server {
                             req.optInt("guardPort", 0), req.optBoolean("force", false));
                     case "call" -> call(req.optString("site"), req.optString("method"), req.optJSONArray("args"));
                     case "ping" -> "pong";
+                    case "guard-encrypt" -> {
+                        // guest 内 Guard 加密：凭据回写 spUtils 前的逆向操作（同 Rc.KJ 体系）
+                        String data = req.optString("data", "");
+                        String enc = guardEncryptViaSpider(data);
+                        yield enc == null ? JSONObject.NULL : enc;
+                    }
+                    case "guard-decrypt" -> {
+                        // guest 内 Guard 解密：经已装载 spider 的类加载器调其解密入口
+                        // （merge.Rc.KJ → HideUtils.decrypt → 壳内转译 SO）。FishConfig 的
+                        // quark_scan 等流程经 10.0.2.2:18481 → 宿主 18481 监听 → 本 op。
+                        String data = req.optString("data", "");
+                        String dec = guardDecryptViaSpider(data);
+                        yield dec == null ? JSONObject.NULL : dec;
+                    }
                     case "probe" -> {
                         // 「guest 里这个类名到底是谁的」一次性问清：boot classpath 前置有没有生效、
                         // 桥的 UI 捕获层有没有被真框架顶掉（2026-09-26 网盘对话框上不来，两种原因表现一样）。
@@ -425,7 +447,7 @@ public class Server {
         } catch (Throwable t) {
             return;
         }
-        if (ppid <= 0L || ppid == ProcessHandle.current().pid()) return;
+        if (ppid <= 0L || ppid == myPidSafe()) return;
         Thread t = new Thread(() -> {
             while (true) {
                 try {
@@ -433,7 +455,7 @@ public class Server {
                 } catch (InterruptedException e) {
                     return;
                 }
-                if (ProcessHandle.of(ppid).isPresent()) continue;
+                if (pidAlive(ppid)) continue;
                 System.err.println("[srv] 宿主 pid=" + ppid + " 已消失，桥自行退出");
                 for (String name : android.content.PrefsStore.names()) {
                     try { android.content.PrefsStore.flush(name); } catch (Throwable ignored) { }
@@ -445,6 +467,28 @@ public class Server {
         }, "ppid-watchdog");
         t.setDaemon(true);
         t.start();
+    }
+
+    /**
+     * {@code ProcessHandle} 是 JDK9 类，ART guest 里没有 —— 解析会抛
+     * {@code NoClassDefFoundError}，看门狗不该因此把桥带崩（2026-09-30）。取不到 pid 就返回 -1
+     * （不会与任何真实 ppid 相等 → 看门狗按"宿主还在"处理）。
+     */
+    private static long myPidSafe() {
+        try {
+            return ProcessHandle.current().pid();
+        } catch (Throwable t) {
+            return -1L;
+        }
+    }
+
+    /** 同上：查不到进程存活信息时一律当"活着"（宁可留下孤儿，也不能误杀自己）。 */
+    private static boolean pidAlive(long pid) {
+        try {
+            return ProcessHandle.of(pid).isPresent();
+        } catch (Throwable t) {
+            return true;
+        }
     }
 
     private static String loadFull(String site, String className, String ext, org.json.JSONArray jars,
@@ -460,6 +504,11 @@ public class Server {
                 // → 新类 → 壳静态/服务状态重建 → 本源重新占回端口。实测新 site key 重装载 3.4s 可
                 // 100% 抢回（docs 交接 §6.8）。
                 SPIDERS.remove(site);
+                // force 重装载同时**换掉站点锁**（2026-09-30）：一条 hang 死的网盘调用会永久持有旧锁，
+                // 不换锁的话新实例照样被上一代的僵尸调用堵死 ⇒ 实测症状是「点一次无响应的线路，
+                // 这个网盘源整个会话都废了，只能重启应用」。换锁后那条僵尸线程只握着旧对象
+                // （它自己慢慢结束或永久泄漏，但不再挡路），新调用用新锁，站点当场复活。
+                SITE_LOCKS.remove(site);
                 System.err.println("[srv] force 重装载: " + site + " (" + className + ")");
             }
 
@@ -762,7 +811,18 @@ public class Server {
         //   通道，长参数（筛选 ext / 网盘 JSON id）时肉眼可见地拖慢每一次调用，已移除。
         //   需要看参数原文时在此处临时加回（必须随 initrd/gb.dex 重编才进 guest）。
         final long t0 = System.currentTimeMillis();
-        synchronized (SITE_LOCKS.computeIfAbsent(site, k -> new Object())) {
+        // ⚠ 站点锁必须 tryLock，不能 synchronized（2026-09-30 实测「点一次没登录的盘，
+        //   整个网盘源以后再也不响应」）：壳里的网盘调用**没有读超时**，一条 hang 死的
+        //   playerContent 会一直持有这把锁；synchronized 让后续调用无限排队 ⇒
+        //   宿主每条都撞 300s 看门狗（实测 homeContent/categoryContent 连着全部 300s 无响应），
+        //   整站被永久毒化，而且用户看到的是「点了没反应」。
+        //   tryLock 只排队 10s：拿不到锁立刻回**说人话**的错误，别的站不受影响。
+        final java.util.concurrent.locks.ReentrantLock siteLock =
+                SITE_LOCKS.computeIfAbsent(site, k -> new java.util.concurrent.locks.ReentrantLock());
+        if (!siteLock.tryLock(10, java.util.concurrent.TimeUnit.SECONDS))
+            throw new IllegalStateException("站点 " + site + " 上一次调用仍未结束"
+                    + "（网盘线路无响应，通常是那个盘没登录）——请稍后重试或换线路");
+        try {
             Object instance = SPIDERS.get(site);
             if (instance == null) throw new IllegalStateException("site not loaded: " + site);
             Class<?> cls = instance.getClass();
@@ -818,6 +878,8 @@ public class Server {
                 System.err.println("[srv-resp] " + site + "." + method + " ← " + out);
             }
             return out;
+        } finally {
+            siteLock.unlock();
         }
     }
 
@@ -948,6 +1010,51 @@ public class Server {
 
     /** 给 guest 内的 /proxy 服务取已装载的爬虫实例（站点键 → 实例）。 */
     static Object spiderOf(String site) { return SPIDERS.get(site); }
+
+    /**
+     * guest 内 Guard 解密：经任意已装载 spider 的类加载器调其解密包装
+     * （merge.Rc.KJ(String)——内部 cn.yq=true 时走壳内转译 SO 的 HideUtils.decrypt）。
+     * FishConfig 的 quark_scan/解密链路探测 10.0.2.2:18481（Guard 服务约定口），
+     * 宿主 18481 监听把请求转到本方法——x86 guest 无独立 Guard VM 的替代供给。
+     */
+    static String guardEncryptViaSpider(String data) {
+        // SO 的 encrypt 入口：Rc 体系同族（encrypt 走 HideUtils.encrypt/转译 SO）
+        for (Object spider : SPIDERS.values()) {
+            try {
+                ClassLoader cl = spider.getClass().getClassLoader();
+                for (String cn : new String[]{"com.github.catvod.spider.merge.Rc"}) {
+                    try {
+                        Class<?> rc = cl.loadClass(cn);
+                        for (Method m : rc.getDeclaredMethods()) {
+                            if (java.lang.reflect.Modifier.isStatic(m.getModifiers()) && m.getParameterCount() == 1
+                                    && m.getParameterTypes()[0] == String.class
+                                    && m.getReturnType() == String.class
+                                    && (m.getName().equals("encrypt") || m.getName().equals("JM") || m.getName().equals("KJ"))) {
+                                m.setAccessible(true);
+                                Object r = m.invoke(null, data);
+                                if (r instanceof String str && !str.isEmpty()) return str;
+                            }
+                        }
+                    } catch (ClassNotFoundException ignored) { }
+                }
+            } catch (Throwable ignored) { }
+        }
+        return null;
+    }
+
+    static String guardDecryptViaSpider(String data) {
+        for (Object spider : SPIDERS.values()) {
+            try {
+                ClassLoader cl = spider.getClass().getClassLoader();
+                Class<?> rc = cl.loadClass("com.github.catvod.spider.merge.Rc");
+                Method m = rc.getDeclaredMethod("KJ", String.class);
+                m.setAccessible(true);
+                Object r = m.invoke(null, data);
+                if (r instanceof String str && !str.isEmpty()) return str;
+            } catch (Throwable ignored) { }
+        }
+        return null;
+    }
 
     /**
      * jar 内 {@code com.github.catvod.spider.Proxy.proxy(Map)}：类不存在或返回不是 Object[] 时回 null，

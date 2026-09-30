@@ -257,4 +257,15 @@ public class Dialog implements DialogInterface {
     public boolean isShowing() { return seq >= 0 && UiBridge.isPending(seq); }
 
     public android.view.Window getWindow() { return new android.view.Window(); }
+
+    // ── 自动补齐：jar 引用到但桩缺失的成员（android-33 签名，空实现）──
+    public Dialog(android.content.Context p0, int p1) { }
+    public android.content.Context getContext() { return android.app.Application.getInstance(); }
+    public android.view.View getCurrentFocus() { return null; }
+    public android.view.View findViewById(int p0) { return null; }
+    public void setContentView(int p0) { }
+    public void setContentView(android.view.View p0) { }
+    public void setContentView(android.view.View p0, android.view.ViewGroup.LayoutParams p1) { }
+    public boolean requestWindowFeature(int p0) { return false; }
+    public void setOnKeyListener(android.content.DialogInterface.OnKeyListener p0) { }
 }

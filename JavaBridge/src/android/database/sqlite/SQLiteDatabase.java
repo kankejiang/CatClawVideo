@@ -86,4 +86,7 @@ public class SQLiteDatabase extends SQLiteClosable {
     public void setTransactionSuccessful() { }
 
     public void endTransaction() { }
+
+    // ── 自动补齐（第 2 批）：jar 引用到但桩缺失的成员 ──
+    public long insertWithOnConflict(java.lang.String p0, java.lang.String p1, android.content.ContentValues p2, int p3) { return 0L; }
 }

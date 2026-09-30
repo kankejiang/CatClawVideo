@@ -82,4 +82,14 @@ public class Uri {
 
     public String getScheme() { int i = s.indexOf(':'); return i < 0 ? null : s.substring(0, i); }
     public String getAuthority() { int i = s.indexOf("//"); return i < 0 ? null : s.substring(i + 2).split("[/?#]")[0]; }
+
+    // ── 自动补齐：jar 引用到但桩缺失的成员（android-33 签名，空实现）──
+    public java.lang.String getUserInfo() { return null; }
+    public java.lang.String getQuery() { return null; }
+    public java.lang.String getFragment() { return null; }
+    public java.lang.String getLastPathSegment() { return null; }
+    public static java.lang.String encode(java.lang.String p0) { return null; }
+    public static java.lang.String encode(java.lang.String p0, java.lang.String p1) { return null; }
+
+    // ── 自动补齐（第 2 批）：jar 引用到但桩缺失的成员 ──
 }

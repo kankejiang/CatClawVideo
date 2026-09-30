@@ -25,4 +25,11 @@ public class ImageView extends View {
     public enum ScaleType {
         MATRIX, FIT_XY, FIT_START, FIT_CENTER, FIT_END, CENTER, CENTER_CROP, CENTER_INSIDE
     }
+
+    // ── 自动补齐：jar 引用到但桩缺失的成员（android-33 签名，空实现）──
+    public android.graphics.drawable.Drawable getDrawable() { return null; }
+    public void setImageMatrix(android.graphics.Matrix p0) { }
+    public void setCropToPadding(boolean p0) { }
+    public void onDraw(android.graphics.Canvas p0) { }
+    public void setVisibility(int p0) { }
 }

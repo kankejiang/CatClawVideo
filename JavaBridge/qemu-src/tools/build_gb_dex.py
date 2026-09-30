@@ -90,9 +90,32 @@ def build_ui_stub_dex(bridge_jar, out_dex, java, d8, android_jar, workdir):
     os.makedirs(cls)
     kept = 0
     prefixes = ("android/", "com/github/catvod/crawler/")
+    # ⚠ 只排除 android/graphics/drawable/**（2026-09-29）：Drawable 挂在真 framework
+    # 方法签名上（Activity.getWindow().setBackgroundDrawable），桩 Drawable 与 boot 里的
+    # 真 Drawable 同名不同类 → ART verifier 直接拒：register v4 has type Drawable but
+    # expected Drawable（玩偶 WoGG→Pan→ProxyOrigin.getan 整条播放链路因此死在 VerifyError）。
+    # ⚠ 其余 android/graphics 值类**必须留在桩命名空间里**（2026-09-30 实测回归）：扫码
+    # 二维码那条路要靠桩 Bitmap（UiBridge 用它的 snapshotPixels 抓黑白矩阵上行宿主），
+    # 而 guest 的 ART 没有注册 android.graphics 的 native（Paint.nInit /
+    # ColorSpace$Rgb.nativeCreate / Bitmap.nativeCreate 全是 UnsatisfiedLinkError）——
+    # 放给平台类 ⇒ jar 构二维码时当场抛错并静默吞掉 ⇒ action("quark_scan") 回空、
+    # 宿主一整天收不到 ui-dialog，只剩「改用粘贴 Cookie」兜底 toast。
+    # ⚠ 实验（2026-09-30，第二轮）：整体恢复 android/graphics 的桩族（含 drawable/**）。
+    # 上一轮只留「除 drawable 外」的 graphics 桩，实测 action("quark_scan") 已过
+    # z.P1 的 TextPaint 校验，但仍死在 UnsatisfiedLinkError: Paint.nInit ——
+    # 说明还有**平台** graphics 对象在构造（GradientDrawable/BitmapDrawable 这类
+    # 具体 Drawable 的构造函数内部会 new Paint(...)，而 guest 的 ART 没注册任何
+    # android.graphics native）。drawable 只留平台类就绕不开这一点；只有当整个
+    # graphics 族（Drawable + 具体子类 + Canvas/ColorFilter）都是桩时，jar 的
+    # 图形世界才自洽（JRE 时代扫码能用的配置）。
+    # 待验证的代价：2026-09-29 记录过「桩 Drawable 与平台签名交叉 ⇒
+    # 玩偶 ProxyOrigin.getan 的 VerifyError」，需用荐片/玩偶 homeContent+playerContent 回归确认。
+    skip = ()
     with zipfile.ZipFile(bridge_jar) as z:
         for n in z.namelist():
             if not (n.startswith(prefixes) and n.endswith(".class")):
+                continue
+            if n.startswith(skip):
                 continue
             p = os.path.join(cls, n.replace("/", os.sep))
             os.makedirs(os.path.dirname(p), exist_ok=True)

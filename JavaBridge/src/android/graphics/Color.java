@@ -49,4 +49,7 @@ public class Color {
             default: throw new IllegalArgumentException("Unknown color: " + colorString);
         }
     }
+
+    // ── 自动补齐：jar 引用到但桩缺失的成员（android-33 签名，空实现）──
+    public static int argb(float p0, float p1, float p2, float p3) { return 0; }
 }

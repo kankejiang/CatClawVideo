@@ -47,4 +47,7 @@ public class GradientDrawable extends Drawable {
     public void setUseLevel(boolean useLevel) { }
 
     public int getColor() { return color; }
+
+    // ── 自动补齐：jar 引用到但桩缺失的成员（android-33 签名，空实现）──
+    public void setStroke(int p0, android.content.res.ColorStateList p1) { }
 }

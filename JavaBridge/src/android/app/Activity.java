@@ -2,6 +2,7 @@ package android.app;
 
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.ContextThemeWrapper;
 import android.content.Intent;
 
 /**
@@ -15,8 +16,13 @@ import android.content.Intent;
  * 而报错发生在端口调整线程里，用户侧只看到「播放失败」。</p>
  *
  * <p>原则：这里的方法只做「不崩 + 返回合理值」，不实现真实 Android 行为。</p>
+ *
+ * <p><b>父链必须是 {@code ContextThemeWrapper → ContextWrapper → Context}</b>（真机同款）：
+ * 以前直接 {@code extends Context}，壳里凡是把 Activity 当 ContextWrapper 用的方法
+ * 全部过不了 ART 验证器（{@code VerifyError: register has type Activity but expected
+ * ContextWrapper}），整类被拒 ⇒ 荐片这类 Guard 壳源直接「加载失败」（2026-09-30 实测 76 条）。</p>
  */
-public class Activity extends Context {
+public class Activity extends ContextThemeWrapper {
 
     private static final String LOCAL_CLASS = "MainActivity";
 
@@ -59,4 +65,7 @@ public class Activity extends Context {
     public int getTaskId() { return 1; }
 
     public void onBackPressed() { }
+
+    // ── 自动补齐：jar 引用到但桩缺失的成员（android-33 签名，空实现）──
+    public java.lang.Object getSystemService(java.lang.String p0) { return null; }
 }

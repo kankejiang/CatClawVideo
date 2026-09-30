@@ -188,4 +188,8 @@ public class Context {
         @Override public boolean commit() { return PrefsStore.flush(name); }
         @Override public void apply() { PrefsStore.flush(name); }
     }
+
+    // ── 自动补齐：jar 引用到但桩缺失的成员（android-33 签名，空实现）──
+    public void startActivity(android.content.Intent p0) { }
+    public java.lang.Object getSystemService(java.lang.Class p0) { return null; }
 }

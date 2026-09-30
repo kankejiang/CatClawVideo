@@ -39,9 +39,18 @@ public class Build {
 
     public static final String CPU_ABI2 = "";
 
-    public static final String[] SUPPORTED_ABIS = {"arm64-v8a", "armeabi-v7a", "armeabi"};
+    /**
+     * ⚠ <b>32 位 ABI 必须为空</b>（2026-09-30 实测根因）：guest 只注册了 arm64 binfmt
+     * （<c>ro.product.cpu.abilist32=""</c>），而 jar 的 Go 代理/Guard SO 装载会**优先挑 32 位**
+     * —— 报 armeabi-v7a 时它选中 <c>pvideo-armeabi-v7a</c>，guest 里没人能执行 ARM32 ELF，
+     * 落到 shell 解析 ⇒ <c>syntax error: unexpected "("</c>，紧接着 guest ART SIGSEGV、
+     * 桥进程死亡（每次冷启约 2.5s 后准时发生）。同一个偏好还让 FishCrypto 选
+     * <c>libFishGuard-v7-*.so</c> ⇒ <c>is 32-bit instead of 64-bit</c>。
+     * 按 guest 真实属性报（见 qemu-src/art/gen_props.py 的 x64 段）：32 位空、64 位只有 arm64。
+     */
+    public static final String[] SUPPORTED_ABIS = {"arm64-v8a"};
 
-    public static final String[] SUPPORTED_32_BIT_ABIS = {"armeabi-v7a", "armeabi"};
+    public static final String[] SUPPORTED_32_BIT_ABIS = {};
 
     public static final String[] SUPPORTED_64_BIT_ABIS = {"arm64-v8a"};
 
