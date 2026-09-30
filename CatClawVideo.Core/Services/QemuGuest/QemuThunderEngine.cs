@@ -57,6 +57,21 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
     private QemuArtGuest.ThunderLease? _external;
     /// <summary>最近一次 PrepareSession 失败原因（外层 9128 自愈判断用；成功/开始时清空）。</summary>
     private string? _lastPrepareError;
+    /// <summary>
+    /// 磁力 → <b>首解结果</b>（任务名 / 目录 / 文件列表 / 种子路径）。与 <see cref="_history"/> 分开存，
+    /// 因为两者生命周期不同：会话结束（<c>Teardown</c>）只该丢掉播放会话，而 TASK MAGNET 的解析结果
+    /// 在迅雷里<b>按 btih 唯一</b>、种子文件就躺在 VM 级 tmpfs <c>/thunder-data</c>（合并模式的
+    /// Teardown 不杀 VM，文件还在）。
+    /// <para>为什么要它：重开时如果换<b>另一个任务名</b>再解析一次（<c>BuildTaskName</c> 取
+    /// <c>preferName</c>=集名，与首解时的磁力 <c>dn</c> 不同），引擎里同 btih 的任务已存在 ——
+    /// 新任务照样起来（<c>started id=1002 st=1</c>）但<b>种子永不落盘</b>，宿主等 46s 超时，
+    /// 用户看到「迅雷无法解析该磁力链接」。2026-09-30 T5 实测：「退出播放页再进同一片」100%
+    /// 死在这条上。任务名必须一次定终身，重开只复用、绝不重发 TASK MAGNET。</para>
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, ResolvedMagnet> _resolved = new(StringComparer.Ordinal);
+
+    /// <summary>一次磁力解析的稳定结果（任务名决定 guest 里的种子路径）。</summary>
+    private sealed record ResolvedMagnet(string Name, string Dir, List<MagnetFile> Files, string TorrentRawPath);
     private QemuControlServer? _server;
     private int _mediaPort;
     private int _monitorPort;
@@ -126,6 +141,20 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
     {
         get { var s = _session; return s is not null && (s.DlSent || _streamProxy is not null); }
     }
+
+    /// <summary>
+    /// 最近一次「没打开成」的真实原因（成功时清空）。
+    /// <para><b>为什么要有它</b>：本引擎的每一条失败路径都是 <c>return null</c>（回落契约），
+    /// 原因只落在 bt.log 里；调用方（<c>SpiderVodProvider.TryOpenBtAsync</c>）只能写一句
+    /// 「迅雷无法解析该磁力链接（无可用资源或资源不存在）」——于是「VM 没起来」「harness 没回连」
+    /// 「initrd 里没有迅雷段」「种子 45s 没落盘」全被说成「资源不存在」，测试清单里根本判不了
+    /// （2026-09-30 磁力链路调试报告 §一：spider 返回 magnet 之后「没有下文」）。
+    /// 现在把最后一道失败原因带出来，UI 文案能直接指到病根。</para>
+    /// </summary>
+    public string? LastFailureReason { get; private set; }
+
+    /// <summary>记失败原因（同时落日志；调用方拿 null 时读 <see cref="LastFailureReason"/>）。</summary>
+    private void Fail(string why) { LastFailureReason = why; Log(why); }
 
     /// <summary>磁力点播磁盘缓存根目录（null = 关闭，默认关）。由宿主注入（AppPaths.Sub("btcache")）：
     /// 播放数据 4MB 分块落盘，重看/换集回看直接磁盘秒供，不再依赖引擎 tmpfs（VM 重启即空）。</summary>
@@ -208,7 +237,8 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
 
     public async Task<MagnetPlayback?> TryOpenAsync(string magnet, string? preferName = null, CancellationToken ct = default)
     {
-        if (!IsReady) return null;
+        LastFailureReason = null;
+        if (!IsReady) { Fail("迅雷引擎不可用（QemuGuest 运行时未部署）"); return null; }
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
@@ -275,24 +305,50 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
             //   全选让引擎顺序下载所有集，换集只需把媒体口切到新文件路径（见上方换片分支）。
             //   tmpfs 3500m 装得下整部剧；下载顺序从种子头部开始，首集起播不受影响。
             s.Others = "";
-            // ★ 必须显式携带种子路径：guest 的 "-" 回退会取「引擎当前上下文」的种子（最后一次
-            //   TASK MAGNET），而详情页探测/会话复用会把上下文停在别的磁力上 —— 任务会建到
-            //   错误的种子上（内容与目录错位），播放路径在引擎里 404 死循环（实测）。
-            s.DLTorrentPath = s.TorrentRawPath.Length > 0 ? s.TorrentRawPath
-                : Uri.UnescapeDataString(Uri.UnescapeDataString(s.TorrentUrlPath));
-            _server!.SetCommand($"DL {s.DLTorrentPath}|{s.Dir}|{pick.Name}|{pick.Index}|");
-            _lastActiveUtc = DateTime.UtcNow;
-
-            // 等阶段二 ev=play（视频地址）
-            await PollUntilAsync(() => s.Cancelled || s.Played || s.LastError is not null, TimeSpan.FromSeconds(240), ct).ConfigureAwait(false);
-            if (!s.Played)
+            // ★ 必须走 TorrentPathFor：直接 unescape 引擎上报的 URL 路径会得到**双斜杠**
+            //   `//thunder-data/成名在望.mp4`（那是双重编码的 URL 形式，去码两次就多个前导斜杠），
+            //   createBtTask 认不出这种路径 —— 2026-09-30 本机端到端实测：任务号照样发（id=1003 st=1）、
+            //   播放地址照样上报，但**一个字节都不动**（没有任何带进度的 ev=status），媒体口每次
+            //   在 64KB 处提前断流，最后被判「60s 内拉不到数据」。下载侧早就为这个坑写了
+            //   TorrentPathFor（见其注释），播放这条路漏了。
+            s.DLTorrentPath = TorrentPathFor(s);
+            // 下发 DL 并等阶段二 ev=resplay（视频地址）。9128（同 btih 任务句柄顽留）在这里也会发生：
+            // 「退出播放页 → 再进同一片」= Teardown 只发了 STOP，引擎里该 btih 的任务句柄实测清不掉
+            //（guest 的 stopTask 异步且经常无效），重发 DL 秒回 `st=9128 BT 下载任务创建失败`
+            //（2026-09-30 台架 R1 实测 0.4s 就报这个）。下载侧早有 SendDlWithRecoveryAsync 兜这条，
+            // 播放侧此前没有任何兜底 → 用户看到「迅雷无法解析该磁力链接」。
+            // 合并模式唯一可靠的复位 = 重启 harness（进程一没任务表就空；/thunder-data 是 VM 级
+            // tmpfs + 块设备，种子与已下数据都不随进程死），所以重启后**直接重发 DL**，不需要再解析。
+            for (var dlTry = 1; ; dlTry++)
             {
-                if (!s.Cancelled)
+                // DlSent 必须在**每次下发前**置真：OnReport 靠它区分「阶段一的 play=种子路径」
+                // 与「阶段二的 play=视频地址」。恢复分支里把它清了没再置回，第二条 play 就被当成
+                // 种子路径吞掉、s.Played 永不为真 → 白等 240s（2026-09-30 台架 R1 实测）。
+                s.DlSent = true;
+                _server!.SetCommand($"DL {s.DLTorrentPath}|{s.Dir}|{pick.Name}|{pick.Index}|");
+                _lastActiveUtc = DateTime.UtcNow;
+
+                await PollUntilAsync(() => s.Cancelled || s.Played || s.LastError is not null,
+                    TimeSpan.FromSeconds(240), ct).ConfigureAwait(false);
+                if (s.Played) break;
+                if (s.Cancelled) return null;
+
+                var why = s.LastError ?? "等迅雷给出播放地址超时（240s）——任务未起来或一直无源";
+                if (IsTaskAlreadyExists(s) && _external is not null && dlTry < 2)
                 {
-                    Log(s.LastError ?? "等播放地址超时（240s）");
-                    // DL 失败（如 VM 重启后种子已不在磁盘）：剔除历史，下次重新走 TASK MAGNET 展开
-                    _history.TryRemove(magnet, out _);
+                    Log($"播放 DL 撞 9128（STOP 后任务句柄顽留）→ 重启 harness 清表后重发一次：{why}");
+                    _history.TryRemove(magnet, out _);   // 会话作废；_resolved 留着（种子还在）
+                    s.LastError = null; s.DlSent = false; s.Played = false;
+                    if (!await RestartExternalHarnessLockedAsync(ct).ConfigureAwait(false))
+                    {
+                        Fail("9128 后重启 harness 失败（guest 起不来）");
+                        return null;
+                    }
+                    _history[magnet] = s;
+                    continue;
                 }
+                Fail(why);
+                _history.TryRemove(magnet, out _);
                 return null;
             }
             Log($"播放地址已就绪：{s.PlayUrlPath}");
@@ -301,7 +357,7 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
             var got = await VerifyBytesAsync(s.PlayUrlPath, ct).ConfigureAwait(false);
             if (got == 0)
             {
-                Log("拉流验证 60s 内 0 字节 —— 判失败，回落后续引擎");
+                Fail("迅雷任务已给出播放地址，但 60s 内拉不到任何数据（无源或速度恒为 0）");
                 return null;
             }
 
@@ -722,7 +778,14 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
         ReleaseProxy();
         _vmPaused = false;
         _playbackIdleSinceUtc = null;
-        try { _runtime?.Stop(); } catch { }
+        if (_runtime is not null)
+        {
+            // 自起 VM 模式：VM 一停，tmpfs 里的种子就没了 → 解析缓存必须一起作废。
+            // 外部 VM（合并）不杀 VM，/thunder-data 还在 —— 解析缓存留着，重开靠它
+            //（换任务名重解析同一条磁力会僵死，见 _resolved 注释）。
+            _resolved.Clear();
+            try { _runtime.Stop(); } catch { }
+        }
     }
 
     /// <summary>外部 VM 退出（桥重置/崩溃）回调：结束会话让状态收敛。
@@ -731,6 +794,7 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
     private void OnExternalVmDied()
     {
         Log("[引擎] 外部 VM 已退出（爬虫桥重置/崩溃）——结束迅雷会话，下次任务自动重拉");
+        _resolved.Clear();   // VM 没了 = /thunder-data 里的种子也没了，解析缓存必须作废
         try { Teardown("外部 VM 退出"); } catch { }
     }
 
@@ -823,7 +887,7 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
             catch (Exception ex)
             {
                 _server = null;
-                Log($"控制端启动失败（端口 {CtrlPort} 被占？）：{ex.Message}");
+                Fail($"迅雷控制端启动失败（端口 {_ctrlPort} 被占？）：{ex.Message}");
                 return false;
             }
         }
@@ -832,7 +896,7 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
         if (ExternalVmProvider is not null)
         {
             var lease = await ExternalVmProvider(ct).ConfigureAwait(false);
-            if (lease is null) { Log("外部 VM 不可用（合并 initrd 缺失或 ART VM 起不来）"); return false; }
+            if (lease is null) { Fail("迅雷外部 VM 不可用（合并 initrd 缺失或 ART VM 起不来）"); return false; }
             if (!ReferenceEquals(_external, lease))
             {
                 _external = lease;
@@ -848,6 +912,7 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
             if (!await _server.WaitFirstPollAsync(TimeSpan.FromSeconds(180)).ConfigureAwait(false))
             {
                 Log("外部 VM 已启动，但 180s 内迅雷 harness 未回连控制端（guest 里 cat /thunder.log 看死因）");
+                LastFailureReason = "迅雷 harness 180s 未回连控制口（initrd 里没有迅雷段 / harness 起不来）";
                 return false;
             }
             Log($"外部 VM 就绪（ART VM 媒体口 {_mediaPort}，迅雷 harness 已回连）");
@@ -889,7 +954,7 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
             var ready = await _server.WaitFirstPollAsync(TimeSpan.FromSeconds(90)).ConfigureAwait(false);
             if (!ready)
             {
-                Log("VM 已启动但 90s 内 guest 未连上控制端");
+                Fail("迅雷 VM 已启动，但 90s 内 guest 未连上控制端（harness 进程没起来？）");
                 return false;
             }
             Log($"VM 就绪（媒体口 {_mediaPort}，monitor {_monitorPort}）");
@@ -930,6 +995,23 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
             _session = hist;
             return hist;
         }
+        // 会话已经结束、但解析结果还在（VM 与 /thunder-data 都活着）：照**原任务名**重建会话，
+        // 绝不重发 TASK MAGNET —— 换个任务名重解析同一条磁力，引擎里会僵在「同 btih 已有任务」，
+        // 种子不再落盘（见 _resolved 注释）。
+        if (_resolved.TryGetValue(magnet, out var res) && res.Files.Count > 0)
+        {
+            var rs = new Session
+            {
+                Magnet = magnet, Name = res.Name, Dir = res.Dir,
+                TorrentRawPath = res.TorrentRawPath, Files = res.Files, AtUtc = DateTime.UtcNow,
+            };
+            _session = rs;
+            _history[magnet] = rs;
+            _lastActiveUtc = DateTime.UtcNow;
+            LastFailureReason = null;
+            Log($"复用已解析种子（原任务名 {res.Name}，不再发 TASK MAGNET）：{res.Files.Count} 项");
+            return rs;
+        }
 
         // 换磁力 = 引擎会被重武装到别的文件，旧缓存代理必须立即停
         //（否则它会把「新文件」的字节当作旧文件送给播放器——数据就错了）
@@ -966,7 +1048,7 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
         while (DateTime.UtcNow < hardDeadline)
         {
             if (s.Cancelled) return null;
-            if (s.LastError is not null) { Log(s.LastError); _lastPrepareError = s.LastError; _session = null; return null; }
+            if (s.LastError is not null) { Fail(s.LastError); _lastPrepareError = s.LastError; _session = null; return null; }
 
             var data = await TryFetchTorrentQuietAsync(directTorrentPath, ct).ConfigureAwait(false);
             if (data is null && (s.TorrentRawPath.Length > 0 || s.TorrentUrlPath.Length > 0))
@@ -993,7 +1075,7 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
         }
         if (parsed is null)
         {
-            Log($"等种子落盘超时（{(DateTime.UtcNow - startUtc).TotalSeconds:F0}s，疑似死链或无资源）");
+            Fail($"磁力解析失败：{(DateTime.UtcNow - startUtc).TotalSeconds:F0}s 内种子没落盘（疑似死链或无资源）");
             _lastPrepareError = "timeout";
             _session = null;
             return null;
@@ -1004,6 +1086,7 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
             s.Files = entries.Select(e => new MagnetFile(e.Index, e.Size, e.Rel)).ToList();
             s.AtUtc = DateTime.UtcNow;
             _history[magnet] = s;   // 进程级历史：重复点播/换集不再重复建任务（9128）
+            _resolved[magnet] = new ResolvedMagnet(s.Name, s.Dir, s.Files, s.TorrentRawPath);
             Log($"文件列表 {entries.Count} 项（种子名 {tname}）");
             foreach (var f in s.Files.Take(12)) Log($"  #{f.Index,3}  {f.Size / 1048576.0,8:F1}MB  {f.Name}");
             if (s.Files.Count > 12) Log($"  … 共 {s.Files.Count} 项");
@@ -1387,6 +1470,13 @@ public sealed class QemuGuestEngine : IPreferredMagnetEngine, IPlaybackSessionLe
             // 判活：自起 VM 看进程；外部 VM 模式（合并 guest）看租约 —— VM 归 ART 桥，不归本引擎。
             var alive = _external is not null ? _external.IsRunning : _runtime is { IsRunning: true };
             if (_disposed || !alive) return;
+
+            // 无事可管就直接退（2026-09-30 实测修「每 60s 刷一条空闲日志 + 重复下发 STOP」）：
+            // 外部 VM 模式下 Teardown 之后 _session 已空、_runtime 恒为 null（机器归爬虫桥），
+            // 而 STOP 会让 guest 清任务 id、从此不再有 ev=status → `_lastActiveUtc` 永久陈旧，
+            // 于是每个 60s tick 都重新走一遍「空闲 15 分钟」分支：刷日志、对共享控制口再发一次
+            // STOP，并把 _history 反复剔除（下次点播被迫重走 TASK MAGNET）。
+            if (_session is null && _streamProxy is null && _runtime is null) return;
 
             // ① 冻结态（用户已退出播放页）：下载已停，但 5GB 内存还占着 → 15 分钟后收机器。
             //   冻结期间 guest 不再上报，_lastActiveUtc 自然停止刷新，窗口能真正走完。

@@ -232,12 +232,16 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     /// （ARM harness + qemu-aarch64-static + 引擎库 + init 迅雷段），文件在即磁力可用。</summary>
     public const string X86ThunderCapableInitrdName = @"x86guest\art_initrd_x64.gz";
 
-    /// <summary>能否提供迅雷外部 VM：<b>恒 false</b>（2026-09-29 x86 唯一化——合并 initrd 是
-    /// aarch64 专属产物，随 aarch64 线退役；迅雷引擎回落自起 VM 模式，其 aarch64 运行时
-    /// 若不在（安装版已剔除）则进一步回落内置 BT）。</summary>
-    /// <summary>x86 合并磁力可用（2026-09-29）：initrd 已注入迅雷资产（ARM harness 经
-    /// qemu-aarch64-static 转译 + 引擎库 + init 迅雷段），磁力与桥共用同一个 ART VM。</summary>
-    public bool CanProvideThunderVm => true;
+    /// <summary>
+    /// 能否提供迅雷外部 VM：合并配置已注入 <b>且</b> x86 initrd 真在部署目录里。
+    /// <para>此前是 <c>=> true</c>（还压着两段互相打脸的注释），于是「运行时根本没部署」
+    /// 这类环境问题也会一路走到引擎深处，最后报成「磁力无资源」（2026-09-30 报告 §一）。
+    /// 文件在即磁力可用——这只是**必要条件**：init 里有没有迅雷段、harness 起不起得来，
+    /// 由 <c>QemuGuestEngine</c> 等 harness 回连（180s）判，那才是运行时判据。</para>
+    /// </summary>
+    public bool CanProvideThunderVm =>
+        ThunderMerge is not null &&
+        File.Exists(Path.Combine(ArtRuntimeDir, _guestInitrdFile ?? X86ThunderCapableInitrdName));
 
     /// <summary>给迅雷引擎（<c>QemuGuestEngine</c> 外部 VM 模式）提供租约：确保 ART VM（含
     /// 迅雷段）起来并返回租约；不可用/起不来返回 null（引擎回落自起 VM 模式）。</summary>

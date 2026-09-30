@@ -792,8 +792,26 @@ public sealed class QemuStreamProxy : IDisposable
 
     private async Task ServeAsync(NetworkStream stream, string method, long start, long end, bool hasRange)
     {
-        var first = Math.Min(Math.Max(0, start), _totalSize - 1);
+        var firstRaw = Math.Max(0, start);
         var last = Math.Min(end, _totalSize - 1);
+        // ── 请求起点已经在文件尾之外：绝不能夹回「最后一个字节」再应答 ──
+        // 旧写法 `first = Math.Min(first, _totalSize-1)` + `if (last < first) last = first` 会把
+        // 越界请求变成**只吐 1 个字节、且偏移永远不动**的响应：客户端按 Content-Length 读就原地
+        // 死循环（2026-09-30 台架实测：同一个 `bytes=261897401-261897401` 重复约 29 万次，
+        // 250MB 的片跑了 49 万个请求）。真实播放器在「时长/文件大小比引擎实际小一点」的片上同样会撞上。
+        // 正确答复是 0 字节的 206：既不是 416（FFmpeg 收到 416 会判定该 AVIO 不可用、直接弃流，
+        // 见上面 Cues 探测那段的 A/B 结论），也不是 1 字节的假数据。
+        if (firstRaw >= _totalSize)
+        {
+            _log?.Invoke($"[proxy] 请求起点 {firstRaw} 已在文件尾（共 {_totalSize}B）之外 → 206 空体收尾");
+            var atEnd = Encoding.ASCII.GetBytes(
+                $"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes */{_totalSize}\r\n" +
+                $"Content-Type: {_contentType}\r\nContent-Length: 0\r\nAccept-Ranges: bytes\r\n" +
+                "Connection: keep-alive\r\n\r\n");
+            await stream.WriteAsync(atEnd).ConfigureAwait(false);
+            return;
+        }
+        var first = firstRaw;
         if (last < first) last = first;
 
         // 请求可见性：验证「avio 层 seek 是否真的走到协议层」（Seekable 修复的证据链）
@@ -811,8 +829,14 @@ public sealed class QemuStreamProxy : IDisposable
         {
             long frontier;
             lock (_sync) frontier = _base + _len;
-            // Cues 探测 = 首开阶段读文件尾（FFmpeg 查 mfra/Cues 这类**可选**索引）。
-            var isCuesProbe = _bytesServed < 32 * 1024 * 1024 && first > _totalSize / 4;
+            // Cues 探测 = 首开阶段读**文件尾那一段**（FFmpeg 查 mfra/Cues 这类可选索引）。
+            // ⚠ 判据必须钉在尾部：旧写法 `first > _totalSize / 4` 会把「用户把进度条拖到影片中段」
+            //   也判成尾探测。2026-09-30 台架 M5 实测：250MB 的 mkv、只下了 3.5MB 时 seek 到 130MB
+            //   → 2.6s 回 206 空体 —— 正是上面 806 行自己警告的死法（空体 = FFmpeg 当 EOF = 跳片尾
+            //   = MediaEnded = 单集误弹「已经是最后一集了」）。中段 seek 必须走下面的正常供数路径
+            //   （注册读者 + Recenter 触发 KICK PREFETCH + 60s 停滞预算 + 绝不空体）。
+            const long TailProbeWindow = 16L * 1024 * 1024;   // mfra/Cues 就在文件尾几 MB 内
+            var isCuesProbe = _bytesServed < 32L * 1024 * 1024 && first >= _totalSize - TailProbeWindow;
             if (isCuesProbe && first > frontier && !diskHit)
             {
                 // Cues（文件尾几 MB）只影响精确 seek；FFmpeg 已配 FastSeek + 关闭 ReadAhead，缺 Cues 也能播。
@@ -886,6 +910,9 @@ public sealed class QemuStreamProxy : IDisposable
             var stallMs = 0;
             var selfRescued = false;   // 60s 自救是否已做过（只做一次）
             var probeTick = 0;         // 停滞期播放器存活探测节拍（~1s 一次）
+            var relocateTicks = 0;     // 「请求位被窗口甩下」期间的等待节拍（每 66 拍 ≈2s 再踢一次 Recenter）
+            var eofRetries = 0;        // 「上游 EOF 但请求位还在文件里」时重新武装上游的次数（上限 8）
+            string? shortWhy = null;   // 本次响应体为何提前结束（诊断「每请求只吐几百字节」用）
             while (pos <= last && !_stopped)
             {
                 long baseNow, frontierNow;
@@ -915,9 +942,41 @@ public sealed class QemuStreamProxy : IDisposable
                     UpdatePos(rq, pos);
                     continue;
                 }
-                if (pos < baseNow) { _log?.Invoke("[proxy] 请求被重定位甩下，提前结束（播放器会重发）"); break; }
+                // 请求位被窗口甩下：**不能立刻 break**。自己刚 Recenter(first) 之后，`_base` 要等
+                // 上游循环真的搬过去才更新——这一轮采样到的还是上一次 seek 的旧窗口（实测 124.9MB），
+                // 旧写法当场 break ⇒ 响应体短于已经声明出去的 Content-Length ⇒ FFmpeg 判 EOF，
+                // 2026-09-30 台架 T5 第 1 块（0-262143）就是这么断的，表现正是「放着放着就中断」。
+                // 现在给它与断粮同样的 60s 预算：预算内继续等窗口搬回来（每 ~2s 再踢一次 Recenter），
+                // 超预算说明窗口被**别的读者**抢走（真并发 seek），才按老语义结束、让播放器重发。
+                if (pos < baseNow)
+                {
+                    if (stallMs >= stallBudget)
+                    {
+                        _log?.Invoke("[proxy] 请求被重定位甩下超 60s → 提前结束（播放器会重发）");
+                        break;
+                    }
+                    if (++relocateTicks % 66 == 0) Recenter(pos, "请求位被窗口甩下，等窗口搬回来");
+                    await Task.Delay(30).ConfigureAwait(false);
+                    stallMs += 30;
+                    continue;
+                }
 
-                if (UpstreamEofLocked() && pos >= frontierNow) break;   // 正常短读（文件尾）
+                // 「上游 EOF」有两种：**真的读到文件尾**，以及**这一轮 slice 拉完但请求位还在文件里**。
+                // 旧写法不区分，一律 break ⇒ 响应体短于已经声明出去的 Content-Length。
+                // 台架实测代价（2026-09-30 T5）：整块整块地吐 ~100 字节就断，244.7MB 竟用了
+                // 2,512,811 次 Range 请求（≈4200 req/s）才"爬"完 10 分钟 —— 播放器不会报错，
+                // 但每个请求都要重新付一次「重连 + 重新武装上游」的代价，白白烧 CPU 和时延。
+                // 现在：真到文件尾才正常短读；否则把上游**重新武装到 pos** 继续供数
+                //（数据通常已在引擎/宿主磁盘缓存里，一次 Recenter 即秒回），最多试 8 次再放弃。
+                if (UpstreamEofLocked() && pos >= frontierNow)
+                {
+                    if (pos >= _totalSize - 1 || ++eofRetries > 8)
+                    {
+                        shortWhy = pos >= _totalSize - 1 ? "真文件尾" : $"EOF 重试 {eofRetries} 次用尽";
+                        break;
+                    }
+                    Recenter(pos, "上游 EOF 而请求位仍在文件内 → 重新武装上游续拉");
+                }
                 await Task.Delay(30).ConfigureAwait(false);
                 stallMs += 30;
 
@@ -948,8 +1007,18 @@ public sealed class QemuStreamProxy : IDisposable
                 if (stallMs >= hardBudget)
                 {
                     _log?.Invoke($"[proxy] 等待数据超过 {hardBudget / 60000} 分钟仍未到位，放弃本次请求（播放器会重试）");
+                    shortWhy = "等超 5 分钟";
                     break;
                 }
+            }
+            // 短读诊断：到底哪条路让响应体短于已经声明出去的 Content-Length。
+            // 按位置抽样（每 ~0.5MB 一条），既看得清分布又不会被 4000 req/s 刷屏。
+            if (pos <= last && !_stopped && pos % 524288 < 600)
+            {
+                long b2, f2; lock (_sync) { b2 = _base; f2 = _base + _len; }
+                _log?.Invoke($"[proxy-short] 声明 {length}B 只供出 {pos - first}B @{pos}｜原因={shortWhy ?? "未到 break 分支（正常读完？）"}"
+                    + $"｜窗口 [{b2 / 1048576.0:F1}|{f2 / 1048576.0:F1}MB]｜EOF={UpstreamEofLocked()}"
+                    + $"｜甩下超预算={stallMs >= stallBudget}");
             }
         }
         finally { ExitRead(rq); }

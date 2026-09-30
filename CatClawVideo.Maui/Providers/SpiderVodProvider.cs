@@ -283,7 +283,18 @@ public class SpiderVodProvider : IVodSourceProvider, IActionVodSourceProvider
 
         // （danmaku 钩子已在上面统一处理：提取播放地址 + 幂等触发网盘配置对话框）
 
-        return await TvBoxPlayPipeline.ResolveAsync(site, play, episode.Flag ?? "", _sniffer, ct);
+        var final = await TvBoxPlayPipeline.ResolveAsync(site, play, episode.Flag ?? "", _sniffer, ct);
+        // 出 provider 前的最后一道：地址必须能喂播放器。站点回落链会把 vod_id／相对路径／内嵌 JSON
+        // 原样当地址交上来，播放器只会抛 "Invalid URI: The format of the URI could not be determined."
+        // ——把「这一条压根没给可播地址」盖成播放器故障（2026-09-30 磁力链路报告 T3）。
+        // 判据与播放页共用 PlayAddress（一处规则、离线台架可断言）；抛 NotSupportedException
+        // 由播放页原样显示（它已按「协议给了原因就别喂播放器」处理）。
+        if (!Services.PlayAddress.IsPlayable(final.Url, out var why))
+            throw new NotSupportedException(
+                $"「{site.Name}」这条集没有可播地址：{why}"
+                + $"（拿到的是「{Services.PlayAddress.Brief(final.Url)}」）。"
+                + (final.Message.Length > 0 ? " 站点说明：" + final.Message : ""));
+        return final;
     }
 
     /// <summary>
@@ -314,8 +325,21 @@ public class SpiderVodProvider : IVodSourceProvider, IActionVodSourceProvider
         if (engine is null || !engine.IsReady)
             throw new NotSupportedException("磁力播放需要迅雷引擎，当前不可用；请确认迅雷运行时已就绪");
 
-        var opened = await engine.TryOpenAsync(url, episode.Name, ct)
-            ?? throw new NotSupportedException("迅雷无法解析该磁力链接（无可用资源或资源不存在）");
+        var opened = await engine.TryOpenAsync(url, episode.Name, ct);
+        if (opened is null)
+        {
+            // 原因必须透出来：VM 没起来 / harness 没回连 / 种子 45s 不落盘 / 真的无源，
+            // 对用户的处置完全不同（报告 §一 就是被一句「资源不存在」糊过去的）。
+            var why = engine switch
+            {
+                CatClawVideo.Core.Services.QemuGuest.QemuGuestEngine q => q.LastFailureReason,
+                ChainedMagnetEngine c => c.LastFailureReason,
+                _ => null,
+            };
+            throw new NotSupportedException(why is { Length: > 0 }
+                ? $"磁力播放失败：{why}"
+                : "迅雷无法解析该磁力链接（无可用资源或资源不存在）");
+        }
 
         // 展示名取**种子内真实文件名**而非站点给的打包名：磁力站的起播名往往是
         // 「第四季01-03-1080p」这种打包描述（磁力 dn），看不出正在播哪个文件；

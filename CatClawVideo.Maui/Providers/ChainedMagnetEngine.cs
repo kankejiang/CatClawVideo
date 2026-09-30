@@ -21,6 +21,13 @@ public sealed class ChainedMagnetEngine : IPreferredMagnetEngine, IPlaybackSessi
     /// <summary>链上任一引擎忙碌即视为忙碌（探测让位判断用）。</summary>
     public bool IsBusy => _engines.Any(e => e.IsBusy);
 
+    /// <summary>
+    /// 链上最近一次失败原因。引擎的失败契约是「返回 null」（回落下一家），真实病因只落在
+    /// 各家肚子里、只进 bt.log；UI 拿不到就只能对六种死法说一句「资源不存在」，测试清单判不了
+    /// 病根（2026-09-30 磁力链路调试报告 §一「spider 返回 magnet 之后没有下文」）。
+    /// </summary>
+    public string? LastFailureReason { get; private set; }
+
     public async Task<bool> EnsureReadyAsync()
     {
         var any = false;
@@ -49,6 +56,7 @@ public sealed class ChainedMagnetEngine : IPreferredMagnetEngine, IPlaybackSessi
 
     public async Task<MagnetPlayback?> TryOpenAsync(string magnet, string? preferName = null, CancellationToken ct = default)
     {
+        LastFailureReason = null;
         foreach (var e in _engines)
         {
             if (!e.IsReady) continue;
@@ -56,8 +64,13 @@ public sealed class ChainedMagnetEngine : IPreferredMagnetEngine, IPlaybackSessi
             {
                 var hit = await e.TryOpenAsync(magnet, preferName, ct).ConfigureAwait(false);
                 if (hit is not null) return hit;
+                LastFailureReason = (e as Services.QemuGuest.QemuGuestEngine)?.LastFailureReason
+                    ?? LastFailureReason ?? $"{e.Name}：未打开（无原因上报）";
             }
-            catch { }
+            catch (Exception ex)
+            {
+                LastFailureReason = $"{e.Name} 异常：{ex.GetType().Name}: {ex.Message}";
+            }
         }
         return null;
     }

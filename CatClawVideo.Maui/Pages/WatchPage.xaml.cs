@@ -2076,6 +2076,21 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
                 return;
             }
 
+            // ── 喂播放器前的最后一道闸：地址必须是绝对 URI ──
+            // 站点回落链路会把 vod_id/相对路径当播放地址交上来（如 /dianshiju/guoju/29659.html），
+            // 播放器只会炸 `Invalid URI: The format of the URI could not be determined.`，
+            // 用户看到的是一个 .NET 内部异常而不是「该源这条集没给可播地址」
+            // （2026-09-30 磁力链路报告 T3）。磁力/电驴在这之前已被 provider 拦截或拒绝。
+            if (!CatClawVideo.Core.Services.PlayAddress.IsPlayable(play.Url, out var notPlayableWhy))
+            {
+                ShowBufferingIndeterminate(false);
+                CatClawVideo.Core.Providers.CatClawLog.Write(
+                    $"[播放] 丢弃不可播地址 {play.Url}（{notPlayableWhy}）");
+                await ShowTipAsync($"这条没有可播地址：{notPlayableWhy}（拿到的是「{play.Url}」）。"
+                    + (play.Message.Length > 0 ? $"\n站点说明：{play.Message}" : ""));
+                return;
+            }
+
             UpdateControlBarSubtitle(episode, play.Title);
             // 防盗链头透传播放器（spider header 全量；此前 Referer/UA 在此被丢弃导致部分源 403）
             Player.Headers = play.Headers ??
