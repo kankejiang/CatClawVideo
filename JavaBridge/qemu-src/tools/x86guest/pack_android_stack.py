@@ -38,6 +38,8 @@ SEEDS = [
     f"{VEN}/bin/hw/android.hardware.graphics.composer@2.1-service",
     f"{VEN}/bin/hw/android.hardware.graphics.allocator@2.0-service",
     f"{VEN}/bin/hw/android.hardware.configstore@1.1-service",
+    # Waydroid 专有：SF/HWC 会等它（system 镜像里，不在 vendor）
+    f"{SYS}/system/bin/hw/vendor.waydroid.task@1.0-service",
     f"{SYS}/system/bin/servicemanager",
     f"{SYS}/system/bin/hwservicemanager",
     f"{SYS}/system/bin/surfaceflinger",
@@ -100,7 +102,13 @@ for d in (libdir, bindir, hwdir_s, hwdir_v):
 
 total = 0
 for p in sorted(seen):
-    if p.startswith(f"{SYS}/system/bin/"):
+    if p.startswith(f"{SYS}/system/bin/hw/"):
+        # system 侧的 HAL 服务（如 Waydroid 的 vendor.waydroid.task@1.0-service）
+        # 必须落在 /system/bin/hw（rc 与我们的 init 都用这个路径）
+        shw = os.path.join(STAGE, "system/bin/hw")
+        os.makedirs(shw, exist_ok=True)
+        dst = os.path.join(shw, os.path.basename(p))
+    elif p.startswith(f"{SYS}/system/bin/"):
         dst = os.path.join(bindir, os.path.basename(p))
     elif p.startswith(f"{VEN}/bin/"):
         # vendor 的 HAL 服务二进制：放 /vendor/bin/hw（rc 里就是这个路径）
@@ -159,7 +167,53 @@ for frag in VENDOR_FRAGS:
     inner = _re.sub(r"(?s)</manifest>\s*$", "", inner).strip()
     merged += inner + "\n"
 if merged:
+    # Android 13 的 screencap 走 **AIDL 服务名 `SurfaceFlingerAIDL`**；SF 只有在 VINTF 里声明了才会注册它，
+    # 否则客户端会一直 "Since 'SurfaceFlingerAIDL' could not be found, trying to start it as a lazy AIDL
+    # service"（我们没 init 的 lazy 机制）⇒ screencap 永久阻塞（实测）。
+    # 原镜像的 system manifest 里 AIDL 条目为 0（实测）⇒ 这里补上。名字不确定，两个候选都写（未知项无害）。
+    merged += (
+        '    <hal format="hidl">\n'
+        '        <name>vendor.waydroid.task</name>\n'
+        '        <transport>hwbinder</transport>\n'
+        '        <version>1.0</version>\n'
+        '        <interface>\n'
+        '            <name>IWaydroidTask</name>\n'
+        '            <instance>default</instance>\n'
+        '        </interface>\n'
+        '    </hal>\n'
+        '    <hal format="aidl">\n'
+        '        <name>android.hardware.graphics.surfaceflinger</name>\n'
+        '        <version>1</version>\n'
+        '        <fqname>ISurfaceComposer/default</fqname>\n'
+        '    </hal>\n'
+        '    <hal format="aidl">\n'
+        '        <name>android.gui</name>\n'
+        '        <version>1</version>\n'
+        '        <fqname>ISurfaceComposer/default</fqname>\n'
+        '    </hal>\n'
+    )
     body = '<?xml version="1.0" encoding="utf-8"?>\n<manifest version="1.0" type="device">\n' + merged + "</manifest>\n"
+    # ⚠ 去重：主 manifest 里已经声明过的 HAL，fragment 或我们手工补的条目就不要重复写。
+    # 实测教训：重复的 <hal> 条目会让 libvintf 判 manifest 非法 ⇒ **所有** HAL 查找失败
+    # （症状：mapper@4.0 找不到 ⇒ libui GraphicBufferMapper 构造 LOG_ALWAYS_FATAL ⇒ SF 崩）。
+    try:
+        import xml.etree.ElementTree as _ET
+        _root = _ET.fromstring(body)
+        _seen, _dups = set(), 0
+        for _h in list(_root.findall("hal")):
+            _n = _h.find("name")
+            _v = _h.find("version")
+            _key = ((_n.text or "") if _n is not None else "", (_v.text or "") if _v is not None else "")
+            if _key in _seen:
+                _root.remove(_h)
+                _dups += 1
+            else:
+                _seen.add(_key)
+        if _dups:
+            print("  vintf: 去重 %d 条重复 HAL 条目" % _dups)
+        body = _ET.tostring(_root, encoding="unicode") + "\n"
+    except Exception as _e:
+        print("  vintf: 去重失败（保留原样）:", _e)
     dst = os.path.join(STAGE, "vendor/manifest.xml")
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     with open(dst, "w", encoding="utf-8") as fh:
