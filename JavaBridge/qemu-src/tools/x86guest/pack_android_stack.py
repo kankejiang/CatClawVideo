@@ -42,6 +42,8 @@ SEEDS = [
     f"{SYS}/system/bin/hw/vendor.waydroid.task@1.0-service",
     f"{SYS}/system/bin/servicemanager",
     f"{SYS}/system/bin/hwservicemanager",
+    # 与 108 对齐：108 在跑 vndservicemanager（我们此前没有 ✗）
+    f"{VEN}/bin/vndservicemanager",
     f"{SYS}/system/bin/surfaceflinger",
     f"{VEN}/lib64/hw/hwcomposer.waydroid.so",
     f"{VEN}/lib64/hw/gralloc.gbm.so",
@@ -236,6 +238,15 @@ if merged:
     with open(dst, "w", encoding="utf-8") as fh:
         fh.write(body)
     print("  vintf: 合并 %d 份 → vendor/manifest.xml（%d 字节）" % (len(VENDOR_FRAGS), len(body)))
+    # ⚠ 与 108（跑通的 Waydroid）对齐：108 **只有现代路径**、没有 legacy ✗
+    #   实测 libhidlbase 的 isPassthrough（决定是否加载 passthrough 实现）很可能只读现代路径 ✗
+    #   ⇒ 同一份合并结果同时写到现代路径，避免"legacy 被读、现代没读"或反之的差异。
+    for _rel in ("vendor/etc/vintf/manifest.xml", "system/etc/vintf/manifest.xml"):
+        _d = os.path.join(STAGE, _rel)
+        os.makedirs(os.path.dirname(_d), exist_ok=True)
+        with open(_d, "w", encoding="utf-8") as fh:
+            fh.write(body)
+    print("  vintf: 同时写入现代路径 vendor/etc/vintf/manifest.xml 与 system/etc/vintf/manifest.xml")
 
 for src, rel in VINTF_COPY:
     if not os.path.exists(src):
