@@ -10,3 +10,4 @@ JavaBridge/qemu-src/blobs/**/*.c text eol=lf
 JavaBridge/qemu-src/blobs/**/*.xml text eol=lf
 docs/research/framework/evidence/*.txt text eol=lf
 tools/b1-build/*.py text eol=lf
+CatClawVideo.Maui/Platforms/Windows/libs/mpv-2.dll filter=lfs diff=lfs merge=lfs -text

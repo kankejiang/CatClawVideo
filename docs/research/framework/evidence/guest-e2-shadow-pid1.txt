@@ -1,9 +1,10 @@
-E2 shadow PID1 —— 八次开机的串口判据（2026-10-02 06:05~06:51，Windows + WHPX，同一张内核/同一台机器）
-工具：tools/b1-build/shadow_init.py；每次开机 1 分半（重打镜像 45s + 启动+观察 100s）
-回退已实测：--off 后镜像 md5 回到 75702977759e41d985b6385969f2876d，guest 正常起、桥在 :18600 监听
+E2 shadow PID1 —— ①~⑭ 次开机的串口判据（2026-10-02 06:05~07:36，Windows + WHPX，同一内核同一台机器）
+工具：tools/b1-build/shadow_init.py；一节 = 一次改动后的串口窗口（**宿主会在 guest 重启后自动再拉起 QEMU，
+ 所以一节里可能含 1~2 次开机**；字节范围就是该窗口的串口位置，可复核）。
+回退已实测：--off 后两处镜像 md5 均回到 75702977759e41d985b6385969f2876d，guest 正常起、桥在 :18600 监听。
 
-── ① rdinit 不改，/init 顶替 PID1 后 exec /system/bin/init（裸=first stage） ──
-   串口字节 454801877..454814610 ｜ 保留 24 行 ｜ init 声明并启动过的服务 0 个 ｜ execv 失败 0 个 ｜ init 存活到 5.55 s
+── ① 裸 exec /system/bin/init（=first stage） ──
+   字节 454801877..454814610 ｜ 保留 24 行 ｜ 声明过的服务 0 个 ｜ execv 失败 0 个 ｜ 最后 init 日志时刻 5.55 s ｜ init.claw.rc 被 parse：有
 Probing EDD (edd=off to disable)... oc[?7l[2J[init] shadow-PID1：exec /system/bin/init（原编排改由 /system/etc/init/init.claw.rc 拉回）
 [    5.544012] init: mknod("/dev/kmsg", S_IFCHR | 0600, makedev(1, 11)) failed File exists
 [    5.544543] init: mknod("/dev/random", S_IFCHR | 0666, makedev(1, 8)) failed File exists
@@ -29,8 +30,8 @@ Probing EDD (edd=off to disable)... oc[?7l[2J[init] binder: 三实例已建
 [init] insmod binder_linux: insmod: can't insert '/modules/binder_linux.ko': File exists
 [init] binfmt arm64 已注册
 
-── ② exec /system/bin/init second_stage（跳过 first stage） ──
-   串口字节 454814610..454818222 ｜ 保留 11 行 ｜ init 声明并启动过的服务 0 个 ｜ execv 失败 0 个 ｜ init 存活到 5.45 s
+── ② exec /system/bin/init second_stage ──
+   字节 454814610..454818222 ｜ 保留 11 行 ｜ 声明过的服务 0 个 ｜ execv 失败 0 个 ｜ 最后 init 日志时刻 5.45 s ｜ init.claw.rc 被 parse：无
 Probing EDD (edd=off to disable)... oc[?7l[2J[init] shadow-PID1：exec /system/bin/init second_stage
 [    5.437127] init: Failed to umount /debug_ramdisk: Invalid argument
 [    5.438023] init: Failed to read /vendor/etc/selinux/plat_sepolicy_vers.txt: No such file or directory
@@ -43,8 +44,8 @@ Probing EDD (edd=off to disable)... oc[?7l[2J[init] shadow-PID1：exec /syste
 [    5.448456] init: #04 pc 0000000000148f32  /system/bin/init (android::init::SelinuxGetVendorAndroidVersion()::$_2::operator()() const+610)
 [    5.449756] reboot: Restarting system with command 'bootloader'
 
-── ③ 同上 + 预建 tmpfs 挂载点目录（并把 console_loglevel 抬到 7） ──
-   串口字节 454818222..454858330 ｜ 保留 21 行 ｜ init 声明并启动过的服务 0 个 ｜ execv 失败 0 个 ｜ init 存活到 5.83 s
+── ③ +预建 tmpfs 挂载点目录；console_loglevel 抬到 7 ──
+   字节 454818222..454858330 ｜ 保留 21 行 ｜ 声明过的服务 0 个 ｜ execv 失败 0 个 ｜ 最后 init 日志时刻 5.83 s ｜ init.claw.rc 被 parse：无
 Probing EDD (edd=off to disable)... oc[?7l[2J[init] shadow-PID1：exec /system/bin/init second_stage
 [    5.828817] init: Failed to umount /debug_ramdisk: Invalid argument
 [    5.854586] reboot: Restarting system with command 'bootloader'
@@ -67,8 +68,8 @@ Probing EDD (edd=off to disable)... oc[?7l[2J[init] binder: 三实例已建
 [    5.423090] init: Couldn't load property file '/system/build.prop': open() failed: No such file or directory: No such file or directory
 [    5.439114] reboot: Restarting system with command 'bootloader'
 
-── ④ 补 /vendor/etc/selinux/plat_sepolicy_vers.txt ──
-   串口字节 454858330..454907719 ｜ 保留 42 行 ｜ init 声明并启动过的服务 0 个 ｜ execv 失败 0 个 ｜ init 存活到 6.15 s
+── ④ +补 /vendor/etc/selinux/plat_sepolicy_vers.txt ──
+   字节 454858330..454907719 ｜ 保留 42 行 ｜ 声明过的服务 0 个 ｜ execv 失败 0 个 ｜ 最后 init 日志时刻 6.15 s ｜ init.claw.rc 被 parse：无
 Probing EDD (edd=off to disable)... oc[?7l[2J[init] shadow-PID1：exec /system/bin/init second_stage
 [init] build.prop: system=6359B vendor=2700B
 [    6.125323] init: init second stage started!
@@ -99,13 +100,9 @@ Probing EDD (edd=off to disable)... oc[?7l[2J[init] binder: 三实例已建
 [init] insmod virtio_net:
 [init] insmod binder_linux: insmod: can't insert '/modules/binder_linux.ko': File exists
 [init] binfmt arm64 已注册
-[init] binder: 三实例已建
-[init] insmod virtio_ring:
-[init] insmod virtio:
-[init] insmod virtio_pci_modern_dev:
 
-── ⑤ child 诊断形态：init 作子进程 + 抓退出码 ──
-   串口字节 454907719..454945105 ｜ 保留 12 行 ｜ init 声明并启动过的服务 0 个 ｜ execv 失败 0 个 ｜ init 存活到 ? s
+── ⑤ child 形态：init 作子进程 + 抓退出码 ──
+   字节 454907719..454945105 ｜ 保留 12 行 ｜ 声明过的服务 0 个 ｜ execv 失败 0 个 ｜ 最后 init 日志时刻 ? s ｜ init.claw.rc 被 parse：无
 [init] binder: 三实例已建
 [init] insmod virtio_ring:
 [init] insmod virtio:
@@ -119,8 +116,8 @@ Probing EDD (edd=off to disable)... oc[?7l[2J[init] binder: 三实例已建
 [init] insmod binder_linux: insmod: can't insert '/modules/binder_linux.ko': File exists
 [init] binfmt arm64 已注册
 
-── ⑥ 解开 /dev/kmsg 按进程限速（printk_devkmsg=on） ──
-   串口字节 454945105..454954318 ｜ 保留 21 行 ｜ init 声明并启动过的服务 0 个 ｜ execv 失败 0 个 ｜ init 存活到 5.79 s
+── ⑥ +解开 /dev/kmsg 按进程限速（printk_devkmsg=on） ──
+   字节 454945105..454954318 ｜ 保留 16 行 ｜ 声明过的服务 0 个 ｜ execv 失败 0 个 ｜ 最后 init 日志时刻 5.79 s ｜ init.claw.rc 被 parse：无
 [init] 分发器在位 shadow=Y initd=Y
 [init] shadow-PID1：exec /system/bin/init second_stage
 [init] build.prop: system=6359B vendor=2700B
@@ -133,35 +130,32 @@ Probing EDD (edd=off to disable)... oc[?7l[2J[init] 分发器在位 shadow=Y 
 [init] build.prop: system=6359B vendor=2700B
 [    5.407009] [E2] init 以子进程启动 pid=132（child 诊断形态）
 [    5.414629] [E2] t=5s init.svc=0 props=0 getprop可读=0 zygote= boot= sdk= hw= svcmgr=
-[    5.456070] init: Setting property 'ro.build.fingerprint' to 'waydroid/lineage_waydroid_x86_64/waydroid_x86_64:13/TQ3A.230901.001/eng.aleast.20260403.132616:userdebug/test-keys'
-[    5.457061] init: Setting property 'ro.product.cpu.abilist' to 'x86_64,x86'
-[    5.457566] init: Setting property 'ro.product.cpu.abilist32' to 'x86'
-[    5.457991] init: Setting property 'ro.product.cpu.abilist64' to 'x86_64'
-[    5.460918] init: Running restorecon...
 [    5.461532] init: start_property_service socket creation failed: Failed to bind socket 'property_service': No such file or directory
 [   10.416624] [E2] init 退出 rc=6（6/134=SIGABRT 139=SIGSEGV 132=SIGILL 0=正常返回）
 [   10.417184] [E2] init stderr 前 40 行:
 [   10.424316] [E2] t=10s init.svc=0 props=265 getprop可读=0 zygote= boot= sdk= hw= svcmgr=
 
-── ⑦ 建 /dev/socket ⇒ 第二阶段跑完整条动作队列（child 形态） ──
-   串口字节 454954318..455079504 ｜ 保留 82 行 ｜ init 声明并启动过的服务 29 个 ｜ execv 失败 24 个 ｜ init 存活到 24.14 s
-   execv 失败清单: app_process32 app_process64 audioserver boringssl_self_test32 cameraserver gatekeeperd android.hidl.allocator@1.0-service android.system.suspend@1.0-service vendor.waydroid.task@1.0-service hwservicemanager idmap2d incidentd installd keystore2
+── ⑦ +建 /dev/socket ⇒ 第二阶段跑完动作队列 ──
+   字节 454954318..455079504 ｜ 保留 131 行 ｜ 声明过的服务 29 个 ｜ execv 失败 24 个 ｜ 最后 init 日志时刻 24.14 s ｜ init.claw.rc 被 parse：有
+   execv 失败清单: app_process32 app_process64 audioserver boringssl_self_test32 cameraserver gatekeeperd android.hidl.allocator@1.0-service android.system.suspend@1.0-service vendor.waydroid.task@1.0-service hwservicemanager idmap2d incidentd
 [init] 分发器在位 shadow=Y initd=Y
 [init] shadow-PID1：exec /system/bin/init second_stage
 [init] build.prop: system=6359B vendor=2700B
 [init] /dev/socket=/dev/socket pts=1
 [    5.725780] [E2] init 以子进程启动 pid=138（child 诊断形态）
 [    5.753711] [E2] t=5s init.svc=0 props=0 getprop可读=0 zygote= boot= sdk= hw= svcmgr=
-[    5.777613] init: Setting property 'ro.build.fingerprint' to 'waydroid/lineage_waydroid_x86_64/waydroid_x86_64:13/TQ3A.230901.001/eng.aleast.20260403.132616:userdebug/test-keys'
-[    5.779062] init: Setting property 'ro.product.cpu.abilist' to 'x86_64,x86'
-[    5.779617] init: Setting property 'ro.product.cpu.abilist32' to 'x86'
-[    5.780047] init: Setting property 'ro.product.cpu.abilist64' to 'x86_64'
-[    5.782510] init: Running restorecon...
 [    5.782892] init: Created socket '/dev/socket/property_service', mode 666, user 0, group 0
+[    5.889320] init: starting service 'exec 1 (/system/bin/bootstrap/linkerconfig --target /linkerconfig/bootstrap)'...
+[    5.900966] init: Service 'exec 1 (/system/bin/bootstrap/linkerconfig --target /linkerconfig/bootstrap)' (pid 160) exited with status 0 waiting took 0.010000 seconds
+[    6.147424] init: Service 'apexd-bootstrap' (pid 162) exited with status 0 waiting took 0.026000 seconds
 [    6.375580] init: cannot execv('/system/bin/prng_seeder'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    6.377519] init: Service 'prng_seeder' (pid 171) exited with status 127
 [    6.623563] init: cannot execv('/system/bin/logd'). See the 'Debugging init' section of init's README.md for tips: Permission denied
+[    6.628533] init: Service 'logd' (pid 172) exited with status 127
 [    6.633351] init: cannot execv('/system/bin/lmkd'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    6.838216] init: Service 'lmkd' (pid 173) exited with status 127
 [    7.053165] init: cannot execv('/system/bin/servicemanager'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.057318] init: Service 'servicemanager' (pid 174) exited with status 127
 [    7.067633] init: cannot execv('/system/bin/hwservicemanager'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
 [    7.289312] init: cannot execv('/system/bin/app_process64'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
 [    7.290801] init: cannot execv('/system/bin/app_process32'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
@@ -174,31 +168,27 @@ Probing EDD (edd=off to disable)... oc[?7l[2J[init] 分发器在位 shadow=Y 
 [    7.343403] init: cannot execv('/system/bin/mediaextractor'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
 [    7.349370] init: cannot execv('/system/bin/storaged'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
 [    7.350833] init: cannot execv('/system/bin/wificond'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
-[    7.351856] init: cannot execv('/system/bin/mediametrics'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
-[    7.352106] init: cannot execv('/system/bin/hw/android.hidl.allocator@1.0-service'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
-[    7.354720] init: cannot execv('/system/bin/hw/android.system.suspend@1.0-service'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
-[    7.355945] init: cannot execv('/system/bin/keystore2'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
-[    7.356723] init: cannot execv('/system/bin/hw/vendor.waydroid.task@1.0-service'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
-[    7.357086] init: cannot execv('/system/bin/mediaserver'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
 
-── ⑧ 摘掉 boringssl 的 reboot_on_failure（exec 形态，PID1=真 init） ──
-   串口字节 455079504..EOF ｜ 保留 151 行 ｜ init 声明并启动过的服务 34 个 ｜ execv 失败 26 个 ｜ init 存活到 44.84 s
-   execv 失败清单: app_process32 app_process64 audioserver boringssl_self_test32 boringssl_self_test64 cameraserver gatekeeperd android.hidl.allocator@1.0-service android.system.suspend@1.0-service vendor.waydroid.task@1.0-service hwservicemanager idmap2d incidentd installd
+── ⑧ +摘 boringssl 的 reboot_on_failure（exec 形态） ──
+   字节 455079504..455342804 ｜ 保留 262 行 ｜ 声明过的服务 34 个 ｜ execv 失败 26 个 ｜ 最后 init 日志时刻 44.84 s ｜ init.claw.rc 被 parse：有
+   execv 失败清单: app_process32 app_process64 audioserver boringssl_self_test32 boringssl_self_test64 cameraserver gatekeeperd android.hidl.allocator@1.0-service android.system.suspend@1.0-service vendor.waydroid.task@1.0-service hwservicemanager idmap2d
 Probing EDD (edd=off to disable)... oc[?7l[2J[init] 分发器在位 shadow=Y initd=Y
 [init] shadow-PID1：exec /system/bin/init second_stage
 [init] build.prop: system=6359B vendor=2700B
 [init] /dev/socket=/dev/socket pts=1
-[    5.732173] init: Setting property 'ro.build.fingerprint' to 'waydroid/lineage_waydroid_x86_64/waydroid_x86_64:13/TQ3A.230901.001/eng.aleast.20260403.132616:userdebug/test-keys'
-[    5.733251] init: Setting property 'ro.product.cpu.abilist' to 'x86_64,x86'
-[    5.733731] init: Setting property 'ro.product.cpu.abilist32' to 'x86'
-[    5.734163] init: Setting property 'ro.product.cpu.abilist64' to 'x86_64'
-[    5.736670] init: Running restorecon...
 [    5.737007] init: Created socket '/dev/socket/property_service', mode 666, user 0, group 0
+[    5.849162] init: starting service 'exec 1 (/system/bin/bootstrap/linkerconfig --target /linkerconfig/bootstrap)'...
+[    5.864386] init: Service 'exec 1 (/system/bin/bootstrap/linkerconfig --target /linkerconfig/bootstrap)' (pid 141) exited with status 0 waiting took 0.012000 seconds
+[    6.100552] init: Service 'apexd-bootstrap' (pid 143) exited with status 0 waiting took 0.017000 seconds
 [    6.329715] init: cannot execv('/system/bin/prng_seeder'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    6.333390] init: Service 'prng_seeder' (pid 153) exited with status 127
 [    6.583106] init: cannot execv('/system/bin/logd'). See the 'Debugging init' section of init's README.md for tips: Permission denied
 [    6.585108] init: cannot execv('/system/bin/servicemanager'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    6.588853] init: Service 'logd' (pid 154) exited with status 127
 [    6.591496] init: cannot execv('/system/bin/lmkd'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
 [    6.605040] init: cannot execv('/system/bin/hwservicemanager'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    6.802033] init: Service 'lmkd' (pid 155) exited with status 127
+[    7.010049] init: Service 'servicemanager' (pid 156) exited with status 127
 [    7.232685] init: cannot execv('/system/bin/audioserver'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
 [    7.233334] init: cannot execv('/system/bin/gatekeeperd'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
 [    7.248104] init: cannot execv('/system/bin/app_process64'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
@@ -212,9 +202,300 @@ Probing EDD (edd=off to disable)... oc[?7l[2J[init] 分发器在位 shadow=Y 
 [    7.271210] init: cannot execv('/system/bin/mediaextractor'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
 [    7.272549] init: cannot execv('/system/bin/wificond'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
 [    7.273772] init: cannot execv('/system/bin/hw/android.hidl.allocator@1.0-service'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
-[    7.274363] init: cannot execv('/system/bin/mediametrics'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
-[    7.334485] init: cannot execv('/system/bin/hw/vendor.waydroid.task@1.0-service'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
-[    7.341777] init: cannot execv('/system/bin/hw/android.system.suspend@1.0-service'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
-[    7.353714] init: cannot execv('/system/bin/keystore2'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
-[   11.560084] init: cannot execv('/system/bin/vdc'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
-[   15.362979] init: cannot execv('/system/bin/hw/android.hidl.allocator@1.0-service'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+
+── ⑨ +linker64 软链→实体（ENOENT 清零，服务启动 34→125） ──
+   字节 455342804..455548768 ｜ 保留 139 行 ｜ 声明过的服务 34 个 ｜ execv 失败 1 个 ｜ 最后 init 日志时刻 44.64 s ｜ init.claw.rc 被 parse：有
+   execv 失败清单: logd
+Probing EDD (edd=off to disable)... oc[?7l[2J[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[init] linker64: 软链→实体 1744616B
+[init] linker: 软链→实体 1798016B
+[    5.820300] init: Created socket '/dev/socket/property_service', mode 666, user 0, group 0
+[    5.919838] init: starting service 'exec 1 (/system/bin/bootstrap/linkerconfig --target /linkerconfig/bootstrap)'...
+[    5.932127] init: Service 'exec 1 (/system/bin/bootstrap/linkerconfig --target /linkerconfig/bootstrap)' (pid 153) exited with status 0 waiting took 0.009000 seconds
+[    6.187757] init: Service 'apexd-bootstrap' (pid 155) exited with status 0 waiting took 0.027000 seconds
+[    6.415945] init: Service 'prng_seeder' (pid 165) exited with status 1
+[    6.668291] init: cannot execv('/system/bin/logd'). See the 'Debugging init' section of init's README.md for tips: Permission denied
+[    6.672314] init: Service 'logd' (pid 166) exited with status 127
+[    6.881957] init: Service 'lmkd' (pid 167) exited with status 1
+[    7.101935] init: Service 'servicemanager' (pid 168) exited with status 1
+[    7.388607] init: Service 'hwservicemanager' (pid 169) exited with status 1
+[   10.750434] init: Service 'apexd' (pid 170) exited with status 0 oneshot service took 3.438000 seconds in background
+[   10.959734] init: Service 'audioserver' (pid 171) exited with status 1
+[   11.173117] init: Service 'gatekeeperd' (pid 172) exited with status 1
+[   11.381739] init: Service 'zygote' (pid 173) exited with status 1
+[   11.590488] init: starting service 'exec 2 (/system/bin/vdc volume abort_fuse)'...
+[   12.220175] init: Service 'zygote_secondary' (pid 174) exited with status 1
+[   12.426780] init: Service 'cameraserver' (pid 175) exited with status 1
+[   12.634948] init: Service 'idmap2d' (pid 176) exited with status 1
+[   12.842222] init: Service 'incidentd' (pid 177) exited with status 1
+[   13.049294] init: Service 'installd' (pid 178) exited with status 1
+[   13.256107] init: Service 'mediaextractor' (pid 179) exited with status 1
+[   13.462978] init: Service 'mediametrics' (pid 180) exited with status 1
+[   13.669979] init: Service 'media' (pid 181) exited with status 1
+[   13.876804] init: Service 'storaged' (pid 182) exited with status 1
+
+── ⑩ --strip-seclabel：摘掉 4 份 rc 的 seclabel ──
+   字节 455548768..463237131 ｜ 保留 72 行 ｜ 声明过的服务 27 个 ｜ execv 失败 1 个 ｜ 最后 init 日志时刻 15.39 s ｜ init.claw.rc 被 parse：有
+   execv 失败清单: logd
+Probing EDD (edd=off to disable)... oc[?7l[2J[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[init] linker64: 软链→实体 1744616B
+[init] linker: 软链→实体 1798016B
+[    6.014876] init: Created socket '/dev/socket/property_service', mode 666, user 0, group 0
+[    6.144516] init: starting service 'exec 1 (/system/bin/bootstrap/linkerconfig --target /linkerconfig/bootstrap)'...
+[    6.159541] init: Service 'exec 1 (/system/bin/bootstrap/linkerconfig --target /linkerconfig/bootstrap)' (pid 152) exited with status 0 waiting took 0.013000 seconds
+[    6.407329] init: Service 'apexd-bootstrap' (pid 154) exited with status 0 waiting took 0.028000 seconds
+[    6.641946] init: Service 'prng_seeder' (pid 164) exited with status 1
+[    6.900975] init: cannot execv('/system/bin/logd'). See the 'Debugging init' section of init's README.md for tips: Permission denied
+[    6.907194] init: Service 'logd' (pid 165) exited with status 127
+[    7.113441] init: Service 'lmkd' (pid 166) exited with status 1
+[    7.322449] init: Service 'servicemanager' (pid 167) exited with status 1
+[    7.656290] init: Service 'hwservicemanager' (pid 168) exited with status 1
+[   10.987472] init: Service 'apexd' (pid 169) exited with status 0 oneshot service took 3.455000 seconds in background
+[   11.197510] init: Service 'audioserver' (pid 170) exited with status 1
+[   11.411530] init: Service 'gatekeeperd' (pid 171) exited with status 1
+[   11.619311] init: Service 'zygote' (pid 172) exited with status 1
+[   11.837902] init: starting service 'exec 2 (/system/bin/vdc volume abort_fuse)'...
+[   12.475157] init: Service 'zygote_secondary' (pid 173) exited with status 1
+[   12.686372] init: Service 'cameraserver' (pid 174) exited with status 1
+[   12.895106] init: Service 'idmap2d' (pid 175) exited with status 1
+[   13.102983] init: Service 'incidentd' (pid 176) exited with status 1
+[   13.311033] init: Service 'installd' (pid 177) exited with status 1
+[   13.518592] init: Service 'mediaextractor' (pid 178) exited with status 1
+[   13.726356] init: Service 'mediametrics' (pid 179) exited with status 1
+[   13.933030] init: Service 'media' (pid 180) exited with status 1
+[   14.140041] init: Service 'storaged' (pid 181) exited with status 1
+
+── ⑪ 给 init.claw.rc 加 write /dev/kmsg 哨兵 ──
+   字节 463237131..463433481 ｜ 保留 144 行 ｜ 声明过的服务 34 个 ｜ execv 失败 1 个 ｜ 最后 init 日志时刻 38.62 s ｜ init.claw.rc 被 parse：有
+   execv 失败清单: logd
+c[?7l[2J[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[init] linker64: 软链→实体 1744616B
+[init] linker: 软链→实体 1798016B
+[    5.447954] init: Created socket '/dev/socket/property_service', mode 666, user 0, group 0
+[    5.552649] init: starting service 'exec 1 (/system/bin/bootstrap/linkerconfig --target /linkerconfig/bootstrap)'...
+[    5.562749] init: Service 'exec 1 (/system/bin/bootstrap/linkerconfig --target /linkerconfig/bootstrap)' (pid 153) exited with status 0 waiting took 0.008000 seconds
+[    5.799392] init: Service 'apexd-bootstrap' (pid 155) exited with status 0 waiting took 0.022000 seconds
+[    6.022578] init: Service 'prng_seeder' (pid 165) exited with status 1
+[    6.271573] init: cannot execv('/system/bin/logd'). See the 'Debugging init' section of init's README.md for tips: Permission denied
+[    6.277978] init: Service 'logd' (pid 166) exited with status 127
+[    6.483258] init: Service 'lmkd' (pid 167) exited with status 1
+[    6.689931] init: Service 'servicemanager' (pid 168) exited with status 1
+[    6.946521] init: Service 'apexd' (pid 169) exited with status 0 oneshot service took 0.048000 seconds in background
+[    7.154061] init: Service 'audioserver' (pid 170) exited with status 1
+[    7.366341] init: Service 'gatekeeperd' (pid 171) exited with status 1
+[    7.573131] init: Service 'zygote' (pid 172) exited with status 1
+[    7.781396] init: starting service 'exec 2 (/system/bin/vdc volume abort_fuse)'...
+[    8.409523] init: Service 'zygote_secondary' (pid 173) exited with status 1
+[    8.616942] init: Service 'cameraserver' (pid 174) exited with status 1
+[    8.823827] init: Service 'idmap2d' (pid 175) exited with status 1
+[    9.031036] init: Service 'incidentd' (pid 176) exited with status 1
+[    9.237806] init: Service 'installd' (pid 177) exited with status 1
+[    9.445162] init: Service 'mediaextractor' (pid 178) exited with status 1
+[    9.652285] init: Service 'mediametrics' (pid 179) exited with status 1
+[    9.859088] init: Service 'media' (pid 180) exited with status 1
+[   10.065996] init: Service 'storaged' (pid 181) exited with status 1
+[   10.272895] init: Service 'wificond' (pid 182) exited with status 1
+
+── ⑫ 改用 exec 哨兵（决定性：我们的 action 一次都没跑） ──
+   字节 463433481..463646468 ｜ 保留 15 行 ｜ 声明过的服务 20 个 ｜ execv 失败 1 个 ｜ 最后 init 日志时刻 7.00 s ｜ init.claw.rc 被 parse：有
+   execv 失败清单: logd
+Probing EDD (edd=off to disable)... oc[?7l[2J[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[init] linker64: 软链→实体 1744616B
+[init] linker: 软链→实体 1798016B
+[    5.531145] init: Created socket '/dev/socket/property_service', mode 666, user 0, group 0
+[    5.624861] init: starting service 'exec 1 (/system/bin/bootstrap/linkerconfig --target /linkerconfig/bootstrap)'...
+[    5.636404] init: Service 'exec 1 (/system/bin/bootstrap/linkerconfig --target /linkerconfig/bootstrap)' (pid 152) exited with status 0 waiting took 0.009000 seconds
+[    5.872634] init: Service 'apexd-bootstrap' (pid 154) exited with status 0 waiting took 0.022000 seconds
+[    6.096993] init: Service 'prng_seeder' (pid 164) exited with status 1
+[    6.348984] init: cannot execv('/system/bin/logd'). See the 'Debugging init' section of init's README.md for tips: Permission denied
+[    6.351931] init: Service 'logd' (pid 165) exited with status 127
+[    6.558014] init: Service 'lmkd' (pid 166) exited with status 1
+[    6.765244] init: Service 'servicemanager' (pid 167) exited with status 1
+
+── ⑨ +linker64 软链→实体（execv ENOENT 清零） ──
+   字节 455342804..455548768 ｜ 保留 141 行 ｜ 起过的服务 34 个 ｜ 最后 init 日志 44.64 s
+Probing EDD (edd=off to disable)... oc[?7l[2J[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[init] linker64: 软链→实体 1744616B
+[init] linker: 软链→实体 1798016B
+[    5.879115] init: processing action (SetupCgroups) from (<Builtin Action>:0)
+[    5.883276] init: processing action (TestPerfEventSelinux) from (<Builtin Action>:0)
+[    5.883842] init: processing action (ConnectEarlyStageSnapuserd) from (<Builtin Action>:0)
+[    5.884475] init: processing action (early-init) from (/system/etc/init/hw/init.rc:15)
+[    5.919838] init: starting service 'exec 1 (/system/bin/bootstrap/linkerconfig --target /linkerconfig/bootstrap)'...
+[    5.932127] init: Service 'exec 1 (/system/bin/bootstrap/linkerconfig --target /linkerconfig/bootstrap)' (pid 153) exited with status 0 waiting took 0.009000 seconds
+[    6.187757] init: Service 'apexd-bootstrap' (pid 155) exited with status 0 waiting took 0.027000 seconds
+[    6.408129] init: processing action (early-init) from (/system/etc/init/prng_seeder.rc:5)
+[    6.412910] init: processing action (wait_for_coldboot_done) from (<Builtin Action>:0)
+[    6.415050] init: processing action (KeychordInit) from (<Builtin Action>:0)
+[    6.415945] init: Service 'prng_seeder' (pid 165) exited with status 1
+[    6.624378] init: processing action (init) from (/system/etc/init/hw/init.rc:89)
+[    6.668291] init: cannot execv('/system/bin/logd'). See the 'Debugging init' section of init's README.md for tips: Permission denied
+[    6.672314] init: Service 'logd' (pid 166) exited with status 127
+[    6.881957] init: Service 'lmkd' (pid 167) exited with status 1
+[    7.101935] init: Service 'servicemanager' (pid 168) exited with status 1
+[    7.388607] init: Service 'hwservicemanager' (pid 169) exited with status 1
+[   10.750434] init: Service 'apexd' (pid 170) exited with status 0 oneshot service took 3.438000 seconds in background
+[   10.959734] init: Service 'audioserver' (pid 171) exited with status 1
+[   11.173117] init: Service 'gatekeeperd' (pid 172) exited with status 1
+
+── ⑩ --strip-seclabel：摘 4 份 rc 的 seclabel ──
+   字节 455548768..463237131 ｜ 保留 79 行 ｜ 起过的服务 27 个 ｜ 最后 init 日志 15.39 s
+Probing EDD (edd=off to disable)... oc[?7l[2J[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[init] linker64: 软链→实体 1744616B
+[init] linker: 软链→实体 1798016B
+[    6.089071] init: processing action (SetupCgroups) from (<Builtin Action>:0)
+[    6.093051] init: processing action (TestPerfEventSelinux) from (<Builtin Action>:0)
+[    6.093901] init: processing action (ConnectEarlyStageSnapuserd) from (<Builtin Action>:0)
+[    6.094728] init: processing action (early-init) from (/system/etc/init/hw/init.rc:15)
+[    6.144516] init: starting service 'exec 1 (/system/bin/bootstrap/linkerconfig --target /linkerconfig/bootstrap)'...
+[    6.159541] init: Service 'exec 1 (/system/bin/bootstrap/linkerconfig --target /linkerconfig/bootstrap)' (pid 152) exited with status 0 waiting took 0.013000 seconds
+[    6.407329] init: Service 'apexd-bootstrap' (pid 154) exited with status 0 waiting took 0.028000 seconds
+[    6.632907] init: processing action (early-init) from (/system/etc/init/prng_seeder.rc:5)
+[    6.639625] init: processing action (wait_for_coldboot_done) from (<Builtin Action>:0)
+[    6.641285] init: processing action (KeychordInit) from (<Builtin Action>:0)
+[    6.641946] init: Service 'prng_seeder' (pid 164) exited with status 1
+[    6.850446] init: processing action (init) from (/system/etc/init/hw/init.rc:89)
+[    6.900975] init: cannot execv('/system/bin/logd'). See the 'Debugging init' section of init's README.md for tips: Permission denied
+[    6.907194] init: Service 'logd' (pid 165) exited with status 127
+[    7.113441] init: Service 'lmkd' (pid 166) exited with status 1
+[    7.322449] init: Service 'servicemanager' (pid 167) exited with status 1
+[    7.656290] init: Service 'hwservicemanager' (pid 168) exited with status 1
+[   10.987472] init: Service 'apexd' (pid 169) exited with status 0 oneshot service took 3.455000 seconds in background
+[   11.197510] init: Service 'audioserver' (pid 170) exited with status 1
+[   11.411530] init: Service 'gatekeeperd' (pid 171) exited with status 1
+
+── ⑪ init.claw.rc 里用 write /dev/kmsg 打哨兵 ──
+   字节 463237131..463433481 ｜ 保留 147 行 ｜ 起过的服务 34 个 ｜ 最后 init 日志 38.62 s
+c[?7l[2J[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[init] linker64: 软链→实体 1744616B
+[init] linker: 软链→实体 1798016B
+[    5.503203] init: processing action (SetupCgroups) from (<Builtin Action>:0)
+[    5.507464] init: processing action (TestPerfEventSelinux) from (<Builtin Action>:0)
+[    5.508056] init: processing action (ConnectEarlyStageSnapuserd) from (<Builtin Action>:0)
+[    5.508968] init: processing action (early-init) from (/system/etc/init/hw/init.rc:15)
+[    5.552649] init: starting service 'exec 1 (/system/bin/bootstrap/linkerconfig --target /linkerconfig/bootstrap)'...
+[    5.562749] init: Service 'exec 1 (/system/bin/bootstrap/linkerconfig --target /linkerconfig/bootstrap)' (pid 153) exited with status 0 waiting took 0.008000 seconds
+[    5.799392] init: Service 'apexd-bootstrap' (pid 155) exited with status 0 waiting took 0.022000 seconds
+[    6.016291] init: processing action (early-init) from (/system/etc/init/prng_seeder.rc:5)
+[    6.020958] init: processing action (wait_for_coldboot_done) from (<Builtin Action>:0)
+[    6.022109] init: processing action (KeychordInit) from (<Builtin Action>:0)
+[    6.022578] init: Service 'prng_seeder' (pid 165) exited with status 1
+[    6.229489] init: processing action (init) from (/system/etc/init/hw/init.rc:89)
+[    6.271573] init: cannot execv('/system/bin/logd'). See the 'Debugging init' section of init's README.md for tips: Permission denied
+[    6.277978] init: Service 'logd' (pid 166) exited with status 127
+[    6.483258] init: Service 'lmkd' (pid 167) exited with status 1
+[    6.689931] init: Service 'servicemanager' (pid 168) exited with status 1
+[    6.946521] init: Service 'apexd' (pid 169) exited with status 0 oneshot service took 0.048000 seconds in background
+[    7.154061] init: Service 'audioserver' (pid 170) exited with status 1
+[    7.366341] init: Service 'gatekeeperd' (pid 171) exited with status 1
+[    7.573131] init: Service 'zygote' (pid 172) exited with status 1
+
+── ⑫ 换 exec 哨兵（决定性：action 一次都没跑） ──
+   字节 463433481..463646468 ｜ 保留 132 行 ｜ 起过的服务 32 个 ｜ 最后 init 日志 39.60 s
+Probing EDD (edd=off to disable)... oc[?7l[2J[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[init] linker64: 软链→实体 1744616B
+[init] linker: 软链→实体 1798016B
+[    5.584578] init: processing action (SetupCgroups) from (<Builtin Action>:0)
+[    5.588725] init: processing action (TestPerfEventSelinux) from (<Builtin Action>:0)
+[    5.589334] init: processing action (ConnectEarlyStageSnapuserd) from (<Builtin Action>:0)
+[    5.589982] init: processing action (early-init) from (/system/etc/init/hw/init.rc:15)
+[    5.624861] init: starting service 'exec 1 (/system/bin/bootstrap/linkerconfig --target /linkerconfig/bootstrap)'...
+[    5.636404] init: Service 'exec 1 (/system/bin/bootstrap/linkerconfig --target /linkerconfig/bootstrap)' (pid 152) exited with status 0 waiting took 0.009000 seconds
+[    5.872634] init: Service 'apexd-bootstrap' (pid 154) exited with status 0 waiting took 0.022000 seconds
+[    6.089059] init: processing action (early-init) from (/system/etc/init/prng_seeder.rc:5)
+[    6.092798] init: processing action (wait_for_coldboot_done) from (<Builtin Action>:0)
+[    6.095633] init: processing action (KeychordInit) from (<Builtin Action>:0)
+[    6.096258] init: processing action (init) from (/system/etc/init/hw/init.rc:89)
+[    6.096993] init: Service 'prng_seeder' (pid 164) exited with status 1
+[    6.348984] init: cannot execv('/system/bin/logd'). See the 'Debugging init' section of init's README.md for tips: Permission denied
+[    6.351931] init: Service 'logd' (pid 165) exited with status 127
+[    6.558014] init: Service 'lmkd' (pid 166) exited with status 1
+[    6.765244] init: Service 'servicemanager' (pid 167) exited with status 1
+[    7.072174] init: Service 'hwservicemanager' (pid 168) exited with status 1
+[   10.389952] init: Service 'apexd' (pid 169) exited with status 0 oneshot service took 3.415000 seconds in background
+[   10.598028] init: Service 'audioserver' (pid 170) exited with status 1
+[   10.819104] init: Service 'gatekeeperd' (pid 171) exited with status 1
+
+── ⑬ 把 claw 段直接追加进 hw/init.rc ──
+   字节 463646468..474225267 ｜ 保留 169 行 ｜ 起过的服务 34 个 ｜ 最后 init 日志 44.30 s
+Probing EDD (edd=off to disable)... oc[?7l[2J[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[init] linker64: 软链→实体 1744616B
+[init] linker: 软链→实体 1798016B
+[    5.481246] init: /system/etc/init/init.claw.rc: 7: ignored duplicate definition of service 'clawboot'
+[    5.482506] init: /system/etc/init/init.claw.rc: 12: ignored duplicate definition of service 'e2probe'
+[    5.512859] init: processing action (SetupCgroups) from (<Builtin Action>:0)
+[    5.516245] init: processing action (TestPerfEventSelinux) from (<Builtin Action>:0)
+[    5.516914] init: processing action (ConnectEarlyStageSnapuserd) from (<Builtin Action>:0)
+[    5.517478] init: processing action (early-init) from (/system/etc/init/hw/init.rc:15)
+[    5.569109] init: starting service 'exec 1 (/system/bin/bootstrap/linkerconfig --target /linkerconfig/bootstrap)'...
+[    5.581394] init: Service 'exec 1 (/system/bin/bootstrap/linkerconfig --target /linkerconfig/bootstrap)' (pid 152) exited with status 0 waiting took 0.010000 seconds
+[    5.819282] init: Service 'apexd-bootstrap' (pid 154) exited with status 0 waiting took 0.022000 seconds
+[    6.037041] init: processing action (early-init) from (/system/etc/init/prng_seeder.rc:5)
+[    6.042469] init: processing action (wait_for_coldboot_done) from (<Builtin Action>:0)
+[    6.043810] init: processing action (KeychordInit) from (<Builtin Action>:0)
+[    6.044457] init: Service 'prng_seeder' (pid 164) exited with status 1
+[    6.253915] init: processing action (init) from (/system/etc/init/hw/init.rc:89)
+[    6.291415] init: cannot execv('/system/bin/logd'). See the 'Debugging init' section of init's README.md for tips: Permission denied
+[    6.295562] init: Service 'logd' (pid 165) exited with status 127
+[    6.505379] init: Service 'lmkd' (pid 166) exited with status 1
+[    6.723741] init: Service 'servicemanager' (pid 167) exited with status 1
+[    7.026591] init: Service 'hwservicemanager' (pid 168) exited with status 1
+[   10.342093] init: Service 'apexd' (pid 169) exited with status 0 oneshot service took 3.407000 seconds in background
+
+── ⑭ --claw-bg：exec 前后台挂编排+探测 ──
+   字节 474225267..474473853 ｜ 保留 168 行 ｜ 起过的服务 34 个 ｜ 最后 init 日志 46.57 s
+c[?7l[2J[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[init] linker64: 软链→实体 1744616B
+[init] linker: 软链→实体 1798016B
+[init] insmod virtio_ring:
+[init] insmod virtio:
+[init] insmod virtio_pci_modern_dev:
+[init] insmod virtio_pci_legacy_dev:
+[init] insmod virtio_pci:
+[init] insmod virtio_blk:
+[init] insmod failover:
+[init] insmod net_failover:
+[init] insmod virtio_net:
+[init] insmod binder_linux: insmod: can't insert '/modules/binder_linux.ko': File exists
+[init] binfmt arm64 已注册
+[    7.395111] [E2] 后台编排已挂（claw + probe），现在 exec 真 init
+[    7.499605] init: /system/etc/init/init.claw.rc: 7: ignored duplicate definition of service 'clawboot'
+[    7.500637] init: /system/etc/init/init.claw.rc: 12: ignored duplicate definition of service 'e2probe'
+[    7.529943] init: processing action (SetupCgroups) from (<Builtin Action>:0)
+[    7.533594] init: processing action (TestPerfEventSelinux) from (<Builtin Action>:0)
+[    7.534364] init: processing action (ConnectEarlyStageSnapuserd) from (<Builtin Action>:0)
+[    7.534934] init: processing action (early-init) from (/system/etc/init/hw/init.rc:15)
+[    7.599822] init: starting service 'exec 1 (/system/bin/bootstrap/linkerconfig --target /linkerconfig/bootstrap)'...
+[    7.611234] init: Service 'exec 1 (/system/bin/bootstrap/linkerconfig --target /linkerconfig/bootstrap)' (pid 266) exited with status 0 waiting took 0.010000 seconds
+
+（⑭ 之后 474473853 起就是 `--off` 回退后的正常开机：/init 直接跑 /init.claw、桥 :18600 监听 ⇒ 回退有效）

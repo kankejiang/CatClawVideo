@@ -122,6 +122,7 @@ if [ -e /shadow-init ]; then
         fi
     done
     [ -f /modules/binder_linux.ko ] && $BB insmod /modules/binder_linux.ko devices=binder,hwbinder,vndbinder 2>&1
+__CLAWBG__
 __E2RUN__
 fi
 exec $BB sh /init.claw
@@ -133,6 +134,14 @@ exec $BB sh /init.claw
 #             用途：exec 形态下 init 在 6.18s **一行错误都没留**就 S5 重启（实测 06:25），
 #             没有退出码就无法定因；child 形态把"静默自杀"变成可判读的信号。
 RUN_EXEC = "    exec /system/bin/init %s"
+# rc 触发器形态实测不成立（07:31）：/system/etc/init/init.claw.rc 里的 service 定义**能注册**
+# （重复定义会被 init 点名），但挂在 on boot / on early-boot / on post-fs-data 上的
+# `exec`/`start` 一次都没执行 ⇒ 换成"PID1 先后台挂编排 + 探测，再 exec 真 init"：
+# exec 只换镜像不换进程表，后台子进程由真 init 收养后继续活。
+CLAW_BG = """    $BB sh /e2probe.sh > /dev/kmsg 2>&1 &
+    $BB sh /init.claw > /dev/ttyS0 2>&1 &
+    $BB sleep 2
+    echo "<3>[E2] 后台编排已挂（claw + probe），现在 exec 真 init" > /dev/kmsg"""
 RUN_CHILD = """    /system/bin/init %s > /tmp/init.err 2>&1 &
     IP=$!
     echo "<3>[E2] init 以子进程启动 pid=$IP（child 诊断形态）" > /dev/kmsg
@@ -148,7 +157,11 @@ RUN_CHILD = """    /system/bin/init %s > /tmp/init.err 2>&1 &
     while true; do $BB sleep 3600; done"""
 
 CLAW_RC = """# E2：把原编排（网络/HAL/artlaunch 桥）作为 init 的服务拉回来。
-# 真 init 第二阶段会自动 import /system/etc/init/*.rc，所以这个文件放进目录就生效。
+# 实测（06:45 / 07:19）：`Parsing file /system/etc/init/init.claw.rc` 有、无解析错，
+# 但 `write /dev/kmsg` 写的哨兵一次都没出现，`starting service 'e2probe'` 也没有
+# ⇒ 分不清"action 没跑"还是"write/start 各自没生效"。改用 init 的 `exec`：
+#   它一定会打 "starting service 'exec N (/bin/busybox sh /e2probe.sh)'"，
+#   并且顺手把一条 [E2] 判据写进 kmsg ⇒ 一条命令同时判"action 跑没跑"和属性区读数。
 service clawboot /bin/busybox sh /init.claw
     class core
     user root
@@ -160,8 +173,20 @@ service e2probe /bin/busybox sh /e2probe.sh
     group root
     disabled
     oneshot
-on post-fs-data
+on property:ro.build.version.sdk=*
+    exec -- /bin/busybox sh /e2probe.sh once
     start e2probe
+on post-fs-data
+    exec -- /bin/busybox sh /e2probe.sh once
+    start e2probe
+    start clawboot
+on early-boot
+    exec -- /bin/busybox sh /e2probe.sh once
+    start e2probe
+    start clawboot
+on boot
+    exec -- /bin/busybox sh /e2probe.sh once
+    start clawboot
 on property:sys.boot_completed=1
     start clawboot
     start e2probe
@@ -222,6 +247,8 @@ def main():
                     help="诊断形态：真 init 作为 PID1 的子进程跑，死了上报退出码（默认 exec 顶替 PID1）")
     ap.add_argument("--strip-seclabel", action="store_true",
                     help="摘掉所有 rc 服务的 seclabel（内核 SELinux 开着但没策略 ⇒ setexeccon 一律 EACCES）")
+    ap.add_argument("--claw-bg", action="store_true",
+                    help="exec 真 init 之前先在后台挂上原编排 + 探测器（rc 触发器实测不生效，用它替代）")
     a = ap.parse_args()
 
     if a.off:
@@ -250,7 +277,8 @@ def main():
         claw = cur["init"]
     run = (RUN_CHILD if a.child else RUN_EXEC) % a.init_args
     with open(os.path.join(gen, "init"), "w", encoding="utf-8", newline="\n") as f:
-        f.write(DISPATCH.replace("__E2RUN__", run).replace("__E2ARGS__", a.init_args))
+        f.write(DISPATCH.replace("__CLAWBG__", CLAW_BG if a.claw_bg else "")
+                          .replace("__E2RUN__", run).replace("__E2ARGS__", a.init_args))
     with open(os.path.join(gen, "init.claw"), "w", encoding="utf-8", newline="\n") as f:
         f.write(claw)
     with open(os.path.join(gen, "init.claw.rc"), "w", encoding="utf-8", newline="\n") as f:
@@ -303,6 +331,14 @@ def main():
             new = "\n".join(l for l in new.splitlines() if l.strip() != BO) + "\n"
         if new == body:
             continue
+        if name == "system/etc/init/hw/init.rc" and "service clawboot" not in new:
+            # 实测⑫（07:24）：单独放一份 /system/etc/init/init.claw.rc，init **会 parse**（无解析错），
+            # 但我们挂的 on boot / on early-boot / on post-fs-data 里的 `exec`/`start`
+            # **一次都没执行**（原厂 rc 的 `starting service 'exec 2 (vdc volume abort_fuse)'` 有，
+            # 我们的 exec 哨兵没有）⇒ "extra rc 把编排 import 回去"这条路在 Android 13 上不成立。
+            # ⇒ 直接追加进 init 第二阶段的主 rc 本体（本就要为 boringssl 改写它，改动面不变大）。
+            new = (new.rstrip("\n") +
+                   "\n\n# === E2：claw 编排回挂（实测只有追加进主 rc 才生效）===\n" + CLAW_RC)
         p = os.path.join(gen, "rc_" + name.replace("/", "_"))
         with open(p, "w", encoding="utf-8", newline="\n") as f:
             f.write(new)
