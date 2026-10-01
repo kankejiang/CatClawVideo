@@ -1313,9 +1313,22 @@ public class Server {
                 pb.environment().put("WAYLAND_DISPLAY", "wayland-0");
                 pb.environment().put("XDG_RUNTIME_DIR", "/run/user/0");
                 pb.redirectErrorStream(true);
-                Process p = pb.start();
-                System.err.println("[sf] 已拉起 surfaceflinger pid=" + p.hashCode());
-                pump(p.getInputStream(), "[sf] ");
+                // 等 HAL 服务注册完成的哨兵（init 在服务块末尾写）——实测 SF 与 HAL 注册存在竞争：
+                // 抢跑时会撞上间歇性的 "gralloc-mapper is missing" / libEGL 找不到实现。
+                for (int w = 0; w < 120 && !new java.io.File("/tmp/hal_ready").exists(); w++) {
+                    Thread.sleep(500);
+                }
+                // 再重试最多 3 次：即使某个组件仍慢一拍，重试也能吃掉（SF 崩在启动早期，重启成本低）
+                for (int attempt = 1; attempt <= 3; attempt++) {
+                    Process p = pb.start();
+                    System.err.println("[sf] 已拉起 surfaceflinger（第 " + attempt + " 次）pid=" + p.hashCode());
+                    Thread.sleep(6000);
+                    if (p.isAlive()) {
+                        pump(p.getInputStream(), "[sf] ");
+                        break;
+                    }
+                    System.err.println("[sf] 第 " + attempt + " 次启动后已退出（进程不在），准备重试");
+                }
             } catch (Throwable e) {
                 System.err.println("[sf] 启动失败: " + e);
             }
