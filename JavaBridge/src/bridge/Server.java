@@ -1271,7 +1271,17 @@ public class Server {
                     new java.io.File("/tmp/wrt").mkdirs();
                 } catch (Throwable ignored) { }
                 ProcessBuilder pb = new ProcessBuilder("/system/bin/surfaceflinger");
-                pb.environment().put("LD_PRELOAD", "/proppreload.so");
+                // libpropfix 必须排在 /proppreload.so **前面**：它只回答环境变量里声明的那几个
+                // "跨进程约定"属性，其余用 dlsym(RTLD_NEXT) 转发给 proppreload（每进程一份的编译期表）。
+                // 没有它，SF 的 HIDL 客户端会死等 hwservicemanager.ready（实测）——
+                // 因为桥里 set 的属性，别的进程根本看不到。
+                pb.environment().put("LD_PRELOAD", "/system/lib64/libpropfix.so:/proppreload.so");
+                pb.environment().put("PROPFIX",
+                        "hwservicemanager.ready=true"
+                        + ";ro.hardware.hwcomposer=waydroid"
+                        + ";ro.hardware.gralloc=minigbm_gbm_mesa"
+                        + ";gralloc.gbm.device=/dev/dri/renderD128"
+                        + ";debug.renderengine.backend=skiacpu");
                 pb.environment().put("LD_LIBRARY_PATH", "/system/lib64");
                 pb.environment().put("WAYLAND_DISPLAY", "wl-0");
                 pb.environment().put("XDG_RUNTIME_DIR", "/tmp/wrt");
