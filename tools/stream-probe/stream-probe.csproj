@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    T2 投屏客户端（Windows / 宿主侧）——独立控制台工具，**不进 .sln**（避免与其它会话冲突）。
+    协议 CATCLAW/1 定义见 docs/tasks/README.md 第二节；本工具只做客户端 + 自测用模拟服务端。
+    显示用 WinForms（TFM net11.0-windows 自带，顺带可用 System.Drawing 生成合成 JPEG）。
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>StreamProbe</RootNamespace>
+    <AssemblyName>stream-probe</AssemblyName>
+    <!-- 让控制台输出与窗口共存：dotnet run 下 Console.WriteLine 直接可见 -->
+    <ApplicationManifest Condition="false">app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+</Project>
