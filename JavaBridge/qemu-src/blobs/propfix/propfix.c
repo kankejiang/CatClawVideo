@@ -268,6 +268,10 @@ const char *eglQueryString(EGLDisplay dpy, EGLint name) {
 
 #endif  // ← 反向验证结束（eglGetDisplay/eglInitialize/eglQueryString 三条拦截已关）
 
+// 说明：曾想拦截 dlsym 来看 loader 向驱动要了哪些符号，但 bionic 下拿"下一个 dlsym 实现"很容易
+// 自递归（实测写法风险高），已放弃；改走"建真属性区 + 打开 bionic linker 自己的调试开关
+// debug.ld.all"，让 linker 直接说出驱动加载被拒的原因。
+
 EGLBoolean eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list, EGLConfig *configs,
                            EGLint config_size, EGLint *num_config) {
     static EGLBoolean (*real)(EGLDisplay, const EGLint *, EGLConfig *, EGLint, EGLint *) = NULL;

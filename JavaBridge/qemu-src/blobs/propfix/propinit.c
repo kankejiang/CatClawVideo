@@ -38,6 +38,22 @@ static void *resolve_private(const char *name) {
 typedef struct { const char *k; const char *v; } KV;
 
 int main(void) {
+    // ⚠ 实测：guest 里**已经存在** /dev/__properties__（adb 侧是 Permission denied 而非"不存在"），
+    // 而 __system_property_area_init 对已存在的区域返回 -1、之后 add 全部 rc=-1。
+    // 这里先把它挪走（我们是 init 阶段的 root），再建一份干净的。
+    // 代价：那份里的属性会丢 —— 但它们本来就是 proppreload 假表的产物，没有真值可丢。
+    {
+        char buf[256];
+        int n = readlink("/dev/__properties__", buf, sizeof(buf) - 1);
+        if (n >= 0) {
+            buf[n] = 0;
+            fprintf(stderr, "[propinit] 旧属性区是符号链接 → %s\n", buf);
+        } else {
+            fprintf(stderr, "[propinit] 旧属性区已存在（非链接），先移除\n");
+        }
+        if (remove("/dev/__properties__") != 0)
+            remove("/dev/__properties__/properties_serial");   // 目录形态兜底
+    }
     mkdir("/dev/__properties__", 0755);
     area_init_fn p_area_init = (area_init_fn)resolve_private("__system_property_area_init");
     add_fn p_add = (add_fn)resolve_private("__system_property_add");
@@ -67,6 +83,9 @@ int main(void) {
         { "service.adb.tcp.port", "5555" },
         { "ro.adb.secure", "0" },
         { "persist.adb.tls_server.enable", "0" },
+        // bionic linker 自己的调试开关（只有在**真属性区**里才生效）：打开后 linker 会
+        // 直接打印每次 dlopen/dlsym 的结果与失败原因 —— 正是定位"EGL 驱动为何不被接管"要的。
+        { "debug.ld.all", "dlopen,dlsym,dlerror" },
         // 一些服务启动时会读的基础值
         { "ro.build.version.sdk", "33" },
         { "ro.build.version.release", "13" },
