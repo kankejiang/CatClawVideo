@@ -789,6 +789,46 @@ int open64(const char *path, int flags, ...) {
     return fd;
 }
 
+
+// ── 探针：gbm / drm 打开与分配 ──
+void *gbm_create_device(int fd) {
+    static void *(*real)(int) = NULL;
+    if (!real) real = (void *(*)(int))dlsym(RTLD_NEXT, "gbm_create_device");
+    void *r = real ? real(fd) : NULL;
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] gbm_create_device(fd=%d) -> %p\n", fd, r);
+    return r;
+}
+
+void *gbm_bo_create(void *gbm, uint32_t width, uint32_t height, uint32_t format, uint32_t flags) {
+    static void *(*real)(void *, uint32_t, uint32_t, uint32_t, uint32_t) = NULL;
+    if (!real) real = (void *(*)(void *, uint32_t, uint32_t, uint32_t, uint32_t))dlsym(RTLD_NEXT, "gbm_bo_create");
+    void *r = real ? real(gbm, width, height, format, flags) : NULL;
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] gbm_bo_create(gbm=%p w=%u h=%u fmt=0x%x flags=0x%x) -> %p\n",
+                gbm, width, height, format, flags, r);
+    return r;
+}
+
+int drmOpen(const char *name, const char *busid) {
+    static int (*real)(const char *, const char *) = NULL;
+    if (!real) real = (int (*)(const char *, const char *))dlsym(RTLD_NEXT, "drmOpen");
+    int fd = real ? real(name, busid) : -1;
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] drmOpen(%s, %s) -> fd=%d\n", name ? name : "?", busid ? busid : "?", fd);
+    return fd;
+}
+
+int drmOpenWithType(const char *name, const char *busid, int type) {
+    static int (*real)(const char *, const char *, int) = NULL;
+    if (!real) real = (int (*)(const char *, const char *, int))dlsym(RTLD_NEXT, "drmOpenWithType");
+    int fd = real ? real(name, busid, type) : -1;
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] drmOpenWithType(%s, %s, %d) -> fd=%d\n",
+                name ? name : "?", busid ? busid : "?", type, fd);
+    return fd;
+}
+
 static void parse_once(void) {
     if (g_n >= 0) return;
     g_n = 0;
@@ -956,15 +996,6 @@ typedef void *EGLConfig;
 // ── 诊断：EGL 平台初始化 / GBM ──
 // 实测：libEGL_mesa.so 能加载，但**从未尝试加载 dri 驱动**，且 eglChooseConfig 一个配置都不给
 // ⇒ 卡在 EGL 平台初始化（GBM 打开 DRM 设备）这一步。这里把关键入口的结果打出来。
-void *gbm_create_device(int fd) {
-    static void *(*real)(int) = NULL;
-    if (!real) real = (void *(*)(int))dlsym(RTLD_NEXT, "gbm_create_device");
-    void *d = real ? real(fd) : NULL;
-    if (getenv("PROPFIX_DEBUG"))
-        fprintf(stderr, "[propfix] gbm_create_device(fd=%d) -> %p %s\n", fd, d,
-                d ? "" : "(失败)");
-    return d;
-}
 
 #if 0  // ⚠ 反向验证（2026-10-01）：这几条 EGL 拦截有副作用 —— 若 libEGL.so loader 内部也经过公共
        // 符号，我们绕这一层就可能破坏它的"驱动接管"，导致它回落成 META-EGL 空壳（实测症状：
