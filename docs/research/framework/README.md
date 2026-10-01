@@ -21,7 +21,9 @@
    且参照系在 `ro.apex.updatable` 未设时也只是 overlay 挂载。
 2. **"属性区失败是因为缺 SELinux 策略"降级为待验证** —— 参照系 `getenforce=Disabled` 却跑着完整 framework，
    我们运行时也已 `Disabled`；属性区的真身是 init 建的 268 个文件（context 名来自我们镜像里已有的
-   `plat_property_contexts`）。⇒ 用 E1 定因，别再拿它当"必须先补 SELinux"的依据。
+   `plat_property_contexts`）。而且我们自己写的 `blobs/propfix/propinit.c:41` 早就记着另一条线索
+   （"区域已存在 ⇒ `area_init` 返回 -1"），与 B1 文档第 16 条"移除后仍 -1"没对上。
+   ⇒ 用 E1 定因（`propinit` 已在镜像里，不用注入），别再拿"缺 SELinux"当 A/B 的成本依据。
 3. **"要移植 init"这个前提不成立** —— init 与整套 rc 已在镜像里，缺的是让它当 PID1（可回退的切换是 T1 的 R1）。
 4. **"继续手写 android 桩"有数字上限** —— TVBox APK 引用 framework 包类 802 个，我们桩覆盖 103，
    缺 699，且 `Service`/`Choreographer`/`ActivityManager` 等 9 个硬骨头无桩 ⇒ 覆盖不了"宿主只做显示"。
