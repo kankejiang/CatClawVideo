@@ -229,6 +229,10 @@ void *gbm_create_device(int fd) {
     return d;
 }
 
+#if 0  // ⚠ 反向验证（2026-10-01）：这几条 EGL 拦截有副作用 —— 若 libEGL.so loader 内部也经过公共
+       // 符号，我们绕这一层就可能破坏它的"驱动接管"，导致它回落成 META-EGL 空壳（实测症状：
+       // eglQueryString(EGL_VERSION) == "1.4 Android META-EGL"，eglChooseConfig 拿不到任何配置）。
+       // 先关掉验证。gbm_create_device 的日志保留（它只读不写，无副作用）。
 void *eglGetDisplay(void *native_display) {
     static void *(*real)(void *) = NULL;
     if (!real) real = (void *(*)(void *))dlsym(RTLD_NEXT, "eglGetDisplay");
@@ -261,6 +265,8 @@ const char *eglQueryString(EGLDisplay dpy, EGLint name) {
                 s ? s : "(null)");
     return s;
 }
+
+#endif  // ← 反向验证结束（eglGetDisplay/eglInitialize/eglQueryString 三条拦截已关）
 
 EGLBoolean eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list, EGLConfig *configs,
                            EGLint config_size, EGLint *num_config) {
