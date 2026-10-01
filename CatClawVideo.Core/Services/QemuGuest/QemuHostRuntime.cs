@@ -39,6 +39,10 @@ public sealed class QemuHostRuntime : IDisposable
     /// <summary>Guard 解密服务端口（0 = 未启用；guest 监听 + 宿主 hostfwd 同号）。</summary>
     public int GuardPort { get; }
 
+    /// <summary>B1.0：adb 隧道端口（0 = 未开）。guest 里 adbd 由桥（Java）拉起并监听 5555，
+    /// 宿主用 <c>adb connect 127.0.0.1:&lt;该端口&gt;</c> 直连进去排障。</summary>
+    public int AdbPort { get; }
+
     /// <summary>迅雷引擎控制口（合并 guest 模式，0 = 不起 harness；经 cmdline <c>thunderport=</c> 下发）。
     /// ART initrd 的 /init 迅雷段据此拉起 harness（回连宿主 10.0.2.2:该端口）。
     /// 详见 docs 交接 §6.9「迅雷引擎与 ART guest 合并」。</summary>
@@ -164,7 +168,7 @@ public sealed class QemuHostRuntime : IDisposable
         string? blockImagePath = null, long blockImageBytes = 0,
         string? swapImagePath = null, long swapImageBytes = 0,
         int ctrlPort = 0, int guardPort = 0, string? magnetOverride = null,
-        int thunderPort = 0)
+        int thunderPort = 0, int adbPort = 0)
     {
         RuntimeDir = runtimeDir;
         MediaPort = mediaPort;
@@ -173,6 +177,7 @@ public sealed class QemuHostRuntime : IDisposable
         CtrlPort = ctrlPort;
         GuardPort = guardPort;
         ThunderPort = thunderPort;
+        AdbPort = adbPort;
         MagnetOverride = magnetOverride;
         _log = log;
         // Debug/Release 隔离（见 AppPaths）
@@ -296,6 +301,13 @@ public sealed class QemuHostRuntime : IDisposable
             if (GuardPort > 0) netdev += $",hostfwd=tcp:127.0.0.1:{GuardPort}-:{GuardPort}";
             // 爬虫自带 /proxy 服务的隧道（ART guest）
             if (ProxyTunnel is { } pt) netdev += $",hostfwd=tcp:127.0.0.1:{pt.Host}-:{pt.Guest}";
+            // ── B1.0：guest 里的 adbd（5555）── guest 内由桥（Java）拉起（见 Server.startAdbd），
+            // 这里只做端口映射，宿主即可 `adb connect 127.0.0.1:<AdbPort>` 进去排障。
+            if (AdbPort > 0)
+            {
+                netdev += $",hostfwd=tcp:127.0.0.1:{AdbPort}-:5555";
+                _log?.Invoke($"[qemu] adb 隧道已开：adb connect 127.0.0.1:{AdbPort}（guest 内 adbd 由桥拉起）");
+            }
             var args = new List<string>
             {
                 // -m 5120：guest RAM 需容得下 /thunder-data 的 tmpfs（3500m，见 initrd 的 /init）+ 引擎开销；
@@ -330,6 +342,16 @@ public sealed class QemuHostRuntime : IDisposable
                 "-netdev", netdev,
                 "-device", NetDevice,
             };
+            // ── 诊断开关（默认关）：把 guest 的 slirp 流量 dump 成 pcap ──
+            // 2026-10-01 夸克扫码排障：壳扫码后既不落盘、也不读任何存储，剩下的未知只有
+            // 「它到底跟 uop.quark.cn 交换了什么」。TLS 看不到明文，但 SNI / 包长 / 时序
+            // 足以区分「压根没发请求」与「发了但失败」。设 CATCLAW_ART_PCAP=<文件路径> 打开。
+            var pcapPath = Environment.GetEnvironmentVariable("CATCLAW_ART_PCAP");
+            if (!string.IsNullOrWhiteSpace(pcapPath))
+            {
+                args.AddRange(["-object", $"filter-dump,id=dump0,netdev=n0,file={pcapPath}"]);
+                _log?.Invoke($"[qemu] 网络抓包已开启 → {pcapPath}");
+            }
             if (Arch == GuestArch.X86_64)
                 args.AddRange(["-accel", "tcg,tb-size=256,split-wx=off"]);   // WHPX 不可用时的兜底加速后端
 

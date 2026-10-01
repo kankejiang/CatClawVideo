@@ -63,6 +63,10 @@ public sealed class QemuArtGuest : IDisposable
     /// <summary>宿主→guest /proxy 隧道的宿主端口（0 = 没开成）。见 <see cref="QemuHostRuntime.ProxyTunnel"/>。</summary>
     public int ProxyTunnelPort { get; private set; }
 
+    /// <summary>B1.0：宿主侧 adb 隧道端口（0 = 未开）。guest 内 adbd 由桥拉起并监听 5555，
+    /// 宿主用 <c>adb connect 127.0.0.1:&lt;该端口&gt;</c> 直连进去排障。</summary>
+    public int AdbTunnelPort { get; private set; }
+
     /// <summary>把爬虫写的 guest 地址换成宿主隧道地址；没开隧道时原样返回。</summary>
     public string? ProxyBase => ProxyTunnelPort > 0 ? $"http://127.0.0.1:{ProxyTunnelPort}" : null;
 
@@ -224,9 +228,15 @@ public sealed class QemuArtGuest : IDisposable
             var media = PickFreePort(bridge + 1);       // QemuHostRuntime 总要一条 -:20080 的 hostfwd，别撞号
             // 爬虫的播放地址写的是它自己那个 /proxy（guest 里的 9978），给它开一条宿主隧道。
             var tunnel = PickFreePort(media + 1);
+            // B1.0（2026-10-01）：guest 里 adbd（5555）的宿主隧道 —— 排障用 `adb connect 127.0.0.1:<port>`。
+            // adbd 由 guest 内的桥（Java）拉起（见 Server.startAdbd），这里只做端口映射；
+            // 想关掉就设环境变量 CATCLAW_ART_ADB=0。
+            var adbPort = Environment.GetEnvironmentVariable("CATCLAW_ART_ADB") == "0"
+                ? 0 : PickFreePort(tunnel + 1);
             if (bridge == 0 || media == 0) { Log("找不到可用端口"); return false; }
             BridgePort = bridge;
             ProxyTunnelPort = tunnel;
+            AdbTunnelPort = adbPort;
             _dns ??= new ArtDnsServer(_log);      // guest 里所有 Java 域名解析都问到这（见 ArtDnsServer 注释）
             // 合并模式：数据面/交换区镜像（与 QemuThunderEngine 同目录约定，文件名带 -art 区分）
             string? blkPath = null, swapPath = null;
@@ -248,7 +258,7 @@ public sealed class QemuArtGuest : IDisposable
                     monitorPort: 0, ctrlPort: _dns.Port, guardPort: bridge, magnetOverride: "none",
                     blockImagePath: blkPath, blockImageBytes: blkPath is null ? 0 : BlockDeviceCapacityBytes,
                     swapImagePath: swapPath, swapImageBytes: swapPath is null ? 0 : SwapDeviceCapacityBytes,
-                    thunderPort: ThunderMerged ? ThunderPort : 0)
+                    thunderPort: ThunderMerged ? ThunderPort : 0, adbPort: adbPort)
             {
                 Arch = GuestArch,
                 QemuExeName = qemuExe,

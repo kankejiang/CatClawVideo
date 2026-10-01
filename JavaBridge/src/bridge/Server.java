@@ -133,6 +133,7 @@ public class Server {
             System.setProperty("data.dir", new File("data").getAbsolutePath());
         startParentWatchdog();
         startDataWatcher();
+        startAdbd();
         BufferedReader in = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
         // ⚠ proxy op 必须与 call 并行：call(detailContent) 在主循环同步执行期间，spider 内部
         //   会同步发 HTTP 请求（do=config）→ 宿主 → proxy op。若在主循环排队，call 不返回
@@ -1188,10 +1189,85 @@ public class Server {
      */
     private static volatile boolean DATA_WATCH_STARTED = false;
 
+    /**
+     * B1.0（2026-10-01）：把 <b>adbd</b> 拉起来，让宿主能 {@code adb connect} 进 guest 直接排障
+     * （看目录 / 推拉文件 / logcat / screencap），不必再"加桩 → 重建镜像"。
+     *
+     * <p><b>为什么由桥（Java）而不是 /init 拉起</b>：我们 guest 没有真正的 init property_service，
+     * 属性是 {@code /proppreload.so}（LD_PRELOAD）假装的；artlaunch 带着它启动，**子进程继承该环境**。
+     * 于是 adbd 通过 proppreload 导出的 {@code Java_android_os_SystemProperties_native_1*} JNI 符号
+     * 读到我们这里 set 的属性。shell 里没有 setprop，所以走 Java 这条路。</p>
+     *
+     * <p><b>为什么必须是 x86-64 动态链接那份 adbd</b>：镜像根 {@code /bin/adbd} 是 ARM aarch64
+     * <b>静态</b>版 —— 静态链接会让 LD_PRELOAD 失效、属性读不到；正确来源是
+     * {@code system/apex/com.android.adbd/bin/adbd}（x86-64 PIE）。</p>
+     *
+     * <p>可用 {@code -Dbridge.adbd=0} 关闭。</p>
+     */
+    private static void startAdbd() {
+        if ("0".equals(System.getProperty("bridge.adbd"))) return;
+        Thread t = new Thread(() -> {
+            try {
+                try { new java.io.File("/data/misc/adb").mkdirs(); } catch (Throwable ignored) { }
+                setProp("service.adb.tcp.port", "5555");
+                setProp("ro.adb.secure", "0");
+                java.io.File bin = new java.io.File("/system/bin/adbd");
+                if (!bin.isFile()) {
+                    System.err.println("[adbd] 缺 " + bin + "（镜像里没注入？见 .zwork/rebuild_gb.cmd）");
+                    return;
+                }
+                Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/adbd"});
+                System.err.println("[adbd] 已拉起（宿主 adb connect 127.0.0.1:<hostfwd→5555>）");
+                pump(p.getInputStream(), "[adbd] ");
+                pump(p.getErrorStream(), "[adbd!] ");
+            } catch (Throwable e) {
+                System.err.println("[adbd] 启动失败: " + e);
+            }
+        }, "adbd-launch");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /** 反射设属性：src/ 是"桩环境"（编译期无 android.jar），而真类就在 BCP 上。 */
+    private static void setProp(String k, String v) {
+        try {
+            Class<?> sp = Class.forName("android.os.SystemProperties");
+            sp.getMethod("set", String.class, String.class).invoke(null, k, v);
+            System.err.println("[adbd] prop " + k + "=" + v);
+        } catch (Throwable e) {
+            System.err.println("[adbd] prop " + k + " 设置失败: " + e);
+        }
+    }
+
+    /** 把子进程输出转发到控制台（排障用；每个流一个守护线程）。 */
+    private static void pump(java.io.InputStream in, String prefix) {
+        Thread t = new Thread(() -> {
+            try (java.io.BufferedReader r = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(in, java.nio.charset.StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) {
+                    // adbd 的 wifi 传输分支每 ~200ms 刷一行 "Waiting for persist.adb.tls_server.enable=1"
+                    // （我们用的是 5555 上的 TCP 传输，这行纯噪音，会把控制台日志淹掉）→ 过滤。
+                    if (line.contains("adb_wifi.cpp")) continue;
+                    System.err.println(prefix + line);
+                }
+            } catch (Throwable ignored) { }
+        }, "pump");
+        t.setDaemon(true);
+        t.start();
+    }
+
     private static void startDataWatcher() {
         if (DATA_WATCH_STARTED) return;
         DATA_WATCH_STARTED = true;
         Thread t = new Thread(() -> {
+            // 启动即打印 /data 真实目录树（深度 2）：一次就能判明壳用的是我们的桩路径
+            // （/data/catclaw）还是真框架路径（/data/user/0/<pkg>、/data/data/<pkg>）。
+            try {
+                StringBuilder tree = new StringBuilder("[datatree] /data 深度2:" + (char) 10);
+                walkData(new java.io.File("/data"), 2, tree, "  ");
+                System.err.println(tree);
+            } catch (Throwable ignored) { }
             String last = null;
             while (true) {
                 try { Thread.sleep(20000); } catch (InterruptedException e) { return; }
@@ -1201,7 +1277,10 @@ public class Server {
                     // 2026-10-01：壳可能绕过我们的 Context 桩、用真框架的 ContextImpl / 真 SharedPreferences
                     // 把登录态写到 /data/data/... 去（那条路既不在同步范围、也不在原先的观察范围）。
                     String[] roots = { System.getProperty("data.dir", "/data/catclaw"), "/data/fishso", "/data/cache",
-                            "/data/data", "/data/misc", "/data/system", "/data/local/tmp" };
+                            // 真框架的 ContextImpl 走 /data/user/0/<pkg> 与 /data/data/<pkg> —— 原先没观察，
+                            // 而「灌了真机 cookie 仍显示未登录」强烈提示壳的网盘 prefs 落在那边。
+                            "/data/data", "/data/user", "/data/user_de", "/data/misc", "/data/system",
+                            "/data/local", "/data/local/tmp" };
                     StringBuilder sb = new StringBuilder();
                     for (String r : roots) {
                         java.io.File root = new java.io.File(r);
