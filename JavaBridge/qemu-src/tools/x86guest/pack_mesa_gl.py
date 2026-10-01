@@ -19,15 +19,15 @@ if not os.path.ismount(VEN):
     raise SystemExit("!! vendor 未挂载")
 
 FILES = [
-    ("lib64/egl/libEGL_mesa.so",       "system/lib64/egl/libEGL_mesa.so"),
-    ("lib64/egl/libGLESv2_mesa.so",    "system/lib64/egl/libGLESv2_mesa.so"),
-    ("lib64/egl/libGLESv1_CM_mesa.so", "system/lib64/egl/libGLESv1_CM_mesa.so"),
+    # 已删：mesa 的 GL（实测 loader 拒绝接管、直接调也 init=0；改走 ANGLE）
+    # 已删：mesa 的 GL（实测 loader 拒绝接管、直接调也 init=0；改走 ANGLE）
+    # 已删：mesa 的 GL（实测 loader 拒绝接管、直接调也 init=0；改走 ANGLE）
     # ⚠ 用**打过补丁**的副本：原始 libgallium_dri.so 硬依赖 libLLVM22.so（未压缩 105MB），
     # dlopen libEGL_mesa 会直接失败（实测："library libLLVM22.so not found"）。
     # llvmpipe 需要 LLVM，但同一 mega-driver 里的 swrast(softpipe) 不需要 ⇒
     # patchelf --remove-needed libLLVM22.so，运行时用 GALLIUM_DRIVER=swrast。
     # 补丁脚本见 .zwork/b11_nollvm.sh；产物 /root/b1_blobs/libgallium_nollvm.so。
-    ("/root/b1_blobs/libgallium_nollvm.so", "system/lib64/libgallium_dri.so"),
+    # 已删：mesa 的 GL（实测 loader 拒绝接管、直接调也 init=0；改走 ANGLE）
     ("lib64/libgbm_mesa.so",           "system/lib64/libgbm_mesa.so"),
     ("lib64/libgbm_mesa_wrapper.so",   "system/lib64/libgbm_mesa_wrapper.so"),
     ("lib64/dri_gbm.so",               "system/lib64/dri_gbm.so"),
@@ -38,6 +38,17 @@ FILES = [
     ("lib64/libdrm_amdgpu.so",  "system/lib64/libdrm_amdgpu.so"),
     ("lib64/libdrm_radeon.so",  "system/lib64/libdrm_radeon.so"),
     ("lib64/libdrm.so",         "system/lib64/libdrm.so"),
+    # ── ANGLE + 软件 Vulkan（lavapipe）──
+    # mesa 那条路在本 guest 上走不通（loader 加载了却不接管；直接调 mesa 的 EGL 也 init=0）。
+    # 改走 ANGLE→Vulkan→lavapipe 的全软件组合（Android 上 ANGLE 默认就是 Vulkan 后端）。
+    ("lib64/egl/libEGL_angle.so",       "system/lib64/egl/libEGL_angle.so"),
+    ("lib64/egl/libGLESv2_angle.so",    "system/lib64/egl/libGLESv2_angle.so"),
+    ("lib64/egl/libGLESv1_CM_angle.so", "system/lib64/egl/libGLESv1_CM_angle.so"),
+    ("lib64/hw/vulkan.lvp.so",          "system/lib64/hw/vulkan.lvp.so"),
+    ("lib64/hw/vulkan.lvp.so",          "system/lib64/vulkan.lvp.so"),
+    ("lib64/hw/vulkan.virtio.so",       "system/lib64/hw/vulkan.virtio.so"),
+    ("lib64/hw/vulkan.virtio.so",       "system/lib64/vulkan.virtio.so"),
+    ("/mnt/b11sys/system/lib64/libvulkan.so", "system/lib64/libvulkan.so"),
 ]
 
 shutil.rmtree(STAGE, ignore_errors=True)

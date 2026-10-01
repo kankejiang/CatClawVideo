@@ -1283,7 +1283,8 @@ public class Server {
                         "hwservicemanager.ready=true"
                         + ";ro.hardware.hwcomposer=waydroid"
                         + ";ro.hardware.gralloc=minigbm_gbm_mesa"
-                        + ";ro.hardware.egl=mesa"
+                        + ";ro.hardware.egl=angle"
+                        + ";ro.hardware.vulkan=lvp"
                         + ";gralloc.gbm.device=/dev/dri/renderD128"
                         + ";debug.renderengine.backend=skiagl"
                         // softpipe 只提供标准 EGL 配置；不关掉这两个，SF 会去找广色域/HDR 配置并报

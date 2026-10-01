@@ -28,6 +28,52 @@
 #define MAXK 32
 #define VLEN 96
 
+// EGL 基本类型放在最前面：下面的拦截块可能被 #if 0 关掉，类型定义不能跟着被关
+// （实测踩过一次坑：typedef 落在 #if 0 区里 ⇒ eglChooseConfig 报 unknown type name 'EGLBoolean'）。
+typedef int32_t EGLint;
+typedef uint32_t EGLBoolean;
+typedef void *EGLDisplay;
+typedef void *EGLConfig;
+
+// EGL 属性名（诊断打印用）。同样必须在 #if 0 区之外定义 —— 关掉拦截块时仍要能编译。
+static const char *egl_attr_name(EGLint a) {
+    switch (a) {
+        case 0x3021: return "ALPHA_SIZE";
+        case 0x3022: return "BLUE_SIZE";
+        case 0x3023: return "GREEN_SIZE";
+        case 0x3024: return "RED_SIZE";
+        case 0x3025: return "DEPTH_SIZE";
+        case 0x3026: return "STENCIL_SIZE";
+        case 0x3027: return "CONFIG_CAVEAT";
+        case 0x3028: return "CONFIG_ID";
+        case 0x3029: return "LEVEL";
+        case 0x302A: return "MAX_PBUFFER_HEIGHT";
+        case 0x302B: return "MAX_PBUFFER_WIDTH";
+        case 0x302C: return "NATIVE_RENDERABLE";
+        case 0x302D: return "NATIVE_VISUAL_ID";
+        case 0x302E: return "NATIVE_VISUAL_TYPE";
+        case 0x302F: return "PRESERVED_RESOURCES";
+        case 0x3030: return "SAMPLES";
+        case 0x3031: return "SAMPLE_BUFFERS";
+        case 0x3032: return "SURFACE_TYPE";
+        case 0x3033: return "TRANSPARENT_TYPE";
+        case 0x3038: return "NONE";
+        case 0x3040: return "RENDERABLE_TYPE";
+        case 0x3142: return "RECORDABLE_ANDROID";
+        case 0x3080: return "ALPHA_MASK_SIZE";
+        case 0x3081: return "BIND_TO_TEXTURE_RGB";
+        case 0x3082: return "BIND_TO_TEXTURE_RGBA";
+        case 0x3083: return "BUFFER_SIZE";
+        case 0x3084: return "COLOR_BUFFER_TYPE";
+        case 0x3085: return "CONFORMANT";
+        case 0x3086: return "LUMINANCE_SIZE";
+        case 0x3200: return "COLORSPACE(android)";
+        case 0x3201: return "FRAMEBUFFER_TARGET_ANDROID";
+        case 0x3202: return "SWAP_BEHAVIOR_PRESERVED(android)";
+        default:     return "?";
+    }
+}
+
 static char g_keys[MAXK][128];
 static char g_vals[MAXK][VLEN];
 static int g_n = -1;                 // -1 = 还没解析
@@ -140,6 +186,9 @@ uint32_t __system_property_serial(const void *pi) {
 // （PROPFIX_DEBUG=1 时才打印，避免刷屏。）
 #include <dlfcn.h>
 
+#if 0  // ⚠ 2026-10-01 实测：这里的 dlopen/android_dlopen_ext 拦截返回**垃圾句柄**
+       // （探针里 dlopen(libEGL_mesa.so) = 0xfe1db3c7f55d9c75），而它正是唯一会干扰
+       // libEGL loader 驱动加载的挂钩 ⇒ 极可能就是把驱动搞坏的原因。诊断使命已完成，关掉。
 typedef void *(*android_dlopen_ext_fn)(const char *, int, const void *);
 
 void *android_dlopen_ext(const char *filename, int flags, const void *extinfo) {
@@ -268,9 +317,37 @@ const char *eglQueryString(EGLDisplay dpy, EGLint name) {
 
 #endif  // ← 反向验证结束（eglGetDisplay/eglInitialize/eglQueryString 三条拦截已关）
 
-// 说明：曾想拦截 dlsym 来看 loader 向驱动要了哪些符号，但 bionic 下拿"下一个 dlsym 实现"很容易
-// 自递归（实测写法风险高），已放弃；改走"建真属性区 + 打开 bionic linker 自己的调试开关
-// debug.ld.all"，让 linker 直接说出驱动加载被拒的原因。
+#endif  // ← dlopen 拦截结束
+
+// ── 诊断：把本进程的 Android 日志转到 stderr ──
+// 为什么需要：libEGL.so loader 判定"驱动不可用"时会打 ERROR（tag=libEGL），但那些日志走
+// Android 的 log 机制、我们的 fakelogd 抓不全（实测只有属性查询可见、内容看不到）。
+// 这里挂住日志写入入口，凡是本进程（SurfaceFlinger）打的日志都直接落到 stderr ⇒ 进 qemu 控制台。
+// ⚠ 只打印 libEGL/EGL/MESA/gralloc/hwc 相关，避免刷屏。
+static int log_interesting(const char *tag) {
+    if (!tag) return 0;
+    return strstr(tag, "EGL") || strstr(tag, "egl") || strstr(tag, "MESA") ||
+           strstr(tag, "gralloc") || strstr(tag, "hwc") || strstr(tag, "HWC") ||
+           strstr(tag, "RenderEngine") || strstr(tag, "Composer");
+}
+
+int __android_log_write(int prio, const char *tag, const char *text) {
+    static int (*real)(int, const char *, const char *) = NULL;
+    if (!real) real = (int (*)(int, const char *, const char *))dlsym(RTLD_NEXT, "__android_log_write");
+    if (getenv("PROPFIX_DEBUG") && log_interesting(tag))
+        fprintf(stderr, "[alog:%s] %s\n", tag ? tag : "?", text ? text : "");
+    return real ? real(prio, tag, text) : 0;
+}
+
+int __android_log_buf_write(int bufId, int prio, const char *tag, const char *text) {
+    static int (*real)(int, int, const char *, const char *) = NULL;
+    if (!real)
+        real = (int (*)(int, int, const char *, const char *))
+            dlsym(RTLD_NEXT, "__android_log_buf_write");
+    if (getenv("PROPFIX_DEBUG") && log_interesting(tag))
+        fprintf(stderr, "[alog:%s] %s\n", tag ? tag : "?", text ? text : "");
+    return real ? real(bufId, prio, tag, text) : 0;
+}
 
 EGLBoolean eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list, EGLConfig *configs,
                            EGLint config_size, EGLint *num_config) {
