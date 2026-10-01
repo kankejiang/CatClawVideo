@@ -138,6 +138,31 @@ for base in (libdir, os.path.join(STAGE, "vendor/lib64")):
         if not os.path.lexists(dst):
             os.symlink("../libgallium_dri.so", dst)
 
+# ── VINTF manifest：HIDL 服务**必须**在 manifest 里才能注册 ──
+# 实测根因链：/vendor/manifest.xml 缺失 ⇒ hwservicemanager 报
+#   getTransport: Cannot find entry …IAllocator/default in either framework or device VINTF manifest.
+#   Service … must be in VINTF manifest in order to register/get.
+# ⇒ mapper@4.0 注册不上 ⇒ libui 的 GraphicBufferMapper 构造 LOG_ALWAYS_FATAL ⇒ SurfaceFlinger abort。
+# hwservicemanager 读的是**字面路径** /vendor/manifest.xml 与 /system/manifest.xml
+# （真实设备上由 init 建符号链接；我们不跑 init，所以直接放这个路径）。
+VINTF = [
+    (f"{VEN}/etc/vintf/manifest.xml", "vendor/manifest.xml"),
+    (f"{SYS}/system/etc/vintf/manifest.xml", "system/manifest.xml"),
+    # gbm_mesa 的 allocator/mapper fragment 默认是 disabled（rc 里靠 bind mount 启用），
+    # 我们不跑 init ⇒ 直接把它作为 vendor manifest（覆盖上面那份，二者取其一）。
+    (f"{VEN}/etc/vintf/manifest.disabled/gbm_mesa.allocator@4.0.xml", "vendor/manifest.xml"),
+    (f"{VEN}/etc/vintf/manifest.disabled/gbm_mesa.mapper@4.0.xml",
+     "vendor/etc/vintf/manifest.disabled/gbm_mesa.mapper@4.0.xml"),
+]
+for src, rel in VINTF:
+    if not os.path.exists(src):
+        print("  vintf 跳过（缺）:", src)
+        continue
+    dst = os.path.join(STAGE, rel)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copy2(src, dst)
+    print("  vintf: %s → %s" % (os.path.basename(src), rel))
+
 if os.path.exists(OUT):
     os.remove(OUT)
 with tarfile.open(OUT, "w:gz") as t:

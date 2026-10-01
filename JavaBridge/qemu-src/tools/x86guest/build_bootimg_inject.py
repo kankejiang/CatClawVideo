@@ -328,6 +328,25 @@ def main():
             init_i = next(i for i, e in enumerate(merged) if e[0] == "init")
             merged[init_i] = merged[init_i][:6] + (init,) + merged[init_i][7:]
             print("④e init 已插入 DRM 模块加载段（B1.1）")
+    # ── B1.1：binder 驱动要三个**独立**实例（binder / hwbinder / vndbinder）──
+    # 实测：guest 内核**没有 binderfs**（mount -t binder 报 ENODEV ⇒ 拿不到 binder-control，
+    # 也就无法用 BINDER_CTL_ADD 建节点），只能把 /dev/hwbinder 符号链接到 /dev/binder。
+    # 但同实例会让 HIDL 注册失败：
+    #   Could not get transport for …IAllocator/default: Status(EX_TRANSACTION_FAILED): 'BAD_TYPE: '
+    #   Failed to register graphics IAllocator 4.0 service.
+    # 而 classic binder 驱动暴露 `devices=` 模块参数（内核 CONFIG_ANDROID_BINDER_DEVICES 的入口），
+    # 用它一次建出三个独立 misc 设备 ⇒ 在 insmod 循环之前显式加载一次。
+    if b"devices=binder,hwbinder,vndbinder" not in init:
+        # 循环那行形如：for m in virtio_ring virtio … binder_linux; do
+        anchor_loop = b"for m in virtio_ring"
+        if anchor_loop in init:
+            # ⚠ bytes 字面量只能放 ASCII（踩过两次 SyntaxError），中文部分统一 .encode("utf-8")
+            pre = ("\n# B1.1: binder 三实例（binderfs 不可用时的正解）\n"
+                   "[ -f /modules/binder_linux.ko ] && $BB insmod /modules/binder_linux.ko "
+                   "devices=binder,hwbinder,vndbinder && echo '[init] binder: 三实例已建'\n").encode("utf-8")
+            init = init.replace(anchor_loop, pre + anchor_loop, 1)
+            print("④g init 已插入 binder 三实例加载（devices= 参数）")
+
     # ── B1.1：Android binder 服务栈（servicemanager / hwservicemanager）──
     # 依赖：binder 设备（本脚本前面已按 binderfs 建好）；属性由 proppreload 提供（LD_PRELOAD 继承）。
     if os.environ.get("B1_ASTACK", "1") != "0":
@@ -349,10 +368,13 @@ def main():
             '    # mesa 软件 GL（llvmpipe）：这个 SF 版本没有 CPU 渲染后端，RenderEngine 必须有 EGL。\n'
             '    [ -f /b1/mesa-gl.tar.gz ] && $BB tar xzf /b1/mesa-gl.tar.gz -C / && echo "[astack] mesa GL 已解包"\n'
             '    $BB mkdir -p /dev/binderfs\n'
-            '    $BB mount -t binder binder /dev/binderfs 2>/dev/null && echo "[astack] binderfs 已挂载"\n'
+            '    # binderfs 的节点必须用 ioctl(BINDER_CTL_ADD) 创建（挂载本身只给 binder-control）。\n'
+            '    # 为什么必须独立实例：HIDL 注册走 /dev/hwbinder，符号链接到 /dev/binder（同实例）时实测报\n'
+            '    #   Could not get transport for ...IAllocator/default: Status(EX_TRANSACTION_FAILED): BAD_TYPE\n'
+            '    [ -x /system/bin/mkbinders ] && /system/bin/mkbinders 2>&1 | $BB head -8\n'
             '    for b in binder hwbinder vndbinder; do [ -e /dev/binderfs/$b ] && ln -sf /dev/binderfs/$b /dev/$b; done\n'
             '    # binderfs 没挂成（或内核未建默认节点）时的回落：同实例符号链接。\n'
-            '    # 严格说 hwbinder 应有独立实例，但我们的服务栈只需要"能把服务注册进注册表"，同实例可用。\n'
+            '    # 严格说 hwbinder 应有独立实例，但至少能让 servicemanager 起来。\n'
             '    [ -e /dev/hwbinder ] || ln -sf /dev/binder /dev/hwbinder\n'
             '    [ -e /dev/vndbinder ] || ln -sf /dev/binder /dev/vndbinder\n'
             '    $BB ls -la /dev/binder /dev/hwbinder /dev/vndbinder 2>&1 | $BB head -6\n'
@@ -370,7 +392,7 @@ def main():
             '    # SF 需要 composer。rc 里它们的启动条件是 ro.hardware.gralloc=minigbm_gbm_mesa（由 PROPFIX 提供）。\n'
             '    for svc in android.hardware.graphics.allocator@4.0-service.minigbm_gbm_mesa android.hardware.graphics.composer@2.1-service; do\n'
             '        [ -x /vendor/bin/hw/$svc ] || continue\n'
-            '        ( LD_PRELOAD=/system/lib64/libpropfix.so:/proppreload.so PROPFIX="hwservicemanager.ready=true;ro.hardware.gralloc=minigbm_gbm_mesa;ro.hardware.hwcomposer=waydroid;gralloc.gbm.device=/dev/dri/renderD128" LD_LIBRARY_PATH=/vendor/lib64:/system/lib64 /vendor/bin/hw/$svc >/tmp/$svc.log 2>&1 ) &\n'
+            '        ( LD_PRELOAD=/system/lib64/libpropfix.so:/proppreload.so PROPFIX="hwservicemanager.ready=true;ro.hardware.gralloc=minigbm_gbm_mesa;ro.hardware.hwcomposer=waydroid;gralloc.gbm.device=/dev/dri/renderD128" LD_LIBRARY_PATH=/vendor/lib64:/system/lib64 WAYLAND_DISPLAY=wl-0 XDG_RUNTIME_DIR=/tmp/wrt /vendor/bin/hw/$svc 2>&1 | $BB head -12 ) &\n'
             '        echo "[astack] 已拉起 $svc"\n'
             '    done\n'
             '    # EGL 隔离探针：SF 里 EGL 的失败信息被 liblog 吞掉（乱码），这里用独立进程走同一条 EGL 路径，\n'
