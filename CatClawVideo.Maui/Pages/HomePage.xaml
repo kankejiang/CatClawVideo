@@ -107,72 +107,67 @@
             </HorizontalStackLayout>
         </ScrollView>
 
-        <!-- 主页推荐行流（TVBox 式首页）：每行 = 分类标题 + 更多› + 横向滚动海报。
-             显隐由代码后台按主页/片库模式切换（与 PosterGrid 互斥）。
-             行内卡片复用 VodItem.IsFocused 焦点属性（与片库网格同一套焦点环驱动）。 -->
-        <ScrollView Grid.Row="2" x:Name="HomeRowsScroll" VerticalScrollBarVisibility="Never">
-            <VerticalStackLayout BindableLayout.ItemsSource="{Binding HomeRows}" Spacing="20" Padding="0,2,24,0">
-                <BindableLayout.ItemTemplate>
-                    <DataTemplate>
-                        <Grid RowDefinitions="Auto,Auto" RowSpacing="10">
-                            <!-- 行标题（对位 TVBox：豆瓣热播/站点推荐/观看历史 单行横滑） -->
-                            <HorizontalStackLayout Spacing="8" VerticalOptions="Center">
-                                <BoxView WidthRequest="3" HeightRequest="14" CornerRadius="2"
-                                         Color="{DynamicResource PrimaryColor}" VerticalOptions="Center" />
-                                <Label Text="{Binding Title}" FontSize="14.5" FontFamily="OpenSansSemibold"
-                                       TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
-                            </HorizontalStackLayout>
-                            <ScrollView Grid.Row="1" Orientation="Horizontal"
-                                        HorizontalScrollBarVisibility="Never" VerticalScrollBarVisibility="Never">
-                                <!-- 卡片尺寸 = 片库网格同一套（PosterCardWidth/Height 动态资源，
-                                     由 PosterLayoutHelper 写入），间隔 14 与网格 HorizontalItemSpacing 一致 -->
-                                <HorizontalStackLayout Spacing="14" Padding="0,2,24,2"
-                                                       BindableLayout.ItemsSource="{Binding Items}">
-                                    <BindableLayout.ItemTemplate>
-                                        <DataTemplate>
-                                            <Grid RowDefinitions="Auto,Auto" WidthRequest="{DynamicResource PosterCardWidth}">
-                                                <Border Style="{StaticResource PosterCardStyle}">
-                                                    <Grid>
-                                                        <Image Source="{Binding CoverDisplay}" Aspect="AspectFill" />
-                                                        <!-- 占位海报（无封面时显示，绝不留白） -->
-                                                        <Border StrokeThickness="0" IsVisible="False" Padding="10"
-                                                                Background="{DynamicResource PosterPlaceholderBrush}">
-                                                            <Border.Triggers>
-                                                                <DataTrigger TargetType="Border" Binding="{Binding CoverDisplay}" Value="{x:Null}">
-                                                                    <Setter Property="IsVisible" Value="True" />
-                                                                </DataTrigger>
-                                                            </Border.Triggers>
-                                                            <Label Text="{Binding Title}" FontSize="12.5" FontAttributes="Bold"
-                                                                   TextColor="#D8DDF5" HorizontalTextAlignment="Center"
-                                                                   VerticalOptions="Center" MaxLines="4" LineBreakMode="TailTruncation" />
-                                                        </Border>
-                                                        <Border HorizontalOptions="End" VerticalOptions="Start" Margin="0,7,7,0"
-                                                                StrokeThickness="0" BackgroundColor="#80000000"
-                                                                StrokeShape="RoundRectangle 8" Padding="6,1"
-                                                                IsVisible="{Binding HasRemark}">
-                                                            <Label Text="{Binding Remarks}" FontSize="10" TextColor="#FFD76E" MaxLines="1" />
-                                                        </Border>
-                                                        <!-- 焦点环（遥控）：与片库网格同一套样式，绑定 IsFocused -->
-                                                        <Border Style="{StaticResource PosterFocusRingStyle}"
-                                                                IsVisible="{Binding IsFocused}" />
-                                                    </Grid>
-                                                </Border>
-                                                <Label Grid.Row="1" Text="{Binding Title}" FontSize="12" Margin="0,6,0,0"
-                                                       LineBreakMode="TailTruncation" MaxLines="2"
-                                                       TextColor="{DynamicResource TextPrimaryColor}" />
-                                                <Grid.GestureRecognizers>
-                                                    <TapGestureRecognizer Tapped="OnPosterTapped" />
-                                                </Grid.GestureRecognizers>
-                                            </Grid>
-                                        </DataTemplate>
-                                    </BindableLayout.ItemTemplate>
-                                </HorizontalStackLayout>
-                            </ScrollView>
-                        </Grid>
-                    </DataTemplate>
-                </BindableLayout.ItemTemplate>
-            </VerticalStackLayout>
-        </ScrollView>
+        <!-- 主页推荐（TVBox 式首页）：多行网格，排列与海报大小和片库网格完全一致
+             （同一 PosterCardStyle + PosterLayoutHelper 列数自适应）。
+             内容由设置「主页推荐内容」三选一：站点推荐 / 豆瓣热播 / 观看历史。 -->
+        <Grid Grid.Row="2" x:Name="HomeRecHost">
+            <Grid RowDefinitions="Auto,*" RowSpacing="10">
+                <HorizontalStackLayout Grid.Row="0" Spacing="8" VerticalOptions="Center">
+                    <BoxView WidthRequest="3" HeightRequest="14" CornerRadius="2"
+                             Color="{DynamicResource PrimaryColor}" VerticalOptions="Center" />
+                    <Label Text="{Binding HomeRecTitle}" FontSize="14.5" FontFamily="OpenSansSemibold"
+                           TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
+                </HorizontalStackLayout>
+                <CollectionView Grid.Row="1" x:Name="HomeGrid" SelectionMode="Single"
+                                ItemsSource="{Binding HomeRecItems}"
+                                ItemsUpdatingScrollMode="KeepScrollOffset">
+                    <CollectionView.ItemsLayout>
+                        <GridItemsLayout Orientation="Vertical" Span="6" VerticalItemSpacing="16" HorizontalItemSpacing="14" />
+                    </CollectionView.ItemsLayout>
+                    <CollectionView.ItemTemplate>
+                        <DataTemplate>
+                            <Grid RowDefinitions="Auto,Auto">
+                                <Border Style="{StaticResource PosterCardStyle}">
+                                    <Grid>
+                                        <Image Source="{Binding CoverDisplay}" Aspect="AspectFill" />
+                                        <!-- 占位海报（无封面时显示，绝不留白） -->
+                                        <Border StrokeThickness="0" IsVisible="False" Padding="10"
+                                                Background="{DynamicResource PosterPlaceholderBrush}">
+                                            <Border.Triggers>
+                                                <DataTrigger TargetType="Border" Binding="{Binding CoverDisplay}" Value="{x:Null}">
+                                                    <Setter Property="IsVisible" Value="True" />
+                                                </DataTrigger>
+                                            </Border.Triggers>
+                                            <Label Text="{Binding Title}" FontSize="12.5" FontAttributes="Bold"
+                                                   TextColor="#D8DDF5" HorizontalTextAlignment="Center"
+                                                   VerticalOptions="Center" MaxLines="4" LineBreakMode="TailTruncation" />
+                                        </Border>
+                                        <Border HorizontalOptions="End" VerticalOptions="Start" Margin="0,7,7,0"
+                                                StrokeThickness="0" BackgroundColor="#80000000" StrokeShape="RoundRectangle 8" Padding="6,1"
+                                                IsVisible="{Binding HasRemark}">
+                                            <Label Text="{Binding Remarks}" FontSize="10" TextColor="#FFD76E" MaxLines="1" />
+                                        </Border>
+                                        <Border Style="{StaticResource PosterFocusRingStyle}"
+                                                IsVisible="{Binding IsFocused}" />
+                                    </Grid>
+                                </Border>
+                                <VerticalStackLayout Grid.Row="1" Spacing="0">
+                                    <Label Text="{Binding Title}" FontSize="12" Margin="0,6,0,0"
+                                           LineBreakMode="TailTruncation" MaxLines="2"
+                                           TextColor="{DynamicResource TextPrimaryColor}" />
+                                    <Label Text="{Binding Year}" FontSize="10" Margin="0,2,0,0"
+                                           LineBreakMode="TailTruncation" MaxLines="1"
+                                           TextColor="{DynamicResource TextHintColor}" />
+                                </VerticalStackLayout>
+                                <Grid.GestureRecognizers>
+                                    <TapGestureRecognizer Tapped="OnPosterTapped" />
+                                </Grid.GestureRecognizers>
+                            </Grid>
+                        </DataTemplate>
+                    </CollectionView.ItemTemplate>
+                </CollectionView>
+            </Grid>
+        </Grid>
 
         <!-- 海报网格（真数据：当前源影片列表；列数与卡片高度由代码按可用空间自适应，
              保证卡片宽高比贴近海报 2:3 且一整行能完整显示） -->

@@ -42,14 +42,49 @@ public static class DoubanService
             Cache.Remove(key);
         }
 
+        var list = await FetchNewSearchAsync(limit, ct).ConfigureAwait(false);
+
+        // 回退：new_search_subjects 拉不到（网络/风控差异）→ 老接口 search_subjects
+        // 电影+剧集各取一半混合（与「豆瓣热播」行同形态）。都空才认失败。
+        if (list.Count == 0)
+        {
+            var half = Math.Max(1, limit / 2);
+            var movies = await FetchSearchSubjectsAsync("movie", "热门", half, ct).ConfigureAwait(false);
+            var tvs = await FetchSearchSubjectsAsync("tv", "热门", half, ct).ConfigureAwait(false);
+            list = movies.Concat(tvs).Take(limit).ToList();
+        }
+
+        Cache[key] = (DateTime.UtcNow, list);   // 失败（空表）也缓存，走 FailTtl 防止反复超时
+        return list;
+    }
+
+    /// <summary>TVBox 同款新接口（当前年份、playable=1），返回 data[]。</summary>
+    private static async Task<List<DoubanEntry>> FetchNewSearchAsync(int limit, CancellationToken ct)
+    {
         var year = DateTime.Now.Year;
-        // TVBox 同参数：sort=U 综合排序、range 0-10 全分段、playable=1 只要有片源的
         var url = "https://movie.douban.com/j/new_search_subjects?sort=U&range=0,10&tags=&playable=1" +
                   $"&start=0&year_range={year},{year}";
+        var json = await FetchJsonAsync(url, ct).ConfigureAwait(false);
+        if (json is null) return [];
+        return ParseArray(json.RootElement, "data", limit);
+    }
+
+    /// <summary>老接口 search_subjects（兼容回退），返回 subjects[]。</summary>
+    private static async Task<List<DoubanEntry>> FetchSearchSubjectsAsync(string type, string tag, int limit, CancellationToken ct)
+    {
+        var url = $"https://movie.douban.com/j/search_subjects?type={Uri.EscapeDataString(type)}" +
+                  $"&tag={Uri.EscapeDataString(tag)}&sort=recommend&page_limit={limit}&page_start=0";
+        var json = await FetchJsonAsync(url, ct).ConfigureAwait(false);
+        if (json is null) return [];
+        return ParseArray(json.RootElement, "subjects", limit);
+    }
+
+    /// <summary>带浏览器头拉 JSON（豆瓣对裸请求返回 418）；失败返回 null。</summary>
+    private static async Task<JsonDocument?> FetchJsonAsync(string url, CancellationToken ct)
+    {
         try
         {
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
-            // 豆瓣对无 UA/无 Referer 的裸请求返回 418；带齐浏览器头可直连
             req.Headers.TryAddWithoutValidation("User-Agent",
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36");
             req.Headers.TryAddWithoutValidation("Referer", "https://movie.douban.com/");
@@ -60,34 +95,32 @@ public static class DoubanService
             using var resp = await Http.SendAsync(req, cts.Token).ConfigureAwait(false);
             resp.EnsureSuccessStatusCode();
             await using var stream = await resp.Content.ReadAsStreamAsync(cts.Token).ConfigureAwait(false);
-            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cts.Token).ConfigureAwait(false);
-
-            var list = new List<DoubanEntry>();
-            if (doc.RootElement.TryGetProperty("data", out var arr) && arr.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var s in arr.EnumerateArray())
-                {
-                    var title = s.TryGetProperty("title", out var t) ? t.GetString() : null;
-                    var cover = s.TryGetProperty("cover", out var c) ? c.GetString() : null;
-                    if (string.IsNullOrWhiteSpace(title)) continue;
-                    list.Add(new DoubanEntry
-                    {
-                        Title = title,
-                        Rate = s.TryGetProperty("rate", out var r) ? (r.GetString() ?? "") : "",
-                        Cover = cover ?? "",
-                    });
-                    if (list.Count >= limit) break;
-                }
-            }
-
-            Cache[key] = (DateTime.UtcNow, list);
-            return list;
+            return await JsonDocument.ParseAsync(stream, cancellationToken: cts.Token).ConfigureAwait(false);
         }
         catch (Exception)
         {
-            // 失败也缓存（空表走 FailTtl）：豆瓣不可达时避免每次切回主页都等 8s 超时
-            Cache[key] = (DateTime.UtcNow, new List<DoubanEntry>());
-            return new List<DoubanEntry>();
+            return null;
         }
+    }
+
+    /// <summary>从 data[]/subjects[] 提取 title/rate/cover。</summary>
+    private static List<DoubanEntry> ParseArray(JsonElement root, string field, int limit)
+    {
+        var list = new List<DoubanEntry>();
+        if (!root.TryGetProperty(field, out var arr) || arr.ValueKind != JsonValueKind.Array) return list;
+        foreach (var s in arr.EnumerateArray())
+        {
+            var title = s.TryGetProperty("title", out var t) ? t.GetString() : null;
+            var cover = s.TryGetProperty("cover", out var c) ? c.GetString() : null;
+            if (string.IsNullOrWhiteSpace(title)) continue;
+            list.Add(new DoubanEntry
+            {
+                Title = title,
+                Rate = s.TryGetProperty("rate", out var r) ? (r.GetString() ?? "") : "",
+                Cover = cover ?? "",
+            });
+            if (list.Count >= limit) break;
+        }
+        return list;
     }
 }

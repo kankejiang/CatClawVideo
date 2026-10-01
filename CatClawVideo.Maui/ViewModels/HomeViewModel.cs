@@ -106,104 +106,117 @@ public partial class HomeViewModel : ObservableObject
     /// <summary>虚拟「主页」分类 Id（chips 第一个固定项；选中它显示推荐行）。</summary>
     public const string HomeCategoryId = "__home__";
 
-    /// <summary>是否处于主页模式（选中虚拟主页分类 → 行流视图；其余分类 → 网格）。</summary>
+    /// <summary>是否处于主页模式（选中虚拟主页分类 → 推荐网格；其余分类 → 源分类网格）。</summary>
     public bool IsHomeMode => SelectedCategoryId == HomeCategoryId;
 
-    /// <summary>推荐行：一个标题 + 一行横向滚动卡片（豆瓣/站点推荐行无「更多」）。</summary>
-    public sealed class HomeRow
-    {
-        public string Title { get; init; } = string.Empty;
-        public ObservableCollection<VodItem> Items { get; } = new();
-    }
+    /// <summary>推荐网格标题（站点推荐/豆瓣热播/观看历史，随设置模式变）。</summary>
+    [ObservableProperty]
+    private string _homeRecTitle = string.Empty;
 
-    public ObservableCollection<HomeRow> HomeRows { get; } = new();
-
-    /// <summary>行流缓存 key（偏好版本 + 模式 + 站点；任一变了才重建）。</summary>
-    private string _rowsKey = "";
-
-    /// <summary>每行展示条数上限。</summary>
-    private const int HomeRowTake = 20;
-
-    /// <summary>历史行取最近多少条。</summary>
-    private const int HistoryRowTake = 20;
-
-    /// <summary>站点就绪后的默认视图：第一个 chip 固定是「主页」。</summary>
-    private Task EnterDefaultViewAsync() => SelectCategoryAsync(Categories[0]);
+    /// <summary>主页推荐条目（平铺多行网格，排列与海报大小与片库网格一致）。</summary>
+    public ObservableCollection<VodItem> HomeRecItems { get; } = new();
 
     /// <summary>行流缓存 key（偏好版本 + 模式 + 站点；任一变了才重建）。</summary>
     private string RowsKey() =>
         $"v{Services.HomeRecPrefs.Version}|{Services.HomeRecPrefs.Load()}|{CurrentSite?.Key}";
 
+    /// <summary>主页推荐条数上限。</summary>
+    private const int HomeRecTake = 40;
+
+    /// <summary>行流缓存 key 快照（RowsKey() 的结果；不一致即重建）。</summary>
+    private string _rowsKey = "";
+
+    /// <summary>历史取最近多少条。</summary>
+    private const int HistoryRowTake = 40;
+
+    /// <summary>主页推荐构建重入防护（连点首页 tab / 事件并发时避免双写集合打崩绑定）。</summary>
+    private bool _recLoading;
+
+    /// <summary>站点就绪后的默认视图：第一个 chip 固定是「主页」。</summary>
+    private Task EnterDefaultViewAsync() => SelectCategoryAsync(Categories[0]);
+
     /// <summary>
-    /// 构建「主页」推荐行（TVBox 三选一，单行）：站点推荐 / 豆瓣热播 / 观看历史。
+    /// 构建「主页」推荐网格（TVBox 三选一，多行平铺）：站点推荐 / 豆瓣热播 / 观看历史。
     /// </summary>
     public async Task LoadHomeRecRowsAsync()
     {
-        if (CurrentSite == null) return;
+        if (CurrentSite == null || _recLoading) return;
         var key = RowsKey();
-        if (HomeRows.Count > 0 && _rowsKey == key) return;
-        _rowsKey = key;
-
-        IsHomeLoading = true;
-        HomeRows.Clear();
-        var mode = Services.HomeRecPrefs.Load();
-
-        var row = new HomeRow { Title = Services.HomeRecPrefs.Label(mode) };
-        HomeRows.Add(row);
+        if (HomeRecItems.Count > 0 && _rowsKey == key) return;
+        _recLoading = true;
 
         try
         {
+            IsHomeLoading = true;
+            _rowsKey = key;
+            var mode = Services.HomeRecPrefs.Load();
+            HomeRecTitle = Services.HomeRecPrefs.Label(mode);
+            HomeRecItems.Clear();
+
             switch (mode)
             {
                 case Services.HomeRecPrefs.History:
-                    await FillHistoryRowAsync(row).ConfigureAwait(true);
+                    await FillHistoryCardsAsync().ConfigureAwait(true);
                     break;
                 case Services.HomeRecPrefs.DoubanHot:
-                    FillDoubanRow(row, await DoubanService.GetHotAsync(HomeRowTake).ConfigureAwait(true));
+                    FillDoubanCards(await DoubanService.GetHotAsync(HomeRecTake).ConfigureAwait(true));
                     break;
                 default:   // SiteRecommend（TVBox 默认）：homeContent.list
                     var rec = await _provider.GetHomeRecommendAsync(CurrentSite).ConfigureAwait(true);
-                    var take = rec.Take(HomeRowTake).ToList();
-                    CoverResolver.Attach(_covers, take);
-                    foreach (var it in take) row.Items.Add(it);
+                    AppendCards(rec);
                     break;
             }
         }
         catch (Exception ex)
         {
-            DiagLog.Write($"[home-rec] {row.Title} 构建失败: {ex.Message}");
+            DiagLog.Write($"[home-rec] 构建失败: {ex.Message}");
         }
-
-        HomeStatus = row.Items.Count == 0
-            ? $"{CurrentSite.Name} · 主页 · {row.Title}暂无内容"
-            : $"{CurrentSite.Name} · 主页";
-        IsHomeLoading = false;
+        finally
+        {
+            _recLoading = false;
+            HomeStatus = HomeRecItems.Count == 0
+                ? $"{CurrentSite.Name} · 主页 · {HomeRecTitle}暂无内容"
+                : $"{CurrentSite.Name} · 主页 · {HomeRecTitle} {HomeRecItems.Count} 部";
+            IsHomeLoading = false;
+            DiagLog.Write($"[home-rec] 完成 mode={HomeRecTitle} items={HomeRecItems.Count}");
+        }
     }
 
-    /// <summary>设置里切了推荐内容 / 换站后，回主页时行流按需重建（OnTabShownAsync 调）。</summary>
-    public Task RefreshHomeRecIfStaleAsync() =>
-        IsHomeMode && CurrentSite != null ? LoadHomeRecRowsAsync() : Task.CompletedTask;
-
-    /// <summary>豆瓣热播行（TVBox 同款豆瓣接口；封面解析链已带豆瓣 Referer）。</summary>
-    private void FillDoubanRow(HomeRow row, List<DoubanEntry> entries)
+    /// <summary>设置里切了推荐内容 / 换站后，回主页时网格按需重建（OnTabShownAsync 调）。</summary>
+    public Task RefreshHomeRecIfStaleAsync()
     {
-        var items = entries.Take(HomeRowTake).Select(e => new VodItem
+        if (!IsHomeMode || CurrentSite == null || _recLoading) return Task.CompletedTask;
+        if (HomeRecItems.Count > 0 && _rowsKey == RowsKey()) return Task.CompletedTask;
+        return LoadHomeRecRowsAsync();
+    }
+
+    /// <summary>把条目挂上封面解析后追加进推荐网格。</summary>
+    private void AppendCards(IEnumerable<VodItem> items)
+    {
+        var list = items.Take(HomeRecTake).ToList();
+        CoverResolver.Attach(_covers, list);
+        foreach (var it in list) HomeRecItems.Add(it);
+    }
+
+    /// <summary>豆瓣热播卡（TVBox 同款豆瓣接口；封面解析链已带豆瓣 Referer；点卡片跨源搜索）。</summary>
+    private void FillDoubanCards(List<DoubanEntry> entries)
+    {
+        AppendCards(entries.Select(e => new VodItem
         {
             Id = "douban:" + e.Title,
             Title = e.Title,
             Cover = e.Cover,
             Remarks = string.IsNullOrWhiteSpace(e.Rate) ? "" : e.Rate + "分",
-            Tag = "douban",   // OpenItem 据此跳跨源搜索
-        }).ToList();
-        CoverResolver.Attach(_covers, items);
-        foreach (var it in items) row.Items.Add(it);
+            Tag = "douban",
+        }));
     }
 
-    /// <summary>观看历史行（本地最近 N 条；卡片带续看参数，点击直接回观看页）。</summary>
-    private async Task FillHistoryRowAsync(HomeRow row)
+    /// <summary>观看历史卡（本地最近 N 条；卡片带续看参数，点击直接回观看页）。</summary>
+    private async Task FillHistoryCardsAsync()
     {
         if (_db is null) return;
         var entries = await _db.GetRecentHistoryAsync(HistoryRowTake).ConfigureAwait(true);
+        var cards = new List<VodItem>(entries.Count);
         foreach (var e in entries)
         {
             // 与 HistoryPage 同一套回跳参数：type/api 取当前注册表的活源定义（旧记录可能指向死源）
@@ -236,16 +249,17 @@ public partial class HomeViewModel : ObservableObject
             }
 
             var ep = string.IsNullOrEmpty(e.EpisodeName) ? "" : e.EpisodeName;
-            row.Items.Add(new VodItem
+            cards.Add(new VodItem
             {
                 Id = "history:" + e.Id,
                 Title = itemTitle,
-                Cover = e.Cover ?? "",
+                Cover = e.Cover,
                 Remarks = ep,
                 Tag = "history",
                 Action = query,   // OpenItem 据此直接 GoToAsync（历史卡不走 detailContent）
             });
         }
+        AppendCards(cards);
     }
 
     /// <summary>首页首载：用户首选站点优先（失败回退自动探测第一个成功者）→ 进默认视图</summary>
@@ -340,7 +354,7 @@ public partial class HomeViewModel : ObservableObject
         OnPropertyChanged(nameof(Site));
         OnPropertyChanged(nameof(SiteDisplayName));
         Categories.Clear();
-        _rowsKey = "";   // 站点就绪/重拉后行流要重建
+        _rowsKey = "";   // 站点就绪/重拉后主页推荐要重建
         Categories.Add(new VodCategory { Id = HomeCategoryId, Name = "主页" });   // TVBox 同款：第一个 tab 固定主页
         foreach (var c in cats) Categories.Add(c);
 
@@ -403,7 +417,7 @@ public partial class HomeViewModel : ObservableObject
 
         Categories.Clear();
         Items.Clear();
-        HomeRows.Clear();
+        HomeRecItems.Clear();
         _rowsKey = "";
         SelectedCategoryId = string.Empty;
         CurrentSite = site;
@@ -473,8 +487,8 @@ public partial class HomeViewModel : ObservableObject
             return;
         }
 
-        // 从主页切到普通分类：行流退场
-        if (HomeRows.Count > 0) HomeRows.Clear();
+        // 从主页切到普通分类：推荐网格退场
+        if (HomeRecItems.Count > 0) HomeRecItems.Clear();
 
         // 换「分类」才作废筛选条件；同一分类内重拉（改筛选/重试）要保留
         if (_currentCategory is null || _currentCategory.Id != category.Id)

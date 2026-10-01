@@ -29,9 +29,8 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
     private int _posterIndex;
     private int _posterColumns = 6;
 
-    // ── 主页行流焦点（主页模式下 LayerPosters 的语义：行 × 行内列）──
-    private int _rowIndex;
-    private int _colIndex;
+    // ── 主页推荐网格列数（与海报墙同一套 PosterLayoutHelper 自适应，焦点导航按列走）──
+    private int _recColumns = 6;
 
     /// <summary>分类 chip 的焦点壳（与 Categories 一一对应，随集合变化重建）。</summary>
     private readonly List<Border> _chipShells = new();
@@ -68,28 +67,25 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
             CaptureColumns();
         };
 
-        // 主页推荐行：卡片尺寸与海报墙完全同一套（同一资源、同一 cap）——
-        // 用户要求主页行的海报大小/排列与片库网格一致。网格不可见（Size=0）时
-        // 它的 SizeChanged 不触发，行流自己按当前可用面积算一次。
-        HomeRowsScroll.SizeChanged += (_, _) =>
+        // 主页推荐网格：与海报墙完全同一套布局（同 cap、同列数自适应）。
+        // 主页模式下 PosterGrid 不可见（Size=0）不触发自己的 SizeChanged，由 HomeGrid 算。
+        HomeGrid.SizeChanged += (_, _) =>
         {
-            var w = HomeRowsScroll.Width;
-            var h = HomeRowsScroll.Height;
-            if (w <= 0 || h <= 0) return;
 #if WINDOWS
-            PosterLayoutHelper.Apply(w, h, cap: 252);
+            PosterLayoutHelper.Apply(HomeGrid, HomeGrid.Width, HomeGrid.Height, cap: 252);
 #else
-            PosterLayoutHelper.Apply(w, h);
+            PosterLayoutHelper.Apply(HomeGrid, HomeGrid.Width, HomeGrid.Height);
 #endif
+            CaptureRecColumns();
         };
 
         // 列表数据变化后（首次加载/翻页）刷新列数并复位越界焦点
         _vm.Items.CollectionChanged += (_, _) => MainThread.BeginInvokeOnMainThread(OnItemsChanged);
 
-        // 主页行流变化后复位越界的行流焦点（行剔除/重建时 _rowIndex 可能越界）
-        _vm.HomeRows.CollectionChanged += (_, _) => MainThread.BeginInvokeOnMainThread(OnHomeRowsChanged);
+        // 主页推荐变化后复位越界的焦点索引（重建清空时 _posterIndex 可能越界）
+        _vm.HomeRecItems.CollectionChanged += (_, _) => MainThread.BeginInvokeOnMainThread(OnHomeRecItemsChanged);
 
-        // 应用初始模式视觉（默认主页：行流可见、分类条隐藏、切换胶囊高亮「主页」）
+        // 应用初始模式视觉（默认主页：推荐网格可见，切换胶囊等 chrome 按模式显隐）
         ApplyModeVisual();
 
         StartColdStartOverlay();
@@ -336,28 +332,23 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
 
         UpdateChipStyles();
 
-        // 海报墙焦点：只点亮当前项（网格=一维索引；主页行流= 行×列），清掉其余
-        if (!_vm.IsHomeMode)
-        {
-            for (int i = 0; i < _vm.Items.Count; i++)
-                _vm.Items[i].IsFocused = _layer == LayerPosters && i == _posterIndex;
-        }
-        else
-        {
-            for (int r = 0; r < _vm.HomeRows.Count; r++)
-                for (int c = 0; c < _vm.HomeRows[r].Items.Count; c++)
-                    _vm.HomeRows[r].Items[c].IsFocused =
-                        _layer == LayerPosters && r == _rowIndex && c == _colIndex;
-        }
+        // 海报墙焦点：只点亮当前项（主页推荐网格与源分类网格同一套一维索引）
+        var active = ActiveItems();
+        for (int i = 0; i < active.Count; i++)
+            active[i].IsFocused = _layer == LayerPosters && i == _posterIndex;
     }
+
+    /// <summary>当前焦点导航作用的卡片集合（主页推荐网格 / 源分类网格，随视图切换）。</summary>
+    private System.Collections.Generic.IReadOnlyList<VodItem> ActiveItems() =>
+        _vm.IsHomeMode ? _vm.HomeRecItems : _vm.Items;
+
+    /// <summary>当前视图的网格列数。</summary>
+    private int ActiveColumns() => _vm.IsHomeMode ? _recColumns : _posterColumns;
 
     private void ClearPosterFocus()
     {
-        for (int i = 0; i < _vm.Items.Count; i++)
-            _vm.Items[i].IsFocused = false;
-        foreach (var row in _vm.HomeRows)
-            for (int c = 0; c < row.Items.Count; c++)
-                row.Items[c].IsFocused = false;
+        foreach (var it in _vm.Items) it.IsFocused = false;
+        foreach (var it in _vm.HomeRecItems) it.IsFocused = false;
     }
 
     private void FocusSwitchSite()
@@ -391,31 +382,21 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
 
     private void FocusPosters(int index = 0)
     {
-        if (!_vm.IsHomeMode)
-        {
-            if (_vm.Items.Count == 0) { FocusChips(); return; }
-            _posterIndex = Math.Clamp(index, 0, _vm.Items.Count - 1);
-        }
-        else
-        {
-            if (_vm.HomeRows.Count == 0) { FocusSwitchSite(); return; }
-            _rowIndex = 0;
-            _colIndex = Math.Clamp(index, 0, _vm.HomeRows[0].Items.Count - 1);
-        }
+        var items = ActiveItems();
+        if (items.Count == 0) { FocusChips(); return; }
+        _posterIndex = Math.Clamp(index, 0, items.Count - 1);
         _layer = LayerPosters;
         RenderFocus();
-        ScrollToPoster();
+        ScrollActivePoster(_posterIndex);
     }
 
-    /// <summary>把焦点海报滚入可视区（否则遥控器移动时焦点会跑出屏幕）。
-    /// 主页行流暂不做行内跟随滚动（鼠标/触屏为主；遥控用户可切分类用完整网格导航）。</summary>
-    private void ScrollToPoster()
+    /// <summary>把焦点海报滚入可视区（否则遥控器移动时焦点会跑出屏幕）。</summary>
+    private void ScrollActivePoster(int index)
     {
-        if (_vm.IsHomeMode) return;
         try
         {
-            if (_posterIndex >= 0 && _posterIndex < _vm.Items.Count)
-                PosterGrid.ScrollTo(_posterIndex, position: ScrollToPosition.MakeVisible, animate: false);
+            CollectionView grid = _vm.IsHomeMode ? HomeGrid : PosterGrid;
+            grid.ScrollTo(index, position: ScrollToPosition.MakeVisible, animate: false);
         }
         catch { }
     }
@@ -531,73 +512,39 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
                 }
                 return true;
 
-            case LayerPosters when _vm.IsHomeMode:
-                {
-                    // 主页行流：←→ 行内移动，↑↓ 行间移动（列号 clamp 到目标行范围）。
-                    // 行内不做跟随滚动（见 ScrollToPoster 注释）。
-                    int last = Math.Max(0, _vm.HomeRows[_rowIndex].Items.Count - 1);
-                    switch (dir)
-                    {
-                        case RemoteKey.Left:
-                            if (_colIndex <= 0) { ClearPosterFocus(); FocusSwitchSite(); return true; }
-                            _colIndex--;
-                            RenderFocus();
-                            return true;
-
-                        case RemoteKey.Right:
-                            if (_colIndex >= last) return true;   // 行尾
-                            _colIndex++;
-                            RenderFocus();
-                            return true;
-
-                        case RemoteKey.Up:
-                            if (_rowIndex <= 0) { ClearPosterFocus(); FocusSwitchSite(); return true; }
-                            _rowIndex--;
-                            _colIndex = Math.Min(_colIndex, Math.Max(0, _vm.HomeRows[_rowIndex].Items.Count - 1));
-                            RenderFocus();
-                            return true;
-
-                        case RemoteKey.Down:
-                            if (_rowIndex >= _vm.HomeRows.Count - 1) return true;   // 已到底
-                            _rowIndex++;
-                            _colIndex = Math.Min(_colIndex, Math.Max(0, _vm.HomeRows[_rowIndex].Items.Count - 1));
-                            RenderFocus();
-                            return true;
-                    }
-                    return true;
-                }
-
             case LayerPosters:
                 {
-                    int cols = Math.Max(1, _posterColumns);
+                    // 主页推荐网格与源分类网格同一套一维导航（列数按当前视图取）
+                    var items = ActiveItems();
+                    int cols = Math.Max(1, ActiveColumns());
                     switch (dir)
                     {
                         case RemoteKey.Left:
                             if (_posterIndex % cols == 0) { FocusChips(_chipIndex); return true; }  // 行首 → 回 chips
                             _posterIndex--;
                             RenderFocus();
-                            ScrollToPoster();
+                            ScrollActivePoster(_posterIndex);
                             return true;
 
                         case RemoteKey.Right:
-                            if (_posterIndex >= _vm.Items.Count - 1) return true;
+                            if (_posterIndex >= items.Count - 1) return true;
                             _posterIndex++;
                             RenderFocus();
-                            ScrollToPoster();
+                            ScrollActivePoster(_posterIndex);
                             return true;
 
                         case RemoteKey.Up:
                             if (_posterIndex - cols < 0) { ClearPosterFocus(); FocusChips(_chipIndex); return true; }
                             _posterIndex -= cols;
                             RenderFocus();
-                            ScrollToPoster();
+                            ScrollActivePoster(_posterIndex);
                             return true;
 
                         case RemoteKey.Down:
-                            if (_posterIndex + cols > _vm.Items.Count - 1) return true;   // 已到底
+                            if (_posterIndex + cols > items.Count - 1) return true;   // 已到底
                             _posterIndex += cols;
                             RenderFocus();
-                            ScrollToPoster();
+                            ScrollActivePoster(_posterIndex);
                             return true;
                     }
                     return true;
@@ -620,15 +567,10 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
                     _ = _vm.SelectCategoryAsync(_vm.Categories[_chipIndex]);
                 return true;
 
-            case LayerPosters when _vm.IsHomeMode:
-                if (_rowIndex >= 0 && _rowIndex < _vm.HomeRows.Count &&
-                    _colIndex >= 0 && _colIndex < _vm.HomeRows[_rowIndex].Items.Count)
-                    OpenItem(_vm.HomeRows[_rowIndex].Items[_colIndex]);
-                return true;
-
             case LayerPosters:
-                if (_posterIndex >= 0 && _posterIndex < _vm.Items.Count)
-                    OpenItem(_vm.Items[_posterIndex]);
+                var act = ActiveItems();
+                if (_posterIndex >= 0 && _posterIndex < act.Count)
+                    OpenItem(act[_posterIndex]);
                 return true;
         }
         return false;
@@ -641,9 +583,7 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
         {
             case LayerPosters:
                 ClearPosterFocus();
-                // 主页行流视图直接回站点条；网格按原路径回 chips
-                if (_vm.IsHomeMode) FocusSwitchSite();
-                else FocusChips(_chipIndex);
+                FocusChips(_chipIndex);
                 return true;
             case LayerChips:
                 FocusSwitchSite();
@@ -685,20 +625,25 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
     private void ApplyModeVisual()
     {
         var home = _vm.IsHomeMode;
-        HomeRowsScroll.IsVisible = home;
+        HomeRecHost.IsVisible = home;
         PosterGrid.IsVisible = !home;
         CategoryScroll.IsVisible = true;   // 分类 chips 常显（TVBox 的分类 tab 形态），首位固定「主页」
         UpdateFilterUi();
     }
 
-    /// <summary>行流集合变化后复位越界的行流焦点索引（空行剔除/重建时 _rowIndex/_colIndex 可能越界）。</summary>
-    private void OnHomeRowsChanged()
+    /// <summary>主页推荐集合变化后复位越界的焦点索引（重建清空时 _posterIndex 可能越界）。</summary>
+    private void OnHomeRecItemsChanged()
     {
-        if (_vm.HomeRows.Count == 0) { _rowIndex = _colIndex = 0; return; }
-        _rowIndex = Math.Clamp(_rowIndex, 0, _vm.HomeRows.Count - 1);
-        var cols = _vm.HomeRows[_rowIndex].Items.Count;
-        _colIndex = Math.Clamp(_colIndex, 0, Math.Max(0, cols - 1));
+        var n = ActiveItems().Count;
+        if (_posterIndex >= n) _posterIndex = Math.Max(0, n - 1);
         if (_layer == LayerPosters && _vm.IsHomeMode) RenderFocus();
+    }
+
+    /// <summary>记录主页推荐网格列数（方向键上下移动按列换算索引）。</summary>
+    private void CaptureRecColumns()
+    {
+        if (HomeGrid.ItemsLayout is GridItemsLayout g && g.Span > 0)
+            _recColumns = g.Span;
     }
 
     /// <summary>分类 chip 点击 → 拉取该分类影片</summary>
