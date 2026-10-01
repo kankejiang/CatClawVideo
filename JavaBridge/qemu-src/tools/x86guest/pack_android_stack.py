@@ -128,6 +128,53 @@ for d in SEARCH:
                 os.symlink(os.path.basename(os.path.realpath(full)), dst)
                 extra += 1
 
+# ── VINTF manifest：HIDL 服务**必须**在 manifest 里才能注册（这是 SF 崩溃链的上游）──
+# 实测根因链：/vendor/manifest.xml 缺失 ⇒ hwservicemanager 报
+#   getTransport: Cannot find entry …IAllocator/default in either framework or device VINTF manifest.
+#   Service … must be in VINTF manifest in order to register/get.
+# ⇒ mapper@4.0 注册不上 ⇒ libui 的 GraphicBufferMapper 构造 LOG_ALWAYS_FATAL ⇒ SurfaceFlinger abort。
+# hwservicemanager 读的是**字面路径** /vendor/manifest.xml 与 /system/manifest.xml
+# （真机上这俩是 init 建的符号链接；我们不跑 init ⇒ 直接放这两个路径）。
+# vendor 侧要**合并三份**：主 manifest（含 configstore 等）+ gbm_mesa 的 allocator/mapper 两个
+# fragment（rc 里它们默认 disabled、靠 bind mount 启用；实测只放 fragment 时 SF 报
+#   Cannot find entry …configstore@1.0::ISurfaceFlingerConfigs）。
+import re as _re
+
+VINTF_COPY = [
+    (f"{SYS}/system/etc/vintf/manifest.xml", "system/manifest.xml"),
+]
+VENDOR_FRAGS = [
+    f"{VEN}/etc/vintf/manifest.xml",
+    f"{VEN}/etc/vintf/manifest.disabled/gbm_mesa.allocator@4.0.xml",
+    f"{VEN}/etc/vintf/manifest.disabled/gbm_mesa.mapper@4.0.xml",
+]
+merged = ""
+for frag in VENDOR_FRAGS:
+    if not os.path.exists(frag):
+        print("  vintf fragment 缺:", frag)
+        continue
+    with open(frag, encoding="utf-8") as fh:
+        txt = fh.read()
+    inner = _re.sub(r"(?s)^.*?<manifest[^>]*>", "", txt)
+    inner = _re.sub(r"(?s)</manifest>\s*$", "", inner).strip()
+    merged += inner + "\n"
+if merged:
+    body = '<?xml version="1.0" encoding="utf-8"?>\n<manifest version="1.0" type="device">\n' + merged + "</manifest>\n"
+    dst = os.path.join(STAGE, "vendor/manifest.xml")
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    with open(dst, "w", encoding="utf-8") as fh:
+        fh.write(body)
+    print("  vintf: 合并 %d 份 → vendor/manifest.xml（%d 字节）" % (len(VENDOR_FRAGS), len(body)))
+
+for src, rel in VINTF_COPY:
+    if not os.path.exists(src):
+        print("  vintf 跳过（缺）:", src)
+        continue
+    dst = os.path.join(STAGE, rel)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copy2(src, dst)
+    print("  vintf: %s → %s" % (os.path.basename(src), rel))
+
 if os.path.exists(OUT):
     os.remove(OUT)
 with tarfile.open(OUT, "w:gz") as t:
