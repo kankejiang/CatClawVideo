@@ -356,7 +356,7 @@ def main():
     if os.environ.get("B1_ASTACK", "1") != "0":
         ast_sh = (
             '\n# ── B1.1：Android binder 服务栈 ──\n'
-            '# astack v3 (2026-10-02)：dri 软链 tar 化/card0/SF+adbd 由 init 拉起/verify 自检\n'
+            '# astack v5 (2026-10-02)：dri 软链 tar 化/card0/SF+adbd 由 init 拉起/verify 自检（screencap 直调+adbd 静音）\n'
             'if [ -f /b1/android-stack.tar.gz ]; then\n'
             '    # ⚠ 顺序问题（实测）：本段在 init 里排在 weston 段**之前**，而 composer 服务要连 Wayland\n'
             '    #    （日志 "WAYLAND_DISPLAY: wayland-0 / Could not open Wayland display / failed to open\n'
@@ -502,15 +502,27 @@ def main():
             '      LD_LIBRARY_PATH=/vendor/lib64/egl:/vendor/lib64:/system/lib64:/system/lib64/egl \\\n'
             '      WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/0 /system/bin/surfaceflinger >/tmp/sf-init.log 2>&1 ) &\n'
             '    ( $BB sleep 2; LD_PRELOAD=/system/lib64/libpropfix.so:/proppreload.so \\\n'
-            '      PROPFIX="hwservicemanager.ready=true;service.adb.tcp.port=5555;service.adb.root=1;ro.adb.secure=0;ro.debuggable=1" \\\n'
+            '      PROPFIX="hwservicemanager.ready=true;service.adb.tcp.port=5555;service.adb.root=1;ro.adb.secure=0;ro.debuggable=1;persist.adb.tls_server.enable=1" \\\n'
             '      LD_LIBRARY_PATH=/vendor/lib64:/system/lib64 /system/bin/adbd >/tmp/adbd-init.log 2>&1 ) &\n'
                     '    echo "[astack] SF/adbd 已由 init 拉起"\n'
-            '    # ── 验收自检（无需 adb）：延迟 cat 两份日志 + screencap 出 PNG 魔数 ──\n'
-            '    ( $BB sleep 18; echo "[verify] sf-init 头30行:"; $BB head -30 /tmp/sf-init.log 2>&1; \\\n'
-            '      echo "[verify] adbd-init 头15行:"; $BB head -15 /tmp/adbd-init.log 2>&1 ) &\n'
-            '    ( $BB sleep 30; echo "[verify] screencap:"; $BB screencap -p /data/local/tmp/shot.png 2>&1 | $BB head -3; \\\n'
+            '    # 1 秒同步探针：区分「子 shell 没跑/重定向失败」与「进程秒死但日志在」——\n'
+            '    # 若 1 秒后文件不存在，说明 spawn 或重定向本身失败（上一轮 sf-init.log 消失的判别点）。\n'
+            '    $BB sleep 1\n'
+            '    echo "[astack] 启动1秒探针 sf/adbd 日志:"; $BB ls -la /tmp/sf-init.log /tmp/adbd-init.log 2>&1\n'
+            '    # ── 验收自检（无需 adb）：20 秒全量证据 + 35 秒 screencap 出 PNG 魔数 ──\n'
+            '    ( $BB sleep 20; \\\n'
+            '      echo "[verify] ===== /tmp 清单 ====="; $BB ls -la /tmp/ 2>&1 | $BB head -24; \\\n'
+            '      echo "[verify] ===== 进程清单 ====="; ($BB ps w 2>/dev/null || $BB ps) 2>&1 | $BB grep -E "surfaceflinger|adbd|servicemanager|hwservicemanager|weston|allocator|composer|vndservice" | $BB grep -v grep; \\\n'
+            '      echo "[verify] ===== dri 目录 ====="; $BB ls -la /system/lib64/dri/ /vendor/lib64/dri/ 2>&1 | $BB head -24; \\\n'
+            '      echo "[verify] ===== 关键文件 ====="; $BB ls -la /system/bin/surfaceflinger /system/bin/adbd /system/bin/screencap /system/bin/svccheck /dev/dri/card0 /dev/dri/renderD128 2>&1; \\\n'
+            '      echo "[verify] ===== 内存 ====="; $BB head -2 /proc/meminfo; $BB dmesg 2>/dev/null | $BB tail -6; \\\n'
+            '      echo "[verify] ===== sf-init.log 关键行 ====="; $BB grep -aE "allocate|RenderEngine|EGL|eglCreate|dispatcher|AIDL|VINTF|surfaceflinger" /tmp/sf-init.log 2>/dev/null | $BB head -30; echo "[verify] ---- sf-init.log 尾部 ----"; $BB tail -12 /tmp/sf-init.log 2>/dev/null; \\\n'
+            '      echo "[verify] ===== adbd-init.log ====="; if [ -f /tmp/adbd-init.log ]; then $BB head -15 /tmp/adbd-init.log; else echo "(不存在)"; fi ) &\n'
+            '    ( $BB sleep 35; \\\n'
+            '      echo "[verify] screencap:"; LD_LIBRARY_PATH=/system/lib64 /system/bin/screencap -p /data/local/tmp/shot.png 2>&1 | $BB head -3; \\\n'
             '      $BB ls -la /data/local/tmp/ 2>/dev/null | $BB tail -1; \\\n'
-            '      echo "[verify] PNG 前8字节:"; $BB head -c 8 /data/local/tmp/shot.png 2>/dev/null | $BB od -An -tx1 ) &\n'
+            '      echo "[verify] PNG 前8字节:"; $BB head -c 8 /data/local/tmp/shot.png 2>/dev/null | $BB od -An -tx1; \\\n'
+            '      echo "[verify] svccheck 一次性:"; LD_PRELOAD=/system/lib64/libpropfix.so:/proppreload.so PROPFIX="hwservicemanager.ready=true" /system/bin/svccheck 2>&1 | $BB head -10 ) &\n'
             '    $BB sleep 3\n'
             '    echo "[astack] servicemanager pid=$($BB pidof servicemanager 2>/dev/null)"\n'
             '    echo "[astack] hwservicemanager pid=$($BB pidof hwservicemanager 2>/dev/null)"\n'
@@ -525,7 +537,7 @@ def main():
         # ── astack 段幂等更新（2026-10-02）：原守卫「标记不存在才插入」导致基础 initramfs 里
         # 固化的**旧版** astack 段永远不被更新 ⇒ dri 软链/SF/adbd 拉起/verify 等所有修改从未生效。
         # 改为版本标记：ver 不在（=旧段在）时先整段删除旧段（从标记到段尾 fi），再插新版。
-        _ver = b"# astack v3 (2026-10-02)"
+        _ver = b"# astack v5 (2026-10-02)"
         if _ver not in init:
             tag = "B1.1：Android binder 服务栈".encode("utf-8")
             start = init.find(tag)
@@ -539,7 +551,7 @@ def main():
             init = init.replace(_a_ast, ast_sh + _a_ast, 1)
             init_i = next(i for i, e in enumerate(merged) if e[0] == "init")
             merged[init_i] = merged[init_i][:6] + (init,) + merged[init_i][7:]
-            print("④f init 已插入 Android 服务栈段（astack v3，含 dri 软链/SF/adbd 拉起/verify 自检）")
+            print("④f init 已插入 Android 服务栈段（astack v5，含 dri 软链/SF/adbd 拉起/verify 全量证据自检）")
         anchor3 = b'LD_PRELOAD=/proppreload.so /system/bin/artlaunch'
         if b"weston --backend=headless" not in init and anchor3 in init:
             init = init.replace(anchor3, we_sh + b"\n" + anchor3, 1)
