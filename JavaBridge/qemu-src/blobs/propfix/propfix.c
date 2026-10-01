@@ -216,6 +216,52 @@ static const char *egl_attr_name(EGLint a) {
     }
 }
 
+// ── 诊断：EGL 平台初始化 / GBM ──
+// 实测：libEGL_mesa.so 能加载，但**从未尝试加载 dri 驱动**，且 eglChooseConfig 一个配置都不给
+// ⇒ 卡在 EGL 平台初始化（GBM 打开 DRM 设备）这一步。这里把关键入口的结果打出来。
+void *gbm_create_device(int fd) {
+    static void *(*real)(int) = NULL;
+    if (!real) real = (void *(*)(int))dlsym(RTLD_NEXT, "gbm_create_device");
+    void *d = real ? real(fd) : NULL;
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] gbm_create_device(fd=%d) -> %p %s\n", fd, d,
+                d ? "" : "(失败)");
+    return d;
+}
+
+void *eglGetDisplay(void *native_display) {
+    static void *(*real)(void *) = NULL;
+    if (!real) real = (void *(*)(void *))dlsym(RTLD_NEXT, "eglGetDisplay");
+    void *dpy = real ? real(native_display) : NULL;
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] eglGetDisplay(native=%p) -> %p %s\n",
+                native_display, dpy, dpy ? "" : "(失败)");
+    return dpy;
+}
+
+EGLBoolean eglInitialize(EGLDisplay dpy, EGLint *major, EGLint *minor) {
+    static EGLBoolean (*real)(EGLDisplay, EGLint *, EGLint *) = NULL;
+    if (!real)
+        real = (EGLBoolean (*)(EGLDisplay, EGLint *, EGLint *))dlsym(RTLD_NEXT, "eglInitialize");
+    EGLBoolean ok = real ? real(dpy, major, minor) : 0;
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] eglInitialize(dpy=%p) -> %d (v=%d.%d) %s\n", dpy, ok,
+                major ? *major : -1, minor ? *minor : -1, ok ? "" : "(失败)");
+    return ok;
+}
+
+// 问出 display 背后到底是哪个实现（EGL_VENDOR / EGL_VERSION 会说真话）
+const char *eglQueryString(EGLDisplay dpy, EGLint name) {
+    static const char *(*real)(EGLDisplay, EGLint) = NULL;
+    if (!real) real = (const char *(*)(EGLDisplay, EGLint))dlsym(RTLD_NEXT, "eglQueryString");
+    const char *s = real ? real(dpy, name) : NULL;
+    // 0x3053=EGL_VENDOR, 0x3054=EGL_VERSION, 0x3055=EGL_EXTENSIONS, 0x308D=EGL_CLIENT_APIS
+    if (getenv("PROPFIX_DEBUG") && (name == 0x3053 || name == 0x3054 || name == 0x308D))
+        fprintf(stderr, "[propfix] eglQueryString(dpy=%p, 0x%x) -> %s\n", dpy, name,
+                s ? s : "(null)");
+    return s;
+}
+
 EGLBoolean eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list, EGLConfig *configs,
                            EGLint config_size, EGLint *num_config) {
     static EGLBoolean (*real)(EGLDisplay, const EGLint *, EGLConfig *, EGLint, EGLint *) = NULL;

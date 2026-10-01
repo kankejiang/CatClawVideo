@@ -22,7 +22,12 @@ FILES = [
     ("lib64/egl/libEGL_mesa.so",       "system/lib64/egl/libEGL_mesa.so"),
     ("lib64/egl/libGLESv2_mesa.so",    "system/lib64/egl/libGLESv2_mesa.so"),
     ("lib64/egl/libGLESv1_CM_mesa.so", "system/lib64/egl/libGLESv1_CM_mesa.so"),
-    ("lib64/libgallium_dri.so",        "system/lib64/libgallium_dri.so"),
+    # ⚠ 用**打过补丁**的副本：原始 libgallium_dri.so 硬依赖 libLLVM22.so（未压缩 105MB），
+    # dlopen libEGL_mesa 会直接失败（实测："library libLLVM22.so not found"）。
+    # llvmpipe 需要 LLVM，但同一 mega-driver 里的 swrast(softpipe) 不需要 ⇒
+    # patchelf --remove-needed libLLVM22.so，运行时用 GALLIUM_DRIVER=swrast。
+    # 补丁脚本见 .zwork/b11_nollvm.sh；产物 /root/b1_blobs/libgallium_nollvm.so。
+    ("/root/b1_blobs/libgallium_nollvm.so", "system/lib64/libgallium_dri.so"),
     ("lib64/libgbm_mesa.so",           "system/lib64/libgbm_mesa.so"),
     ("lib64/libgbm_mesa_wrapper.so",   "system/lib64/libgbm_mesa_wrapper.so"),
     ("lib64/dri_gbm.so",               "system/lib64/dri_gbm.so"),
@@ -38,7 +43,7 @@ FILES = [
 shutil.rmtree(STAGE, ignore_errors=True)
 total = 0
 for src, rel in FILES:
-    p = os.path.join(VEN, src)
+    p = src if src.startswith("/") else os.path.join(VEN, src)
     if not os.path.exists(p):
         print("  跳过（缺）:", src)
         continue
@@ -60,6 +65,31 @@ os.makedirs(dri, exist_ok=True)
 for n in ("iris_dri.so", "llvmpipe_dri.so", "swrast_dri.so"):
     os.symlink("../libgallium_dri.so", os.path.join(dri, n))
 
+# ── 同时挂到 /vendor/lib64（sphal 命名空间）──
+# 根因（实测）：SF 是 system 进程，它拿到的 EGL display 自述为
+#   "1.4 Android META-EGL"
+# 即 libEGL.so 这个 loader **没能加载任何驱动**，回落成内置空壳，于是 eglChooseConfig 一个配置都不给。
+# loader 在 sphal 命名空间里找 /vendor/lib64/egl/libEGL_<driver>.so ⇒ 这里用**符号链接**
+# 指向 /system/lib64 下的真身（零体积代价；绝对路径在同一进程里可达）。
+vlinks = [
+    ("vendor/lib64/egl/libEGL_mesa.so",       "../../../system/lib64/egl/libEGL_mesa.so"),
+    ("vendor/lib64/egl/libGLESv2_mesa.so",    "../../../system/lib64/egl/libGLESv2_mesa.so"),
+    ("vendor/lib64/egl/libGLESv1_CM_mesa.so", "../../../system/lib64/egl/libGLESv1_CM_mesa.so"),
+    ("vendor/lib64/libgallium_dri.so",        "../../system/lib64/libgallium_dri.so"),
+    ("vendor/lib64/libgbm_mesa.so",           "../../system/lib64/libgbm_mesa.so"),
+    ("vendor/lib64/libgbm_mesa_wrapper.so",   "../../system/lib64/libgbm_mesa_wrapper.so"),
+    ("vendor/lib64/dri_gbm.so",               "../../system/lib64/dri_gbm.so"),
+    ("vendor/lib64/libdrm.so",                "../../system/lib64/libdrm.so"),
+    ("vendor/lib64/libdrm_intel.so",          "../../system/lib64/libdrm_intel.so"),
+    ("vendor/lib64/libdrm_amdgpu.so",         "../../system/lib64/libdrm_amdgpu.so"),
+    ("vendor/lib64/libdrm_radeon.so",         "../../system/lib64/libdrm_radeon.so"),
+    ("vendor/lib64/libLLVM22.so",             "../../system/lib64/libLLVM22.so"),
+]
+for rel, target in vlinks:
+    full = os.path.join(STAGE, rel)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    if not os.path.lexists(full):
+        os.symlink(target, full)
 if os.path.exists(OUT):
     os.remove(OUT)
 with tarfile.open(OUT, "w:gz") as t:

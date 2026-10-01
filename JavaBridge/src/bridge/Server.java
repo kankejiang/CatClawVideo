@@ -1293,6 +1293,11 @@ public class Server {
                         + ";ro.surface_flinger.use_color_management=false");
                 // mesa 的软件光栅化（llvmpipe）：本 guest 没有 GPU，iris 起不来，强制软件路径。
                 pb.environment().put("GALLIUM_DRIVER", "swrast");   // softpipe：不需要 LLVM（llvmpipe 需要 libLLVM22）
+                // mesa/EGL 自己的调试输出（定位"驱动为什么没起来"）
+                pb.environment().put("MESA_DEBUG", "1");
+                pb.environment().put("LIBGL_DEBUG", "verbose");
+                pb.environment().put("EGL_LOG_LEVEL", "debug");
+                pb.environment().put("MESA_LOADER_DEBUG", "1");
                 pb.environment().put("LIBGL_ALWAYS_SOFTWARE", "1");
                 pb.environment().put("MESA_LOADER_DRIVER_OVERRIDE", "swrast");
                 // 诊断开关：让 libpropfix 把 SF 的每一次属性读取打到控制台
