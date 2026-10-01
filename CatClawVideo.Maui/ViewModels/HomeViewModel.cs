@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using CatClawVideo.Core.Interfaces;
 using CatClawVideo.Core.Models;
 using CatClawVideo.Core.Services;
+using CatClawVideo.Data;
 using CatClawVideo.Maui.Services;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -18,6 +19,9 @@ public partial class HomeViewModel : ObservableObject
 
     /// <summary>封面解析（源封面失效 → 豆瓣 → 占位海报）</summary>
     private readonly CoverImageService _covers;
+
+    /// <summary>播放历史库（主页「观看历史」行用；未注入时该行为空）</summary>
+    private readonly VideoDatabase? _db;
 
     /// <summary>当前生效站点（UI 显示/详情页拉取用；无可用源时为 null）</summary>
     public VodSiteInfo? Site => CurrentSite;
@@ -78,10 +82,11 @@ public partial class HomeViewModel : ObservableObject
     public ObservableCollection<VodCategory> Categories { get; } = new();
     public ObservableCollection<VodItem> Items { get; } = new();
 
-    public HomeViewModel(IVodSourceProvider provider, CoverImageService covers)
+    public HomeViewModel(IVodSourceProvider provider, CoverImageService covers, VideoDatabase? db = null)
     {
         _provider = provider;
         _covers = covers;
+        _db = db;
         // 订阅变化后允许首页重新拉一次（常驻页，之前以 Categories.Count>0 跳过）
         SiteRegistry.Changed += () =>
             MainThread.BeginInvokeOnMainThread(() =>
@@ -92,118 +97,154 @@ public partial class HomeViewModel : ObservableObject
             });
     }
 
-    // ═══════════════════ 主页（TVBox 式推荐行流）═══════════════════
+    // ═══════════════════ 主页（TVBox 式推荐行，设置三选一）═══════════════════
     //
-    // TVBox/影视仓的「首页」和「片库」是两个概念：首页 = 进 app 直接看到的推荐内容，
-    // 按分类分行的横向海报流（不用选分类就有内容看）；片库 = 全分类网格（本页原有形态）。
+    // 对位 TVBox UserFragment：第一个 tab 固定「主页」，内容由设置决定（HawkConfig.HOME_REC
+    // 三选一）——站点推荐（spider homeContent.list）/ 豆瓣热播（壳自己拉豆瓣）/ 观看历史。
+    // 不依赖源 class（像「设置│中心」这类功能站 class 全是功能卡，靠源出不了推荐）。
 
-    /// <summary>主页推荐行：一个分类 + 其第一页影片（前 N 条，横向滚动）。</summary>
+    /// <summary>虚拟「主页」分类 Id（chips 第一个固定项；选中它显示推荐行）。</summary>
+    public const string HomeCategoryId = "__home__";
+
+    /// <summary>是否处于主页模式（选中虚拟主页分类 → 行流视图；其余分类 → 网格）。</summary>
+    public bool IsHomeMode => SelectedCategoryId == HomeCategoryId;
+
+    /// <summary>推荐行：一个标题 + 一行横向滚动卡片（豆瓣/站点推荐行无「更多」）。</summary>
     public sealed class HomeRow
     {
-        public VodCategory Category { get; init; } = new();
-        public string Title => Category.Name;
+        public string Title { get; init; } = string.Empty;
         public ObservableCollection<VodItem> Items { get; } = new();
     }
 
-    /// <summary>false = 主页（推荐行流，TVBox 默认形态）；true = 片库（全分类网格）。</summary>
-    [ObservableProperty]
-    private bool _isLibraryMode;
-
     public ObservableCollection<HomeRow> HomeRows { get; } = new();
 
-    /// <summary>行流已为哪个站点建过（同站点免重建；换站/订阅变化后重建）。</summary>
-    private string _rowsSiteKey = "";
+    /// <summary>行流缓存 key（偏好版本 + 模式 + 站点；任一变了才重建）。</summary>
+    private string _rowsKey = "";
 
-    /// <summary>主页行数上限：每行一次网络请求，行太多会把主页拖慢（TVBox 首页也只推前几个分类）。</summary>
-    private const int HomeRowCount = 8;
+    /// <summary>每行展示条数上限。</summary>
+    private const int HomeRowTake = 20;
 
-    /// <summary>每行展示条数（第一页通常 20+，取前 N 条横向滚动）。</summary>
-    private const int HomeRowTake = 14;
+    /// <summary>历史行取最近多少条。</summary>
+    private const int HistoryRowTake = 20;
 
-    /// <summary>站点就绪后的默认视图：主页模式 → 推荐行流；片库模式 → 第一个分类网格。</summary>
-    private Task EnterDefaultViewAsync() =>
-        IsLibraryMode ? SelectCategoryAsync(Categories[0]) : LoadHomeRowsAsync();
+    /// <summary>站点就绪后的默认视图：第一个 chip 固定是「主页」。</summary>
+    private Task EnterDefaultViewAsync() => SelectCategoryAsync(Categories[0]);
+
+    /// <summary>行流缓存 key（偏好版本 + 模式 + 站点；任一变了才重建）。</summary>
+    private string RowsKey() =>
+        $"v{Services.HomeRecPrefs.Version}|{Services.HomeRecPrefs.Load()}|{CurrentSite?.Key}";
 
     /// <summary>
-    /// 构建主页推荐行流：取当前源前几个分类（跳过「配置」这类网盘功能卡类目），
-    /// 并发拉各分类第一页，每行展示前 N 条。行先占位再填充（渐进出现），失败的行静默剔除。
+    /// 构建「主页」推荐行（TVBox 三选一，单行）：站点推荐 / 豆瓣热播 / 观看历史。
     /// </summary>
-    public async Task LoadHomeRowsAsync()
+    public async Task LoadHomeRecRowsAsync()
     {
-        if (CurrentSite == null || Categories.Count == 0) return;
-        if (HomeRows.Count > 0 && _rowsSiteKey == CurrentSite.Key) return;
-        _rowsSiteKey = CurrentSite.Key;
+        if (CurrentSite == null) return;
+        var key = RowsKey();
+        if (HomeRows.Count > 0 && _rowsKey == key) return;
+        _rowsKey = key;
 
         IsHomeLoading = true;
-        HomeStatus = "正在加载主页推荐…";
         HomeRows.Clear();
+        var mode = Services.HomeRecPrefs.Load();
 
-        var site = CurrentSite;
-        var cats = Categories.Where(c => c.Name != "配置").Take(HomeRowCount).ToList();
-        var rows = cats.Select(c => new HomeRow { Category = c }).ToList();
-        foreach (var r in rows) HomeRows.Add(r);
+        var row = new HomeRow { Title = Services.HomeRecPrefs.Label(mode) };
+        HomeRows.Add(row);
 
-        using var gate = new SemaphoreSlim(4);   // jar 源桥内有全局锁，并发太高只会排队
-        await Task.WhenAll(rows.Select(async row =>
+        try
         {
-            try
+            switch (mode)
             {
-                await gate.WaitAsync();
-                List<VodItem> items;
-                var key = FirstPageKey(site, row.Category);
-                if (_firstPageCache.TryGetValue(key, out var cached))
-                {
-                    items = cached;
-                }
-                else
-                {
-                    items = await _provider.GetItemsAsync(site, row.Category, 1, null);
-                    if (items.Count > 0)
-                    {
-                        if (_firstPageCache.Count >= MaxFirstPageCache) _firstPageCache.Clear();
-                        _firstPageCache[key] = items;
-                    }
-                }
-                var take = items.Take(HomeRowTake).ToList();
-                CoverResolver.Attach(_covers, take);   // 行内容先挂上，封面异步补齐
-                foreach (var it in take) row.Items.Add(it);
+                case Services.HomeRecPrefs.History:
+                    await FillHistoryRowAsync(row).ConfigureAwait(true);
+                    break;
+                case Services.HomeRecPrefs.DoubanHot:
+                    FillDoubanRow(row, await DoubanService.GetHotAsync(HomeRowTake).ConfigureAwait(true));
+                    break;
+                default:   // SiteRecommend（TVBox 默认）：homeContent.list
+                    var rec = await _provider.GetHomeRecommendAsync(CurrentSite).ConfigureAwait(true);
+                    var take = rec.Take(HomeRowTake).ToList();
+                    CoverResolver.Attach(_covers, take);
+                    foreach (var it in take) row.Items.Add(it);
+                    break;
             }
-            catch (Exception ex) { DiagLog.Write($"[home-rows] {row.Title} 拉取失败: {ex.Message}"); }
-            finally { gate.Release(); }
-        }));
-
-        for (var i = HomeRows.Count - 1; i >= 0; i--)
-            if (HomeRows[i].Items.Count == 0) HomeRows.RemoveAt(i);
-
-        // 全空 = 该源不适合行流（网盘源分类多是功能卡）→ 自动回退片库，不让用户面对空主页
-        if (HomeRows.Count == 0 && Categories.Count > 0)
+        }
+        catch (Exception ex)
         {
-            DiagLog.Write("[home-rows] 行流全空 → 自动回退片库模式");
-            IsLibraryMode = true;
-            await SelectCategoryAsync(Categories[0]);
-            return;
+            DiagLog.Write($"[home-rec] {row.Title} 构建失败: {ex.Message}");
         }
 
-        HomeStatus = $"{site.Name} · 主页";
+        HomeStatus = row.Items.Count == 0
+            ? $"{CurrentSite.Name} · 主页 · {row.Title}暂无内容"
+            : $"{CurrentSite.Name} · 主页";
         IsHomeLoading = false;
     }
 
-    /// <summary>
-    /// 主页/片库模式切换。两模式共享站点分类与首屏缓存（FirstPageKey 一致），切换近乎零成本；
-    /// 首次进入某模式才补一次数据。
-    /// </summary>
-    public async Task SetLibraryModeAsync(bool library)
+    /// <summary>设置里切了推荐内容 / 换站后，回主页时行流按需重建（OnTabShownAsync 调）。</summary>
+    public Task RefreshHomeRecIfStaleAsync() =>
+        IsHomeMode && CurrentSite != null ? LoadHomeRecRowsAsync() : Task.CompletedTask;
+
+    /// <summary>豆瓣热播行（TVBox 同款豆瓣接口；封面解析链已带豆瓣 Referer）。</summary>
+    private void FillDoubanRow(HomeRow row, List<DoubanEntry> entries)
     {
-        if (IsLibraryMode == library) return;
-        IsLibraryMode = library;
-        if (library)
+        var items = entries.Take(HomeRowTake).Select(e => new VodItem
         {
-            if (Items.Count == 0 && Categories.Count > 0)
-                await SelectCategoryAsync(Categories[0]);
-        }
-        else
+            Id = "douban:" + e.Title,
+            Title = e.Title,
+            Cover = e.Cover,
+            Remarks = string.IsNullOrWhiteSpace(e.Rate) ? "" : e.Rate + "分",
+            Tag = "douban",   // OpenItem 据此跳跨源搜索
+        }).ToList();
+        CoverResolver.Attach(_covers, items);
+        foreach (var it in items) row.Items.Add(it);
+    }
+
+    /// <summary>观看历史行（本地最近 N 条；卡片带续看参数，点击直接回观看页）。</summary>
+    private async Task FillHistoryRowAsync(HomeRow row)
+    {
+        if (_db is null) return;
+        var entries = await _db.GetRecentHistoryAsync(HistoryRowTake).ConfigureAwait(true);
+        foreach (var e in entries)
         {
-            await LoadHomeRowsAsync();
+            // 与 HistoryPage 同一套回跳参数：type/api 取当前注册表的活源定义（旧记录可能指向死源）
+            var hasSource = !string.IsNullOrEmpty(e.SourceKey) && !string.IsNullOrEmpty(e.ItemId);
+            var site = SiteRegistry.Find(e.SourceKey);
+            var type = site?.Type ?? e.ItemType;
+            var api = site?.Api ?? e.ItemApi;
+            var posParam = $"&pos={Math.Max(0, (int)e.PositionSeconds)}";
+            var itemTitle = e.Title.Contains(" · ") ? e.Title.Split(" · ")[0] : e.Title;
+            if (string.IsNullOrWhiteSpace(itemTitle)) itemTitle = e.EpisodeName;
+
+            string query;
+            if (hasSource)
+            {
+                query = $"watch?title={Uri.EscapeDataString(itemTitle)}" +
+                        $"&sourceKey={Uri.EscapeDataString(e.SourceKey)}&type={type}" +
+                        $"&api={Uri.EscapeDataString(api)}&itemId={Uri.EscapeDataString(e.ItemId)}" +
+                        (string.IsNullOrEmpty(e.EpisodeName) ? "" : $"&resumeEp={Uri.EscapeDataString(e.EpisodeName)}") +
+                        (string.IsNullOrEmpty(e.RouteName) ? "" : $"&route={Uri.EscapeDataString(e.RouteName)}") +
+                        $"&year={Uri.EscapeDataString(e.Year)}&remarks={Uri.EscapeDataString(e.Remarks)}" +
+                        $"&desc={Uri.EscapeDataString(e.Description)}&category={Uri.EscapeDataString(e.Category)}" +
+                        posParam +
+                        (string.IsNullOrEmpty(e.Cover) ? "" : $"&cover={Uri.EscapeDataString(e.Cover)}");
+            }
+            else
+            {
+                query = $"player?title={Uri.EscapeDataString(e.Title)}&url={Uri.EscapeDataString(e.Url)}" +
+                        posParam +
+                        (string.IsNullOrEmpty(e.Cover) ? "" : $"&cover={Uri.EscapeDataString(e.Cover)}");
+            }
+
+            var ep = string.IsNullOrEmpty(e.EpisodeName) ? "" : e.EpisodeName;
+            row.Items.Add(new VodItem
+            {
+                Id = "history:" + e.Id,
+                Title = itemTitle,
+                Cover = e.Cover ?? "",
+                Remarks = ep,
+                Tag = "history",
+                Action = query,   // OpenItem 据此直接 GoToAsync（历史卡不走 detailContent）
+            });
         }
     }
 
@@ -299,7 +340,8 @@ public partial class HomeViewModel : ObservableObject
         OnPropertyChanged(nameof(Site));
         OnPropertyChanged(nameof(SiteDisplayName));
         Categories.Clear();
-        _rowsSiteKey = "";   // 站点就绪/重拉后行流要重建
+        _rowsKey = "";   // 站点就绪/重拉后行流要重建
+        Categories.Add(new VodCategory { Id = HomeCategoryId, Name = "主页" });   // TVBox 同款：第一个 tab 固定主页
         foreach (var c in cats) Categories.Add(c);
 
         DiagLog.Write($"[home] 首载 site={usedSite.Name} 分类={cats.Count} 耗时={sw.ElapsedMilliseconds}ms");
@@ -362,7 +404,7 @@ public partial class HomeViewModel : ObservableObject
         Categories.Clear();
         Items.Clear();
         HomeRows.Clear();
-        _rowsSiteKey = "";
+        _rowsKey = "";
         SelectedCategoryId = string.Empty;
         CurrentSite = site;
         OnPropertyChanged(nameof(Site));
@@ -403,18 +445,37 @@ public partial class HomeViewModel : ObservableObject
         }
 
         FailedSites.Remove(site.Key);
+        Categories.Add(new VodCategory { Id = HomeCategoryId, Name = "主页" });   // TVBox 同款：第一个 tab 固定主页
         foreach (var c in cats) Categories.Add(c);
         DiagLog.Write($"[site-switch] 分类就绪 site={site.Name} cats={cats.Count} 耗时={sw.ElapsedMilliseconds}ms{(_catsCache.ContainsKey(site.Key) ? "（缓存命中）" : "")}");
         await EnterDefaultViewAsync();
     }
 
-    /// <summary>切换分类并拉取第一页影片（仅当前站点）；分页状态复位</summary>
+    /// <summary>切换分类并拉取第一页影片（仅当前站点）；分页状态复位。虚拟「主页」分类 → 豆瓣推荐行流。</summary>
     [RelayCommand]
     public async Task SelectCategoryAsync(VodCategory? category)
     {
         if (category == null) return;
         DiagLog.Write($"[cat-select] 开始 site={(CurrentSite?.Name ?? "null")} cat={category.Name} loading={IsHomeLoading}");
         SelectedCategoryId = category.Id;
+
+        // 虚拟「主页」分类：豆瓣推荐行流，不进网格/筛选/分页链路
+        if (category.Id == HomeCategoryId)
+        {
+            _currentCategory = null;
+            _filter.Clear();
+            FilterSummary = "";
+            OnPropertyChanged(nameof(HasFilters));
+            _currentPage = 1;
+            HasMoreItems = true;
+            Items.Clear();
+            await LoadHomeRecRowsAsync();
+            return;
+        }
+
+        // 从主页切到普通分类：行流退场
+        if (HomeRows.Count > 0) HomeRows.Clear();
+
         // 换「分类」才作废筛选条件；同一分类内重拉（改筛选/重试）要保留
         if (_currentCategory is null || _currentCategory.Id != category.Id)
         {

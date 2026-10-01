@@ -79,9 +79,21 @@ public class SpiderVodProvider : IVodSourceProvider, IActionVodSourceProvider
         var rt = RuntimeFor(site) ?? throw new NotSupportedException(site.StatusNote ?? "爬虫运行时不可用");
         var raw = await rt.HomeContentAsync(site, ct).ConfigureAwait(false);
         var cats = SpiderJsonParser.ParseCategories(raw);
-        _log?.Invoke($"[解析] {site.Key}.home → {raw.Length}B → 分类 {cats.Count} 个");
+        // homeContent 的 list 字段 = 站点推荐（TVBox 首页「站点推荐」语义）。与分类同一次
+        // 请求拿到，顺手解析缓存，GetHomeRecommendAsync 直接读，不再打网络。
+        try { _homeRecommend[site.Key] = SpiderJsonParser.ParseItems(raw, site.Key); }
+        catch { _homeRecommend[site.Key] = []; }
+        _log?.Invoke($"[解析] {site.Key}.home → {raw.Length}B → 分类 {cats.Count} 个"
+                     + $"，推荐 {(_homeRecommend.TryGetValue(site.Key, out var rec) ? rec.Count : 0)} 条");
         return cats;
     }
+
+    /// <summary>站点推荐缓存（site.Key → homeContent.list 解析结果；随会话驻留）。</summary>
+    private readonly Dictionary<string, List<VodItem>> _homeRecommend = new(StringComparer.Ordinal);
+
+    /// <summary>站点推荐（homeContent.list；TVBox 首页语义）。拉过分类就有值，未拉过/无 list 为空。</summary>
+    public Task<List<VodItem>> GetHomeRecommendAsync(VodSiteInfo site, CancellationToken ct = default) =>
+        Task.FromResult(_homeRecommend.TryGetValue(site.Key, out var v) ? v : []);
 
     public async Task<List<VodItem>> GetItemsAsync(VodSiteInfo site, VodCategory category, int page = 1,
         IReadOnlyDictionary<string, string>? filter = null, CancellationToken ct = default)

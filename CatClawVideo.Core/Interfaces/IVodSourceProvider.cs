@@ -35,6 +35,16 @@ public interface IVodSourceProvider
 
     /// <summary>站点内搜索</summary>
     Task<List<VodItem>> SearchAsync(VodSiteInfo site, string keyword, CancellationToken ct = default);
+
+    /// <summary>
+    /// 站点推荐（对位 TVBox 首页「站点推荐」：spider <c>homeContent</c> 返回 JSON 里
+    /// class/filters 之外的 <c>list</c> 字段）。
+    ///
+    /// <para>默认空表 = 该源不支持（MacCMS/猫爪源的 home 响应没有 list）；spider 系
+    /// Provider 在拉分类那次请求里顺手解析缓存，不再单独打网络。</para>
+    /// </summary>
+    Task<List<VodItem>> GetHomeRecommendAsync(VodSiteInfo site, CancellationToken ct = default) =>
+        Task.FromResult(new List<VodItem>());
 }
 
 /// <summary>

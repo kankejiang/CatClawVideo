@@ -10,26 +10,10 @@
          （加载状态并入站点条中列），并收紧内边距与行距，把高度尽量让给海报墙。 -->
     <Grid RowDefinitions="Auto,Auto,*" Padding="24,12,24,14" RowSpacing="10">
 
-        <!-- 站点条：主页/片库切换（对位 TVBox 首页 tab）+ 当前数据源 + 切换入口 -->
-        <Grid Grid.Row="0" ColumnDefinitions="Auto,Auto,*,Auto" Margin="0,0,24,0">
-            <!-- 主页/片库模式切换：主页 = TVBox 式推荐行流；片库 = 全分类网格。
-                 选中态（主题色实底/白字）由代码后台 ApplyModeVisual 驱动（与分类 chip 同一套色）。 -->
-            <HorizontalStackLayout Grid.Column="0" Spacing="6" VerticalOptions="Center" Margin="0,0,14,0">
-                <Border x:Name="HomeModeShell" StrokeThickness="0" StrokeShape="RoundRectangle 12" Padding="12,5">
-                    <Label Text="主页" FontSize="11.5" VerticalOptions="Center" />
-                    <Border.GestureRecognizers>
-                        <TapGestureRecognizer Tapped="OnHomeModeTapped" />
-                    </Border.GestureRecognizers>
-                </Border>
-                <Border x:Name="LibModeShell" StrokeThickness="0" StrokeShape="RoundRectangle 12" Padding="12,5">
-                    <Label Text="片库" FontSize="11.5" VerticalOptions="Center" />
-                    <Border.GestureRecognizers>
-                        <TapGestureRecognizer Tapped="OnLibraryModeTapped" />
-                    </Border.GestureRecognizers>
-                </Border>
-            </HorizontalStackLayout>
-
-            <HorizontalStackLayout Grid.Column="1" Spacing="8" VerticalOptions="Center">
+        <!-- 站点条：当前数据源 + 切换入口（TVBox 同款：分类 chips 首位固定「主页」，
+             主页内容 = 豆瓣推荐行流，见下方 HomeRowsScroll） -->
+        <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto" Margin="0,0,24,0">
+            <HorizontalStackLayout Grid.Column="0" Spacing="8" VerticalOptions="Center">
                 <Image Source="ic_library_white.png" WidthRequest="14" HeightRequest="14" VerticalOptions="Center" />
                 <Label Text="{Binding SiteDisplayName}" FontSize="14" FontFamily="OpenSansSemibold"
                        LineBreakMode="TailTruncation" MaxLines="1"
@@ -37,12 +21,12 @@
             </HorizontalStackLayout>
 
             <!-- 加载/统计状态：并入站点条中列（原为独立一行，横屏下白占约 27dp） -->
-            <Label Grid.Column="2" Text="{Binding HomeStatus}" FontSize="11.5"
+            <Label Grid.Column="1" Text="{Binding HomeStatus}" FontSize="11.5"
                    Margin="14,0,14,0" LineBreakMode="TailTruncation" MaxLines="1"
                    TextColor="{DynamicResource TextHintColor}" VerticalOptions="Center" />
 
             <!-- 右侧动作：直播（从全局顶栏挪来，只在"找内容"时用） + 切换源 -->
-            <HorizontalStackLayout Grid.Column="3" Spacing="8" HorizontalOptions="End" VerticalOptions="Center">
+            <HorizontalStackLayout Grid.Column="2" Spacing="8" HorizontalOptions="End" VerticalOptions="Center">
 
                 <!-- 直播：TVBox 直播间的入口（全屏推入页，路由 live） -->
                 <Border StrokeThickness="0" StrokeShape="RoundRectangle 14" Padding="14,6"
@@ -131,24 +115,13 @@
                 <BindableLayout.ItemTemplate>
                     <DataTemplate>
                         <Grid RowDefinitions="Auto,Auto" RowSpacing="10">
-                            <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
-                                <HorizontalStackLayout Spacing="8" VerticalOptions="Center">
-                                    <BoxView WidthRequest="3" HeightRequest="14" CornerRadius="2"
-                                             Color="{DynamicResource PrimaryColor}" VerticalOptions="Center" />
-                                    <Label Text="{Binding Title}" FontSize="14.5" FontFamily="OpenSansSemibold"
-                                           TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
-                                </HorizontalStackLayout>
-                                <!-- 更多 → 进片库并选中该分类（对位 TVBox 行尾「更多」） -->
-                                <HorizontalStackLayout Grid.Column="1" Spacing="3" VerticalOptions="Center">
-                                    <Label Text="更多" FontSize="11.5"
-                                           TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
-                                    <Label Text="›" FontSize="13"
-                                           TextColor="{DynamicResource TextSecondaryColor}" VerticalOptions="Center" />
-                                    <HorizontalStackLayout.GestureRecognizers>
-                                        <TapGestureRecognizer Tapped="OnRowMoreTapped" />
-                                    </HorizontalStackLayout.GestureRecognizers>
-                                </HorizontalStackLayout>
-                            </Grid>
+                            <!-- 行标题（对位 TVBox：豆瓣热播/站点推荐/观看历史 单行横滑） -->
+                            <HorizontalStackLayout Spacing="8" VerticalOptions="Center">
+                                <BoxView WidthRequest="3" HeightRequest="14" CornerRadius="2"
+                                         Color="{DynamicResource PrimaryColor}" VerticalOptions="Center" />
+                                <Label Text="{Binding Title}" FontSize="14.5" FontFamily="OpenSansSemibold"
+                                       TextColor="{DynamicResource TextPrimaryColor}" VerticalOptions="Center" />
+                            </HorizontalStackLayout>
                             <ScrollView Grid.Row="1" Orientation="Horizontal"
                                         HorizontalScrollBarVisibility="Never" VerticalScrollBarVisibility="Never">
                                 <HorizontalStackLayout Spacing="12" Padding="0,2,24,2"

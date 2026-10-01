@@ -55,6 +55,7 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
             {
                 MainThread.BeginInvokeOnMainThread(UpdateChipStyles);
                 MainThread.BeginInvokeOnMainThread(UpdateFilterUi);
+                MainThread.BeginInvokeOnMainThread(ApplyModeVisual);   // 主页行流 / 分类网格 切换
             }
             if (e.PropertyName == nameof(HomeViewModel.FilterSummary))
                 MainThread.BeginInvokeOnMainThread(UpdateFilterUi);
@@ -174,6 +175,8 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
         _layer = LayerTopNav;
         RenderFocus();
         RemoteKeyRouter.Push(this);
+        // 设置里切了「主页推荐内容」/ 换站后：回首页 tab 时行流按需重建
+        _ = _vm.RefreshHomeRecIfStaleAsync();
         return _vm.LoadHomeCommand.ExecuteAsync(null);
     }
 
@@ -221,8 +224,8 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
     void UpdateFilterUi()
     {
         var groups = _vm.CurrentFilters;
-        // 筛选是「分类」的附属能力：主页行流没有当前分类，整块隐藏（片库模式才有）
-        FilterShell.IsVisible = _vm.IsLibraryMode && groups.Count > 0;
+        // 筛选是「分类」的附属能力：主页行流没有当前分类，整块隐藏（网格视图才有）
+        FilterShell.IsVisible = !_vm.IsHomeMode && groups.Count > 0;
         var summary = _vm.FilterSummary;
         FilterLabel.Text = string.IsNullOrEmpty(summary) ? "筛选" : summary;
     }
@@ -318,8 +321,8 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
 
         UpdateChipStyles();
 
-        // 海报墙焦点：只点亮当前项（片库=网格一维索引；主页=行流的 行×列），清掉其余
-        if (_vm.IsLibraryMode)
+        // 海报墙焦点：只点亮当前项（网格=一维索引；主页行流= 行×列），清掉其余
+        if (!_vm.IsHomeMode)
         {
             for (int i = 0; i < _vm.Items.Count; i++)
                 _vm.Items[i].IsFocused = _layer == LayerPosters && i == _posterIndex;
@@ -373,7 +376,7 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
 
     private void FocusPosters(int index = 0)
     {
-        if (_vm.IsLibraryMode)
+        if (!_vm.IsHomeMode)
         {
             if (_vm.Items.Count == 0) { FocusChips(); return; }
             _posterIndex = Math.Clamp(index, 0, _vm.Items.Count - 1);
@@ -390,10 +393,10 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
     }
 
     /// <summary>把焦点海报滚入可视区（否则遥控器移动时焦点会跑出屏幕）。
-    /// 主页行流暂不做行内跟随滚动（鼠标/触屏为主；遥控用户可切片库用完整网格导航）。</summary>
+    /// 主页行流暂不做行内跟随滚动（鼠标/触屏为主；遥控用户可切分类用完整网格导航）。</summary>
     private void ScrollToPoster()
     {
-        if (!_vm.IsLibraryMode) return;
+        if (_vm.IsHomeMode) return;
         try
         {
             if (_posterIndex >= 0 && _posterIndex < _vm.Items.Count)
@@ -405,19 +408,18 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
     // ═══════════════════════ IRemoteKeyHandler ═══════════════════════
 
     /// <summary>
-    /// 被主壳层要求接管焦点（顶栏按 ↓）：**直接落在分类 chips**，不再先经「切换源」。
+    /// 被主壳层要求接管焦点（顶栏按 ↓）。
     ///
-    /// <para>2026-09-19 用户建议：首页最常用的是挑分类，而「切换源」是低频操作 ——
-    /// 让 ↓ 一步就到分类，省掉一次多余的按键。切换源改为从 chip 行两端进：
+    /// <para>2026-09-19 用户建议：首页最常用的是挑内容，「切换源」是低频操作 ——
+    /// 让 ↓ 一步就到内容区，省掉一次多余的按键。切换源改为从 chip 行两端进：
     /// 最左 chip <c>←</c>、最右 chip <c>→</c>（见 <see cref="TryMove"/>）。</para>
     ///
-    /// <para>落点按模式分流：片库 → 记忆的 <c>_chipIndex</c>（上次逛到哪个分类就回那儿）；
-    /// 主页 → 行流第一行（TVBox 首页就是直接逛内容）。</para>
+    /// <para>落点按视图分流：网格 → 记忆的分类 chip；主页行流 → 第一行（TVBox 首页就是直接逛内容）。</para>
     /// </summary>
     public void FocusContent()
     {
-        if (_vm.IsLibraryMode) FocusChips(Math.Max(0, _chipIndex));
-        else FocusPosters(0);
+        if (_vm.IsHomeMode) FocusPosters(0);
+        else FocusChips(Math.Max(0, _chipIndex));
     }
 
     /// <summary>
@@ -465,15 +467,15 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
             case LayerSwitchSite:
                 if (dir == RemoteKey.Down)
                 {
-                    // ↓ 进内容区：片库 → 分类 chips；主页 → 行流第一行（分类条在主页是隐藏的）
-                    if (_vm.IsLibraryMode) FocusChips(Math.Max(0, _chipIndex));
-                    else FocusPosters(0);
+                    // ↓ 进内容区：网格 → 分类 chips；主页 → 行流第一行
+                    if (_vm.IsHomeMode) FocusPosters(0);
+                    else FocusChips(Math.Max(0, _chipIndex));
                     return true;
                 }
                 if (dir == RemoteKey.Up) { _layer = LayerTopNav; RenderFocus(); return false; }  // 交还顶栏
                 // ← 退回分类行最右 chip（2026-09-19 用户反馈：从「切换源」按 ← 出不去）。
-                // 与「最右 chip → 上到切换源」成对 —— 两边互为对方的出口。主页模式无分类行，吃掉。
-                if (dir == RemoteKey.Left && _vm.IsLibraryMode && _chipShells.Count > 0)
+                // 与「最右 chip → 上到切换源」成对 —— 两边互为对方的出口。
+                if (dir == RemoteKey.Left && !_vm.IsHomeMode && _chipShells.Count > 0)
                 {
                     FocusChips(_chipShells.Count - 1);
                     return true;
@@ -514,7 +516,7 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
                 }
                 return true;
 
-            case LayerPosters when !_vm.IsLibraryMode:
+            case LayerPosters when _vm.IsHomeMode:
                 {
                     // 主页行流：←→ 行内移动，↑↓ 行间移动（列号 clamp 到目标行范围）。
                     // 行内不做跟随滚动（见 ScrollToPoster 注释）。
@@ -603,7 +605,7 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
                     _ = _vm.SelectCategoryAsync(_vm.Categories[_chipIndex]);
                 return true;
 
-            case LayerPosters when !_vm.IsLibraryMode:
+            case LayerPosters when _vm.IsHomeMode:
                 if (_rowIndex >= 0 && _rowIndex < _vm.HomeRows.Count &&
                     _colIndex >= 0 && _colIndex < _vm.HomeRows[_rowIndex].Items.Count)
                     OpenItem(_vm.HomeRows[_rowIndex].Items[_colIndex]);
@@ -617,16 +619,16 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
         return false;
     }
 
-    /// <summary>Back：海报 → 分类（片库）/ 切换源（主页）→ 交还顶栏。</summary>
+    /// <summary>Back：海报 → 分类（网格）/ 切换源（主页）→ 交还顶栏。</summary>
     private bool GoBack()
     {
         switch (_layer)
         {
             case LayerPosters:
                 ClearPosterFocus();
-                // 主页模式分类条是隐藏的，直接回站点条；片库按原路径回 chips
-                if (_vm.IsLibraryMode) FocusChips(_chipIndex);
-                else FocusSwitchSite();
+                // 主页行流视图直接回站点条；网格按原路径回 chips
+                if (_vm.IsHomeMode) FocusSwitchSite();
+                else FocusChips(_chipIndex);
                 return true;
             case LayerChips:
                 FocusSwitchSite();
@@ -662,56 +664,16 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
         await Shell.Current.Navigation.PushModalAsync(dialog);
     }
 
-    // ═══════════════════════ 主页 / 片库模式切换 ═══════════════════════
+    // ═══════════════════════ 主页 / 分类视图分流 ═══════════════════════
 
-    private void OnHomeModeTapped(object? sender, TappedEventArgs e) => _ = SwitchModeAsync(false);
-
-    private void OnLibraryModeTapped(object? sender, TappedEventArgs e) => _ = SwitchModeAsync(true);
-
-    /// <summary>主页行「更多」→ 进片库并选中该分类（对位 TVBox 行尾「更多」）。</summary>
-    private void OnRowMoreTapped(object? sender, TappedEventArgs e)
-    {
-        if ((sender as VisualElement)?.BindingContext is not HomeViewModel.HomeRow row) return;
-        _ = EnterLibraryAtAsync(row);
-    }
-
-    private async Task SwitchModeAsync(bool library)
-    {
-        ApplyModeVisual();                       // 先切视觉（胶囊高亮立即反馈）
-        await _vm.SetLibraryModeAsync(library);  // 数据按需补（两模式共享缓存，近乎零成本）
-        ApplyModeVisual();                       // 数据就绪后再刷（FilterShell 等依赖加载状态）
-    }
-
-    /// <summary>带指定分类进片库（行「更多」入口）：直接置位 + 选中分类，绕过 SetLibraryMode 的默认分类逻辑。</summary>
-    private async Task EnterLibraryAtAsync(HomeViewModel.HomeRow row)
-    {
-        _vm.IsLibraryMode = true;
-        ApplyModeVisual();
-        await _vm.SelectCategoryAsync(row.Category);
-    }
-
-    /// <summary>按模式显隐内容区与 chrome，并刷新两个切换胶囊的选中态（与分类 chip 同一套配色）。</summary>
+    /// <summary>按视图（主页行流 / 分类网格）显隐内容区，筛选入口只在网格视图有意义。</summary>
     private void ApplyModeVisual()
     {
-        var lib = _vm.IsLibraryMode;
-        HomeRowsScroll.IsVisible = !lib;
-        PosterGrid.IsVisible = lib;
-        CategoryScroll.IsVisible = lib;   // 分类 chips 是片库的导航（TVBox 主页不选分类）
+        var home = _vm.IsHomeMode;
+        HomeRowsScroll.IsVisible = home;
+        PosterGrid.IsVisible = !home;
+        CategoryScroll.IsVisible = true;   // 分类 chips 常显（TVBox 的分类 tab 形态），首位固定「主页」
         UpdateFilterUi();
-
-        var res = Application.Current?.Resources;
-        var active = res?["PrimaryColor"] as Color ?? Colors.Purple;
-        var inactive = res?["ChipInactiveColor"] as Color ?? Colors.Gray;
-        var inactiveText = res?["TextSecondaryColor"] as Color ?? Colors.Gray;
-        SetModeChip(HomeModeShell, !lib, active, inactive, inactiveText);
-        SetModeChip(LibModeShell, lib, active, inactive, inactiveText);
-    }
-
-    private static void SetModeChip(Border shell, bool on, Color active, Color inactive, Color inactiveText)
-    {
-        shell.BackgroundColor = on ? active : inactive;
-        if (shell.Content is Label label)
-            label.TextColor = on ? Colors.White : inactiveText;
     }
 
     /// <summary>行流集合变化后复位越界的行流焦点索引（空行剔除/重建时 _rowIndex/_colIndex 可能越界）。</summary>
@@ -721,7 +683,7 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
         _rowIndex = Math.Clamp(_rowIndex, 0, _vm.HomeRows.Count - 1);
         var cols = _vm.HomeRows[_rowIndex].Items.Count;
         _colIndex = Math.Clamp(_colIndex, 0, Math.Max(0, cols - 1));
-        if (_layer == LayerPosters && !_vm.IsLibraryMode) RenderFocus();
+        if (_layer == LayerPosters && _vm.IsHomeMode) RenderFocus();
     }
 
     /// <summary>分类 chip 点击 → 拉取该分类影片</summary>
@@ -751,6 +713,21 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
     /// <summary>进入观看页（带源定位参数；type 必传——猫爪源等无 api 特征的源靠它路由）</summary>
     private void OpenItem(VodItem item)
     {
+        // ⓪ 主页推荐行的特殊卡（TVBox 语义）：
+        //    历史卡 → 直接回观看页续看（卡片上带着与 HistoryPage 同一套回跳参数）；
+        //    豆瓣卡 → 跳搜索页跨源搜片名（豆瓣条目没有源，TVBox 是详情搜不到再快搜，我们一步到位）
+        if (item.Tag == "history" && item.Action.Length > 0)
+        {
+            try { Shell.Current.GoToAsync(item.Action); } catch { }
+            return;
+        }
+        if (item.Tag == "douban")
+        {
+            var q = Uri.EscapeDataString(item.Title);
+            try { Shell.Current.GoToAsync($"search?q={q}"); } catch { }
+            return;
+        }
+
         if (_vm.Site is null) return;
 
         // TVBox GridFragment.onItemClick 的优先级照搬：action 先于 tag。
@@ -766,14 +743,10 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
         // ② tag=folder/cover = 网盘里的一层目录：点它要用本条目 ID 当分类 ID 重新拉列表
         //    （TVBox changeView），喂给 detailContent/playerContent 会把目录路径当播放地址，
         //    表现为「播放失败：MalformedURLException: no protocol: /movies/137018/@folder」。
-        //    主页行流里点目录卡要先切到片库——列表变化发生在网格里，行流视图看不到。
+        //    主页行流里点目录卡要先切到该分类网格——列表变化发生在网格里，行流视图看不到。
         if (item.Tag is "folder" or "cover")
         {
-            if (!_vm.IsLibraryMode)
-            {
-                _vm.IsLibraryMode = true;
-                ApplyModeVisual();
-            }
+            // SelectCategoryAsync 对普通分类会自动退场行流（HomeRows.Clear），网格视图接手展示
             _ = _vm.SelectCategoryAsync(new VodCategory { Id = item.Id, Name = item.Title });
             return;
         }

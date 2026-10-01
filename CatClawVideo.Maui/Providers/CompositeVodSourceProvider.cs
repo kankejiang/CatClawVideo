@@ -493,6 +493,10 @@ public class CompositeVodSourceProvider : IVodSourceProvider, IActionVodSourcePr
     public Task<PlayRequest> ResolvePlayUrlAsync(VodSiteInfo site, VodEpisode episode, CancellationToken ct = default) =>
         Required(site).ResolvePlayUrlAsync(site, episode, ct);
 
+    // 经接口类型调用子 Provider：有实现的（spider 系）走它自己的站点推荐，其余落到接口默认空表
+    public Task<List<VodItem>> GetHomeRecommendAsync(VodSiteInfo site, CancellationToken ct = default) =>
+        Required(site).GetHomeRecommendAsync(site, ct);
+
     public Task<List<VodItem>> SearchAsync(VodSiteInfo site, string keyword, CancellationToken ct = default) =>
         Required(site).SearchAsync(site, keyword, ct);
 }

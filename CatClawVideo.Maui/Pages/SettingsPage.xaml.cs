@@ -313,6 +313,30 @@ public partial class SettingsPage : ContentView, ITabView, IRemoteKeyHandler
         sub.ShowArrow = true;
         sub.Activated += async (_, _) => await GoAsync("sourceconfig");
 
+        // 主页推荐内容（对位 TVBox HawkConfig.HOME_REC 三选一）：首页「主页」tab 显示哪一行
+        var recRow = AddRow("🏠", "主页推荐内容", "首页「主页」tab 显示哪一行（TVBox 首页同款设置）", ref rows,
+            Services.HomeRecPrefs.Label(Services.HomeRecPrefs.Load()));
+        recRow.ShowArrow = true;
+        recRow.Activated += async (_, _) =>
+        {
+            var page = HostPage();
+            if (page is null) return;
+            var names = new[]
+            {
+                Services.HomeRecPrefs.Label(Services.HomeRecPrefs.SiteRecommend),
+                Services.HomeRecPrefs.Label(Services.HomeRecPrefs.DoubanHot),
+                Services.HomeRecPrefs.Label(Services.HomeRecPrefs.History),
+            };
+            var pick = await page.DisplayActionSheetAsync("主页显示哪种推荐？", "取消", null, names);
+            if (string.IsNullOrEmpty(pick) || pick == "取消") return;
+            var v = pick == names[1] ? Services.HomeRecPrefs.DoubanHot
+                  : pick == names[2] ? Services.HomeRecPrefs.History
+                  : Services.HomeRecPrefs.SiteRecommend;
+            Services.HomeRecPrefs.Save(v);
+            recRow.ValueText = Services.HomeRecPrefs.Label(v);
+            DiagLog.Write($"[设置] 主页推荐内容 → {pick}");
+        };
+
         var bgRow = AddRow("▶", "后台继续播放", "切到后台或锁屏时声音不断（通知栏可控制）；分片仍走原链路", ref rows);
         var bgSwitch = new TogglePill { IsOn = Services.BgPlayPrefs.IsOn };
         bgSwitch.Toggled += (_, on) =>
