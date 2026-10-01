@@ -1287,6 +1287,10 @@ public class Server {
                 pb.environment().put("GALLIUM_DRIVER", "llvmpipe");
                 pb.environment().put("LIBGL_ALWAYS_SOFTWARE", "1");
                 pb.environment().put("MESA_LOADER_DRIVER_OVERRIDE", "llvmpipe");
+                // 诊断开关：让 libpropfix 把 SF 的每一次属性读取打到控制台
+                // （EGL 找不到实现时，靠它看 libEGL 到底问哪个键、拿到什么值）。
+                // 临时无条件开启做一次诊断；查清后改回按环境变量开关。
+                pb.environment().put("PROPFIX_DEBUG", "1");
                 pb.environment().put("LD_LIBRARY_PATH", "/vendor/lib64/egl:/vendor/lib64:/system/lib64");
                 pb.environment().put("WAYLAND_DISPLAY", "wl-0");
                 pb.environment().put("XDG_RUNTIME_DIR", "/tmp/wrt");
