@@ -744,6 +744,51 @@ long gba_helper(void *self, unsigned int w, unsigned int h, int fmt, unsigned in
     return rc;
 }
 
+
+// ── 探针：图形设备 open ──
+#include <fcntl.h>
+#include <errno.h>
+static int pf_dev_interesting(const char *p) {
+    if (!p) return 0;
+    return strstr(p, "/dev/dri") || strstr(p, "/dev/dma_heap") || strstr(p, "/dev/ion") ||
+           strstr(p, "/dev/kgsl") || strstr(p, "/dev/gpu") || strstr(p, "/dev/mali");
+}
+int open(const char *path, int flags, ...) {
+    static int (*real)(const char *, int, ...) = NULL;
+    if (!real) real = (int (*)(const char *, int, ...))dlsym(RTLD_NEXT, "open");
+    mode_t mode = 0;
+    if (flags & O_CREAT) { va_list ap; va_start(ap, flags); mode = (mode_t)va_arg(ap, int); va_end(ap); }
+    int fd = real ? real(path, flags, mode) : -1;
+    if (pf_dev_interesting(path) && getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] open(%s, 0x%x) -> fd=%d errno=%d\n", path, flags, fd,
+                fd < 0 ? errno : 0);
+    return fd;
+}
+
+int openat(int dirfd, const char *path, int flags, ...) {
+    static int (*real)(int, const char *, int, ...) = NULL;
+    if (!real) real = (int (*)(int, const char *, int, ...))dlsym(RTLD_NEXT, "openat");
+    mode_t mode = 0;
+    if (flags & O_CREAT) { va_list ap; va_start(ap, flags); mode = (mode_t)va_arg(ap, int); va_end(ap); }
+    int fd = real ? real(dirfd, path, flags, mode) : -1;
+    if (pf_dev_interesting(path) && getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] openat(%d, %s, 0x%x) -> fd=%d errno=%d\n", dirfd, path, flags, fd,
+                fd < 0 ? errno : 0);
+    return fd;
+}
+
+int open64(const char *path, int flags, ...) {
+    static int (*real)(const char *, int, ...) = NULL;
+    if (!real) real = (int (*)(const char *, int, ...))dlsym(RTLD_NEXT, "open64");
+    mode_t mode = 0;
+    if (flags & O_CREAT) { va_list ap; va_start(ap, flags); mode = (mode_t)va_arg(ap, int); va_end(ap); }
+    int fd = real ? real(path, flags, mode) : -1;
+    if (pf_dev_interesting(path) && getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] open64(%s, 0x%x) -> fd=%d errno=%d\n", path, flags, fd,
+                fd < 0 ? errno : 0);
+    return fd;
+}
+
 static void parse_once(void) {
     if (g_n >= 0) return;
     g_n = 0;
