@@ -206,6 +206,47 @@ void android_set_abort_message(const char *msg) {
     if (real) real(msg);
 }
 
+
+// ── 诊断：变参日志接口（ALOGD 走这里，不经过 __android_log_write）──
+// ⚠ 前置声明：log_interesting/log_critical 定义在本块之后（本块插在文件前部）
+static int log_interesting(const char *tag);
+static int log_critical(int prio);
+#include <stdarg.h>
+
+int __android_log_vprint(int prio, const char *tag, const char *fmt, va_list ap) {
+    static int (*real)(int, const char *, const char *, va_list) = NULL;
+    if (!real)
+        real = (int (*)(int, const char *, const char *, va_list))dlsym(RTLD_NEXT, "__android_log_vprint");
+    if (getenv("PROPFIX_DEBUG") && (log_interesting(tag) || log_critical(prio))) {
+        char buf[1024];
+        va_list cp;
+        va_copy(cp, ap);
+        vsnprintf(buf, sizeof(buf), fmt ? fmt : "(null)", cp);
+        va_end(cp);
+        fprintf(stderr, "[alogv:%s/%d] %s\n", tag ? tag : "?", prio, buf);
+    }
+    return real ? real(prio, tag, fmt, ap) : 0;
+}
+
+int __android_log_print(int prio, const char *tag, const char *fmt, ...) {
+    static int (*real)(int, const char *, const char *, ...) = NULL;
+    if (!real)
+        real = (int (*)(int, const char *, const char *, ...))dlsym(RTLD_NEXT, "__android_log_print");
+    if (getenv("PROPFIX_DEBUG") && (log_interesting(tag) || log_critical(prio))) {
+        char buf[1024];
+        va_list ap;
+        va_start(ap, fmt);
+        vsnprintf(buf, sizeof(buf), fmt ? fmt : "(null)", ap);
+        va_end(ap);
+        fprintf(stderr, "[alogp:%s/%d] %s\n", tag ? tag : "?", prio, buf);
+    }
+    va_list ap2;
+    va_start(ap2, fmt);
+    int rc = real ? real(prio, tag, fmt, ap2) : 0;
+    va_end(ap2);
+    return rc;
+}
+
 static void parse_once(void) {
     if (g_n >= 0) return;
     g_n = 0;

@@ -171,6 +171,23 @@ if merged:
     # 否则客户端会一直 "Since 'SurfaceFlingerAIDL' could not be found, trying to start it as a lazy AIDL
     # service"（我们没 init 的 lazy 机制）⇒ screencap 永久阻塞（实测）。
     # 原镜像的 system manifest 里 AIDL 条目为 0（实测）⇒ 这里补上。名字不确定，两个候选都写（未知项无害）。
+    # ── configstore 1.0（关键！）──
+    # 完整符号化的崩溃回溯实证：SF 在 **__libc_init 的静态初始化**里就走
+    #   libSurfaceFlingerProp.so(sysprop::start_graphics_allocator_service)
+    #   → configstore@1.0::ISurfaceFlingerConfigs::getService
+    # 而 manifest 只声明了 1.1 ⇒ 1.0 查找被 VINTF 拒绝 ⇒ HIDL 客户端崩（SIGSEGV@0x1）⇒ SF 启动即死。
+    # （HIDL 允许 1.1 服务满足 1.0 客户端，但**前提是 manifest 里声明了 1.0**。）
+    merged += (
+        '    <hal format="hidl">\n'
+        '        <name>android.hardware.configstore</name>\n'
+        '        <transport>hwbinder</transport>\n'
+        '        <version>1.0</version>\n'
+        '        <interface>\n'
+        '            <name>ISurfaceFlingerConfigs</name>\n'
+        '            <instance>default</instance>\n'
+        '        </interface>\n'
+        '    </hal>\n'
+    )
     merged += (
         '    <hal format="hidl">\n'
         '        <name>vendor.waydroid.task</name>\n'

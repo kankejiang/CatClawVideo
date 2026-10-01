@@ -1263,7 +1263,7 @@ public class Server {
                 setProp("hwservicemanager.ready", "true");
                 // 图形栈属性：HAL 变体与 DRM 设备（值取自 108 上跑通的 Waydroid 配置）
                 setProp("ro.hardware.hwcomposer", "waydroid");
-                setProp("ro.hardware.gralloc", "gbm");
+                setProp("ro.hardware.gralloc", "minigbm_gbm_mesa");
                 setProp("gralloc.gbm.device", "/dev/dri/renderD128");
                 // 无 GL 环境：让 RenderEngine 走 Skia CPU（否则 SF 会去找 EGL 驱动）
                 setProp("debug.renderengine.backend", "skiacpu");
@@ -1282,7 +1282,7 @@ public class Server {
                 pb.environment().put("PROPFIX",
                         "hwservicemanager.ready=true"
                         + ";ro.hardware.hwcomposer=waydroid"
-                        + ";ro.hardware.gralloc=gbm"
+                        + ";ro.hardware.gralloc=minigbm_gbm_mesa"
                         + ";ro.hardware.egl=angle"
                         + ";ro.hardware.vulkan=lvp"
                         + ";gralloc.gbm.device=/dev/dri/renderD128"
