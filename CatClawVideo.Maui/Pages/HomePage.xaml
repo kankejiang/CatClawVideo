@@ -124,42 +124,41 @@
                             </HorizontalStackLayout>
                             <ScrollView Grid.Row="1" Orientation="Horizontal"
                                         HorizontalScrollBarVisibility="Never" VerticalScrollBarVisibility="Never">
-                                <HorizontalStackLayout Spacing="12" Padding="0,2,24,2"
+                                <!-- 卡片尺寸 = 片库网格同一套（PosterCardWidth/Height 动态资源，
+                                     由 PosterLayoutHelper 写入），间隔 14 与网格 HorizontalItemSpacing 一致 -->
+                                <HorizontalStackLayout Spacing="14" Padding="0,2,24,2"
                                                        BindableLayout.ItemsSource="{Binding Items}">
                                     <BindableLayout.ItemTemplate>
                                         <DataTemplate>
-                                            <!-- 固定宽卡片（横向行内不能靠格子铺宽）；海报 2:3 -->
-                                            <Grid RowDefinitions="Auto,Auto" WidthRequest="118">
-                                                <Border StrokeThickness="0" StrokeShape="RoundRectangle 8"
-                                                        HeightRequest="165"
-                                                        BackgroundColor="{DynamicResource CardBackgroundColor}">
+                                            <Grid RowDefinitions="Auto,Auto" WidthRequest="{DynamicResource PosterCardWidth}">
+                                                <Border Style="{StaticResource PosterCardStyle}">
                                                     <Grid>
                                                         <Image Source="{Binding CoverDisplay}" Aspect="AspectFill" />
                                                         <!-- 占位海报（无封面时显示，绝不留白） -->
-                                                        <Border StrokeThickness="0" IsVisible="False" Padding="8"
+                                                        <Border StrokeThickness="0" IsVisible="False" Padding="10"
                                                                 Background="{DynamicResource PosterPlaceholderBrush}">
                                                             <Border.Triggers>
                                                                 <DataTrigger TargetType="Border" Binding="{Binding CoverDisplay}" Value="{x:Null}">
                                                                     <Setter Property="IsVisible" Value="True" />
                                                                 </DataTrigger>
                                                             </Border.Triggers>
-                                                            <Label Text="{Binding Title}" FontSize="10.5" FontAttributes="Bold"
+                                                            <Label Text="{Binding Title}" FontSize="12.5" FontAttributes="Bold"
                                                                    TextColor="#D8DDF5" HorizontalTextAlignment="Center"
-                                                                   VerticalOptions="Center" MaxLines="3" LineBreakMode="TailTruncation" />
+                                                                   VerticalOptions="Center" MaxLines="4" LineBreakMode="TailTruncation" />
                                                         </Border>
-                                                        <Border HorizontalOptions="End" VerticalOptions="Start" Margin="0,5,5,0"
+                                                        <Border HorizontalOptions="End" VerticalOptions="Start" Margin="0,7,7,0"
                                                                 StrokeThickness="0" BackgroundColor="#80000000"
-                                                                StrokeShape="RoundRectangle 6" Padding="5,1"
+                                                                StrokeShape="RoundRectangle 8" Padding="6,1"
                                                                 IsVisible="{Binding HasRemark}">
-                                                            <Label Text="{Binding Remarks}" FontSize="9" TextColor="#FFD76E" MaxLines="1" />
+                                                            <Label Text="{Binding Remarks}" FontSize="10" TextColor="#FFD76E" MaxLines="1" />
                                                         </Border>
                                                         <!-- 焦点环（遥控）：与片库网格同一套样式，绑定 IsFocused -->
                                                         <Border Style="{StaticResource PosterFocusRingStyle}"
                                                                 IsVisible="{Binding IsFocused}" />
                                                     </Grid>
                                                 </Border>
-                                                <Label Grid.Row="1" Text="{Binding Title}" FontSize="11.5" Margin="0,6,0,0"
-                                                       LineBreakMode="TailTruncation" MaxLines="1"
+                                                <Label Grid.Row="1" Text="{Binding Title}" FontSize="12" Margin="0,6,0,0"
+                                                       LineBreakMode="TailTruncation" MaxLines="2"
                                                        TextColor="{DynamicResource TextPrimaryColor}" />
                                                 <Grid.GestureRecognizers>
                                                     <TapGestureRecognizer Tapped="OnPosterTapped" />

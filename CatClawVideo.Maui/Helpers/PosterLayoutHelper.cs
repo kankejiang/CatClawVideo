@@ -7,6 +7,27 @@ namespace CatClawVideo.Maui;
 /// </summary>
 public static class PosterLayoutHelper
 {
+    /// <summary>
+    /// 无网格重载：只写卡片尺寸资源（给非 CollectionView 的海报容器用，
+    /// 如主页推荐行——横向滚动没有「格宽裁切/列数」问题，cap 直接生效）。
+    /// </summary>
+    public static void Apply(double width, double height, double cap = 182)
+    {
+        try
+        {
+            if (width <= 0 || height <= 0) return;
+            var cardH = Math.Clamp(cap, 64, 600);
+            var cardW = cardH * 2.0 / 3.0;
+            if (Application.Current is null) return;
+            Application.Current.Resources["PosterCardHeight"] = cardH;
+            Application.Current.Resources["PosterCardWidth"] = cardW;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[PosterLayout] 自适应失败: {ex.Message}");
+        }
+    }
+
     /// <param name="grid">海报墙 CollectionView（ItemsLayout 须为 GridItemsLayout）</param>
     /// <param name="width">海报墙当前宽</param>
     /// <param name="height">海报墙当前高</param>

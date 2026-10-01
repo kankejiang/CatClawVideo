@@ -68,6 +68,21 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
             CaptureColumns();
         };
 
+        // 主页推荐行：卡片尺寸与海报墙完全同一套（同一资源、同一 cap）——
+        // 用户要求主页行的海报大小/排列与片库网格一致。网格不可见（Size=0）时
+        // 它的 SizeChanged 不触发，行流自己按当前可用面积算一次。
+        HomeRowsScroll.SizeChanged += (_, _) =>
+        {
+            var w = HomeRowsScroll.Width;
+            var h = HomeRowsScroll.Height;
+            if (w <= 0 || h <= 0) return;
+#if WINDOWS
+            PosterLayoutHelper.Apply(w, h, cap: 252);
+#else
+            PosterLayoutHelper.Apply(w, h);
+#endif
+        };
+
         // 列表数据变化后（首次加载/翻页）刷新列数并复位越界焦点
         _vm.Items.CollectionChanged += (_, _) => MainThread.BeginInvokeOnMainThread(OnItemsChanged);
 

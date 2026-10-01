@@ -48,6 +48,11 @@
         列表项不是原生可聚焦控件，IsFocused 由各页面的 IRemoteKeyHandler 显式维护
         （见 Services/PosterWallFocus、HomePage）。
     -->
+
+    <!-- 卡片尺寸默认值（桌面 252 高 / 移动 182 高的运行时会被 PosterLayoutHelper 覆盖；
+         主页推荐行模板吃同一对资源，保证与海报墙网格尺寸一致）。 -->
+    <x:Double x:Key="PosterCardHeight">252</x:Double>
+    <x:Double x:Key="PosterCardWidth">168</x:Double>
     <Style x:Key="PosterCardStyle" TargetType="Border">
         <Setter Property="StrokeThickness" Value="0" />
         <Setter Property="StrokeShape" Value="RoundRectangle 10" />
