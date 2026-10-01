@@ -28,6 +28,50 @@
 #define MAXK 32
 #define VLEN 96
 
+// ── 崩溃现场：装 SIGSEGV/SIGABRT/… 处理器，把信号与回溯直接打到 stderr ──
+// 为什么需要：SurfaceFlinger 在 RenderEngine 之后崩了，但日志里只有 crash_dump64
+// （连 tombstoned 都没有 ⇒ 拿不到 tombstone），致命信号与回溯根本看不到。
+// 用 PROPFIX_CRASH=1 打开（避免影响正常进程）。
+#include <execinfo.h>
+#include <fcntl.h>   // open() 给崩溃日志用
+#include <signal.h>
+
+static void propfix_crash_handler(int sig, siginfo_t *si, void *ctx) {
+    (void)ctx;
+    void *bt[48];
+    int n = backtrace(bt, 48);
+    char buf[256];
+    int k = snprintf(buf, sizeof(buf),
+                     "\n[propfix] !! 收到信号 %d，地址 %p，回溯 %d 层：\n",
+                     sig, si ? si->si_addr : (void *)0, n);
+    if (k > 0) (void)!write(2, buf, (size_t)k);
+    backtrace_symbols_fd(bt, n, 2);   // 直接写 fd 2：崩溃时机不适合 malloc
+
+    // 同时落一份文件：stderr 会被 logd 的噪音冲乱（实测读不干净），文件可以用 adb 直接读。
+    int fd = open("/data/crash.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd >= 0) {
+        if (k > 0) (void)!write(fd, buf, (size_t)k);
+        backtrace_symbols_fd(bt, n, fd);
+        close(fd);
+    }
+
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+__attribute__((constructor)) static void propfix_install_crash_handler(void) {
+    if (!getenv("PROPFIX_CRASH")) return;
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = propfix_crash_handler;
+    sa.sa_flags = SA_SIGINFO | SA_RESETHAND;
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGABRT, &sa, NULL);
+    sigaction(SIGBUS, &sa, NULL);
+    sigaction(SIGILL, &sa, NULL);
+    sigaction(SIGFPE, &sa, NULL);
+}
+
 // EGL 基本类型放在最前面：下面的拦截块可能被 #if 0 关掉，类型定义不能跟着被关
 // （实测踩过一次坑：typedef 落在 #if 0 区里 ⇒ eglChooseConfig 报 unknown type name 'EGLBoolean'）。
 typedef int32_t EGLint;

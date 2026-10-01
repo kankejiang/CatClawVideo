@@ -17,6 +17,14 @@ if not os.path.ismount(VEN):
     subprocess.run(["mount", "-o", "ro,loop", "/root/x86guest/vendor-ex/vendor.img", VEN], check=False)
 if not os.path.ismount(VEN):
     raise SystemExit("!! vendor 未挂载")
+# 系统镜像也要挂：libvulkan.so（Vulkan loader）在 /system/lib64 里。
+# ⚠ 实测教训：缺了它 ANGLE 直接 "no suitable EGLConfig found, giving up"（因为根本没有 Vulkan loader）。
+SYS = "/mnt/b11sys"
+os.makedirs(SYS, exist_ok=True)
+if not os.path.ismount(SYS):
+    subprocess.run(["mount", "-o", "ro,loop", "/var/lib/waydroid/images/system.img", SYS], check=False)
+if not os.path.ismount(SYS):
+    print("  !! 警告：系统镜像未挂上 ⇒ libvulkan.so 会缺（ANGLE 会直接放弃）")
 
 FILES = [
     # 已删：mesa 的 GL（实测 loader 拒绝接管、直接调也 init=0；改走 ANGLE）
@@ -46,9 +54,13 @@ FILES = [
     ("lib64/egl/libGLESv1_CM_angle.so", "system/lib64/egl/libGLESv1_CM_angle.so"),
     ("lib64/hw/vulkan.lvp.so",          "system/lib64/hw/vulkan.lvp.so"),
     ("lib64/hw/vulkan.lvp.so",          "system/lib64/vulkan.lvp.so"),
+    # lavapipe 硬依赖真 LLVM（100MB，gzip 约 31.5MB）：符号桩不行（bionic 加载期要求全部符号可解析，
+    # 而桩会把 lavapipe 自己的 LLVM 调用指到假地址 ⇒ SIGSEGV，实测）。系统自带的 libLLVM_android.so
+    # 只有 27MB 但覆盖率 177/211（缺 JIT/DI 那批 C API）⇒ 也不行。所以只能带真身。
+    ("lib64/libLLVM22.so",              "system/lib64/libLLVM22.so"),
     ("lib64/hw/vulkan.virtio.so",       "system/lib64/hw/vulkan.virtio.so"),
     ("lib64/hw/vulkan.virtio.so",       "system/lib64/vulkan.virtio.so"),
-    ("/mnt/b11sys/system/lib64/libvulkan.so", "system/lib64/libvulkan.so"),
+    (SYS + "/system/lib64/libvulkan.so", "system/lib64/libvulkan.so"),
 ]
 
 shutil.rmtree(STAGE, ignore_errors=True)

@@ -1278,7 +1278,7 @@ public class Server {
                 pb.environment().put("LD_PRELOAD",
                         // libllvmstub：libgallium_dri.so 里 llvmpipe 用到 llvm:: 符号，bionic 加载时会全部解析；
                         // 我们跑 swrast(softpipe) 不会调用它们，所以只提供地址的桩就够了（真 LLVM 未压缩 105MB）。
-                        "/system/lib64/libLLVM22.so:/system/lib64/libpropfix.so:/proppreload.so");
+                        "/system/lib64/libpropfix.so:/proppreload.so");
                 pb.environment().put("PROPFIX",
                         "hwservicemanager.ready=true"
                         + ";ro.hardware.hwcomposer=waydroid"
@@ -1305,7 +1305,11 @@ public class Server {
                 // （EGL 找不到实现时，靠它看 libEGL 到底问哪个键、拿到什么值）。
                 // 临时无条件开启做一次诊断；查清后改回按环境变量开关。
                 pb.environment().put("PROPFIX_DEBUG", "1");
-                pb.environment().put("LD_LIBRARY_PATH", "/vendor/lib64/egl:/vendor/lib64:/system/lib64");
+                // 崩溃现场：装 SIGSEGV/SIGABRT 处理器打印信号与回溯。
+                // 为什么需要：SF 在 RenderEngine 之后崩，而 guest 里没有 tombstoned ⇒
+                // crash_dump64 拿不到 tombstone，致命信号与回溯在日志里完全看不到。
+                pb.environment().put("PROPFIX_CRASH", "1");
+                pb.environment().put("LD_LIBRARY_PATH", "/vendor/lib64/egl:/vendor/lib64:/system/lib64:/system/lib64/egl");
                 pb.environment().put("WAYLAND_DISPLAY", "wl-0");
                 pb.environment().put("XDG_RUNTIME_DIR", "/tmp/wrt");
                 pb.redirectErrorStream(true);
