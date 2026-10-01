@@ -173,6 +173,7 @@ int __system_property_wdev_l(const prop_info *pi, uint32_t old_serial, const cha
  */
 #include <errno.h>
 #include <spawn.h>
+#include <dlfcn.h>
 #include <sys/types.h>
 
 #define FORK_BLOCK_MAX_LOG 8
@@ -192,15 +193,38 @@ pid_t __clone(int (*fn)(void *), void *stack, int flags, void *arg, ...) {
 }
 
 /* posix_spawn 系列返回**正数错误码**（不是 -1/errno），bionic 就是这么规定的。 */
+/* ── adbd 白名单（2026-10-02）──
+ * 05:20 版 bridge.jar 把 adbd 的拉起移进了桥（Server.startAdbd，走 ProcessBuilder/
+ * posix_spawn），而桥进程挂着本垫片 ⇒ posix_spawn 被拦 EAGAIN ⇒ adbd 起不来
+ * （实测："[adbd] 启动失败: Cannot run program /system/bin/adbd: error=11"）。
+ * adbd 是我们自己的编排组件（非 jar 的任意 fork），按路径放行；jar 的其它 fork 仍拦。 */
+static int pf_allow_exec(const char *p) {
+    /* 桥自己拉起的编排组件：adbd + surfaceflinger + 各 HAL 服务（/vendor/bin/hw/、
+     * /system/bin/hw/）。jar 的任意 fork（Go 代理等）仍拦。 */
+    if (!p) return 0;
+    return strstr(p, "/adbd") || strstr(p, "/surfaceflinger") ||
+           strstr(p, "/bin/hw/") || strstr(p, "weston");
+}
+
 int posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_actions_t *fa,
                 const posix_spawnattr_t *at, char *const argv[], char *const envp[]) {
-    (void) path; (void) fa; (void) at; (void) argv; (void) envp;
+    static int (*real)(pid_t *, const char *, const posix_spawn_file_actions_t *,
+                       const posix_spawnattr_t *, char *const [], char *const []) = NULL;
+    if (!real) real = (int (*)(pid_t *, const char *, const posix_spawn_file_actions_t *,
+                               const posix_spawnattr_t *, char *const [], char *const []))
+        dlsym(RTLD_NEXT, "posix_spawn");
+    if (pf_allow_exec(path) && real) return real(pid, path, fa, at, argv, envp);
     fork_block_note("posix_spawn"); if (pid) *pid = -1; return EAGAIN;
 }
 
 int posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file_actions_t *fa,
                  const posix_spawnattr_t *at, char *const argv[], char *const envp[]) {
-    (void) file; (void) fa; (void) at; (void) argv; (void) envp;
+    static int (*real)(pid_t *, const char *, const posix_spawn_file_actions_t *,
+                       const posix_spawnattr_t *, char *const [], char *const []) = NULL;
+    if (!real) real = (int (*)(pid_t *, const char *, const posix_spawn_file_actions_t *,
+                               const posix_spawnattr_t *, char *const [], char *const []))
+        dlsym(RTLD_NEXT, "posix_spawnp");
+    if (pf_allow_exec(file) && real) return real(pid, file, fa, at, argv, envp);
     fork_block_note("posix_spawnp"); if (pid) *pid = -1; return EAGAIN;
 }
 
@@ -217,7 +241,11 @@ int posix_clone_file_actions(const posix_spawn_file_actions_t *fa, posix_spawn_f
 
 static void __attribute__((constructor)) proppreload_note(void) {
     ensure_pool();
-    fprintf(stderr, "[proppreload] 接管 Android 属性 API：%d 条\n", NPROPS);
+    /* 2026-10-02 静默化：这行每进程一条、走 stderr，exec-out/adb 二进制通道
+     * （如 screencap 的 PNG）被它污染——adbd 的 LD_PRELOAD 会被 exec-out 的
+     * sh 与目标进程继承，stdout/stderr 在 adbd 侧合并。诊断价值 < 通道纯净性。 */
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[proppreload] 接管 Android 属性 API：%d 条\n", NPROPS);
     /* 立刻把 LD_PRELOAD 从**本进程环境**里抹掉：它会被 artlaunch 的每个子进程继承，
      * 于是壳的 Go 代理自更新（fork 后 exec /data/files/moyu_go/pvideo-arm64-v8a，
      * x86_64 内核认不了 arm64 ELF → 回落 busybox sh 逐行「解析」那 3MB 二进制）里，

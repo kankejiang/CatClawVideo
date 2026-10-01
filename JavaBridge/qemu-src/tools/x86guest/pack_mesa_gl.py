@@ -44,6 +44,10 @@ FILES = [
     ("lib64/libgbm_mesa_wrapper.so",   "system/lib64/libgbm_mesa_wrapper.so"),
     ("lib64/dri_gbm.so",               "system/lib64/dri_gbm.so"),
     ("lib64/libminigbm_gralloc_gbm_mesa.so", "system/lib64/libminigbm_gralloc_gbm_mesa.so"),
+    # ── vendor 副本（2026-10-02）：minigbm 后端插件搜索 /vendor/lib64/，108 参照系实锤
+    #    vendor/lib64 同时有 dri_gbm.so + libgallium_dri.so —— 缺了 gbm_create_device ENOENT
+    ("lib64/libgallium_dri.so",        "vendor/lib64/libgallium_dri.so"),
+    ("lib64/dri_gbm.so",               "vendor/lib64/dri_gbm.so"),
     # gallium 链接了各家的 DRM 后端；缺一个 dlopen 就直接失败
     # （实测：只有 libdrm_intel.so 缺失时报 "library \"libdrm_intel.so\" not found"）。
     ("lib64/libdrm_intel.so",   "system/lib64/libdrm_intel.so"),
@@ -88,11 +92,26 @@ for src, rel in FILES:
 
 if os.path.exists(OUT):
     os.remove(OUT)
+DRIVERS = ["swrast", "llvmpipe", "iris", "virtio_gpu", "kms_swrast", "zink"]
 with tarfile.open(OUT, "w:gz") as t:
     for root, _, files in os.walk(STAGE):
         for f in files:
             full = os.path.join(root, f)
             t.add(full, arcname=os.path.relpath(full, STAGE))
+    # ── dri/ 软链直接写进 tar（LNKTYPE，2026-10-02）──
+    # init 里 ln -sf 不可靠（实测 6 个只成功 1 个：busybox 行为/字符串转义），打包期写死最稳。
+    # 相对目标 ../libgallium_dri.so 在 system/lib64 与 vendor/lib64 两侧各自解析正确。
+    for base_dir in ("system/lib64/dri", "vendor/lib64/dri"):
+        for n in DRIVERS:
+            ti = tarfile.TarInfo(name="%s/%s_dri.so" % (base_dir, n))
+            ti.type = tarfile.LNKTYPE
+            ti.linkname = "../libgallium_dri.so"
+            ti.mode = 0o755
+            ti.uid = ti.gid = 0
+            ti.uname = ti.gname = "root"
+            ti.mtime = 0
+            t.addfile(ti)
+print("  tar 内 dri 软链: %d 个" % (len(DRIVERS) * 2))
 
 print("  未压缩: %.1f MB" % (total / 1024 / 1024))
 print("  tar.gz: %d B (%.1f MB)" % (os.path.getsize(OUT), os.path.getsize(OUT) / 1024 / 1024))
