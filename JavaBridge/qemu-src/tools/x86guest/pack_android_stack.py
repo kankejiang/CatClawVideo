@@ -207,6 +207,21 @@ if merged:
     try:
         import xml.etree.ElementTree as _ET
         _root = _ET.fromstring(body)
+        # configstore：把 <version> 规范成最小版本 1.0（保留 <fqname>@1.1::… 不动）
+        # 依据：SF 的 libSurfaceFlingerProp 在**静态初始化**里查 configstore@1.0 ✗，
+        # 而 manifest 只声明 1.1 时该查找被拒 ⇒ SF 空指针崩溃（实测）。
+        # VINTF 又不允许同一块出现两个同 major 版本 ⇒ 正解是"<version> 写最小版本 + <fqname> 写具体版本"。
+        for _h in _root.findall("hal"):
+            if (_h.findtext("name") or "").strip() == "android.hardware.configstore":
+                for _v in _h.findall("version"):
+                    _h.remove(_v)
+                _ifaces = _h.findall("interface")
+                _pos = list(_h).index(_ifaces[0]) if _ifaces else len(list(_h))
+                import xml.etree.ElementTree as _ET2
+                _nv = _ET2.Element("version"); _nv.text = "1.0"
+                _h.insert(_pos, _nv)
+                print("  vintf: configstore <version> 规范为 1.0（保留 fqname 1.1）")
+
         _keep, _dup = {}, 0
         for _h in list(_root.findall("hal")):
             _n = _h.find("name")

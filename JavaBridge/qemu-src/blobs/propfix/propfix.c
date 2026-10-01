@@ -283,6 +283,46 @@ int hw_get_module_by_class(const char *class_id, const char *inst, const struct 
 // sp<> 非平凡 ⇒ 按 x86-64 SysV 用隐式 sret（第一个参数是返回槽指针）。
 // 目的：看清 libui 的 GraphicBufferMapper 到底怎么要 mapper、结果是否 null。
 
+
+// ── configstore@1.0 的临时兼容：用 @1.1 重查 ──
+// libc++ std::string 的构造/析构（mangled 名固定，dlsym 拿；对象 24 字节，栈上分配）
+typedef void (*pf_str_ctor_t)(void *, const char *);
+typedef void (*pf_str_dtor_t)(void *);
+static int pf_try_higher_minor(void *sret, const void *inst, unsigned char retry, unsigned char getStub,
+                               void (*real)(void *, const void *, const void *, unsigned char, unsigned char),
+                               const char *desc) {
+    static pf_str_ctor_t ctor = NULL;
+    static pf_str_dtor_t dtor = NULL;
+    if (!ctor)
+        ctor = (pf_str_ctor_t)dlsym(RTLD_NEXT,
+            "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1EPKc");
+    if (!ctor)
+        ctor = (pf_str_ctor_t)dlsym(RTLD_NEXT,
+            "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC2EPKc");
+    if (!dtor)
+        dtor = (pf_str_dtor_t)dlsym(RTLD_NEXT,
+            "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev");
+    if (!dtor)
+        dtor = (pf_str_dtor_t)dlsym(RTLD_NEXT,
+            "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED2Ev");
+    if (!ctor || !dtor || !desc) return 0;
+    if (!strstr(desc, "configstore@1.0")) return 0;      // 只修这一处，最小风险
+    char fixed[256];
+    snprintf(fixed, sizeof(fixed), "%s", desc);
+    char *p = strstr(fixed, "@1.0");
+    if (!p) return 0;
+    p[2] = '1';                                          // @1.0 -> @1.1
+    char nsbuf[32] __attribute__((aligned(16)));
+    memset(nsbuf, 0, sizeof(nsbuf));
+    ctor(nsbuf, fixed);
+    real(sret, (const void *)nsbuf, inst, retry, getStub);
+    dtor(nsbuf);
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] configstore@1.0 兼容重查 -> %s : raw=%p\n",
+                fixed, sret ? *(void **)sret : NULL);
+    return 1;
+}
+
 // libc++ std::string::c_str()（非虚、out-of-line）——安全解码 const& string 参数
 static const char *pf_cstr(const void *str_obj) {
     static const char *(*fn)(const void *) = NULL;
@@ -315,6 +355,9 @@ void grs_raw(void *sret, const void *desc, const void *inst, unsigned char retry
             dlsym(RTLD_NEXT, "_ZN7android8hardware7details21getRawServiceInternalERKNSt3__112basic_stringIcNS2_11char_traitsIcEENS2_9allocatorIcEEEESA_bb");
     if (real) real(sret, desc, inst, retry, getStub);
     void *raw0 = sret ? *(void **)sret : NULL;
+    // configstore@1.0：服务只注册了 1.1 ⇒ 用 @1.1 重查（否则 SF 在静态初始化里空指针崩溃）
+    if (!raw0 && real && pf_try_higher_minor(sret, inst, retry, getStub, real, pf_cstr(desc)))
+        raw0 = sret ? *(void **)sret : NULL;
     // 兜底：libui 查 mapper 时（实测）拿到 null。以 getStub=1 再试一次 —— 等价于 HIDL 的 passthrough 回退。
     if (!raw0 && !getStub && real && getenv("PROPFIX_STUB")) {   // 默认关闭：实测开启后 SF 反而更早就死
         real(sret, desc, inst, retry, 1);
