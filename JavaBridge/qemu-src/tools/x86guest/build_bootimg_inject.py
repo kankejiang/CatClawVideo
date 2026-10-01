@@ -356,6 +356,7 @@ def main():
     if os.environ.get("B1_ASTACK", "1") != "0":
         ast_sh = (
             '\n# ── B1.1：Android binder 服务栈 ──\n'
+            '# astack v3 (2026-10-02)：dri 软链 tar 化/card0/SF+adbd 由 init 拉起/verify 自检\n'
             'if [ -f /b1/android-stack.tar.gz ]; then\n'
             '    # ⚠ 顺序问题（实测）：本段在 init 里排在 weston 段**之前**，而 composer 服务要连 Wayland\n'
             '    #    （日志 "WAYLAND_DISPLAY: wayland-0 / Could not open Wayland display / failed to open\n'
@@ -521,14 +522,24 @@ def main():
             'else\n'
             '    echo "[astack] 未注入 /b1/android-stack.tar.gz（跳过）"\n'
             'fi\n').encode("utf-8")
-        if "B1.1：Android binder 服务栈".encode("utf-8") not in init:
-            # ⚠ 不能复用 anchor2：它定义在上面「调试后门」分支里，而后门已改 opt-in（默认不执行）
-            # ⇒ 复用会 UnboundLocalError（2026-10-01 实测）。这里用独立锚点。
+        # ── astack 段幂等更新（2026-10-02）：原守卫「标记不存在才插入」导致基础 initramfs 里
+        # 固化的**旧版** astack 段永远不被更新 ⇒ dri 软链/SF/adbd 拉起/verify 等所有修改从未生效。
+        # 改为版本标记：ver 不在（=旧段在）时先整段删除旧段（从标记到段尾 fi），再插新版。
+        _ver = b"# astack v3 (2026-10-02)"
+        if _ver not in init:
+            tag = "B1.1：Android binder 服务栈".encode("utf-8")
+            start = init.find(tag)
+            if start >= 0:
+                endmark = 'echo "[astack] 未注入 /b1/android-stack.tar.gz（跳过）"\nfi\n'.encode("utf-8")
+                end = init.find(endmark, start)
+                if end >= 0:
+                    init = init[:start] + init[end + len(endmark):]
+                    print("④e init 已删除旧版 astack 段")
             _a_ast = b'LD_PRELOAD=/proppreload.so /system/bin/artlaunch'
             init = init.replace(_a_ast, ast_sh + _a_ast, 1)
             init_i = next(i for i, e in enumerate(merged) if e[0] == "init")
             merged[init_i] = merged[init_i][:6] + (init,) + merged[init_i][7:]
-            print("④f init 已插入 Android 服务栈段（B1.1）")
+            print("④f init 已插入 Android 服务栈段（astack v3，含 dri 软链/SF/adbd 拉起/verify 自检）")
         anchor3 = b'LD_PRELOAD=/proppreload.so /system/bin/artlaunch'
         if b"weston --backend=headless" not in init and anchor3 in init:
             init = init.replace(anchor3, we_sh + b"\n" + anchor3, 1)
