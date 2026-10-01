@@ -306,6 +306,28 @@ def main():
             'else\n'
             '    echo "[weston] 未注入 /b1/weston.tar.gz（跳过）"\n'
             'fi\n').encode("utf-8")
+    # ── B1.1：DRM/virtio-gpu 内核模块（给 gralloc/minigbm 提供 /dev/dri）──
+    # 模块与 guest 内核**版本精确匹配**（Debian 6.1.0-50-amd64 = 6.1.176-1，取自
+    # snapshot.debian.org 的 linux-image 包）。QEMU 侧同时要加 `-device virtio-gpu-pci`。
+    # 依赖链（modinfo 实测）：virtio-gpu ← drm_kms_helper ← drm，另有 drm_shmem_helper / virtio_dma_buf。
+    if os.environ.get("B1_MODS", "1") != "0":
+        mods_sh = (
+            '\n# ── B1.1：virtio-gpu / DRM 模块（→ /dev/dri）──\n'
+            'if [ -f /b1/mods.tar.gz ]; then\n'
+            '    $BB tar xzf /b1/mods.tar.gz -C /modules/ && echo "[mods] 解包完成"\n'
+            '    for m in drm drm_kms_helper drm_shmem_helper cec drm_display_helper virtio_dma_buf virtio-gpu drm_ttm_helper ttm; do\n'
+            '        [ -f /modules/$m.ko ] || continue\n'
+            '        $BB insmod /modules/$m.ko >/dev/null 2>&1 && echo "[mods] insmod $m 成功" || echo "[mods] insmod $m 失败（可能已内建/已加载）"\n'
+            '    done\n'
+            '    $BB ls -la /dev/dri 2>&1 | $BB head -5\n'
+            'else\n'
+            '    echo "[mods] 未注入 /b1/mods.tar.gz（跳过）"\n'
+            'fi\n').encode("utf-8")
+        if b"B1.1" not in init and b"/modules/virtio-gpu.ko" not in init:
+            init = init.replace(anchor, mods_sh + anchor, 1)
+            init_i = next(i for i, e in enumerate(merged) if e[0] == "init")
+            merged[init_i] = merged[init_i][:6] + (init,) + merged[init_i][7:]
+            print("④e init 已插入 DRM 模块加载段（B1.1）")
         anchor3 = b'LD_PRELOAD=/proppreload.so /system/bin/artlaunch'
         if b"weston --backend=headless" not in init and anchor3 in init:
             init = init.replace(anchor3, we_sh + b"\n" + anchor3, 1)

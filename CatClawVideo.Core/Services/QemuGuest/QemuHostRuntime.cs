@@ -341,6 +341,11 @@ public sealed class QemuHostRuntime : IDisposable
                 "-initrd", InitrdName,
                 "-netdev", netdev,
                 "-device", NetDevice,
+                // ── B1.1：virtio-gpu（给 guest 的 gralloc/minigbm 一个 DRM 设备 → /dev/dri）──
+                // 无头运行（-nographic）：只提供 DRM 节点；画面由 SurfaceFlinger 自己合成后用
+                // adb screencap 取。guest 侧要 insmod 与内核版本精确匹配的 drm/virtio-gpu 模块。
+                // 关掉：环境变量 CATCLAW_ART_GPU=0。
+                "-device", Environment.GetEnvironmentVariable("CATCLAW_ART_GPU") == "0" ? "virtio-gpu-pci,id=gpu0,disable-legacy=on" : "virtio-gpu-pci",
             };
             // ── 诊断开关（默认关）：把 guest 的 slirp 流量 dump 成 pcap ──
             // 2026-10-01 夸克扫码排障：壳扫码后既不落盘、也不读任何存储，剩下的未知只有
