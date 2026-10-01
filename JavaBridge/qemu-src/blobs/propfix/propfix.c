@@ -217,7 +217,7 @@ int __android_log_vprint(int prio, const char *tag, const char *fmt, va_list ap)
     static int (*real)(int, const char *, const char *, va_list) = NULL;
     if (!real)
         real = (int (*)(int, const char *, const char *, va_list))dlsym(RTLD_NEXT, "__android_log_vprint");
-    if (getenv("PROPFIX_DEBUG") && (log_interesting(tag) || log_critical(prio))) {
+    if (getenv("PROPFIX_LOGV") && getenv("PROPFIX_DEBUG") && (log_interesting(tag) || log_critical(prio))) {
         char buf[1024];
         va_list cp;
         va_copy(cp, ap);
@@ -232,7 +232,7 @@ int __android_log_print(int prio, const char *tag, const char *fmt, ...) {
     static int (*real)(int, const char *, const char *, ...) = NULL;
     if (!real)
         real = (int (*)(int, const char *, const char *, ...))dlsym(RTLD_NEXT, "__android_log_print");
-    if (getenv("PROPFIX_DEBUG") && (log_interesting(tag) || log_critical(prio))) {
+    if (getenv("PROPFIX_LOGV") && getenv("PROPFIX_DEBUG") && (log_interesting(tag) || log_critical(prio))) {
         char buf[1024];
         va_list ap;
         va_start(ap, fmt);
@@ -323,14 +323,21 @@ static int pf_try_higher_minor(void *sret, const void *inst, unsigned char retry
     return 1;
 }
 
-// libc++ std::string::c_str()（非虚、out-of-line）——安全解码 const& string 参数
-static const char *pf_cstr(const void *str_obj) {
-    static const char *(*fn)(const void *) = NULL;
-    if (!fn)
-        fn = (const char *(*)(const void *))
-            dlsym(RTLD_NEXT, "_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5c_strEv");
-    if (!fn || !str_obj) return NULL;
-    return fn(str_obj);
+// ── 安全解码 libc++ std::string（alternate layout）──
+// 实测证据：描述符对象前 16 字节形如 41 00.. 38 00..，对应 {cap=65, size=56}
+// 而 android.hardware.configstore@1.1::ISurfaceFlingerConfigs 正好 56 字符 ⇒ 布局 = {cap, size, data}。
+// 判别：先看 +16 处是否像一个合法指针且 cap>=size 且 size<256 ⇒ 视为 long；否则按 short（数据在 +1）。
+static const char *pf_cstr(const void *o) {
+    if (!o) return NULL;
+    const unsigned char *b = (const unsigned char *)o;
+    const char *cand = NULL;
+    memcpy(&cand, b + 16, sizeof(cand));
+    size_t cap = 0, size = 0;
+    memcpy(&cap, b, sizeof(cap));
+    memcpy(&size, b + 8, sizeof(size));
+    if (cand && cand > (const char *)0x10000 && cap >= size && size > 0 && size < 256)
+        return cand;                                   // long
+    return (const char *)o + 1;                        // short（首字节 = size<<1）
 }
 
 static void dump_bytes(const char *tag, const void *p) {
@@ -353,18 +360,31 @@ void grs_raw(void *sret, const void *desc, const void *inst, unsigned char retry
     if (!real)
         real = (void (*)(void *, const void *, const void *, unsigned char, unsigned char))
             dlsym(RTLD_NEXT, "_ZN7android8hardware7details21getRawServiceInternalERKNSt3__112basic_stringIcNS2_11char_traitsIcEENS2_9allocatorIcEEEESA_bb");
-    if (real) real(sret, desc, inst, retry, getStub);
-    void *raw0 = sret ? *(void **)sret : NULL;
-    // configstore@1.0：服务只注册了 1.1 ⇒ 用 @1.1 重查（否则 SF 在静态初始化里空指针崩溃）
-    if (!raw0 && real && pf_try_higher_minor(sret, inst, retry, getStub, real, pf_cstr(desc)))
-        raw0 = sret ? *(void **)sret : NULL;
-    // 兜底：libui 查 mapper 时（实测）拿到 null。以 getStub=1 再试一次 —— 等价于 HIDL 的 passthrough 回退。
-    if (!raw0 && !getStub && real && getenv("PROPFIX_STUB")) {   // 默认关闭：实测开启后 SF 反而更早就死
-        real(sret, desc, inst, retry, 1);
-        void *raw1 = sret ? *(void **)sret : NULL;
-        if (getenv("PROPFIX_DEBUG"))
-            fprintf(stderr, "[propfix] getRawServiceInternal 兜底 getStub=1 -> raw=%p\n", raw1);
+    // ⚠ 先打日志再调 real：实测 real 在 configstore@1.0 的查找里会崩（libhidlbase+0x7a9），
+    //   若把日志放在 real 之后，就永远看不到"它到底在查哪个描述符"。
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] >> getRawServiceInternal(p3=%d p4=%d) desc=[%s] inst=[%s]\n",
+                (int)retry, (int)getStub,
+                pf_cstr(desc) ? pf_cstr(desc) : "?", pf_cstr(inst) ? pf_cstr(inst) : "?");
+    // ⚠ 关键：configstore@1.0 的**改写必须在 real 之前**。
+    //   实测：SF 静态初始化里唯一一次查找就是 configstore@1.0::ISurfaceFlingerConfigs/default，
+    //   而 real（libhidlbase）在该查找上**当场崩溃** ⇒ 放在 real 之后的兜底永远执行不到。
+    //   镜像里的服务只注册 @1.1 ⇒ 直接把描述符就地改成 @1.1 再查（查完还原，保持对象原样）。
+    char *pf_at = NULL;
+    const char *pf_d = pf_cstr(desc);
+    if (pf_d) {
+        pf_at = strstr((char *)pf_d, "@1.0");
+        if (pf_at && strstr(pf_d, "configstore")) {
+            pf_at[3] = '1';   // @1.0 -> @1.1（minor 在下标 3）
+            if (getenv("PROPFIX_DEBUG"))
+                fprintf(stderr, "[propfix] configstore@1.0 -> @1.1（避开崩溃路径）: %s\n", pf_d);
+        } else {
+            pf_at = NULL;
+        }
     }
+    if (real) real(sret, desc, inst, retry, getStub);
+    if (pf_at) pf_at[3] = '0';                       // 还原
+    void *raw0 = sret ? *(void **)sret : NULL;
     if (getenv("PROPFIX_DEBUG")) {
         void *raw = sret ? *(void **)sret : NULL;
         fprintf(stderr, "[propfix] getRawServiceInternal(p3=%d p4=%d) -> raw=%p  desc=%s  inst=%s\n",
