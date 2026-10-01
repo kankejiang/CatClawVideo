@@ -15,6 +15,8 @@
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <string.h>
+#include <stdarg.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -25,6 +27,27 @@
 #include <sys/system_properties.h>   // __system_property_get（NDK 头里有）
 typedef int (*area_init_fn)(const char *);
 typedef int (*add_fn)(const char *, unsigned int, const char *, unsigned int);
+
+// 一行诊断同时落两处：stderr（→ 串口 → 宿主 qemu-console-art.log）与 /data/propinit.err
+// （给只读探针/adb 取，不必等 logd）。见 T4 交付文档"给 T1 的请求 R3"。
+static void say(const char *fmt, ...) {
+    va_list ap;
+    fputs("[propinit] ", stderr);
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+    fflush(stderr);
+    FILE *f = fopen("/data/propinit.err", "ae");
+    if (f) {
+        fputs("[propinit] ", f);
+        va_start(ap, fmt);
+        vfprintf(f, fmt, ap);
+        va_end(ap);
+        fputc('\n', f);
+        fclose(f);
+    }
+}
 
 static void *resolve_private(const char *name) {
     void *h = dlopen("libc.so", RTLD_NOW);
@@ -38,28 +61,52 @@ static void *resolve_private(const char *name) {
 typedef struct { const char *k; const char *v; } KV;
 
 int main(void) {
-    // ⚠ 实测：guest 里**已经存在** /dev/__properties__（adb 侧是 Permission denied 而非"不存在"），
-    // 而 __system_property_area_init 对已存在的区域返回 -1、之后 add 全部 rc=-1。
-    // 这里先把它挪走（我们是 init 阶段的 root），再建一份干净的。
-    // 代价：那份里的属性会丢 —— 但它们本来就是 proppreload 假表的产物，没有真值可丢。
+    // ⚠ 2026-10-02（E1 定因）：原来这里只打一句"旧属性区已存在（非链接）"——**那句不可信**：
+    //   readlink() 对"根本不存在"的目录同样返回 -1（ENOENT），代码却没区分，
+    //   于是每次开机都打印"已存在"，把"旧区导致 area_init=-1"这个假设说得像有证据。
+    //   现在每一步都带 errno，并额外 stat 一遍 property_info（bionic 建区真正要读的文件）。
+    //   同时把同样的行写一份到 /data/propinit.err（给只读探针取，见 T4 的 R3）。
+    say("[propinit] === 属性区定因开始 ===");
     {
-        char buf[256];
-        int n = readlink("/dev/__properties__", buf, sizeof(buf) - 1);
+        char lb[256];
+        errno = 0;
+        int n = readlink("/dev/__properties__", lb, sizeof(lb) - 1);
         if (n >= 0) {
-            buf[n] = 0;
-            fprintf(stderr, "[propinit] 旧属性区是符号链接 → %s\n", buf);
+            lb[n] = 0;
+            say("[propinit] /dev/__properties__ 是符号链接 → %s", lb);
         } else {
-            fprintf(stderr, "[propinit] 旧属性区已存在（非链接），先移除\n");
+            say("[propinit] readlink 失败: %s（ENOENT=根本没有旧区）", strerror(errno));
         }
-        if (remove("/dev/__properties__") != 0)
-            remove("/dev/__properties__/properties_serial");   // 目录形态兜底
+        errno = 0;
+        if (remove("/dev/__properties__") != 0) {
+            say("[propinit] remove(目录) 失败: %s", strerror(errno));
+            errno = 0;
+            if (remove("/dev/__properties__/properties_serial") != 0)
+                say("[propinit] remove(properties_serial) 失败: %s", strerror(errno));
+        } else {
+            say("[propinit] 旧区已移除");
+        }
+        errno = 0;
+        if (mkdir("/dev/__properties__", 0755) != 0)
+            say("[propinit] mkdir 失败: %s", strerror(errno));
     }
-    mkdir("/dev/__properties__", 0755);
     area_init_fn p_area_init = (area_init_fn)resolve_private("__system_property_area_init");
     add_fn p_add = (add_fn)resolve_private("__system_property_add");
-    if (!p_area_init || !p_add) { fprintf(stderr, "[propinit] 无法解析 libc 私有符号（area_init=%p add=%p）\n", (void*)p_area_init, (void*)p_add); return 2; }
+    if (!p_area_init || !p_add) { say("无法解析 libc 私有符号（area_init=%p add=%p）", (void*)p_area_init, (void*)p_add); return 2; }
+    errno = 0;
     int r = p_area_init("/dev/__properties__");
-    fprintf(stderr, "[propinit] area_init(%s) = %d\n", "/dev/__properties__", r);
+    say("[propinit] area_init(/dev/__properties__) = %d, errno=%d (%s)", r, errno, strerror(errno));
+    {
+        struct stat st;
+        errno = 0;
+        say("[propinit] stat 目录: %s", stat("/dev/__properties__", &st) == 0 ? "OK" : strerror(errno));
+        errno = 0;
+        say("[propinit] property_info: %s",
+            stat("/dev/__properties__/property_info", &st) == 0 ? "在" : strerror(errno));
+        errno = 0;
+        say("[propinit] properties_serial: %s",
+            stat("/dev/__properties__/properties_serial", &st) == 0 ? "在" : strerror(errno));
+    }
     if (r != 0) {
         // 已存在（重复调用）不算致命：继续尝试写入
     }
@@ -102,15 +149,15 @@ int main(void) {
         int rc = p_add(kvs[i].k, (unsigned)strlen(kvs[i].k),
                                        kvs[i].v, (unsigned)strlen(kvs[i].v));
         if (rc == 0) n++;
-        else fprintf(stderr, "[propinit] add %s 失败 (rc=%d)\n", kvs[i].k, rc);
+        else say("add %s 失败 (rc=%d, errno=%d %s)", kvs[i].k, rc, errno, strerror(errno));
     }
-    fprintf(stderr, "[propinit] 写入 %d/%d 条\n", n, (int)(sizeof(kvs) / sizeof(kvs[0])));
+    say("写入 %d/%d 条", n, (int)(sizeof(kvs) / sizeof(kvs[0])));
 
     // 自检：用真属性区读回来（这会走 bionic 自己的实现，而不是任何 shim）
     char buf[256];
     int got = __system_property_get("ro.hardware.egl", buf);
-    fprintf(stderr, "[propinit] 读回 ro.hardware.egl = %s (len=%d)\n", got ? buf : "(空)", got);
+    say("读回 ro.hardware.egl = %s (len=%d)", got ? buf : "(空)", got);
     got = __system_property_get("ro.debuggable", buf);
-    fprintf(stderr, "[propinit] 读回 ro.debuggable = %s (len=%d)\n", got ? buf : "(空)", got);
+    say("读回 ro.debuggable = %s (len=%d)", got ? buf : "(空)", got);
     return 0;
 }
