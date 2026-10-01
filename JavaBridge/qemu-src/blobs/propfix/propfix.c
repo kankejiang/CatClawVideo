@@ -181,6 +181,13 @@ pf_status_t gba8(void *self, uint32_t w, uint32_t h, int fmt, uint32_t layers, u
                 self, w, h, fmt, (unsigned long long)usage);
     pf_status_t rc = real ? real(self, w, h, fmt, layers, usage, handle, stride, err) : -1;
     if (getenv("PROPFIX_DEBUG")) fprintf(stderr, "[propfix] << allocate(8) rc=%d\n", rc);
+    if (rc == 5 && real && (!getenv("PROPFIX_USAGE") || getenv("PROPFIX_USAGE")[0] != '0')) {
+        unsigned long masked = usage & 0xF0Full;
+        if (getenv("PROPFIX_DEBUG"))
+            fprintf(stderr, "[propfix]   usage 0x%lx 被拒 ⇒ 掩码为 0x%lx 重试\n", usage, masked);
+        rc = real(self, w, h, fmt, layers, masked, handle, stride, err);
+        if (getenv("PROPFIX_DEBUG")) fprintf(stderr, "[propfix]   << 掩码重试 rc=%d\n", rc);
+    }
     return rc;
 }
 
@@ -201,6 +208,16 @@ pf_status_t gba9(void *self, uint32_t w, uint32_t h, int fmt, uint32_t layers, u
                 self, w, h, fmt, (unsigned long long)usage);
     pf_status_t rc = real ? real(self, w, h, fmt, layers, usage, handle, stride, extra, err) : -1;
     if (getenv("PROPFIX_DEBUG")) fprintf(stderr, "[propfix] << allocate(9) rc=%d\n", rc);
+    if (rc == 5 && real && (!getenv("PROPFIX_USAGE") || getenv("PROPFIX_USAGE")[0] != '0')) {
+        // rc=5 = mapper NO_RESOURCES。掩码掉 minigbm 可能不认的高位后重试一次。
+        // 保留：SW_READ_NEVER(0x1) SW_WRITE_NEVER(0x2) SW_READ_OFTEN(0x4) SW_WRITE_OFTEN(0x8)
+        //      HW_TEXTURE(0x100) HW_RENDER(0x200) HW_2D(0x400) HW_COMPOSER(0x800)
+        unsigned long masked = usage & 0xF0Full;
+        if (getenv("PROPFIX_DEBUG"))
+            fprintf(stderr, "[propfix]   usage 0x%lx 被拒 ⇒ 掩码为 0x%lx 重试\n", usage, masked);
+        rc = real(self, w, h, fmt, layers, masked, handle, stride, extra, err);
+        if (getenv("PROPFIX_DEBUG")) fprintf(stderr, "[propfix]   << 掩码重试 rc=%d\n", rc);
+    }
     return rc;
 }
 
@@ -791,23 +808,175 @@ int open64(const char *path, int flags, ...) {
 
 
 // ── 探针：gbm / drm 打开与分配 ──
+/* ── GBM 回退层（2026-10-02）──
+ * 实测：mapper 走 libgbm_mesa_wrapper（cros/minigbm 风格），对 virtio_gpu 的 card0 与
+ * renderD128 都建不出设备（card0=EINVAL / renderD 分配=EACCES→rc=5→SF abort
+ * "output buffer not gpu writeable"）；而直连 libgbm_mesa 对 card0 分配成功（gbmprobe 实证）。
+ * 故 wrapper 的 gbm_* 调用失败时整套切到 mesa 实现——device/bo 必须同源，用 g_from_mesa 标记。 */
+static void *g_gbm_mesa_h;
+static int g_from_mesa;
+static void *gbm_mesa_sym(const char *n) {
+    if (!g_gbm_mesa_h) g_gbm_mesa_h = dlopen("libgbm_mesa.so", RTLD_NOW);
+    if (!g_gbm_mesa_h && getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] gbm 回退：dlopen libgbm_mesa.so 失败 %s\n", dlerror());
+    return g_gbm_mesa_h ? dlsym(g_gbm_mesa_h, n) : NULL;
+}
+
 void *gbm_create_device(int fd) {
     static void *(*real)(int) = NULL;
     if (!real) real = (void *(*)(int))dlsym(RTLD_NEXT, "gbm_create_device");
     void *r = real ? real(fd) : NULL;
-    if (getenv("PROPFIX_DEBUG"))
-        fprintf(stderr, "[propfix] gbm_create_device(fd=%d) -> %p\n", fd, r);
+    g_from_mesa = 0;
+    if (!r) {
+        void *(*f)(int) = (void *(*)(int))gbm_mesa_sym("gbm_create_device");
+        if (f) { r = f(fd); g_from_mesa = 1; }
+    }
+    if (getenv("PROPFIX_DEBUG")) {
+        char link[64], buf[512];
+        snprintf(link, sizeof link, "/proc/self/fd/%d", fd);
+        ssize_t n = readlink(link, buf, sizeof buf - 1);
+        if (n < 0) { buf[0] = '?'; buf[1] = 0; n = 1; }
+        buf[n] = 0;
+        fprintf(stderr, "[propfix] gbm_create_device(fd=%d=%s) -> %p errno=%d(%s) mesa=%d\n",
+                fd, buf, r, r ? 0 : errno, r ? "-" : strerror(errno), g_from_mesa);
+    }
     return r;
 }
 
 void *gbm_bo_create(void *gbm, uint32_t width, uint32_t height, uint32_t format, uint32_t flags) {
     static void *(*real)(void *, uint32_t, uint32_t, uint32_t, uint32_t) = NULL;
     if (!real) real = (void *(*)(void *, uint32_t, uint32_t, uint32_t, uint32_t))dlsym(RTLD_NEXT, "gbm_bo_create");
-    void *r = real ? real(gbm, width, height, format, flags) : NULL;
+    void *r;
+    if (g_from_mesa) {
+        void *(*f)(void *, uint32_t, uint32_t, uint32_t, uint32_t) =
+            (void *(*)(void *, uint32_t, uint32_t, uint32_t, uint32_t))gbm_mesa_sym("gbm_bo_create");
+        r = f ? f(gbm, width, height, format, flags) : NULL;
+    } else {
+        r = real ? real(gbm, width, height, format, flags) : NULL;
+    }
     if (getenv("PROPFIX_DEBUG"))
         fprintf(stderr, "[propfix] gbm_bo_create(gbm=%p w=%u h=%u fmt=0x%x flags=0x%x) -> %p\n",
                 gbm, width, height, format, flags, r);
     return r;
+}
+
+
+/* ── 其余 wrapper UND 符号：real(wrapper) 成功用 wrapper，失败切 mesa（bo/device 同源跟随）── */
+void gbm_bo_destroy(void *bo) {
+    static void (*real)(void *) = NULL;
+    if (!real) real = (void (*)(void *))dlsym(RTLD_NEXT, "gbm_bo_destroy");
+    if (!g_from_mesa) { if (real) real(bo); return; }
+    void (*f)(void *) = (void (*)(void *))gbm_mesa_sym("gbm_bo_destroy");
+    if (f) f(bo);
+}
+
+void gbm_device_destroy(void *dev) {
+    static void (*real)(void *) = NULL;
+    if (!real) real = (void (*)(void *))dlsym(RTLD_NEXT, "gbm_device_destroy");
+    if (!g_from_mesa) { if (real) real(dev); return; }
+    void (*f)(void *) = (void (*)(void *))gbm_mesa_sym("gbm_device_destroy");
+    if (f) f(dev);
+}
+
+int gbm_device_get_fd(void *dev) {
+    static int (*real)(void *) = NULL;
+    if (!real) real = (int (*)(void *))dlsym(RTLD_NEXT, "gbm_device_get_fd");
+    if (g_from_mesa) {
+        int (*f)(void *) = (int (*)(void *))gbm_mesa_sym("gbm_device_get_fd");
+        return f ? f(dev) : -1;
+    }
+    return real ? real(dev) : -1;
+}
+
+int gbm_bo_get_fd(void *bo) {
+    static int (*real)(void *) = NULL;
+    if (!real) real = (int (*)(void *))dlsym(RTLD_NEXT, "gbm_bo_get_fd");
+    if (g_from_mesa) {
+        int (*f)(void *) = (int (*)(void *))gbm_mesa_sym("gbm_bo_get_fd");
+        return f ? f(bo) : -1;
+    }
+    return real ? real(bo) : -1;
+}
+
+uint32_t gbm_bo_get_stride(void *bo) {
+    static uint32_t (*real)(void *) = NULL;
+    if (!real) real = (uint32_t (*)(void *))dlsym(RTLD_NEXT, "gbm_bo_get_stride");
+    if (g_from_mesa) {
+        uint32_t (*f)(void *) = (uint32_t (*)(void *))gbm_mesa_sym("gbm_bo_get_stride");
+        return f ? f(bo) : 0;
+    }
+    return real ? real(bo) : 0;
+}
+
+uint64_t gbm_bo_get_modifier(void *bo) {
+    static uint64_t (*real)(void *) = NULL;
+    if (!real) real = (uint64_t (*)(void *))dlsym(RTLD_NEXT, "gbm_bo_get_modifier");
+    if (g_from_mesa) {
+        uint64_t (*f)(void *) = (uint64_t (*)(void *))gbm_mesa_sym("gbm_bo_get_modifier");
+        return f ? f(bo) : 0;
+    }
+    return real ? real(bo) : 0;
+}
+
+void *gbm_bo_import(void *gbm, uint32_t type, int fd, uint32_t flags) {
+    static void *(*real)(void *, uint32_t, int, uint32_t) = NULL;
+    if (!real) real = (void *(*)(void *, uint32_t, int, uint32_t))dlsym(RTLD_NEXT, "gbm_bo_import");
+    if (g_from_mesa) {
+        void *(*f)(void *, uint32_t, int, uint32_t) =
+            (void *(*)(void *, uint32_t, int, uint32_t))gbm_mesa_sym("gbm_bo_import");
+        return f ? f(gbm, type, fd, flags) : NULL;
+    }
+    return real ? real(gbm, type, fd, flags) : NULL;
+}
+
+void *gbm_bo_map(void *bo, uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                 uint32_t flags, uint32_t *stride, void **map_data) {
+    static void *(*real)(void *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t *, void **) = NULL;
+    if (!real) real = (void *(*)(void *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t *, void **))
+        dlsym(RTLD_NEXT, "gbm_bo_map");
+    if (g_from_mesa) {
+        void *(*f)(void *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t *, void **) =
+            (void *(*)(void *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t *, void **))
+            gbm_mesa_sym("gbm_bo_map");
+        return f ? f(bo, x, y, w, h, flags, stride, map_data) : NULL;
+    }
+    return real ? real(bo, x, y, w, h, flags, stride, map_data) : NULL;
+}
+
+void gbm_bo_unmap(void *bo, void *map_data) {
+    static void (*real)(void *, void *) = NULL;
+    if (!real) real = (void (*)(void *, void *))dlsym(RTLD_NEXT, "gbm_bo_unmap");
+    if (g_from_mesa) {
+        void (*f)(void *, void *) = (void (*)(void *, void *))gbm_mesa_sym("gbm_bo_unmap");
+        if (f) f(bo, map_data);
+        return;
+    }
+    if (real) real(bo, map_data);
+}
+
+int gbm_device_get_format_modifier_plane_count(void *dev, uint32_t fmt, uint64_t modifier) {
+    static int (*real)(void *, uint32_t, uint64_t) = NULL;
+    if (!real) real = (int (*)(void *, uint32_t, uint64_t))dlsym(RTLD_NEXT, "gbm_device_get_format_modifier_plane_count");
+    if (g_from_mesa) {
+        int (*f)(void *, uint32_t, uint64_t) = (int (*)(void *, uint32_t, uint64_t))
+            gbm_mesa_sym("gbm_device_get_format_modifier_plane_count");
+        return f ? f(dev, fmt, modifier) : 0;
+    }
+    return real ? real(dev, fmt, modifier) : 0;
+}
+
+void *gbm_bo_create_with_modifiers2(void *gbm, uint32_t width, uint32_t height, uint32_t format,
+                                    const uint64_t *modifiers, const unsigned int count, uint32_t flags) {
+    static void *(*real)(void *, uint32_t, uint32_t, uint32_t, const uint64_t *, const unsigned int, uint32_t) = NULL;
+    if (!real) real = (void *(*)(void *, uint32_t, uint32_t, uint32_t, const uint64_t *, const unsigned int, uint32_t))
+        dlsym(RTLD_NEXT, "gbm_bo_create_with_modifiers2");
+    if (g_from_mesa) {
+        void *(*f)(void *, uint32_t, uint32_t, uint32_t, const uint64_t *, const unsigned int, uint32_t) =
+            (void *(*)(void *, uint32_t, uint32_t, uint32_t, const uint64_t *, const unsigned int, uint32_t))
+            gbm_mesa_sym("gbm_bo_create_with_modifiers2");
+        return f ? f(gbm, width, height, format, modifiers, count, flags) : NULL;
+    }
+    return real ? real(gbm, width, height, format, modifiers, count, flags) : NULL;
 }
 
 int drmOpen(const char *name, const char *busid) {

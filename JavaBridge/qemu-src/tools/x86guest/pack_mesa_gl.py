@@ -36,6 +36,10 @@ FILES = [
     # patchelf --remove-needed libLLVM22.so，运行时用 GALLIUM_DRIVER=swrast。
     # 补丁脚本见 .zwork/b11_nollvm.sh；产物 /root/b1_blobs/libgallium_nollvm.so。
     # 已删：mesa 的 GL（实测 loader 拒绝接管、直接调也 init=0；改走 ANGLE）
+    # ⚠ 但 **GBM 必须**有它：minigbm 的 gbm 会加载 dri/<driver>_dri.so，其本体就是 libgallium_dri.so。
+    #   当初改走 ANGLE 时把它一起删了 ⇒ gbm_create_device 直接 ENOENT(2) ⇒ mapper 返回 NO_RESOURCES（本轮实证）。
+    #   GBM 分配与 GL 走哪条路无关，所以这个必须有。
+    ("lib64/libgallium_dri.so",        "system/lib64/libgallium_dri.so"),
     ("lib64/libgbm_mesa.so",           "system/lib64/libgbm_mesa.so"),
     ("lib64/libgbm_mesa_wrapper.so",   "system/lib64/libgbm_mesa_wrapper.so"),
     ("lib64/dri_gbm.so",               "system/lib64/dri_gbm.so"),
