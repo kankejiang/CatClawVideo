@@ -286,6 +286,32 @@ def main():
     else:
         print("④b （无磁力资产，跳过 thunder 注入）")
 
+    # ── B1.1：guest 内 Wayland 合成器（weston headless）──
+    # 目的：vendor 的 hwcomposer.waydroid.so 需要一个**可呈现的 Wayland surface**（它不接受"无显示"），
+    # 而我们的 guest 没有显示栈。weston 及其 glibc 依赖以 tar.gz 注入到 /b1/weston.tar.gz
+    # （见 .zwork/rebuild_gb.cmd），这里只在存在时解包并拉起；tarball 内是绝对路径布局
+    # （/usr/bin/weston、/lib/x86_64-linux-gnu/...、/lib64/ld-linux-x86-64.so.2）。
+    # 关掉：构建时设 WESTON=0。
+    if os.environ.get("WESTON", "1") != "0":
+        we_sh = (
+            '\n# ── B1.1：weston（无头 Wayland 合成器；给 waydroid HWC 送画面）──\n'
+            'if [ -f /b1/weston.tar.gz ]; then\n'
+            '    $BB tar xzf /b1/weston.tar.gz -C / >/tmp/weston-untar.log 2>&1 && echo "[weston] 解包完成" || echo "[weston] 解包失败（见 /tmp/weston-untar.log）"\n'
+            '     mkdir -p /tmp/wrt &&  chmod 700 /tmp/wrt\n'
+            '    export XDG_RUNTIME_DIR=/tmp/wrt\n'
+            '    ( /usr/bin/weston --backend=headless --shell=kiosk --socket=wl-0 --width=1280 --height=720 >/tmp/weston.log 2>&1 ) &\n'
+            '    $BB sleep 3\n'
+            '    if $BB pgrep -f "weston --backend=headless" >/dev/null 2>&1; then echo "[weston] 已启动（socket wl-0）";\n'
+            '    else echo "[weston] 未起来，日志前 8 行："; $BB head -8 /tmp/weston.log 2>/dev/null; fi\n'
+            'else\n'
+            '    echo "[weston] 未注入 /b1/weston.tar.gz（跳过）"\n'
+            'fi\n').encode("utf-8")
+        anchor3 = b'LD_PRELOAD=/proppreload.so /system/bin/artlaunch'
+        if b"weston --backend=headless" not in init and anchor3 in init:
+            init = init.replace(anchor3, we_sh + b"\n" + anchor3, 1)
+            init_i = next(i for i, e in enumerate(merged) if e[0] == "init")
+            merged[init_i] = merged[init_i][:6] + (init,) + merged[init_i][7:]
+            print("④d init 已插入 weston 启动段（B1.1）")
     print("⑤ 重打包 ...")
     buf = io.BytesIO()
     write_cpio_newc(merged, buf)

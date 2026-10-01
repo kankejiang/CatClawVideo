@@ -78,6 +78,18 @@ while _off + HDR <= len(data):
 adds = {k: v for k, v in repl.items() if k not in existing}
 print("预扫描：镜像 %d 条目；待新增 %s" % (len(existing), sorted(adds) or "无"), flush=True)
 
+# ⚠ 父目录条目必须一起补（2026-10-01 实测）：cpio 里只有 "b1/weston.tar.gz" 文件条目、
+# 没有 "b1/" 目录条目时，内核 initramfs 解包会因父目录不存在而**跳过该文件** ——
+# guest 里看不到它，init 里 `[ -f /b1/weston.tar.gz ]` 为假（症状：明明"新增"成功却报未注入）。
+_adddirs = set()
+for k in list(adds):
+    parts = k.split("/")[:-1]
+    cur = ""
+    for p in parts:
+        cur = (cur + "/" + p) if cur else p
+        if cur not in existing:
+            _adddirs.add(cur)
+
 
 def header(ino, mode, filesize, namesize):
     return (b"070701" + b"".join(b"%08X" % v for v in (
@@ -114,7 +126,12 @@ while off + HDR <= len(data):
     orig_size = filesize
     key = norm_path(name)
     # 新增条目必须在 TRAILER!!! **之前**写出（之后会被内核忽略）
-    if key == "TRAILER!!!" and adds:
+    if key == "TRAILER!!!" and (adds or _adddirs):
+        for d in sorted(_adddirs):
+            emit_entry(out, d + "/", b"", 0o040755, ino)
+            ino += 1
+            print("  + 新增目录 %s/", flush=True)
+        _adddirs.clear()
         for k, (b, m) in sorted(adds.items()):
             emit_entry(out, k, b, m if m is not None else 0o100644, ino)
             ino += 1
