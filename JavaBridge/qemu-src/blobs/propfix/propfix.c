@@ -139,6 +139,53 @@ static int g_n = -1;                 // -1 = 还没解析
 // 给 __system_property_find 用：每个 key 一块私有的 prop_info 占位内存
 static uint8_t g_fake[MAXK][128];
 
+
+// ── 诊断：GraphicBufferAllocator::allocate ──
+// 目的：SF 的 RenderEngine 断言 "output buffer not gpu writeable"，
+// 需要知道 SF 究竟用什么 usage 去申请输出缓冲、申请是否成功。
+// 做法：C 函数 + asm 标签指定 C++ mangled 名（libui.so 的导出符号，调用方在 SF 里 ⇒ 可拦截）。
+// 注意：Android 13 的 usage 是 64 位。
+typedef int32_t propfix_status2_t;
+
+static void log_alloc(const char *tag, uint32_t w, uint32_t h, int fmt, uint32_t layers,
+                      uint64_t usage, propfix_status2_t rc) {
+    if (!getenv("PROPFIX_DEBUG")) return;
+    fprintf(stderr, "[propfix] %s(w=%u h=%u fmt=0x%x layers=%u usage=0x%llx) -> %d "
+                    "[HW_TEXTURE=%d HW_RENDER=%d HW_2D=%d HW_COMPOSER=%d GPU_DATA=%d]\n",
+            tag, w, h, fmt, layers, (unsigned long long)usage, rc,
+            (int)((usage & 0x100) != 0), (int)((usage & 0x200) != 0),
+            (int)((usage & 0x400) != 0), (int)((usage & 0x800) != 0),
+            (int)((usage & 0x1000000ULL) != 0));
+}
+
+// 8 参数重载：allocate(w,h,format,layerCount,usage,native_handle const**, uint32_t*, string)
+propfix_status2_t gba_alloc8(uint32_t w, uint32_t h, int fmt, uint32_t layers, uint64_t usage,
+                             void **handle, uint32_t *stride, void *err)
+    __asm__("_ZN7android22GraphicBufferAllocator8allocateEjjijmPPK13native_handlePjNSt3__112basic_stringIcNS6_11char_traitsIcEENS6_9allocatorIcEEEE");
+propfix_status2_t gba_alloc8(uint32_t w, uint32_t h, int fmt, uint32_t layers, uint64_t usage,
+                             void **handle, uint32_t *stride, void *err) {
+    static propfix_status2_t (*real)(uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, void *) = NULL;
+    if (!real) real = (propfix_status2_t (*)(uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, void *))
+        dlsym(RTLD_NEXT, "_ZN7android22GraphicBufferAllocator8allocateEjjijmPPK13native_handlePjNSt3__112basic_stringIcNS6_11char_traitsIcEENS6_9allocatorIcEEEE");
+    propfix_status2_t rc = real ? real(w, h, fmt, layers, usage, handle, stride, err) : -1;
+    log_alloc("GraphicBufferAllocator::allocate(8)", w, h, fmt, layers, usage, rc);
+    return rc;
+}
+
+// 9 参数重载：多一个 unsigned long（可能是 usage2/allocFlags）
+propfix_status2_t gba_alloc9(uint32_t w, uint32_t h, int fmt, uint32_t layers, uint64_t usage,
+                             void **handle, uint32_t *stride, unsigned long extra, void *err)
+    __asm__("_ZN7android22GraphicBufferAllocator8allocateEjjijmPPK13native_handlePjmNSt3__112basic_stringIcNS6_11char_traitsIcEENS6_9allocatorIcEEEE");
+propfix_status2_t gba_alloc9(uint32_t w, uint32_t h, int fmt, uint32_t layers, uint64_t usage,
+                             void **handle, uint32_t *stride, unsigned long extra, void *err) {
+    static propfix_status2_t (*real)(uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, unsigned long, void *) = NULL;
+    if (!real) real = (propfix_status2_t (*)(uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, unsigned long, void *))
+        dlsym(RTLD_NEXT, "_ZN7android22GraphicBufferAllocator8allocateEjjijmPPK13native_handlePjmNSt3__112basic_stringIcNS6_11char_traitsIcEENS6_9allocatorIcEEEE");
+    propfix_status2_t rc = real ? real(w, h, fmt, layers, usage, handle, stride, extra, err) : -1;
+    log_alloc("GraphicBufferAllocator::allocate(9)", w, h, fmt, layers, usage, rc);
+    return rc;
+}
+
 static void parse_once(void) {
     if (g_n >= 0) return;
     g_n = 0;
