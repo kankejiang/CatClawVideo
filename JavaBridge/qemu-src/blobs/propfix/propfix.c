@@ -186,6 +186,26 @@ propfix_status2_t gba_alloc9(uint32_t w, uint32_t h, int fmt, uint32_t layers, u
     return rc;
 }
 
+
+// ── 诊断：直接抓 abort 原文 ──
+// 实测：LOG_ALWAYS_FATAL/assert 的文本**不经过** __android_log_write/__android_log_buf_write
+// （liblog 内部走 crash 缓冲 + logdw），所以在 shim 里按优先级也抓不到（0 条）。
+// 但 abort 文本是由 libc 导出的 android_set_abort_message() 设置的 ⇒ 拦它即可。
+void android_set_abort_message(const char *msg) {
+    static void (*real)(const char *) = NULL;
+    if (!real) real = (void (*)(const char *))dlsym(RTLD_NEXT, "android_set_abort_message");
+    fprintf(stderr, "\n[propfix] ==== ABORT 原文 ====\n[propfix] %s\n[propfix] ===================\n",
+            msg ? msg : "(null)");
+    int fd = open("/data/abort.txt", O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd >= 0) {
+        char line[1024];
+        int n = snprintf(line, sizeof(line), "ABORT: %s\n", msg ? msg : "(null)");
+        if (n > 0) (void)!write(fd, line, (size_t)n);
+        close(fd);
+    }
+    if (real) real(msg);
+}
+
 static void parse_once(void) {
     if (g_n >= 0) return;
     g_n = 0;
@@ -391,6 +411,9 @@ const char *eglQueryString(EGLDisplay dpy, EGLint name) {
 // Android 的 log 机制、我们的 fakelogd 抓不全（实测只有属性查询可见、内容看不到）。
 // 这里挂住日志写入入口，凡是本进程（SurfaceFlinger）打的日志都直接落到 stderr ⇒ 进 qemu 控制台。
 // ⚠ 只打印 libEGL/EGL/MESA/gralloc/hwc 相关，避免刷屏。
+// 优先级放行：FATAL(7)/ERROR(6) 无条件打印（abort 原文就在这里）
+static int log_critical(int prio) { return prio >= 6; }
+
 static int log_interesting(const char *tag) {
     if (!tag) return 0;
     // ⚠ 放宽：SF 自己的 assert/abort 文本 tag 是 SurfaceFlinger（此前被过滤掉，导致
@@ -405,8 +428,8 @@ static int log_interesting(const char *tag) {
 int __android_log_write(int prio, const char *tag, const char *text) {
     static int (*real)(int, const char *, const char *) = NULL;
     if (!real) real = (int (*)(int, const char *, const char *))dlsym(RTLD_NEXT, "__android_log_write");
-    if (getenv("PROPFIX_DEBUG") && log_interesting(tag))
-        fprintf(stderr, "[alog:%s] %s\n", tag ? tag : "?", text ? text : "");
+    if (getenv("PROPFIX_DEBUG") && (log_interesting(tag) || log_critical(prio)))
+        fprintf(stderr, "[alog:%s/%d] %s\n", tag ? tag : "?", prio, text ? text : "");
     return real ? real(prio, tag, text) : 0;
 }
 
@@ -415,8 +438,8 @@ int __android_log_buf_write(int bufId, int prio, const char *tag, const char *te
     if (!real)
         real = (int (*)(int, int, const char *, const char *))
             dlsym(RTLD_NEXT, "__android_log_buf_write");
-    if (getenv("PROPFIX_DEBUG") && log_interesting(tag))
-        fprintf(stderr, "[alog:%s] %s\n", tag ? tag : "?", text ? text : "");
+    if (getenv("PROPFIX_DEBUG") && (log_interesting(tag) || log_critical(prio)))
+        fprintf(stderr, "[alog:%s/%d] %s\n", tag ? tag : "?", prio, text ? text : "");
     return real ? real(bufId, prio, tag, text) : 0;
 }
 
