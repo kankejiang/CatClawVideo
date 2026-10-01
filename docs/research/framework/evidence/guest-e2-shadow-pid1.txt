@@ -1,0 +1,220 @@
+E2 shadow PID1 —— 八次开机的串口判据（2026-10-02 06:05~06:51，Windows + WHPX，同一张内核/同一台机器）
+工具：tools/b1-build/shadow_init.py；每次开机 1 分半（重打镜像 45s + 启动+观察 100s）
+回退已实测：--off 后镜像 md5 回到 75702977759e41d985b6385969f2876d，guest 正常起、桥在 :18600 监听
+
+── ① rdinit 不改，/init 顶替 PID1 后 exec /system/bin/init（裸=first stage） ──
+   串口字节 454801877..454814610 ｜ 保留 24 行 ｜ init 声明并启动过的服务 0 个 ｜ execv 失败 0 个 ｜ init 存活到 5.55 s
+Probing EDD (edd=off to disable)... oc[?7l[2J[init] shadow-PID1：exec /system/bin/init（原编排改由 /system/etc/init/init.claw.rc 拉回）
+[    5.544012] init: mknod("/dev/kmsg", S_IFCHR | 0600, makedev(1, 11)) failed File exists
+[    5.544543] init: mknod("/dev/random", S_IFCHR | 0666, makedev(1, 8)) failed File exists
+[    5.545179] init: mknod("/dev/urandom", S_IFCHR | 0666, makedev(1, 9)) failed File exists
+[    5.546025] init: mount("tmpfs", "/mnt", "tmpfs", MS_NOEXEC | MS_NOSUID | MS_NODEV, "mode=0755,uid=0,gid=1000") failed No such file or directory
+[    5.546849] init: mkdir("/mnt/vendor", 0755) failed Invalid argument
+[    5.547255] init: mkdir("/mnt/product", 0755) failed No such file or directory
+[    5.547717] init: mount("tmpfs", "/debug_ramdisk", "tmpfs", MS_NOEXEC | MS_NOSUID | MS_NODEV, "mode=0755,uid=0,gid=0") failed No such file or directory
+[    5.548566] init: mount("tmpfs", kSecondStageRes, "tmpfs", MS_NOEXEC | MS_NOSUID | MS_NODEV, "mode=0755,uid=0,gid=0") failed No such file or directory
+[    5.549469] init: Init encountered errors starting first stage, aborting
+[    5.550396] init: InitFatalReboot: signal 6
+[    5.555908] reboot: Restarting system with command 'bootloader'
+Probing EDD (edd=off to disable)... oc[?7l[2J[init] binder: 三实例已建
+[init] insmod virtio_ring:
+[init] insmod virtio:
+[init] insmod virtio_pci_modern_dev:
+[init] insmod virtio_pci_legacy_dev:
+[init] insmod virtio_pci:
+[init] insmod virtio_blk:
+[init] insmod failover:
+[init] insmod net_failover:
+[init] insmod virtio_net:
+[init] insmod binder_linux: insmod: can't insert '/modules/binder_linux.ko': File exists
+[init] binfmt arm64 已注册
+
+── ② exec /system/bin/init second_stage（跳过 first stage） ──
+   串口字节 454814610..454818222 ｜ 保留 11 行 ｜ init 声明并启动过的服务 0 个 ｜ execv 失败 0 个 ｜ init 存活到 5.45 s
+Probing EDD (edd=off to disable)... oc[?7l[2J[init] shadow-PID1：exec /system/bin/init second_stage
+[    5.437127] init: Failed to umount /debug_ramdisk: Invalid argument
+[    5.438023] init: Failed to read /vendor/etc/selinux/plat_sepolicy_vers.txt: No such file or directory
+[    5.438675] init: Could not read vendor SELinux version
+[    5.439419] init: InitFatalReboot: signal 6
+[    5.445063] init: #00 pc 00000000001475fe  /system/bin/init (android::init::InitFatalReboot(int)+94)
+[    5.445675] init: #01 pc 00000000000cd490  /system/bin/init (android::init::InitAborter(char const*)+32)
+[    5.446318] init: #02 pc 0000000000019cfc  /system/lib64/libbase.so (android::base::SetAborter(std::__1::function<void (char const*)>&&)::$_3::__invoke(char const*)+60)
+[    5.447491] init: #03 pc 000000000001924e  /system/lib64/libbase.so (android::base::LogMessage::~LogMessage()+350)
+[    5.448456] init: #04 pc 0000000000148f32  /system/bin/init (android::init::SelinuxGetVendorAndroidVersion()::$_2::operator()() const+610)
+[    5.449756] reboot: Restarting system with command 'bootloader'
+
+── ③ 同上 + 预建 tmpfs 挂载点目录（并把 console_loglevel 抬到 7） ──
+   串口字节 454818222..454858330 ｜ 保留 21 行 ｜ init 声明并启动过的服务 0 个 ｜ execv 失败 0 个 ｜ init 存活到 5.83 s
+Probing EDD (edd=off to disable)... oc[?7l[2J[init] shadow-PID1：exec /system/bin/init second_stage
+[    5.828817] init: Failed to umount /debug_ramdisk: Invalid argument
+[    5.854586] reboot: Restarting system with command 'bootloader'
+Probing EDD (edd=off to disable)... oc[?7l[2J[init] binder: 三实例已建
+[init] insmod virtio_ring:
+[init] insmod virtio:
+[init] insmod virtio_pci_modern_dev:
+[init] insmod virtio_pci_legacy_dev:
+[init] insmod virtio_pci:
+[init] insmod virtio_blk:
+[init] insmod failover:
+[init] insmod net_failover:
+[init] insmod virtio_net:
+[init] insmod binder_linux: insmod: can't insert '/modules/binder_linux.ko': File exists
+[init] binfmt arm64 已注册
+c[?7l[2J[init] shadow-PID1：exec /system/bin/init second_stage
+[    5.407984] init: init second stage started!
+[    5.408353] init: Failed to umount /debug_ramdisk: Invalid argument
+[    5.422528] init: Using Android DT directory /proc/device-tree/firmware/android/
+[    5.423090] init: Couldn't load property file '/system/build.prop': open() failed: No such file or directory: No such file or directory
+[    5.439114] reboot: Restarting system with command 'bootloader'
+
+── ④ 补 /vendor/etc/selinux/plat_sepolicy_vers.txt ──
+   串口字节 454858330..454907719 ｜ 保留 42 行 ｜ init 声明并启动过的服务 0 个 ｜ execv 失败 0 个 ｜ init 存活到 6.15 s
+Probing EDD (edd=off to disable)... oc[?7l[2J[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[    6.125323] init: init second stage started!
+[    6.125996] init: Failed to umount /debug_ramdisk: Invalid argument
+[    6.141153] init: Using Android DT directory /proc/device-tree/firmware/android/
+[    6.177648] reboot: Restarting system with command 'bootloader'
+Probing EDD (edd=off to disable)... oc[?7l[2J[init] binder: 三实例已建
+[init] insmod virtio_ring:
+[init] insmod virtio:
+[init] insmod virtio_pci_modern_dev:
+[init] insmod virtio_pci_legacy_dev:
+[init] insmod virtio_pci:
+[init] insmod virtio_blk:
+[init] insmod failover:
+[init] insmod net_failover:
+[init] insmod virtio_net:
+[init] insmod binder_linux: insmod: can't insert '/modules/binder_linux.ko': File exists
+[init] binfmt arm64 已注册
+[init] binder: 三实例已建
+[init] insmod virtio_ring:
+[init] insmod virtio:
+[init] insmod virtio_pci_modern_dev:
+[init] insmod virtio_pci_legacy_dev:
+[init] insmod virtio_pci:
+[init] insmod virtio_blk:
+[init] insmod failover:
+[init] insmod net_failover:
+[init] insmod virtio_net:
+[init] insmod binder_linux: insmod: can't insert '/modules/binder_linux.ko': File exists
+[init] binfmt arm64 已注册
+[init] binder: 三实例已建
+[init] insmod virtio_ring:
+[init] insmod virtio:
+[init] insmod virtio_pci_modern_dev:
+
+── ⑤ child 诊断形态：init 作子进程 + 抓退出码 ──
+   串口字节 454907719..454945105 ｜ 保留 12 行 ｜ init 声明并启动过的服务 0 个 ｜ execv 失败 0 个 ｜ init 存活到 ? s
+[init] binder: 三实例已建
+[init] insmod virtio_ring:
+[init] insmod virtio:
+[init] insmod virtio_pci_modern_dev:
+[init] insmod virtio_pci_legacy_dev:
+[init] insmod virtio_pci:
+[init] insmod virtio_blk:
+[init] insmod failover:
+[init] insmod net_failover:
+[init] insmod virtio_net:
+[init] insmod binder_linux: insmod: can't insert '/modules/binder_linux.ko': File exists
+[init] binfmt arm64 已注册
+
+── ⑥ 解开 /dev/kmsg 按进程限速（printk_devkmsg=on） ──
+   串口字节 454945105..454954318 ｜ 保留 21 行 ｜ init 声明并启动过的服务 0 个 ｜ execv 失败 0 个 ｜ init 存活到 5.79 s
+[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[    5.757947] [E2] init 以子进程启动 pid=132（child 诊断形态）
+[    5.763373] [E2] t=5s init.svc=0 props=0 zygote= boot= sdk= hw= svcmgr=
+[   10.765269] [E2] init 退出 rc=6（134=SIGABRT 139=SIGSEGV 132=SIGILL 0=正常返回）
+[   10.770964] [E2] t=10s init.svc=0 props=265 zygote= boot= sdk= hw= svcmgr=
+Probing EDD (edd=off to disable)... oc[?7l[2J[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[    5.407009] [E2] init 以子进程启动 pid=132（child 诊断形态）
+[    5.414629] [E2] t=5s init.svc=0 props=0 getprop可读=0 zygote= boot= sdk= hw= svcmgr=
+[    5.456070] init: Setting property 'ro.build.fingerprint' to 'waydroid/lineage_waydroid_x86_64/waydroid_x86_64:13/TQ3A.230901.001/eng.aleast.20260403.132616:userdebug/test-keys'
+[    5.457061] init: Setting property 'ro.product.cpu.abilist' to 'x86_64,x86'
+[    5.457566] init: Setting property 'ro.product.cpu.abilist32' to 'x86'
+[    5.457991] init: Setting property 'ro.product.cpu.abilist64' to 'x86_64'
+[    5.460918] init: Running restorecon...
+[    5.461532] init: start_property_service socket creation failed: Failed to bind socket 'property_service': No such file or directory
+[   10.416624] [E2] init 退出 rc=6（6/134=SIGABRT 139=SIGSEGV 132=SIGILL 0=正常返回）
+[   10.417184] [E2] init stderr 前 40 行:
+[   10.424316] [E2] t=10s init.svc=0 props=265 getprop可读=0 zygote= boot= sdk= hw= svcmgr=
+
+── ⑦ 建 /dev/socket ⇒ 第二阶段跑完整条动作队列（child 形态） ──
+   串口字节 454954318..455079504 ｜ 保留 82 行 ｜ init 声明并启动过的服务 29 个 ｜ execv 失败 24 个 ｜ init 存活到 24.14 s
+   execv 失败清单: app_process32 app_process64 audioserver boringssl_self_test32 cameraserver gatekeeperd android.hidl.allocator@1.0-service android.system.suspend@1.0-service vendor.waydroid.task@1.0-service hwservicemanager idmap2d incidentd installd keystore2
+[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[    5.725780] [E2] init 以子进程启动 pid=138（child 诊断形态）
+[    5.753711] [E2] t=5s init.svc=0 props=0 getprop可读=0 zygote= boot= sdk= hw= svcmgr=
+[    5.777613] init: Setting property 'ro.build.fingerprint' to 'waydroid/lineage_waydroid_x86_64/waydroid_x86_64:13/TQ3A.230901.001/eng.aleast.20260403.132616:userdebug/test-keys'
+[    5.779062] init: Setting property 'ro.product.cpu.abilist' to 'x86_64,x86'
+[    5.779617] init: Setting property 'ro.product.cpu.abilist32' to 'x86'
+[    5.780047] init: Setting property 'ro.product.cpu.abilist64' to 'x86_64'
+[    5.782510] init: Running restorecon...
+[    5.782892] init: Created socket '/dev/socket/property_service', mode 666, user 0, group 0
+[    6.375580] init: cannot execv('/system/bin/prng_seeder'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    6.623563] init: cannot execv('/system/bin/logd'). See the 'Debugging init' section of init's README.md for tips: Permission denied
+[    6.633351] init: cannot execv('/system/bin/lmkd'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.053165] init: cannot execv('/system/bin/servicemanager'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.067633] init: cannot execv('/system/bin/hwservicemanager'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.289312] init: cannot execv('/system/bin/app_process64'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.290801] init: cannot execv('/system/bin/app_process32'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.293657] init: cannot execv('/system/bin/cameraserver'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.293688] init: cannot execv('/system/bin/audioserver'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.294874] init: cannot execv('/system/bin/gatekeeperd'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.295489] init: cannot execv('/system/bin/idmap2d'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.299690] init: cannot execv('/system/bin/incidentd'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.335537] init: cannot execv('/system/bin/installd'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.343403] init: cannot execv('/system/bin/mediaextractor'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.349370] init: cannot execv('/system/bin/storaged'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.350833] init: cannot execv('/system/bin/wificond'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.351856] init: cannot execv('/system/bin/mediametrics'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.352106] init: cannot execv('/system/bin/hw/android.hidl.allocator@1.0-service'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.354720] init: cannot execv('/system/bin/hw/android.system.suspend@1.0-service'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.355945] init: cannot execv('/system/bin/keystore2'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.356723] init: cannot execv('/system/bin/hw/vendor.waydroid.task@1.0-service'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.357086] init: cannot execv('/system/bin/mediaserver'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+
+── ⑧ 摘掉 boringssl 的 reboot_on_failure（exec 形态，PID1=真 init） ──
+   串口字节 455079504..EOF ｜ 保留 151 行 ｜ init 声明并启动过的服务 34 个 ｜ execv 失败 26 个 ｜ init 存活到 44.84 s
+   execv 失败清单: app_process32 app_process64 audioserver boringssl_self_test32 boringssl_self_test64 cameraserver gatekeeperd android.hidl.allocator@1.0-service android.system.suspend@1.0-service vendor.waydroid.task@1.0-service hwservicemanager idmap2d incidentd installd
+Probing EDD (edd=off to disable)... oc[?7l[2J[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[    5.732173] init: Setting property 'ro.build.fingerprint' to 'waydroid/lineage_waydroid_x86_64/waydroid_x86_64:13/TQ3A.230901.001/eng.aleast.20260403.132616:userdebug/test-keys'
+[    5.733251] init: Setting property 'ro.product.cpu.abilist' to 'x86_64,x86'
+[    5.733731] init: Setting property 'ro.product.cpu.abilist32' to 'x86'
+[    5.734163] init: Setting property 'ro.product.cpu.abilist64' to 'x86_64'
+[    5.736670] init: Running restorecon...
+[    5.737007] init: Created socket '/dev/socket/property_service', mode 666, user 0, group 0
+[    6.329715] init: cannot execv('/system/bin/prng_seeder'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    6.583106] init: cannot execv('/system/bin/logd'). See the 'Debugging init' section of init's README.md for tips: Permission denied
+[    6.585108] init: cannot execv('/system/bin/servicemanager'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    6.591496] init: cannot execv('/system/bin/lmkd'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    6.605040] init: cannot execv('/system/bin/hwservicemanager'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.232685] init: cannot execv('/system/bin/audioserver'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.233334] init: cannot execv('/system/bin/gatekeeperd'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.248104] init: cannot execv('/system/bin/app_process64'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.255954] init: cannot execv('/system/bin/idmap2d'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.257848] init: cannot execv('/system/bin/app_process32'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.257860] init: cannot execv('/system/bin/incidentd'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.259161] init: cannot execv('/system/bin/installd'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.262446] init: cannot execv('/system/bin/cameraserver'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.269100] init: cannot execv('/system/bin/mediaserver'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.271132] init: cannot execv('/system/bin/storaged'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.271210] init: cannot execv('/system/bin/mediaextractor'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.272549] init: cannot execv('/system/bin/wificond'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.273772] init: cannot execv('/system/bin/hw/android.hidl.allocator@1.0-service'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.274363] init: cannot execv('/system/bin/mediametrics'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.334485] init: cannot execv('/system/bin/hw/vendor.waydroid.task@1.0-service'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.341777] init: cannot execv('/system/bin/hw/android.system.suspend@1.0-service'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[    7.353714] init: cannot execv('/system/bin/keystore2'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[   11.560084] init: cannot execv('/system/bin/vdc'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
+[   15.362979] init: cannot execv('/system/bin/hw/android.hidl.allocator@1.0-service'). See the 'Debugging init' section of init's README.md for tips: No such file or directory
