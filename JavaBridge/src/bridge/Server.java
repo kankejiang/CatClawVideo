@@ -1322,11 +1322,12 @@ public class Server {
                 for (int attempt = 1; attempt <= 3; attempt++) {
                     Process p = pb.start();
                     System.err.println("[sf] 已拉起 surfaceflinger（第 " + attempt + " 次）pid=" + p.hashCode());
-                    Thread.sleep(6000);
-                    if (p.isAlive()) {
-                        pump(p.getInputStream(), "[sf] ");
-                        break;
-                    }
+                    // ⚠ 必须**无条件** pump：早先只在"存活"时 pump ⇒ SF 若 6s 内退出，
+                    //   它的全部输出（含 shim 打的诊断：getRawServiceInternal/dlopen/EGL）都被丢掉 ✗
+                    //   —— 这正是此前"拦截器 0 条输出"的假象来源。
+                    //   pump 读到流关闭（进程退出）才返回；SF 活着就一直读（守护线程，正合需要）。
+                    pump(p.getInputStream(), "[sf] ");
+                    if (p.isAlive()) break;
                     System.err.println("[sf] 第 " + attempt + " 次启动后已退出（进程不在），准备重试");
                 }
             } catch (Throwable e) {

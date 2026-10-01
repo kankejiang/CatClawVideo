@@ -282,6 +282,17 @@ int hw_get_module_by_class(const char *class_id, const char *inst, const struct 
 //                                                    bool retry, bool getStub) -> sp<RefBase>
 // sp<> 非平凡 ⇒ 按 x86-64 SysV 用隐式 sret（第一个参数是返回槽指针）。
 // 目的：看清 libui 的 GraphicBufferMapper 到底怎么要 mapper、结果是否 null。
+
+// libc++ std::string::c_str()（非虚、out-of-line）——安全解码 const& string 参数
+static const char *pf_cstr(const void *str_obj) {
+    static const char *(*fn)(const void *) = NULL;
+    if (!fn)
+        fn = (const char *(*)(const void *))
+            dlsym(RTLD_NEXT, "_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5c_strEv");
+    if (!fn || !str_obj) return NULL;
+    return fn(str_obj);
+}
+
 static void dump_bytes(const char *tag, const void *p) {
     if (!p) { fprintf(stderr, "[propfix]   %s=(null)\n", tag); return; }
     const unsigned char *b = (const unsigned char *)p;
@@ -313,10 +324,9 @@ void grs_raw(void *sret, const void *desc, const void *inst, unsigned char retry
     }
     if (getenv("PROPFIX_DEBUG")) {
         void *raw = sret ? *(void **)sret : NULL;
-        fprintf(stderr, "[propfix] getRawServiceInternal(retry=%d getStub=%d) -> raw=%p\n",
-                (int)retry, (int)getStub, raw);
-        dump_bytes("descriptor", desc);
-        dump_bytes("instance  ", inst);
+        fprintf(stderr, "[propfix] getRawServiceInternal(p3=%d p4=%d) -> raw=%p  desc=%s  inst=%s\n",
+                (int)retry, (int)getStub, raw,
+                pf_cstr(desc) ? pf_cstr(desc) : "?", pf_cstr(inst) ? pf_cstr(inst) : "?");
     }
 }
 

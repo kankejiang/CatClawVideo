@@ -151,7 +151,7 @@ for d in SEARCH:
 import re as _re
 
 VINTF_COPY = [
-    (f"{SYS}/system/etc/vintf/manifest.xml", "system/manifest.xml"),
+    (f"{SYS}/system/etc/vintf/manifest.xml", "system/etc/vintf/manifest.xml"),
 ]
 VENDOR_FRAGS = [
     f"{VEN}/etc/vintf/manifest.xml",
@@ -173,23 +173,10 @@ if merged:
     # 否则客户端会一直 "Since 'SurfaceFlingerAIDL' could not be found, trying to start it as a lazy AIDL
     # service"（我们没 init 的 lazy 机制）⇒ screencap 永久阻塞（实测）。
     # 原镜像的 system manifest 里 AIDL 条目为 0（实测）⇒ 这里补上。名字不确定，两个候选都写（未知项无害）。
-    # ── configstore 1.0（关键！）──
-    # 完整符号化的崩溃回溯实证：SF 在 **__libc_init 的静态初始化**里就走
-    #   libSurfaceFlingerProp.so(sysprop::start_graphics_allocator_service)
-    #   → configstore@1.0::ISurfaceFlingerConfigs::getService
-    # 而 manifest 只声明了 1.1 ⇒ 1.0 查找被 VINTF 拒绝 ⇒ HIDL 客户端崩（SIGSEGV@0x1）⇒ SF 启动即死。
-    # （HIDL 允许 1.1 服务满足 1.0 客户端，但**前提是 manifest 里声明了 1.0**。）
-    merged += (
-        '    <hal format="hidl">\n'
-        '        <name>android.hardware.configstore</name>\n'
-        '        <transport>hwbinder</transport>\n'
-        '        <version>1.0</version>\n'
-        '        <interface>\n'
-        '            <name>ISurfaceFlingerConfigs</name>\n'
-        '            <instance>default</instance>\n'
-        '        </interface>\n'
-        '    </hal>\n'
-    )
+    # ⚠ 不要再补 configstore 1.0：VINTF 把同一 <hal> 的多个 <version> 当版本区间，
+    #   同 major 出现两次会报 `Duplicated major version: 1.0 vs. 1.1` ⇒ 整份 manifest EINVAL ⇒
+    #   getDeviceHalManifest 失败 ⇒ **所有** HIDL 查找失败（mapper 找不到 / HAL 注册不上）。
+    #   108（跑通的机器）只写 `<version>1.1</version>` ⇒ HIDL 会自动向下兼容 1.0 客户端。
     merged += (
         '    <hal format="hidl">\n'
         '        <name>vendor.waydroid.task</name>\n'
@@ -212,24 +199,44 @@ if merged:
         '    </hal>\n'
     )
     body = '<?xml version="1.0" encoding="utf-8"?>\n<manifest version="1.0" type="device">\n' + merged + "</manifest>\n"
-    # ⚠ 去重：主 manifest 里已经声明过的 HAL，fragment 或我们手工补的条目就不要重复写。
-    # 实测教训：重复的 <hal> 条目会让 libvintf 判 manifest 非法 ⇒ **所有** HAL 查找失败
-    # （症状：mapper@4.0 找不到 ⇒ libui GraphicBufferMapper 构造 LOG_ALWAYS_FATAL ⇒ SF 崩）。
+    # ⚠ 合并（不是简单去重）：VINTF 规定同一个 <name> 只能出现一次 —— 多版本必须写在**同一个** <hal> 块里。
+    # 实测根因：`Illformed file: /vendor/manifest.xml: Duplicated manifest.hal entry
+    #            android.hardware.configstore` ⇒ 整份 manifest 判 EINVAL
+    #            ⇒ getDeviceHalManifest 失败 ⇒ **所有** HIDL 查找失败（mapper 找不到 / task 注册不上）。
+    # 注意 <hal> 内部是 sequence（<version> 必须在 <interface> 之前）⇒ 合并版本要插到首个 <interface> 前。
     try:
         import xml.etree.ElementTree as _ET
         _root = _ET.fromstring(body)
-        _seen, _dups = set(), 0
+        _keep, _dup = {}, 0
         for _h in list(_root.findall("hal")):
             _n = _h.find("name")
-            _v = _h.find("version")
-            _key = ((_n.text or "") if _n is not None else "", (_v.text or "") if _v is not None else "")
-            if _key in _seen:
-                _root.remove(_h)
-                _dups += 1
-            else:
-                _seen.add(_key)
-        if _dups:
-            print("  vintf: 去重 %d 条重复 HAL 条目" % _dups)
+            _key = ((_n.text or "") if _n is not None else "", _h.get("format", "hidl"))
+            if _key not in _keep:
+                _keep[_key] = _h
+                continue
+            _dst = _keep[_key]
+            _dup += 1
+            # 版本并入（去重）
+            _have = {(e.text or "").strip() for e in _dst.findall("version")}
+            _ifaces = _dst.findall("interface")
+            _pos = list(_dst).index(_ifaces[0]) if _ifaces else len(list(_dst))
+            for _v in list(_h.findall("version")):
+                if (_v.text or "").strip() in _have:
+                    continue
+                _have.add((_v.text or "").strip())
+                _dst.insert(_pos, _v)
+                _pos += 1
+            # interface 并入（按 name+instance 去重）
+            _seen_i = {((i.findtext("name") or ""), (i.findtext("instance") or ""))
+                       for i in _dst.findall("interface")}
+            for _i in list(_h.findall("interface")):
+                _ik = ((_i.findtext("name") or ""), (_i.findtext("instance") or ""))
+                if _ik not in _seen_i:
+                    _seen_i.add(_ik)
+                    _dst.append(_i)
+            _root.remove(_h)
+        if _dup:
+            print("  vintf: 合并 %d 个同名 <hal> 块（多版本并入同块）" % _dup)
         body = _ET.tostring(_root, encoding="unicode") + "\n"
     except Exception as _e:
         print("  vintf: 去重失败（保留原样）:", _e)
@@ -238,15 +245,20 @@ if merged:
     with open(dst, "w", encoding="utf-8") as fh:
         fh.write(body)
     print("  vintf: 合并 %d 份 → vendor/manifest.xml（%d 字节）" % (len(VENDOR_FRAGS), len(body)))
-    # ⚠ 与 108（跑通的 Waydroid）对齐：108 **只有现代路径**、没有 legacy ✗
-    #   实测 libhidlbase 的 isPassthrough（决定是否加载 passthrough 实现）很可能只读现代路径 ✗
-    #   ⇒ 同一份合并结果同时写到现代路径，避免"legacy 被读、现代没读"或反之的差异。
-    for _rel in ("vendor/etc/vintf/manifest.xml", "system/etc/vintf/manifest.xml"):
+    # ⚠ 只把**合并后的 vendor 体**写到 vendor 侧（legacy + 现代两个路径）。
+    #   教训：曾把同一份合并体也写到 system 侧 ✗ ⇒ vendor 声明的 HAL（如 android.hidl.allocator）
+    #   与 system 侧**原厂片段**（/system/etc/vintf/manifest/*.xml）重复 ✗
+    #   ⇒ `Duplicated manifest.hal entry` ⇒ 整份 manifest 判 EINVAL ⇒ 所有 HIDL 查找失败 ✗。
+    #   system 侧改为写**原厂 system manifest**（VINTF_COPY 的来源），保持它自己的片段体系不变。
+    for _rel in ("vendor/manifest.xml", "vendor/etc/vintf/manifest.xml"):
         _d = os.path.join(STAGE, _rel)
         os.makedirs(os.path.dirname(_d), exist_ok=True)
         with open(_d, "w", encoding="utf-8") as fh:
             fh.write(body)
-    print("  vintf: 同时写入现代路径 vendor/etc/vintf/manifest.xml 与 system/etc/vintf/manifest.xml")
+    # system 侧**不再**生成 manifest.xml：原厂 /system/etc/vintf/manifest.xml 是 type="framework" ✗，
+    # 把它放到 device 路径（system/manifest.xml）会被 libvintf 判非法（实测根因之一）✗。
+    # framework manifest 由 VINTF_COPY 复制到它自己的路径，保持原厂体系不变。
+    print("  vintf: 只写 vendor 路径（vendor/manifest.xml + vendor/etc/vintf/manifest.xml）")
 
 for src, rel in VINTF_COPY:
     if not os.path.exists(src):
