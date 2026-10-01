@@ -167,6 +167,12 @@ propfix_status2_t gba_alloc8(uint32_t w, uint32_t h, int fmt, uint32_t layers, u
     static propfix_status2_t (*real)(uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, void *) = NULL;
     if (!real) real = (propfix_status2_t (*)(uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, void *))
         dlsym(RTLD_NEXT, "_ZN7android22GraphicBufferAllocator8allocateEjjijmPPK13native_handlePjNSt3__112basic_stringIcNS6_11char_traitsIcEENS6_9allocatorIcEEEE");
+    if (!getenv("PROPFIX_ALLOC")) {
+        static propfix_status2_t (*r1)(uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, void *) = NULL;
+        if (!r1) r1 = (propfix_status2_t (*)(uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, void *))
+            dlsym(RTLD_NEXT, "_ZN7android22GraphicBufferAllocator8allocateEjjijmPPK13native_handlePjNSt3__112basic_stringIcNS6_11char_traitsIcEENS6_9allocatorIcEEEE");
+        return r1 ? r1(w, h, fmt, layers, usage, handle, stride, err) : -1;
+    }
     if (getenv("PROPFIX_DEBUG"))
         fprintf(stderr, "[propfix] >> GraphicBufferAllocator::allocate(8) w=%u h=%u fmt=0x%x layers=%u usage=0x%llx\n",
                 w, h, fmt, layers, (unsigned long long)usage);
@@ -185,6 +191,12 @@ propfix_status2_t gba_alloc9(uint32_t w, uint32_t h, int fmt, uint32_t layers, u
     static propfix_status2_t (*real)(uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, unsigned long, void *) = NULL;
     if (!real) real = (propfix_status2_t (*)(uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, unsigned long, void *))
         dlsym(RTLD_NEXT, "_ZN7android22GraphicBufferAllocator8allocateEjjijmPPK13native_handlePjmNSt3__112basic_stringIcNS6_11char_traitsIcEENS6_9allocatorIcEEEE");
+    if (!getenv("PROPFIX_ALLOC")) {   // 默认关闭：实测本拦截器的签名与真实 ABI 不符（参数错位）
+        static propfix_status2_t (*r2)(uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, unsigned long, void *) = NULL;
+        if (!r2) r2 = (propfix_status2_t (*)(uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, unsigned long, void *))
+            dlsym(RTLD_NEXT, "_ZN7android22GraphicBufferAllocator8allocateEjjijmPPK13native_handlePjmNSt3__112basic_stringIcNS6_11char_traitsIcEENS6_9allocatorIcEEEE");
+        return r2 ? r2(w, h, fmt, layers, usage, handle, stride, extra, err) : -1;
+    }
     // 尺寸兜底：HWC 上报的显示宽度是未初始化垃圾（实测每轮不同：2435611472 / 1599797008）
     // ⇒ SF 会以 w*h*4 ≈ 12TB 去分配 ⇒ bad_alloc ⇒ 启动即崩。Waydroid 的 HWC 改不了 ✗
     //   ⇒ 这里把荒谬尺寸夹到 weston 的真实尺寸（init: --width=1280 --height=720）。
@@ -194,7 +206,10 @@ propfix_status2_t gba_alloc9(uint32_t w, uint32_t h, int fmt, uint32_t layers, u
         w = 1280; h = 720;
     }
     if (getenv("PROPFIX_DEBUG"))
-        fprintf(stderr, "[propfix] >> GraphicBufferAllocator::allocate(9) w=%u h=%u fmt=0x%x layers=%u usage=0x%llx extra=0x%lx\n",
+        fprintf(stderr, "[propfix] >> allocate(9) 原始参数: a1=0x%x a2=0x%x a3=0x%x a4=0x%x a5=0x%llx a6=%p a7=%p a8=0x%lx a9=%p\n",
+                w, h, (unsigned)fmt, layers, (unsigned long long)usage,
+                (void *)handle, (void *)stride, extra, err);
+        fprintf(stderr, "[propfix] >> allocate(9) 解释: w=%u h=%u fmt=0x%x layers=%u usage=0x%llx extra=0x%lx\n",
                 w, h, fmt, layers, (unsigned long long)usage, extra);
         if (w > (1u << 20) || h > (1u << 20)) {
             void *bt[16];
