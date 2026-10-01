@@ -392,6 +392,28 @@ EGLBoolean eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list, EGLConfig 
     }
     EGLBoolean ok = real ? real(dpy, attrib_list, configs, config_size, num_config) : 0;
     EGLint n = num_config ? *num_config : 0;
+
+    // 兜底：请求里带 TRANSPARENT_TYPE(0x3034) 时往往一个配置都匹配不到
+    // （实测：探针能拿到 45 个配置、RGBA8888/ES2 有 15 个，但 composer 带 TRANSPARENT_TYPE=1 时 n=0
+    //  ⇒ 它的 eglInitialize 失败 ⇒ "failed to open hwcomposer device" ⇒ composer 崩 ⇒ SF 干等）。
+    // 去掉该属性重试一次：拿到的配置不透明，但足够让 HWC 起 EGL。
+    if (n == 0 && attrib_list) {
+        EGLint filtered[64];
+        int k = 0, skipped = 0;
+        for (int i = 0; attrib_list[i] != 0x3038 && i < 60; i += 2) {
+            if (attrib_list[i] == 0x3034) { skipped++; continue; }   // TRANSPARENT_TYPE
+            filtered[k++] = attrib_list[i];
+            filtered[k++] = attrib_list[i + 1];
+        }
+        filtered[k] = 0x3038;   // EGL_NONE
+        if (skipped) {
+            EGLBoolean ok2 = real ? real(dpy, filtered, configs, config_size, num_config) : 0;
+            EGLint n2 = num_config ? *num_config : 0;
+            if (dbg)
+                fprintf(stderr, "[propfix] eglChooseConfig 去掉 TRANSPARENT_TYPE 重试: ok=%d n=%d\n", ok2, n2);
+            if (n2 > 0) { ok = ok2; n = n2; }
+        }
+    }
     if (dbg) fprintf(stderr, "[propfix] eglChooseConfig → ok=%d n=%d\n", ok, n);
     if (n == 0 && configs && config_size > 0) {
         static EGLBoolean (*getcfgs)(EGLDisplay, EGLConfig *, EGLint, EGLint *) = NULL;
