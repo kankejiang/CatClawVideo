@@ -276,6 +276,50 @@ int hw_get_module_by_class(const char *class_id, const char *inst, const struct 
     return rc;
 }
 
+
+// ── 诊断：HIDL 服务查找的唯一漏斗 ──
+// android::hardware::details::getRawServiceInternal(const string& desc, const string& inst,
+//                                                    bool retry, bool getStub) -> sp<RefBase>
+// sp<> 非平凡 ⇒ 按 x86-64 SysV 用隐式 sret（第一个参数是返回槽指针）。
+// 目的：看清 libui 的 GraphicBufferMapper 到底怎么要 mapper、结果是否 null。
+static void dump_bytes(const char *tag, const void *p) {
+    if (!p) { fprintf(stderr, "[propfix]   %s=(null)\n", tag); return; }
+    const unsigned char *b = (const unsigned char *)p;
+    char hex[64], asc[20];
+    int k = 0, a = 0;
+    for (int i = 0; i < 16; i++) {
+        k += snprintf(hex + k, sizeof(hex) - k, "%02x", b[i]);
+        asc[a++] = (b[i] >= 32 && b[i] < 127) ? (char)b[i] : '.';
+    }
+    asc[a] = 0;
+    fprintf(stderr, "[propfix]   %s: %s  |%s|\n", tag, hex, asc);
+}
+
+void grs_raw(void *sret, const void *desc, const void *inst, unsigned char retry, unsigned char getStub)
+    __asm__("_ZN7android8hardware7details21getRawServiceInternalERKNSt3__112basic_stringIcNS2_11char_traitsIcEENS2_9allocatorIcEEEESA_bb");
+void grs_raw(void *sret, const void *desc, const void *inst, unsigned char retry, unsigned char getStub) {
+    static void (*real)(void *, const void *, const void *, unsigned char, unsigned char) = NULL;
+    if (!real)
+        real = (void (*)(void *, const void *, const void *, unsigned char, unsigned char))
+            dlsym(RTLD_NEXT, "_ZN7android8hardware7details21getRawServiceInternalERKNSt3__112basic_stringIcNS2_11char_traitsIcEENS2_9allocatorIcEEEESA_bb");
+    if (real) real(sret, desc, inst, retry, getStub);
+    void *raw0 = sret ? *(void **)sret : NULL;
+    // 兜底：libui 查 mapper 时（实测）拿到 null。以 getStub=1 再试一次 —— 等价于 HIDL 的 passthrough 回退。
+    if (!raw0 && !getStub && real && getenv("PROPFIX_STUB")) {   // 默认关闭：实测开启后 SF 反而更早就死
+        real(sret, desc, inst, retry, 1);
+        void *raw1 = sret ? *(void **)sret : NULL;
+        if (getenv("PROPFIX_DEBUG"))
+            fprintf(stderr, "[propfix] getRawServiceInternal 兜底 getStub=1 -> raw=%p\n", raw1);
+    }
+    if (getenv("PROPFIX_DEBUG")) {
+        void *raw = sret ? *(void **)sret : NULL;
+        fprintf(stderr, "[propfix] getRawServiceInternal(retry=%d getStub=%d) -> raw=%p\n",
+                (int)retry, (int)getStub, raw);
+        dump_bytes("descriptor", desc);
+        dump_bytes("instance  ", inst);
+    }
+}
+
 static void parse_once(void) {
     if (g_n >= 0) return;
     g_n = 0;
