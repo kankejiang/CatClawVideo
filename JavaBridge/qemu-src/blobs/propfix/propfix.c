@@ -140,109 +140,69 @@ static int g_n = -1;                 // -1 = 还没解析
 static uint8_t g_fake[MAXK][128];
 
 
-// ── 诊断：GraphicBufferAllocator::allocate ──
-// 目的：SF 的 RenderEngine 断言 "output buffer not gpu writeable"，
-// 需要知道 SF 究竟用什么 usage 去申请输出缓冲、申请是否成功。
-// 做法：C 函数 + asm 标签指定 C++ mangled 名（libui.so 的导出符号，调用方在 SF 里 ⇒ 可拦截）。
-// 注意：Android 13 的 usage 是 64 位。
-typedef int32_t propfix_status2_t;
+// ── 诊断 + 兜底：GraphicBufferAllocator::allocate（**成员函数** ⇒ this 是隐式首参！）──
+// ⚠ 血泪教训：allocate / allocateHelper 都是成员函数，签名必须带 `void *self`，
+//   否则读到参数整体错位一格、转发时把垃圾当 this ⇒ 真实 allocateHelper 收到截断野指针 ⇒ SIGSEGV
+//   （我们追了多轮的"libui 野指针"就是这里 ✗）。
+//   Android 13 的两个重载（mangled 名见 asm 标签）：
+//     8 参: (w, h, format, layerCount, usage, handle, stride, string&)
+//     9 参: (w, h, format, layerCount, usage, handle, stride, unsigned long, string&)
+typedef int32_t pf_status_t;
 
-static void log_alloc(const char *tag, uint32_t w, uint32_t h, int fmt, uint32_t layers,
-                      uint64_t usage, propfix_status2_t rc) {
-    if (!getenv("PROPFIX_DEBUG")) return;
-    fprintf(stderr, "[propfix] %s(w=%u h=%u fmt=0x%x layers=%u usage=0x%llx) -> %d "
-                    "[HW_TEXTURE=%d HW_RENDER=%d HW_2D=%d HW_COMPOSER=%d GPU_DATA=%d]\n",
-            tag, w, h, fmt, layers, (unsigned long long)usage, rc,
-            (int)((usage & 0x100) != 0), (int)((usage & 0x200) != 0),
-            (int)((usage & 0x400) != 0), (int)((usage & 0x800) != 0),
-            (int)((usage & 0x1000000ULL) != 0));
-}
-
-// 8 参数重载：allocate(w,h,format,layerCount,usage,native_handle const**, uint32_t*, string)
-propfix_status2_t gba_alloc8(uint32_t w, uint32_t h, int fmt, uint32_t layers, uint64_t usage,
-                             void **handle, uint32_t *stride, void *err)
-    __asm__("_ZN7android22GraphicBufferAllocator8allocateEjjijmPPK13native_handlePjNSt3__112basic_stringIcNS6_11char_traitsIcEENS6_9allocatorIcEEEE");
-propfix_status2_t gba_alloc8(uint32_t w, uint32_t h, int fmt, uint32_t layers, uint64_t usage,
-                             void **handle, uint32_t *stride, void *err) {
-    static propfix_status2_t (*real)(uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, void *) = NULL;
-    if (!real) real = (propfix_status2_t (*)(uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, void *))
-        dlsym(RTLD_NEXT, "_ZN7android22GraphicBufferAllocator8allocateEjjijmPPK13native_handlePjNSt3__112basic_stringIcNS6_11char_traitsIcEENS6_9allocatorIcEEEE");
-    if (!getenv("PROPFIX_ALLOC")) {
-        static propfix_status2_t (*r1)(uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, void *) = NULL;
-        if (!r1) r1 = (propfix_status2_t (*)(uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, void *))
-            dlsym(RTLD_NEXT, "_ZN7android22GraphicBufferAllocator8allocateEjjijmPPK13native_handlePjNSt3__112basic_stringIcNS6_11char_traitsIcEENS6_9allocatorIcEEEE");
-        return r1 ? r1(w, h, fmt, layers, usage, handle, stride, err) : -1;
-    }
-    if (getenv("PROPFIX_DEBUG"))
-        fprintf(stderr, "[propfix] >> GraphicBufferAllocator::allocate(8) w=%u h=%u fmt=0x%x layers=%u usage=0x%llx\n",
-                w, h, fmt, layers, (unsigned long long)usage);
-    propfix_status2_t rc = real ? real(w, h, fmt, layers, usage, handle, stride, err) : -1;
-    if (getenv("PROPFIX_DEBUG"))
-        fprintf(stderr, "[propfix] << GraphicBufferAllocator::allocate(8) rc=%d\n", rc);
-    return rc;
-}
-
-// 9 参数重载：多一个 unsigned long（可能是 usage2/allocFlags）
-propfix_status2_t gba_alloc9(uint32_t w, uint32_t h, int fmt, uint32_t layers, uint64_t usage,
-                             void **handle, uint32_t *stride, unsigned long extra, void *err)
-    __asm__("_ZN7android22GraphicBufferAllocator8allocateEjjijmPPK13native_handlePjmNSt3__112basic_stringIcNS6_11char_traitsIcEENS6_9allocatorIcEEEE");
-propfix_status2_t gba_alloc9(uint32_t w, uint32_t h, int fmt, uint32_t layers, uint64_t usage,
-                             void **handle, uint32_t *stride, unsigned long extra, void *err) {
-    static propfix_status2_t (*real)(uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, unsigned long, void *) = NULL;
-    if (!real) real = (propfix_status2_t (*)(uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, unsigned long, void *))
-        dlsym(RTLD_NEXT, "_ZN7android22GraphicBufferAllocator8allocateEjjijmPPK13native_handlePjmNSt3__112basic_stringIcNS6_11char_traitsIcEENS6_9allocatorIcEEEE");
-    if (!getenv("PROPFIX_ALLOC")) {   // 默认关闭：实测本拦截器的签名与真实 ABI 不符（参数错位）
-        static propfix_status2_t (*r2)(uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, unsigned long, void *) = NULL;
-        if (!r2) r2 = (propfix_status2_t (*)(uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, unsigned long, void *))
-            dlsym(RTLD_NEXT, "_ZN7android22GraphicBufferAllocator8allocateEjjijmPPK13native_handlePjmNSt3__112basic_stringIcNS6_11char_traitsIcEENS6_9allocatorIcEEEE");
-        return r2 ? r2(w, h, fmt, layers, usage, handle, stride, extra, err) : -1;
-    }
-    // 尺寸兜底：HWC 上报的显示宽度是未初始化垃圾（实测每轮不同：2435611472 / 1599797008）
-    // ⇒ SF 会以 w*h*4 ≈ 12TB 去分配 ⇒ bad_alloc ⇒ 启动即崩。Waydroid 的 HWC 改不了 ✗
-    //   ⇒ 这里把荒谬尺寸夹到 weston 的真实尺寸（init: --width=1280 --height=720）。
-    if (w > (1u << 20) || h > (1u << 20)) {
+static pf_status_t pf_alloc_common(void *self, uint32_t w, uint32_t h, int fmt, uint32_t layers,
+                                   uint64_t usage) {
+    // 尺寸兜底：Waydroid HWC 上报的显示宽度是未初始化垃圾（实测每轮不同）
+    // ⇒ 夹到 weston 的真实尺寸（init: --width=1280 --height=720），否则 w*h*4 ≈ 12TB ⇒ bad_alloc。
+    if (self && (w > (1u << 20) || h > (1u << 20))) {
         if (getenv("PROPFIX_DEBUG"))
             fprintf(stderr, "[propfix] !! HWC 尺寸荒谬 w=%u h=%u ⇒ 夹到 1280x720\n", w, h);
         w = 1280; h = 720;
     }
     if (getenv("PROPFIX_DEBUG"))
-        fprintf(stderr, "[propfix] >> allocate(9) 原始参数: a1=0x%x a2=0x%x a3=0x%x a4=0x%x a5=0x%llx a6=%p a7=%p a8=0x%lx a9=%p\n",
-                w, h, (unsigned)fmt, layers, (unsigned long long)usage,
-                (void *)handle, (void *)stride, extra, err);
-        fprintf(stderr, "[propfix] >> allocate(9) 解释: w=%u h=%u fmt=0x%x layers=%u usage=0x%llx extra=0x%lx\n",
-                w, h, fmt, layers, (unsigned long long)usage, extra);
-        if (w > (1u << 20) || h > (1u << 20)) {
-            void *bt[16];
-            int n = backtrace(bt, 16);
-            fprintf(stderr, "[propfix] !! 尺寸异常（w=%u h=%u）调用栈：\n", w, h);
-            backtrace_symbols_fd(bt, n, 2);
-        }
-    propfix_status2_t rc = real ? real(w, h, fmt, layers, usage, handle, stride, extra, err) : -1;
+        fprintf(stderr, "[propfix] >> allocate self=%p w=%u h=%u fmt=0x%x layers=%u usage=0x%llx\n",
+                self, w, h, fmt, layers, (unsigned long long)usage);
+    return 0;   // 占位，实际转发在下面（本函数内联展开）
+}
+
+pf_status_t gba8(void *self, uint32_t w, uint32_t h, int fmt, uint32_t layers, uint64_t usage,
+                 void **handle, uint32_t *stride, void *err)
+    __asm__("_ZN7android22GraphicBufferAllocator8allocateEjjijmPPK13native_handlePjNSt3__112basic_stringIcNS6_11char_traitsIcEENS6_9allocatorIcEEEE");
+pf_status_t gba8(void *self, uint32_t w, uint32_t h, int fmt, uint32_t layers, uint64_t usage,
+                 void **handle, uint32_t *stride, void *err) {
+    static pf_status_t (*real)(void *, uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, void *) = NULL;
+    if (!real) real = (pf_status_t (*)(void *, uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, void *))
+        dlsym(RTLD_NEXT, "_ZN7android22GraphicBufferAllocator8allocateEjjijmPPK13native_handlePjNSt3__112basic_stringIcNS6_11char_traitsIcEENS6_9allocatorIcEEEE");
+    if (self && (w > (1u << 20) || h > (1u << 20))) {
+        if (getenv("PROPFIX_DEBUG")) fprintf(stderr, "[propfix] !! HWC 尺寸荒谬 w=%u h=%u ⇒ 1280x720\n", w, h);
+        w = 1280; h = 720;
+    }
     if (getenv("PROPFIX_DEBUG"))
-        fprintf(stderr, "[propfix] << GraphicBufferAllocator::allocate(9) rc=%d\n", rc);
+        fprintf(stderr, "[propfix] >> allocate(8) self=%p w=%u h=%u fmt=0x%x usage=0x%llx\n",
+                self, w, h, fmt, (unsigned long long)usage);
+    pf_status_t rc = real ? real(self, w, h, fmt, layers, usage, handle, stride, err) : -1;
+    if (getenv("PROPFIX_DEBUG")) fprintf(stderr, "[propfix] << allocate(8) rc=%d\n", rc);
     return rc;
 }
 
-
-// ── 诊断：直接抓 abort 原文 ──
-// 实测：LOG_ALWAYS_FATAL/assert 的文本**不经过** __android_log_write/__android_log_buf_write
-// （liblog 内部走 crash 缓冲 + logdw），所以在 shim 里按优先级也抓不到（0 条）。
-// 但 abort 文本是由 libc 导出的 android_set_abort_message() 设置的 ⇒ 拦它即可。
-void android_set_abort_message(const char *msg) {
-    static void (*real)(const char *) = NULL;
-    if (!real) real = (void (*)(const char *))dlsym(RTLD_NEXT, "android_set_abort_message");
-    fprintf(stderr, "\n[propfix] ==== ABORT 原文 ====\n[propfix] %s\n[propfix] ===================\n",
-            msg ? msg : "(null)");
-    int fd = open("/data/abort.txt", O_WRONLY | O_CREAT | O_APPEND, 0644);
-    if (fd >= 0) {
-        char line[1024];
-        int n = snprintf(line, sizeof(line), "ABORT: %s\n", msg ? msg : "(null)");
-        if (n > 0) (void)!write(fd, line, (size_t)n);
-        close(fd);
+pf_status_t gba9(void *self, uint32_t w, uint32_t h, int fmt, uint32_t layers, uint64_t usage,
+                 void **handle, uint32_t *stride, unsigned long extra, void *err)
+    __asm__("_ZN7android22GraphicBufferAllocator8allocateEjjijmPPK13native_handlePjmNSt3__112basic_stringIcNS6_11char_traitsIcEENS6_9allocatorIcEEEE");
+pf_status_t gba9(void *self, uint32_t w, uint32_t h, int fmt, uint32_t layers, uint64_t usage,
+                 void **handle, uint32_t *stride, unsigned long extra, void *err) {
+    static pf_status_t (*real)(void *, uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, unsigned long, void *) = NULL;
+    if (!real) real = (pf_status_t (*)(void *, uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, unsigned long, void *))
+        dlsym(RTLD_NEXT, "_ZN7android22GraphicBufferAllocator8allocateEjjijmPPK13native_handlePjmNSt3__112basic_stringIcNS6_11char_traitsIcEENS6_9allocatorIcEEEE");
+    if (self && (w > (1u << 20) || h > (1u << 20))) {
+        if (getenv("PROPFIX_DEBUG")) fprintf(stderr, "[propfix] !! HWC 尺寸荒谬 w=%u h=%u ⇒ 1280x720\n", w, h);
+        w = 1280; h = 720;
     }
-    if (real) real(msg);
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] >> allocate(9) self=%p w=%u h=%u fmt=0x%x usage=0x%llx\n",
+                self, w, h, fmt, (unsigned long long)usage);
+    pf_status_t rc = real ? real(self, w, h, fmt, layers, usage, handle, stride, extra, err) : -1;
+    if (getenv("PROPFIX_DEBUG")) fprintf(stderr, "[propfix] << allocate(9) rc=%d\n", rc);
+    return rc;
 }
-
 
 // ── 诊断：变参日志接口（ALOGD 走这里，不经过 __android_log_write）──
 // ⚠ 前置声明：log_interesting/log_critical 定义在本块之后（本块插在文件前部）
@@ -741,6 +701,47 @@ void gbm_ctor(void *self) {
     if (getenv("PROPFIX_DEBUG"))
         fprintf(stderr, "[propfix] GraphicBufferMapper::ctor(this=%p)\n", self);
     if (real) real(self);
+}
+
+
+// ── 探针：GraphicBufferAllocator 的构造 / allocateHelper 成员 dump ──
+static void dump_words(const char *tag, const void *self, int n) {
+    if (!self) { fprintf(stderr, "[propfix] %s self=NULL\n", tag); return; }
+    const unsigned long *w = (const unsigned long *)self;
+    fprintf(stderr, "[propfix] %s self=%p:", tag, self);
+    for (int i = 0; i < n; i++) fprintf(stderr, " [%d]=0x%lx", i, w[i]);
+    fprintf(stderr, "\n");
+}
+
+void gba_ctor(void *self) __asm__("_ZN7android22GraphicBufferAllocatorC1Ev");
+void gba_ctor(void *self) {
+    static void (*real)(void *) = NULL;
+    if (!real) real = (void (*)(void *))dlsym(RTLD_NEXT, "_ZN7android22GraphicBufferAllocatorC1Ev");
+    if (real) real(self);
+    if (getenv("PROPFIX_DEBUG")) dump_words("GBA::ctor", self, 8);
+}
+
+typedef long (*gba_helper_t)(void *, unsigned int, unsigned int, int, unsigned int,
+                             unsigned long, const void **, unsigned int *, void *, unsigned char);
+long gba_helper(void *self, unsigned int w, unsigned int h, int fmt, unsigned int layers,
+                unsigned long usage, const void **handle, unsigned int *stride, void *err,
+                unsigned char importBuffer)
+    __asm__("_ZN7android22GraphicBufferAllocator14allocateHelperEjjijmPPK13native_handlePjNSt3__112basic_stringIcNS6_11char_traitsIcEENS6_9allocatorIcEEEEb");
+long gba_helper(void *self, unsigned int w, unsigned int h, int fmt, unsigned int layers,
+                unsigned long usage, const void **handle, unsigned int *stride, void *err,
+                unsigned char importBuffer) {
+    static gba_helper_t real = NULL;
+    if (!real) real = (gba_helper_t)dlsym(RTLD_NEXT,
+        "_ZN7android22GraphicBufferAllocator14allocateHelperEjjijmPPK13native_handlePjNSt3__112basic_stringIcNS6_11char_traitsIcEENS6_9allocatorIcEEEEb");
+    if (getenv("PROPFIX_DEBUG")) {
+        dump_words("GBA::allocateHelper 进入", self, 8);
+        fprintf(stderr, "[propfix]   args w=%u h=%u fmt=0x%x layers=%u usage=0x%lx import=%d\n",
+                w, h, fmt, layers, usage, (int)importBuffer);
+    }
+    long rc = real ? real(self, w, h, fmt, layers, usage, handle, stride, err, importBuffer) : -1;
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] GBA::allocateHelper 返回 rc=%ld\n", rc);
+    return rc;
 }
 
 static void parse_once(void) {
