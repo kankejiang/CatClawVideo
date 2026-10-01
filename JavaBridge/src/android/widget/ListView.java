@@ -12,7 +12,7 @@ import android.view.ViewGroup;
  * 当 AdapterView 传/调（如 setOnItemClickListener 声明在 AdapterView 上），桩侧断链
  * 会被 ART 校验器拒（同 SQLiteDatabase↔SQLiteClosable 的教训）。</p>
  */
-public class ListView extends AdapterView<ListAdapter> {
+public class ListView extends AbsListView {
     public ListView() { super(); }
     public ListView(Context c) { super(c); }
     public ListView(Context c, AttributeSet attrs) { super(c, attrs); }

@@ -2,7 +2,7 @@ package android.app;
 
 import android.content.ComponentName;
 import android.content.Context;
-import android.content.ContextThemeWrapper;
+import android.view.ContextThemeWrapper;
 import android.content.Intent;
 
 /**

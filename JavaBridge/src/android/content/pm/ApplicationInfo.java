@@ -1,5 +1,5 @@
 package android.content.pm;
-public class ApplicationInfo {
+public class ApplicationInfo extends PackageItemInfo {
     public String sourceDir = ".";
     public String nativeLibraryDir = ".";
     public String dataDir = System.getProperty("user.dir") + "/data";

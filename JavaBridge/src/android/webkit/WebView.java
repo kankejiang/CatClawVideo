@@ -3,7 +3,7 @@ package android.webkit;
 import android.content.Context;
 import android.util.AttributeSet;
 import android.view.ViewGroup;
-import android.widget.FrameLayout;
+import android.widget.AbsoluteLayout;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * 「WebView → 宿主 WebView2」桥。行为保持与旧桩一致（全部空实现、不回调），
  * 以便区分「壳等回调」与「壳根本没用 WebView」。</p>
  */
-public class WebView extends FrameLayout {
+public class WebView extends AbsoluteLayout {
 
     private static final AtomicInteger SEQ = new AtomicInteger();
     private static final AtomicInteger TRACES = new AtomicInteger();

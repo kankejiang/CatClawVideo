@@ -17,7 +17,7 @@ import android.util.AttributeSet;
  * <p>纪律：桩一旦覆盖某个类（ProgressBar/TextView/…），真机里所有继承它的可见控件都要一起桩掉，
  * 否则就是同一类型两套身份。见 {@code JavaBridge/tools/check_stub_parents.py}。</p>
  */
-public class SeekBar extends ProgressBar {
+public class SeekBar extends AbsSeekBar {
 
     /** 与真机同签名的监听器（壳用它在拖动时回写线程数/音量之类）。 */
     public interface OnSeekBarChangeListener {
