@@ -240,9 +240,18 @@ int __android_log_print(int prio, const char *tag, const char *fmt, ...) {
         va_end(ap);
         fprintf(stderr, "[alogp:%s/%d] %s\n", tag ? tag : "?", prio, buf);
     }
+    // ⚠ 关键修正：必须用 __android_log_vprint 转发 va_list。
+    //   早先用 real(prio, tag, fmt, ap2) 调**变参**函数 ⇒ liblog 把 va_list 当变参读 ⇒
+    //   %s 拿到垃圾指针 ⇒ strlen/vsnprintf 崩溃（实测回溯）⇒ 是 shim 自己在崩 SF。
+    static int (*realv)(int, const char *, const char *, va_list) = NULL;
+    if (!realv)
+        realv = (int (*)(int, const char *, const char *, va_list))
+            dlsym(RTLD_NEXT, "__android_log_vprint");
+    if (!realv) realv = (int (*)(int, const char *, const char *, va_list))
+            dlsym(RTLD_NEXT, "__android_log_print");
     va_list ap2;
     va_start(ap2, fmt);
-    int rc = real ? real(prio, tag, fmt, ap2) : 0;
+    int rc = realv ? realv(prio, tag, fmt, ap2) : 0;
     va_end(ap2);
     return rc;
 }
@@ -391,6 +400,288 @@ void grs_raw(void *sret, const void *desc, const void *inst, unsigned char retry
                 (int)retry, (int)getStub, raw,
                 pf_cstr(desc) ? pf_cstr(desc) : "?", pf_cstr(inst) ? pf_cstr(inst) : "?");
     }
+}
+
+
+#include <stdbool.h>
+
+// ── SF 配置读取垫片（27 个标量 sysprop）──
+// 背景：SF 静态初始化经 libSurfaceFlingerProp.so 的 sysprop::* 读 configstore；
+// 镜像里的服务只注册 1.1，而 libhidlbase 处理该回复时崩溃（本轮实证）⇒ SF 启动即死。
+// 做法：这些函数都是**导出**的普通函数 ⇒ 逐个拦掉，直接返回调用方传入的默认值
+// （等价于"设备无 configstore"时的 AOSP 兜底行为，安全且语义正确）。
+// 开关：PROPFIX_SFPROP=0 可关闭（默认开启）。
+static int sfprop_on(void) { const char *v = getenv("PROPFIX_SFPROP"); return !(v && v[0] == '0'); }
+
+
+bool sfp_use_vr_flinger(bool d) __asm__("_ZN7android7sysprop14use_vr_flingerEb");
+bool sfp_use_vr_flinger(bool d) {
+    if (!sfprop_on()) { static bool (*real)(bool) = NULL;
+        if (!real) real = (bool (*)(bool))dlsym(RTLD_NEXT, "_ZN7android7sysprop14use_vr_flingerEb");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::use_vr_flinger(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
+}
+
+bool sfp_has_HDR_display(bool d) __asm__("_ZN7android7sysprop15has_HDR_displayEb");
+bool sfp_has_HDR_display(bool d) {
+    if (!sfprop_on()) { static bool (*real)(bool) = NULL;
+        if (!real) real = (bool (*)(bool))dlsym(RTLD_NEXT, "_ZN7android7sysprop15has_HDR_displayEb");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::has_HDR_display(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
+}
+
+bool sfp_enable_sdr_dimming(bool d) __asm__("_ZN7android7sysprop18enable_sdr_dimmingEb");
+bool sfp_enable_sdr_dimming(bool d) {
+    if (!sfprop_on()) { static bool (*real)(bool) = NULL;
+        if (!real) real = (bool (*)(bool))dlsym(RTLD_NEXT, "_ZN7android7sysprop18enable_sdr_dimmingEb");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::enable_sdr_dimming(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
+}
+
+bool sfp_enable_layer_caching(bool d) __asm__("_ZN7android7sysprop20enable_layer_cachingEb");
+bool sfp_enable_layer_caching(bool d) {
+    if (!sfprop_on()) { static bool (*real)(bool) = NULL;
+        if (!real) real = (bool (*)(bool))dlsym(RTLD_NEXT, "_ZN7android7sysprop20enable_layer_cachingEb");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::enable_layer_caching(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
+}
+
+bool sfp_use_context_priority(bool d) __asm__("_ZN7android7sysprop20use_context_priorityEb");
+bool sfp_use_context_priority(bool d) {
+    if (!sfprop_on()) { static bool (*real)(bool) = NULL;
+        if (!real) real = (bool (*)(bool))dlsym(RTLD_NEXT, "_ZN7android7sysprop20use_context_priorityEb");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::use_context_priority(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
+}
+
+bool sfp_has_wide_color_display(bool d) __asm__("_ZN7android7sysprop22has_wide_color_displayEb");
+bool sfp_has_wide_color_display(bool d) {
+    if (!sfprop_on()) { static bool (*real)(bool) = NULL;
+        if (!real) real = (bool (*)(bool))dlsym(RTLD_NEXT, "_ZN7android7sysprop22has_wide_color_displayEb");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::has_wide_color_display(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
+}
+
+bool sfp_refresh_rate_switching(bool d) __asm__("_ZN7android7sysprop22refresh_rate_switchingEb");
+bool sfp_refresh_rate_switching(bool d) {
+    if (!sfprop_on()) { static bool (*real)(bool) = NULL;
+        if (!real) real = (bool (*)(bool))dlsym(RTLD_NEXT, "_ZN7android7sysprop22refresh_rate_switchingEb");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::refresh_rate_switching(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
+}
+
+bool sfp_ignore_hdr_camera_layers(bool d) __asm__("_ZN7android7sysprop24ignore_hdr_camera_layersEb");
+bool sfp_ignore_hdr_camera_layers(bool d) {
+    if (!sfprop_on()) { static bool (*real)(bool) = NULL;
+        if (!real) real = (bool (*)(bool))dlsym(RTLD_NEXT, "_ZN7android7sysprop24ignore_hdr_camera_layersEb");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::ignore_hdr_camera_layers(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
+}
+
+bool sfp_enable_protected_contents(bool d) __asm__("_ZN7android7sysprop25enable_protected_contentsEb");
+bool sfp_enable_protected_contents(bool d) {
+    if (!sfprop_on()) { static bool (*real)(bool) = NULL;
+        if (!real) real = (bool (*)(bool))dlsym(RTLD_NEXT, "_ZN7android7sysprop25enable_protected_contentsEb");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::enable_protected_contents(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
+}
+
+bool sfp_support_kernel_idle_timer(bool d) __asm__("_ZN7android7sysprop25support_kernel_idle_timerEb");
+bool sfp_support_kernel_idle_timer(bool d) {
+    if (!sfprop_on()) { static bool (*real)(bool) = NULL;
+        if (!real) real = (bool (*)(bool))dlsym(RTLD_NEXT, "_ZN7android7sysprop25support_kernel_idle_timerEb");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::support_kernel_idle_timer(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
+}
+
+bool sfp_enable_frame_rate_override(bool d) __asm__("_ZN7android7sysprop26enable_frame_rate_overrideEb");
+bool sfp_enable_frame_rate_override(bool d) {
+    if (!sfprop_on()) { static bool (*real)(bool) = NULL;
+        if (!real) real = (bool (*)(bool))dlsym(RTLD_NEXT, "_ZN7android7sysprop26enable_frame_rate_overrideEb");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::enable_frame_rate_override(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
+}
+
+bool sfp_running_without_sync_framework(bool d) __asm__("_ZN7android7sysprop30running_without_sync_frameworkEb");
+bool sfp_running_without_sync_framework(bool d) {
+    if (!sfprop_on()) { static bool (*real)(bool) = NULL;
+        if (!real) real = (bool (*)(bool))dlsym(RTLD_NEXT, "_ZN7android7sysprop30running_without_sync_frameworkEb");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::running_without_sync_framework(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
+}
+
+bool sfp_start_graphics_allocator_service(bool d) __asm__("_ZN7android7sysprop32start_graphics_allocator_serviceEb");
+bool sfp_start_graphics_allocator_service(bool d) {
+    if (!sfprop_on()) { static bool (*real)(bool) = NULL;
+        if (!real) real = (bool (*)(bool))dlsym(RTLD_NEXT, "_ZN7android7sysprop32start_graphics_allocator_serviceEb");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::start_graphics_allocator_service(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
+}
+
+bool sfp_force_hwc_copy_for_virtual_displays(bool d) __asm__("_ZN7android7sysprop35force_hwc_copy_for_virtual_displaysEb");
+bool sfp_force_hwc_copy_for_virtual_displays(bool d) {
+    if (!sfprop_on()) { static bool (*real)(bool) = NULL;
+        if (!real) real = (bool (*)(bool))dlsym(RTLD_NEXT, "_ZN7android7sysprop35force_hwc_copy_for_virtual_displaysEb");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::force_hwc_copy_for_virtual_displays(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
+}
+
+bool sfp_use_content_detection_for_refresh_rate(bool d) __asm__("_ZN7android7sysprop38use_content_detection_for_refresh_rateEb");
+bool sfp_use_content_detection_for_refresh_rate(bool d) {
+    if (!sfprop_on()) { static bool (*real)(bool) = NULL;
+        if (!real) real = (bool (*)(bool))dlsym(RTLD_NEXT, "_ZN7android7sysprop38use_content_detection_for_refresh_rateEb");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::use_content_detection_for_refresh_rate(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
+}
+
+bool sfp_update_device_product_info_on_hotplug_reconnect(bool d) __asm__("_ZN7android7sysprop47update_device_product_info_on_hotplug_reconnectEb");
+bool sfp_update_device_product_info_on_hotplug_reconnect(bool d) {
+    if (!sfprop_on()) { static bool (*real)(bool) = NULL;
+        if (!real) real = (bool (*)(bool))dlsym(RTLD_NEXT, "_ZN7android7sysprop47update_device_product_info_on_hotplug_reconnectEb");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::update_device_product_info_on_hotplug_reconnect(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
+}
+
+int sfp_set_idle_timer_ms(int d) __asm__("_ZN7android7sysprop17set_idle_timer_msEi");
+int sfp_set_idle_timer_ms(int d) {
+    if (!sfprop_on()) { static int (*real)(int) = NULL;
+        if (!real) real = (int (*)(int))dlsym(RTLD_NEXT, "_ZN7android7sysprop17set_idle_timer_msEi");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::set_idle_timer_ms(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
+}
+
+int sfp_max_graphics_width(int d) __asm__("_ZN7android7sysprop18max_graphics_widthEi");
+int sfp_max_graphics_width(int d) {
+    if (!sfprop_on()) { static int (*real)(int) = NULL;
+        if (!real) real = (int (*)(int))dlsym(RTLD_NEXT, "_ZN7android7sysprop18max_graphics_widthEi");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::max_graphics_width(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
+}
+
+int sfp_set_touch_timer_ms(int d) __asm__("_ZN7android7sysprop18set_touch_timer_msEi");
+int sfp_set_touch_timer_ms(int d) {
+    if (!sfprop_on()) { static int (*real)(int) = NULL;
+        if (!real) real = (int (*)(int))dlsym(RTLD_NEXT, "_ZN7android7sysprop18set_touch_timer_msEi");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::set_touch_timer_ms(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
+}
+
+int sfp_max_graphics_height(int d) __asm__("_ZN7android7sysprop19max_graphics_heightEi");
+int sfp_max_graphics_height(int d) {
+    if (!sfprop_on()) { static int (*real)(int) = NULL;
+        if (!real) real = (int (*)(int))dlsym(RTLD_NEXT, "_ZN7android7sysprop19max_graphics_heightEi");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::max_graphics_height(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
+}
+
+int sfp_set_display_power_timer_ms(int d) __asm__("_ZN7android7sysprop26set_display_power_timer_msEi");
+int sfp_set_display_power_timer_ms(int d) {
+    if (!sfprop_on()) { static int (*real)(int) = NULL;
+        if (!real) real = (int (*)(int))dlsym(RTLD_NEXT, "_ZN7android7sysprop26set_display_power_timer_msEi");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::set_display_power_timer_ms(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
+}
+
+int sfp_display_update_imminent_timeout_ms(int d) __asm__("_ZN7android7sysprop34display_update_imminent_timeout_msEi");
+int sfp_display_update_imminent_timeout_ms(int d) {
+    if (!sfprop_on()) { static int (*real)(int) = NULL;
+        if (!real) real = (int (*)(int))dlsym(RTLD_NEXT, "_ZN7android7sysprop34display_update_imminent_timeout_msEi");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::display_update_imminent_timeout_ms(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
+}
+
+long sfp_vsync_event_phase_offset_ns(long d) __asm__("_ZN7android7sysprop27vsync_event_phase_offset_nsEl");
+long sfp_vsync_event_phase_offset_ns(long d) {
+    if (!sfprop_on()) { static long (*real)(long) = NULL;
+        if (!real) real = (long (*)(long))dlsym(RTLD_NEXT, "_ZN7android7sysprop27vsync_event_phase_offset_nsEl");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::vsync_event_phase_offset_ns(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
+}
+
+long sfp_max_virtual_display_dimension(long d) __asm__("_ZN7android7sysprop29max_virtual_display_dimensionEl");
+long sfp_max_virtual_display_dimension(long d) {
+    if (!sfprop_on()) { static long (*real)(long) = NULL;
+        if (!real) real = (long (*)(long))dlsym(RTLD_NEXT, "_ZN7android7sysprop29max_virtual_display_dimensionEl");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::max_virtual_display_dimension(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
+}
+
+long sfp_vsync_sf_event_phase_offset_ns(long d) __asm__("_ZN7android7sysprop30vsync_sf_event_phase_offset_nsEl");
+long sfp_vsync_sf_event_phase_offset_ns(long d) {
+    if (!sfprop_on()) { static long (*real)(long) = NULL;
+        if (!real) real = (long (*)(long))dlsym(RTLD_NEXT, "_ZN7android7sysprop30vsync_sf_event_phase_offset_nsEl");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::vsync_sf_event_phase_offset_ns(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
+}
+
+long sfp_max_frame_buffer_acquired_buffers(long d) __asm__("_ZN7android7sysprop33max_frame_buffer_acquired_buffersEl");
+long sfp_max_frame_buffer_acquired_buffers(long d) {
+    if (!sfprop_on()) { static long (*real)(long) = NULL;
+        if (!real) real = (long (*)(long))dlsym(RTLD_NEXT, "_ZN7android7sysprop33max_frame_buffer_acquired_buffersEl");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::max_frame_buffer_acquired_buffers(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
+}
+
+long sfp_present_time_offset_from_vsync_ns(long d) __asm__("_ZN7android7sysprop33present_time_offset_from_vsync_nsEl");
+long sfp_present_time_offset_from_vsync_ns(long d) {
+    if (!sfprop_on()) { static long (*real)(long) = NULL;
+        if (!real) real = (long (*)(long))dlsym(RTLD_NEXT, "_ZN7android7sysprop33present_time_offset_from_vsync_nsEl");
+        return real ? real(d) : d; }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] sysprop::present_time_offset_from_vsync_ns(%d) -> %d（垫片）\n", (int)d, (int)d);
+    return d;
 }
 
 static void parse_once(void) {
