@@ -1198,7 +1198,10 @@ public class Server {
                 try {
                     // 三个根一起看：<data.dir>（桥的 Context 文件操作）、/data/fishso（插件解出来的
                     // 原生库，v7=ARM32 / v8=ARM64 就看这里）、/data/cache（壳的 sharedb 缓存）。
-                    String[] roots = { System.getProperty("data.dir", "/data/catclaw"), "/data/fishso", "/data/cache" };
+                    // 2026-10-01：壳可能绕过我们的 Context 桩、用真框架的 ContextImpl / 真 SharedPreferences
+                    // 把登录态写到 /data/data/... 去（那条路既不在同步范围、也不在原先的观察范围）。
+                    String[] roots = { System.getProperty("data.dir", "/data/catclaw"), "/data/fishso", "/data/cache",
+                            "/data/data", "/data/misc", "/data/system", "/data/local/tmp" };
                     StringBuilder sb = new StringBuilder();
                     for (String r : roots) {
                         java.io.File root = new java.io.File(r);
