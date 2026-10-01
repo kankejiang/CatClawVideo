@@ -247,6 +247,35 @@ int __android_log_print(int prio, const char *tag, const char *fmt, ...) {
     return rc;
 }
 
+
+// ── 诊断：hw_get_module（libhardware 的模块查找，普通 C 符号，可稳定 interpose）──
+// 目的：libui 的 GraphicBufferMapper 走 IMapper::getService(inst, getStub=true) 的 passthrough 分支，
+// 最终很可能落到 hw_get_module；把 id 与返回值打出来即可确认它拼的名字与失败点。
+struct hw_module_t;   // 前置声明（只需指针）
+
+int hw_get_module(const char *id, const struct hw_module_t **module) {
+    static int (*real)(const char *, const struct hw_module_t **) = NULL;
+    if (!real) real = (int (*)(const char *, const struct hw_module_t **))dlsym(RTLD_NEXT, "hw_get_module");
+    const struct hw_module_t *m0 = module ? *module : NULL;
+    int rc = real ? real(id, module) : -99;
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] hw_get_module(id=%s) -> rc=%d module=%p->%p\n",
+                id ? id : "(null)", rc, (const void *)m0, module ? (const void *)*module : NULL);
+    return rc;
+}
+
+int hw_get_module_by_class(const char *class_id, const char *inst, const struct hw_module_t **module) {
+    static int (*real)(const char *, const char *, const struct hw_module_t **) = NULL;
+    if (!real) real = (int (*)(const char *, const char *, const struct hw_module_t **))
+        dlsym(RTLD_NEXT, "hw_get_module_by_class");
+    int rc = real ? real(class_id, inst, module) : -99;
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] hw_get_module_by_class(class=%s, inst=%s) -> rc=%d module=%p\n",
+                class_id ? class_id : "(null)", inst ? inst : "(null)", rc,
+                module ? (const void *)*module : NULL);
+    return rc;
+}
+
 static void parse_once(void) {
     if (g_n >= 0) return;
     g_n = 0;
@@ -315,6 +344,8 @@ int __system_property_read(const void *pi, char *name, char *value) {
         if ((const void *)g_fake[i] == pi) {
             if (name) { strncpy(name, g_keys[i], 91); name[91] = 0; }
             if (value) { strncpy(value, g_vals[i], 91); value[91] = 0; }
+            if (getenv("PROPFIX_DEBUG"))
+                fprintf(stderr, "[propfix] read %s = %s\n", g_keys[i], g_vals[i]);
             return (int)strlen(g_vals[i]);
         }
     }
@@ -330,6 +361,8 @@ void __system_property_read_callback(const void *pi,
             dlsym(RTLD_NEXT, "__system_property_read_callback");
     for (int i = 0; i < g_n; i++) {
         if ((const void *)g_fake[i] == pi) {
+            if (getenv("PROPFIX_DEBUG"))
+                fprintf(stderr, "[propfix] read_callback %s = %s\n", g_keys[i], g_vals[i]);
             if (cb) cb(cookie, g_keys[i], g_vals[i], (uint32_t)strlen(g_vals[i]));
             return;
         }
@@ -361,10 +394,18 @@ void *android_dlopen_ext(const char *filename, int flags, const void *extinfo) {
     static android_dlopen_ext_fn real = NULL;
     if (!real) real = (android_dlopen_ext_fn)dlsym(RTLD_NEXT, "android_dlopen_ext");
     void *h = real ? real(filename, flags, extinfo) : NULL;
+    static int _n1 = 0;
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] android_dlopen_ext(%s, flags=0x%x, extinfo=%p) -> %s\n",
+                filename ? filename : "(null)", flags, extinfo, h ? "OK" : "FAIL");
+    if (h && filename && getenv("PROPFIX_DEBUG") && _n1 < 300)
+        fprintf(stderr, "[propfix] dlopen#%d 成功: %s\n", ++_n1, filename);
     if (!h && getenv("PROPFIX_DEBUG"))
         fprintf(stderr, "[propfix] dlopen 失败: %s → %s\n", filename ? filename : "(null)", dlerror());
     else if (h && getenv("PROPFIX_DEBUG") && filename &&
-             (strstr(filename, "dri") || strstr(filename, "gallium") || strstr(filename, "egl")))
+             (strstr(filename, "dri") || strstr(filename, "gallium") || strstr(filename, "egl") ||
+              strstr(filename, "mapper") || strstr(filename, "gralloc") ||
+              strstr(filename, "impl") || strstr(filename, "hw/")))
         fprintf(stderr, "[propfix] dlopen 成功: %s\n", filename);
     return h;
 }
@@ -373,12 +414,17 @@ void *dlopen(const char *filename, int flags) {
     static void *(*real)(const char *, int) = NULL;
     if (!real) real = (void *(*)(const char *, int))dlsym(RTLD_NEXT, "dlopen");
     void *h = real ? real(filename, flags) : NULL;
+    static int _n2 = 0;
+    if (h && filename && getenv("PROPFIX_DEBUG") && _n2 < 300)
+        fprintf(stderr, "[propfix] dlopen#%d 成功: %s\n", ++_n2, filename);
     // 放宽到"任何失败都打"：EGL 的 DRI 驱动内部加载失败是静默的（上层只看到"没有配置"），
     // 实测 SF 请求标准配置但驱动返回 0 个 —— 真相就在这里的 dlopen 结果里。
     if (!h && getenv("PROPFIX_DEBUG"))
         fprintf(stderr, "[propfix] dlopen 失败: %s → %s\n", filename ? filename : "(null)", dlerror());
     else if (h && getenv("PROPFIX_DEBUG") && filename &&
-             (strstr(filename, "dri") || strstr(filename, "gallium") || strstr(filename, "egl")))
+             (strstr(filename, "dri") || strstr(filename, "gallium") || strstr(filename, "egl") ||
+              strstr(filename, "mapper") || strstr(filename, "gralloc") ||
+              strstr(filename, "impl") || strstr(filename, "hw/")))
         fprintf(stderr, "[propfix] dlopen 成功: %s\n", filename);
     return h;
 }
