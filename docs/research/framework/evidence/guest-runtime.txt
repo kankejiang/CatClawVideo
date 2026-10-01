@@ -1,0 +1,21 @@
+== probe_guest_runtime（设备 127.0.0.1:18607）==
+时间: 2026-10-01T23:14:53+08:00
+  /dev/__properties__ 是否存在               /dev/__properties__ 
+  属性区条目数                             0 
+  init.svc.* 条数（服务管理状态）      0 
+  sys.boot_completed                              
+  getenforce（SELinux 模式）                 Disabled 
+  PID1 真身                                    /bin/busybox sh /init  
+  /apex 运行时内容                          apex-info-list.xml com.android.art com.android.conscrypt com.android.i18n com.android.os.statsd com.android.runtime com.android.tzdata  
+  关键二进制在位                          apexd app_process64 hwservicemanager init secilc servicemanager ueventd  
+  init 二进制（镜像里有 2.28MB，运行时在不在是两件事） -rwxr-xr-x 1 root root 2337688 1970-01-01 08:00 /system/bin/init 
+  /system 是怎么来的                        
+  /system/bin 条目数                          428 
+  binder 设备                                  6 
+  （旁证：上面每条问句都会先打出 [proppreload] 接管 Android 属性 API：161 条 —— 
+    每个新进程重打一次，说明那张表是**进程内**的，不是全机共享的属性服务。）
+
+判读:
+  · 属性区 0 项 + init.svc 0 条 + PID1 是 busybox sh ⇒ 我们**没有** init 的属性服务与服务管理，
+    框架前置里最硬的一块就是这个；镜像里 init 二进制与 rc 都在（见 audit_rc/audit_selinux）。
+  · getenforce 已是 Disabled ⇒ '缺 SELinux 策略'不成立为阻塞点（与 108 参照系一致）。

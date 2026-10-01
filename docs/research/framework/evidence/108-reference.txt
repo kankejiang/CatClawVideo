@@ -1,0 +1,383 @@
+== T4 对照：108（debian13）==
+2026-10-01T23:20:51+08:00
+挂载点: /mnt/t4sysimg  文件系统: ext4
+镜像布局: 根下有 system/ ⇒ 探针 --prefix ''
+参照系 build.prop: /mnt/t4sysimg/system/build.prop
+
+── 0. 这台机器上「框架前置由谁提供」的运行时事实（在 Android 命名空间里问）──
+system_server pid（宿主 pidof）: 55629
+getenforce: Disabled
+/apex: 25 个挂载点，26 个条目 ⇒ apexd 真在挂 loop
+    overlay on /apex/com.android.adbd type overlay (ro,relatime,lowerdir=/var/lib/waydroid/overlay:/var/lib/waydroid/rootfs,upperdir=/var/lib/waydroid/overlay_rw/system,workdir=/var/lib/waydroid/overlay_work/system,xino=off,nouserxattr)
+    overlay on /apex/com.android.adservices type overlay (ro,relatime,lowerdir=/var/lib/waydroid/overlay:/var/lib/waydroid/rootfs,upperdir=/var/lib/waydroid/overlay_rw/system,workdir=/var/lib/waydroid/overlay_work/system,xino=off,nouserxattr)
+    overlay on /apex/com.android.appsearch type overlay (ro,relatime,lowerdir=/var/lib/waydroid/overlay:/var/lib/waydroid/rootfs,upperdir=/var/lib/waydroid/overlay_rw/system,workdir=/var/lib/waydroid/overlay_work/system,xino=off,nouserxattr)
+    overlay on /apex/com.android.art type overlay (ro,relatime,lowerdir=/var/lib/waydroid/overlay:/var/lib/waydroid/rootfs,upperdir=/var/lib/waydroid/overlay_rw/system,workdir=/var/lib/waydroid/overlay_work/system,xino=off,nouserxattr)
+    overlay on /apex/com.android.btservices type overlay (ro,relatime,lowerdir=/var/lib/waydroid/overlay:/var/lib/waydroid/rootfs,upperdir=/var/lib/waydroid/overlay_rw/system,workdir=/var/lib/waydroid/overlay_work/system,xino=off,nouserxattr)
+    overlay on /apex/com.android.conscrypt type overlay (ro,relatime,lowerdir=/var/lib/waydroid/overlay:/var/lib/waydroid/rootfs,upperdir=/var/lib/waydroid/overlay_rw/system,workdir=/var/lib/waydroid/overlay_work/system,xino=off,nouserxattr)
+/dev/__properties__: 268 项（属性区的真身，由 init 的 PropertyInit 建）
+    total 1192
+    -r--r--r-- 1 root root 131072 2026-10-01 06:09 properties_serial
+    -r--r--r-- 1 root root  74676 2026-10-01 06:09 property_info
+    -r--r--r-- 1 root root 131072 2026-10-01 06:09 u:object_r:aac_drc_prop:s0
+init.svc.* 计数: 145 条；running: 52 条
+关键属性现值:
+    ro.zygote                          = zygote64_32
+    ro.apex.updatable                  = 
+    ro.config.low_ram                  = 
+    sys.boot_completed                 = 1
+    ro.kernel.qemu                     = 
+    ro.dalvik.vm.native.bridge         = libndk_translation.so
+    persist.sys.dalvik.vm.lib.2        = libart.so
+    ro.product.cpu.abilist64           = x86_64,arm64-v8a
+    apexd.status                       = ready
+    init.svc.zygote                    = running
+
+── 1. 同一套探针跑在参照系上（--prefix 按镜像布局自动对齐，与我们的 initrd 同判据）──
+
+########## audit_apex.py --source /mnt/t4sysimg --prefix   ##########
+  == audit_apex ==
+  来源: dir:/mnt/t4sysimg
+  条目总数: 4211
+  
+  ── 已解包在 apex/<id>/ 下的实例（= 不需要 loop 挂载就有内容） ──
+     （无）
+  
+  ── system/apex/ 下的副本 ──
+     apex 实例                              文件数  字节       
+     ---------------------------------------------------
+     com.android.adbd                     12   4907 KiB 
+     com.android.adservices               12   112 KiB  
+     com.android.appsearch                8    2189 KiB 
+     com.android.art                      79   44545 KiB
+     com.android.btservices               16   16778 KiB
+     com.android.conscrypt                10   1014 KiB 
+     com.android.extservices              4    6399 KiB 
+     com.android.i18n                     14   38208 KiB
+     com.android.ipsec                    6    614 KiB  
+     com.android.media                    31   3998 KiB 
+     com.android.media.swcodec            14   781 KiB  
+     com.android.mediaprovider            8    8973 KiB 
+     com.android.neuralnetworks           4    10705 KiB
+     com.android.ondevicepersonalization  6    22 KiB   
+     com.android.os.statsd                15   1868 KiB 
+     com.android.permission               11   14992 KiB
+     com.android.resolv                   3    2510 KiB 
+     com.android.runtime                  20   8942 KiB 
+     com.android.scheduling               7    58 KiB   
+     com.android.sdkext                   10   654 KiB  
+     com.android.tethering                29   8298 KiB 
+     com.android.tzdata                   7    690 KiB  
+     com.android.uwb                      8    1721 KiB 
+     com.android.vndk.current             333  56816 KiB
+     com.android.wifi                     13   8415 KiB 
+  
+  ── 需要 apexd+loop 才能挂载的容器文件 ──
+     （无）
+  
+  结论:
+    必需 APEX 6 个；镜像里已解包 0 个；缺 ['com.android.art', 'com.android.conscrypt', 'com.android.i18n', 'com.android.os.statsd', 'com.android.runtime', 'com.android.tzdata']
+    .apex 容器文件 0 个 ⇒ 内容已是目录形态，apexd 的挂载职责可以绕过
+    system/bin/apexd                   在（system/bin/apexd）
+    system/bin/toybox                  在（system/bin/toybox）
+    system/bin/losetup                 在（system/bin/losetup）
+    system/bin/dmctl                   在（system/bin/dmctl）
+    system/etc/apex-info-list.xml      缺
+    apexd 的 rc: ['system/etc/init/apexd.rc']
+    linkerconfig 条目: ['system/apex/com.android.conscrypt/etc/ld.config.txt', 'system/apex/com.android.media.swcodec/etc/ld.config.txt']
+       system/apex/com.android.conscrypt/etc/ld.config.txt 里引用 /apex/ 路径 7 次 ⇒ 动态链接已经在按 apex 目录找库
+       system/apex/com.android.media.swcodec/etc/ld.config.txt 里引用 /apex/ 路径 16 次 ⇒ 动态链接已经在按 apex 目录找库
+########## audit_apex.py 退出码 0 ##########
+
+########## audit_rc.py --source /mnt/t4sysimg --prefix   ##########
+  == audit_rc ==
+  来源: dir:/mnt/t4sysimg
+  rc 文件: 74 个，共 3586 行
+  
+  总量级（真 init 路线要吃下的配置）:
+    service 定义     82 条
+    on 触发器        216 条
+    setprop          107 条
+    mkdir/chmod/chown 1011 条
+    write /sys|/proc 202 条
+    exec/exec_start  38 条
+    class 分布: {'main': 26, 'core': 15, 'late_start': 11, 'hal': 6, 'early_hal': 2, 'animation': 1}
+    服务属性: {'user': 63, 'group': 63, 'disabled': 40, 'socket': 39, 'oneshot': 31, 'capabilities': 23, 'seclabel': 6, 'critical': 6}
+  
+  ── 触发器分布（框架启动链按这个顺序走） ──
+     on 触发器                                                                 次数
+     -------------------------------------------------------------------------
+     post-fs-data                                                           14
+     init                                                                   4 
+     post-fs                                                                4 
+     boot                                                                   4 
+     property:sys.boot_completed=1                                          4 
+     property:ro.persistent_properties.ready=true                           3 
+     fs                                                                     3 
+     late-init                                                              2 
+     property:ro.product.cpu.abilist64=* && property:bootreceiver.enable=1  2 
+     load_persist_props_action                                              2 
+     early-init                                                             2 
+     late-fs                                                                2 
+     userspace-reboot-requested                                             2 
+     post-fs-data && property:persist.mm_events.enabled=true                1 
+     property:persist.debug.atrace.boottrace=1                              1 
+     property:vts.native_server.on=1                                        1 
+     property:vts.native_server.on=0                                        1 
+     property:init.svc.audioserver=stopped                                  1 
+     property:init.svc.audioserver=running                                  1 
+     property:sys.audio.restart.hal=1                                       1 
+  
+  ── 缺失的可执行（真 init 起来后这些服务会卡在 restart 循环） ──
+     service                     可执行                                                            出处 rc                                        
+     ----------------------------------------------------------------------------------------------------------------------------------------
+     adb_root                    /system_ext/bin/adb_root                                       system/system_ext/etc/init/adb_root.rc       
+     adbd                        /apex/com.android.adbd/bin/adbd                                system/apex/com.android.adbd/etc/init.rc     
+     adbd                        /system/bin/adbd                                               system/etc/init/hw/init.usb.rc               
+     artd                        /apex/com.android.art/bin/artd                                 system/apex/com.android.art/etc/init.rc      
+     boringssl_self_test_apex32  /apex/com.android.conscrypt/bin/boringssl_self_test32          system/etc/init/hw/init.rc                   
+     boringssl_self_test_apex64  /apex/com.android.conscrypt/bin/boringssl_self_test64          system/etc/init/hw/init.rc                   
+     statsd                      /apex/com.android.os.statsd/bin/statsd                         system/apex/com.android.os.statsd/etc/init.rc
+     vendor.audio-hal            /vendor/bin/hw/android.hardware.audio.service                  system/etc/init/init.waydroid.rc             
+     vendor.audio-hal-2-0        /vendor/bin/hw/android.hardware.audio@2.0-service              system/etc/init/init.waydroid.rc             
+     vendor.camera-provider-2-4  /vendor/bin/hw/android.hardware.camera.provider@2.4-service    system/etc/init/init.waydroid.rc             
+     vendor.hwcomposer-2-1       /vendor/bin/hw/android.hardware.graphics.composer@2.1-service  system/etc/init/init.waydroid.rc             
+  
+  ── service 引用的可执行文件核对（前 40） ──
+     service                     可执行                                                    镜像里
+     --------------------------------------------------------------------------------------
+     adb_root                    /system_ext/bin/adb_root                               缺  
+     adbd                        /apex/com.android.adbd/bin/adbd                        缺  
+     adbd                        /system/bin/adbd                                       缺  
+     apexd                       /system/bin/apexd                                      在  
+     apexd-bootstrap             /system/bin/apexd                                      在  
+     apexd-snapshotde            /system/bin/apexd                                      在  
+     artd                        /apex/com.android.art/bin/artd                         缺  
+     audioserver                 /system/bin/audioserver                                在  
+     blank_screen                /system/bin/blank_screen                               在  
+     bootanim                    /system/bin/bootanimation                              在  
+     boottrace                   /system/bin/atrace                                     在  
+     boringssl_self_test32       /system/bin/boringssl_self_test32                      在  
+     boringssl_self_test64       /system/bin/boringssl_self_test64                      在  
+     boringssl_self_test_apex32  /apex/com.android.conscrypt/bin/boringssl_self_test32  缺  
+     boringssl_self_test_apex64  /apex/com.android.conscrypt/bin/boringssl_self_test64  缺  
+     bpfloader                   /system/bin/bpfloader                                  在  
+     bugreport                   /system/bin/dumpstate                                  在  
+     bugreportd                  /system/bin/dumpstate                                  在  
+     cameraserver                /system/bin/cameraserver                               在  
+     clear-bcb                   /system/bin/uncrypt                                    在  
+     console                     /system/bin/sh                                         在  
+     credstore                   /system/bin/credstore                                  在  
+     dmesgd                      /system/bin/dmesgd                                     在  
+     drm                         /system/bin/drmserver                                  在  
+     dumpstate                   /system/bin/dumpstate                                  在  
+     dumpstatez                  /system/bin/dumpstate                                  在  
+     gatekeeperd                 /system/bin/gatekeeperd                                在  
+     gpu                         /system/bin/gpuservice                                 在  
+     gsid                        /system/bin/gsid                                       在  
+     heapprofd                   /system/bin/heapprofd                                  在  
+     heapprofd_secondary         /system/bin/heapprofd                                  在  
+     hidl_memory                 /system/bin/hw/android.hidl.allocator@1.0-service      在  
+     hwservicemanager            /system/bin/hwservicemanager                           在  
+     idmap2d                     /system/bin/idmap2d                                    在  
+     incidentd                   /system/bin/incidentd                                  在  
+     installd                    /system/bin/installd                                   在  
+     keystore2                   /system/bin/keystore2                                  在  
+     llkd-0                      /system/bin/llkd                                       在  
+     lmkd                        /system/bin/lmkd                                       在  
+     logcatd                     /system/bin/logcatd                                    在  
+    ⇒ service 总数 82，可执行缺失 11
+  
+  ── 框架启动链关键服务 ──
+     service           可执行                                     镜像里
+     -------------------------------------------------------------
+     apexd             /system/bin/apexd                       在  
+     apexd-bootstrap   /system/bin/apexd                       在  
+     apexd-snapshotde  /system/bin/apexd                       在  
+     bpfloader         /system/bin/bpfloader                   在  
+     credstore         /system/bin/credstore                   在  
+     gatekeeperd       /system/bin/gatekeeperd                 在  
+     gsid              /system/bin/gsid                        在  
+     hwservicemanager  /system/bin/hwservicemanager            在  
+     keystore2         /system/bin/keystore2                   在  
+     lmkd              /system/bin/lmkd                        在  
+     logd              /system/bin/logd                        在  
+     logd-auditctl     /system/bin/auditctl                    在  
+     logd-reinit       /system/bin/logd                        在  
+     media             /system/bin/mediaserver                 在  
+     mediaextractor    /system/bin/mediaextractor              在  
+     mediametrics      /system/bin/mediametrics                在  
+     servicemanager    /system/bin/servicemanager              在  
+     statsd            /apex/com.android.os.statsd/bin/statsd  缺  
+     surfaceflinger    /system/bin/surfaceflinger              在  
+     tombstoned        /system/bin/tombstoned                  在  
+     ueventd           /system/bin/ueventd                     在  
+     vold              /system/bin/vold                        在  
+     zygote            /system/bin/app_process                 在  
+     zygote            /system/bin/app_process64               在  
+     zygote_secondary  /system/bin/app_process32               在  
+  
+  ── service 最多的 rc 文件 ──
+     rc 文件                                                  service  on  字节   
+     -------------------------------------------------------------------------
+     system/etc/init/hw/init.rc                             6        51  56064
+     system/etc/init/init.waydroid.rc                       4        5   2484 
+     system/etc/init/perfetto.rc                            4        11  4837 
+     system/etc/init/apexd.rc                               3        0   500  
+     system/etc/init/dumpstate.rc                           3        1   719  
+     system/etc/init/logd.rc                                3        2   903  
+     system/etc/init/uncrypt.rc                             3        0   390  
+     system/etc/init/heapprofd.rc                           2        4   2121 
+     system/etc/init/snapuserd.rc                           2        1   507  
+     system/etc/init/hw/init.zygote64_32.rc                 2        0   1140 
+     system/apex/com.android.os.statsd/etc/init.rc          1        0   797  
+     system/apex/com.android.adbd/etc/init.rc               1        0   181  
+     system/apex/com.android.art/etc/init.rc                1        0   744  
+     system/system_ext/etc/init/adb_root.rc                 1        1   142  
+     system/system_ext/etc/init/init.lineage-system_ext.rc  1        1   258  
+     system/etc/init/android.hidl.allocator@1.0-service.rc  1        0   117  
+     system/etc/init/android.system.suspend@1.0-service.rc  1        0   166  
+     system/etc/init/atrace.rc                              1        3   25378
+     system/etc/init/audioserver.rc                         1        6   2222 
+     system/etc/init/blank_screen.rc                        1        0   113  
+  
+  结论要点（判读规则见 docs/research/framework/探针清单与判读.md）:
+    · 若关键服务可执行齐全 ⇒ 真 init 路线的阻塞点在**属性服务/SELinux/挂载**，不在文件缺失
+    · 若缺 ⇒ 先补文件（工作量以个位数计）
+########## audit_rc.py 退出码 0 ##########
+
+########## audit_props.py --source /mnt/t4sysimg --prefix  --table /mnt/t4sysimg/system/build.prop ##########
+  == audit_props ==
+  对照表: /mnt/t4sysimg/system/build.prop
+    我们的编译期属性表: 131 条（其中 ro. 80 条 / 非 ro. 51 条）
+  来源: dir:/mnt/t4sysimg（rc 与 property_contexts 已读回内容）
+  
+  ① rc 在启动过程写的属性: 共 47 个键（非 ro. 46 个 ⇒ 编译期表**不可能**满足；ro. 被 setprop 1 个）
+  
+  ── 非 ro. 写入项（前 25） ──
+     属性（要写）                                      次数  来自                   
+     ---------------------------------------------------------------------
+     apexd.status                                1   init.rc              
+     bootreceiver.enable                         5   init.rc              
+     dev.bootcomplete                            1   init.rc              
+     dmesgd.start                                1   dmesgd.rc            
+     init.svc.mediadrm                           1   mediaserver.rc       
+     keystore.boot_level                         2   init.rc              
+     khungtask.enable                            4   llkd.rc              
+     llk.enable                                  4   llkd.rc              
+     lmkd.reinit                                 12  lmkd.rc              
+     logd.logpersistd                            3   logcatd.rc           
+     logd.logpersistd.buffer                     1   logcatd.rc           
+     logd.logpersistd.enable                     1   logcatd.rc           
+     logd.logpersistd.rotate_kbytes              1   logcatd.rc           
+     logd.logpersistd.size                       1   logcatd.rc           
+     net.464xlat.cellular.enabled                2   netd.rc              
+     net.tcp_def_init_rwnd                       1   init.rc              
+     perf.drop_caches                            1   init.rc              
+     persist.debug.perfetto.boottrace            1   perfetto.rc          
+     persist.device_config.attempted_boot_count  1   flags_health_check.rc
+     persist.heapprofd.enable                    1   heapprofd.rc         
+     persist.logd.logpersistd                    2   logcatd.rc           
+     persist.logd.logpersistd.size               1   logcatd.rc           
+     persist.sys.fuse                            1   init.rc              
+     persist.traced.enable                       2   perfetto.rc          
+     persist.traced_perf.enable                  1   traced_perf.rc       
+  
+  ② rc 读的属性 95 个键：表里已有 5 个，缺 16 个
+  
+  ── 我们表里没有的只读属性（前 25） ──
+     属性（要读）                          次数  来自                            
+     ------------------------------------------------------------------
+     ro.bionic.2nd_arch              2   init.rc                       
+     ro.bionic.2nd_cpu_variant       1   init.rc                       
+     ro.bionic.arch                  2   init.rc                       
+     ro.bionic.cpu_variant           1   init.rc                       
+     ro.boot.bootreason              1   bootstat-debug.rc, bootstat.rc
+     ro.boot.slot_suffix             1   lpdumpd.rc                    
+     ro.boot.super_partition         4   lpdumpd.rc                    
+     ro.build.fingerprint            1   init.rc                       
+     ro.hardware                     2   init.rc                       
+     ro.khungtask.enable             2   llkd.rc                       
+     ro.khungtask.timeout            1   llkd.rc                       
+     ro.llk.enable                   2   llkd.rc                       
+     ro.persistent_properties.ready  3   bootstat.rc, perfetto.rc      
+     ro.product.cpu.abilist64        3   dmesgd.rc, init.rc            
+     ro.vndk.version                 1   init.waydroid.rc              
+     ro.zygote                       1   init.rc                       
+  
+  ── 框架启动关键属性对照（值截断到 24 字符） ──
+     关键属性                            我们的表  值        被读  被写
+     -----------------------------------------------------
+     ro.zygote                       缺              1   0 
+     ro.boot.hardware                缺              0   0 
+     ro.hardware                     缺              2   0 
+     ro.product.cpu.abilist          缺              0   0 
+     ro.product.cpu.abilist64        缺              3   0 
+     ro.apex.updatable               缺              0   0 
+     ro.config.low_ram               缺              0   0 
+     dalvik.vm.heapsize              有     512m     0   0 
+     dalvik.vm.isa.arm64.variant     缺              0   0 
+     ro.build.version.sdk            有     33       0   0 
+     sys.boot_completed              缺              21  1 
+     ro.bootimage.build.fingerprint  缺              0   0 
+     persist.sys.dalvik.vm.lib.2     缺              0   0 
+     ro.dalvik.vm.native.bridge      有     0        0   0 
+     ro.control_privapp_permissions  有     enforce  0   0 
+     ro.kernel.qemu                  缺              0   0 
+  
+  ③ property_contexts 文件 2 个
+     条目 1022；按前缀: {'ro': 487, 'persist': 113, 'dalvik': 76, 'bluetooth': 47, 'sys': 30, 'setupwizard': 21, 'init': 20, 'pm': 16, 'partition': 15, 'cache_key': 14, 'media': 12, 'net': 11}
+     ⇒ 需要写权限模型的前缀（非 ro.*）占 535/1022
+  
+  结论（判读规则见 docs/research/framework/探针清单与判读.md）:
+    · 非 ro. 写入 46 个键 ⇒ 属性服务**必须可写**，shim 路线要造的是「一个进程写、全机可见」的共享区，
+      而不是再加几条编译期常量；
+    · 缺读的 ro. 属性 16 个 ⇒ 这部分是**便宜的**（补进 build.prop/gen_props 即可）；
+    · 两者相加就是「继续 shim」的真实工作量。
+########## audit_props.py 退出码 0 ##########
+
+########## audit_selinux.py --source /mnt/t4sysimg --prefix   ##########
+  == audit_selinux ==
+  来源: dir:/mnt/t4sysimg
+  
+  ── SELinux / 属性区产物盘点 ──
+     产物                                         状态  大小/条目     为什么框架要它                            
+     --------------------------------------------------------------------------------------------
+     system/etc/selinux/plat_sepolicy.cil       在   2049 KiB  平台策略（CIL 源码，init 要编译才能加载）          
+     system/etc/selinux/precompiled_sepolicy    缺   -         已编译策略（有它 init 就不用跑 secilc）         
+     system/etc/selinux/plat_file_contexts      在   49 KiB    文件上下文（restorecon 依赖）               
+     system/etc/selinux/plat_property_contexts  在   85 KiB    属性上下文（**属性写权限模型**）                 
+     system/etc/selinux/plat_service_contexts   在   30 KiB    服务上下文（servicemanager 注册检查）         
+     system/etc/selinux/mapping                 缺   -         平台映射（version→version 的 cil）        
+     system/bin/secilc                          在   334 KiB   CIL 编译器（无 precompiled 时 init 在开机跑它）
+     system/bin/init                            在   2282 KiB  真 Android init（我们镜像里其实有）           
+     dev/__properties__                         缺   -         属性区目录（bionic 找旧式 per-property 文件时用）
+     system/etc/property_info                   缺   -         property_info（客户端侧写检查）             
+    mapping/*.cil: 17 个，合计 799 KiB
+    vendor 侧 selinux 条目: 0 []
+    VINTF 条目 14 个：[('system/etc/vintf/compatibility_matrix.6.xml', 131020), ('system/etc/vintf/compatibility_matrix.5.xml', 123749), ('system/etc/vintf/compatibility_matrix.4.xml', 114849), ('system/etc/vintf/compatibility_matrix.7.xml', 104528), ('system/etc/vintf/compatibility_matrix.3.xml', 90917), ('system/etc/vintf/manifest.xml', 3078)]
+    libvintf.so: [621208, 640512]
+    rc 里：seclabel 行 6、写 /sys/fs/selinux/enforce 0、restorecon 21
+    运行日志: 未找到 %LOCALAPPDATA%\CatClawVideo.debug\qemu-console-art.log（跳过运行时对照）
+  
+  结论与判读:
+    · 平台策略**文件在**（plat_sepolicy.cil 存在）但 precompiled_sepolicy 缺 ⇒ 走真 init 时
+      要么开机跑 secilc（镜像里有 secilc，TCG 下耗时需实测），要么用 `androidboot.selinux=permissive`
+      / `--skip-sepolicy`（init 支持吗要在第一步实验里验，别猜）。
+    · 运行日志里 denial 计数见上：若为 0 且我们当前**根本没加载策略**，那「属性区失败因为缺 SELinux」这条就**只是巧合**，需要下面的实验来判。
+    · 第一步可验证实验（只读、不改镜像；由 T1 注入或经 adb shell 手跑）：
+        在 guest 里执行 `propinit`（blobs/propfix）并抓 bionic 的 libc 日志行 ——
+        bionic 在 area_init 失败时会把**具体原因**写进 log（`failed to initialize system properties area` + errno/路径）。
+        判读：出现 EPERM/`/sys/fs/selinux`/`u:object_r:` ⇒ SELinux 假设成立；
+              出现 EEXIST/`already`/`/dev/__properties__` 路径类 ⇒ 是**目录或重复初始化**问题，与 SELinux 无关，路线 (B) 的属性服务成本骤降。
+########## audit_selinux.py 退出码 0 ##########
+
+── 2. vendor 侧（SELinux/vintf 的另一半）──
+  /mnt/t4vendor/etc/selinux          plat_pub_versioned.cil plat_sepolicy_vers.txt precompiled_sepolicy precompiled_sepolicy.plat_sepolicy_and_mapping.sha256 precompiled_sepolicy.system_ext_sepolicy_and_mapping.sha256 selinux_denial_meta
+  /mnt/t4vendor/etc/vintf            compatibility_matrix.xml manifest manifest.disabled manifest.xml 
+  /mnt/t4sysimg/system/etc/vintf     compatibility_matrix.3.xml compatibility_matrix.4.xml compatibility_matrix.5.xml compatibility_matrix.6.xml compatibility_matrix.7.xml compatibility_matrix.device.xml manifest manifest.xml 
+  /mnt/t4sysimg/system/apex          com.android.adbd com.android.adservices com.android.appsearch com.android.art com.android.btservices com.android.conscrypt com.android.extservices com.android.i18n com.android.ipsec com.android.media 
+  build.prop 里的关键项:
+    dalvik.vm.heapsize=512m
+    ro.dalvik.vm.native.bridge=0
+
+== 对照结束（已 umount）==

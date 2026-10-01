@@ -1,0 +1,68 @@
+== audit_apk_needs ==
+APK: D:\Code\sourceCode-ccc25f6\app\build\outputs\apk\java64\debug\TVBox_debug-java64.apk
+  dex 文件 18 个；类型描述符 19374 个
+  android.*/dalvik.* 引用类: 1908；其中 framework 包: 802
+
+── APK 引用的 framework 面包（按前三段聚合）──
+   android.graphics.drawable            28 个类   有桩
+   android.view.animation               17 个类   无桩
+   android.content.pm                   16 个类   有桩
+   android.text.style                   16 个类   无桩
+   android.view.accessibility           16 个类   无桩
+   android.media.session                14 个类   无桩
+   android.view.inputmethod             14 个类   有桩
+   android.media.metrics                13 个类   无桩
+   android.content.res                  10 个类   有桩
+   android.database.sqlite              10 个类   无桩
+   android.media.midi                    8 个类   无桩
+   android.app.job                       7 个类   无桩
+   android.view.textclassifier           7 个类   无桩
+   android.graphics.fonts                6 个类   无桩
+   android.media.browse                  5 个类   无桩
+   android.net.wifi                      5 个类   有桩
+   android.text.method                   5 个类   无桩
+   android.net.http                      3 个类   无桩
+
+── 与我们的 android 桩求差集（这就是 (C) 路线的真实缺口）──
+   桩里有 103 个被引用类；缺 699 个
+   android.graphics.drawable      缺  23 个，例: android.graphics.drawable.AdaptiveIconDrawable, android.graphics.drawable.Animatable, android.graphics.drawable.Animatable2$AnimationCallback
+   android.view.animation         缺  17 个，例: android.view.animation.AccelerateDecelerateInterpolator, android.view.animation.AccelerateInterpolator, android.view.animation.AlphaAnimation
+   android.content.pm             缺  11 个，例: android.content.pm.ActivityInfo, android.content.pm.FeatureInfo, android.content.pm.LauncherApps
+   android.text.style             缺  16 个，例: android.text.style.AbsoluteSizeSpan, android.text.style.BackgroundColorSpan, android.text.style.CharacterStyle
+   android.view.accessibility     缺  16 个，例: android.view.accessibility.AccessibilityEvent, android.view.accessibility.AccessibilityManager, android.view.accessibility.AccessibilityManager$AccessibilityStateChangeListener
+   android.media.session          缺  14 个，例: android.media.session.MediaController, android.media.session.MediaController$Callback, android.media.session.MediaController$PlaybackInfo
+   android.view.inputmethod       缺  13 个，例: android.view.inputmethod.BaseInputConnection, android.view.inputmethod.CompletionInfo, android.view.inputmethod.CorrectionInfo
+   android.media.metrics          缺  13 个，例: android.media.metrics.LogSessionId, android.media.metrics.MediaMetricsManager, android.media.metrics.NetworkEvent
+   android.content.res            缺   6 个，例: android.content.res.AssetFileDescriptor, android.content.res.AssetManager, android.content.res.AssetManager$AssetInputStream
+   android.database.sqlite        缺  10 个，例: android.database.sqlite.SQLiteCursor, android.database.sqlite.SQLiteCursorDriver, android.database.sqlite.SQLiteDatabase
+   android.media.midi             缺   8 个，例: android.media.midi.MidiDevice, android.media.midi.MidiDeviceInfo, android.media.midi.MidiInputPort
+   android.app.job                缺   7 个，例: android.app.job.JobInfo, android.app.job.JobInfo$Builder, android.app.job.JobParameters
+   android.view.textclassifier    缺   7 个，例: android.view.textclassifier.TextClassification, android.view.textclassifier.TextClassificationManager, android.view.textclassifier.TextClassifier
+   android.graphics.fonts         缺   6 个，例: android.graphics.fonts.Font, android.graphics.fonts.Font$Builder, android.graphics.fonts.FontFamily
+   android.media.browse           缺   5 个，例: android.media.browse.MediaBrowser, android.media.browse.MediaBrowser$ConnectionCallback, android.media.browse.MediaBrowser$ItemCallback
+   android.net.wifi               缺   3 个，例: android.net.wifi.WifiManager$MulticastLock, android.net.wifi.WifiManager$WifiLock, android.net.wifi.p2p.WifiP2pManager
+   android.text.method            缺   5 个，例: android.text.method.LinkMovementMethod, android.text.method.MovementMethod, android.text.method.PasswordTransformationMethod
+   android.net.http               缺   3 个，例: android.net.http.SslCertificate, android.net.http.SslError, android.net.http.X509TrustManagerExtensions
+
+── 硬骨头（引用到就说明需要真 framework 的进程/生命周期管理）──
+   android.app.Activity                       引用   桩:有
+   android.app.Service                        引用   桩:无
+   android.app.Application                    引用   桩:有
+   android.content.ContentProvider            引用   桩:有
+   android.content.BroadcastReceiver          引用   桩:无
+   android.app.AlarmManager                   引用   桩:无
+   android.app.NotificationManager            引用   桩:无
+   android.view.WindowManager                 引用   桩:有
+   android.view.Choreographer                 引用   桩:无
+   android.os.Looper                          引用   桩:有
+   android.os.Handler                         引用   桩:有
+   android.os.HandlerThread                   引用   桩:无
+   android.webkit.WebView                     引用   桩:有
+   android.media.MediaPlayer                  引用   桩:无
+   android.media.session.MediaSession         引用   桩:无
+   android.app.ActivityManager                引用   桩:无
+
+结论（判读规则见 docs/research/framework/探针清单与判读.md）:
+  · 缺 699 个 framework 类 ⇒ 路线 (C) 的「继续手写桩」成本是按包计的工作量，
+    不是「再补几个方法」；
+  · 硬骨头里只要有一个是「引用了且需要真生命周期」，(C) 就只能覆盖不需要它的功能子集。

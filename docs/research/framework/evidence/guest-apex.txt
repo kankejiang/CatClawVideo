@@ -1,0 +1,31 @@
+== audit_apex ==
+来源: file:art_initrd_x64.gz sha256=7f5817748ac1dd3e size=362396964
+条目总数: 2213
+
+── 已解包在 apex/<id>/ 下的实例（= 不需要 loop 挂载就有内容） ──
+   apex 实例                文件数  字节         框架    为什么需要                                                      
+   --------------------------------------------------------------------------------------------------------
+   com.android.art        78   43444 KiB  ✔ 必需  libart + ART boot classpath + app_process 的 apex 版         
+   com.android.conscrypt  10   1014 KiB   ✔ 必需  TLS provider（framework 的 javax.net.ssl）                    
+   com.android.i18n       14   38208 KiB  ✔ 必需  ICU4C（java.text / ICU 数据）                                  
+   com.android.os.statsd  15   1868 KiB   ✔ 必需  statsd 客户端/服务（framework 上报）                                
+   com.android.runtime    20   8942 KiB   ✔ 必需  linker + bionic 动态库（/apex/com.android.runtime/lib64/bionic）
+   com.android.tzdata     7    690 KiB    ✔ 必需  时区表（java.util.TimeZone）                                    
+
+── system/apex/ 下的副本 ──
+   （无）
+
+── 需要 apexd+loop 才能挂载的容器文件 ──
+   （无）
+
+结论:
+  必需 APEX 6 个；镜像里已解包 6 个；缺 无
+  .apex 容器文件 0 个 ⇒ 内容已是目录形态，apexd 的挂载职责可以绕过
+  system/bin/apexd                   在（system/bin/apexd）
+  system/bin/toybox                  在（system/bin/toybox）
+  system/bin/losetup                 在（system/bin/losetup）
+  system/bin/dmctl                   在（system/bin/dmctl）
+  system/etc/apex-info-list.xml      在（apex/apex-info-list.xml）
+  apexd 的 rc: ['system/etc/init/apexd.rc']
+  apex-info-list.xml: 1101B，记录 6 个 apex ⇒ ['com.android.art(true)', 'com.android.conscrypt(true)', 'com.android.i18n(true)', 'com.android.os.statsd(true)', 'com.android.runtime(true)', 'com.android.tzdata(true)']
+  linkerconfig 条目: ['linkerconfig', 'linkerconfig/ld.config.txt', 'apex/com.android.conscrypt/etc/ld.config.txt']

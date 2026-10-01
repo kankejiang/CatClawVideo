@@ -1,0 +1,84 @@
+== audit_props ==
+对照表: D:\Code\CatClawVideo\JavaBridge\qemu-src\art\props_gen_x64.h
+  我们的编译期属性表: 161 条（其中 ro. 98 条 / 非 ro. 63 条）
+来源: file:art_initrd_x64.gz sha256=07daeec25619210c size=362396900（rc 与 property_contexts 已读回内容）
+
+① rc 在启动过程写的属性: 共 47 个键（非 ro. 46 个 ⇒ 编译期表**不可能**满足；ro. 被 setprop 1 个）
+
+── 非 ro. 写入项（前 25） ──
+   属性（要写）                                      次数  来自                   
+   ---------------------------------------------------------------------
+   apexd.status                                1   init.rc              
+   bootreceiver.enable                         5   init.rc              
+   dev.bootcomplete                            1   init.rc              
+   dmesgd.start                                1   dmesgd.rc            
+   init.svc.mediadrm                           1   mediaserver.rc       
+   keystore.boot_level                         2   init.rc              
+   khungtask.enable                            4   llkd.rc              
+   llk.enable                                  4   llkd.rc              
+   lmkd.reinit                                 12  lmkd.rc              
+   logd.logpersistd                            3   logcatd.rc           
+   logd.logpersistd.buffer                     1   logcatd.rc           
+   logd.logpersistd.enable                     1   logcatd.rc           
+   logd.logpersistd.rotate_kbytes              1   logcatd.rc           
+   logd.logpersistd.size                       1   logcatd.rc           
+   net.464xlat.cellular.enabled                2   netd.rc              
+   net.tcp_def_init_rwnd                       1   init.rc              
+   perf.drop_caches                            1   init.rc              
+   persist.debug.perfetto.boottrace            1   perfetto.rc          
+   persist.device_config.attempted_boot_count  1   flags_health_check.rc
+   persist.heapprofd.enable                    1   heapprofd.rc         
+   persist.logd.logpersistd                    2   logcatd.rc           
+   persist.logd.logpersistd.size               1   logcatd.rc           
+   persist.sys.fuse                            1   init.rc              
+   persist.traced.enable                       2   perfetto.rc          
+   persist.traced_perf.enable                  1   traced_perf.rc       
+
+② rc 读的属性 95 个键：表里已有 9 个，缺 13 个
+
+── 我们表里没有的只读属性（前 25） ──
+   属性（要读）                          次数  来自                            
+   ------------------------------------------------------------------
+   ro.bionic.2nd_arch              2   init.rc                       
+   ro.bionic.2nd_cpu_variant       1   init.rc                       
+   ro.bionic.arch                  2   init.rc                       
+   ro.bionic.cpu_variant           1   init.rc                       
+   ro.boot.bootreason              1   bootstat-debug.rc, bootstat.rc
+   ro.boot.slot_suffix             1   lpdumpd.rc                    
+   ro.boot.super_partition         4   lpdumpd.rc                    
+   ro.build.fingerprint            1   init.rc                       
+   ro.khungtask.enable             2   llkd.rc                       
+   ro.khungtask.timeout            1   llkd.rc                       
+   ro.llk.enable                   2   llkd.rc                       
+   ro.persistent_properties.ready  3   bootstat.rc, perfetto.rc      
+   ro.vndk.version                 1   init.waydroid.rc              
+
+── 框架启动关键属性对照（值截断到 24 字符） ──
+   关键属性                            我们的表  值                      被读  被写
+   -------------------------------------------------------------------
+   ro.zygote                       有     zygote64_32            1   0 
+   ro.boot.hardware                有     ranchu                 0   0 
+   ro.hardware                     有     ranchu                 2   0 
+   ro.product.cpu.abilist          有     x86_64,arm64-v8a       0   0 
+   ro.product.cpu.abilist64        有     x86_64,arm64-v8a       3   0 
+   ro.apex.updatable               缺                            0   0 
+   ro.config.low_ram               缺                            0   0 
+   dalvik.vm.heapsize              有     512m                   0   0 
+   dalvik.vm.isa.arm64.variant     有     generic                0   0 
+   ro.build.version.sdk            有     33                     0   0 
+   sys.boot_completed              缺                            21  1 
+   ro.bootimage.build.fingerprint  缺                            0   0 
+   persist.sys.dalvik.vm.lib.2     有     libart.so              0   0 
+   ro.dalvik.vm.native.bridge      有     libndk_translation.so  0   0 
+   ro.control_privapp_permissions  有     enforce                0   0 
+   ro.kernel.qemu                  有     1                      0   0 
+
+③ property_contexts 文件 1 个
+   条目 1017；按前缀: {'ro': 485, 'persist': 111, 'dalvik': 76, 'bluetooth': 46, 'sys': 30, 'setupwizard': 21, 'init': 20, 'pm': 16, 'partition': 15, 'cache_key': 14, 'media': 12, 'net': 11}
+   ⇒ 需要写权限模型的前缀（非 ro.*）占 532/1017
+
+结论（判读规则见 docs/research/framework/探针清单与判读.md）:
+  · 非 ro. 写入 46 个键 ⇒ 属性服务**必须可写**，shim 路线要造的是「一个进程写、全机可见」的共享区，
+    而不是再加几条编译期常量；
+  · 缺读的 ro. 属性 13 个 ⇒ 这部分是**便宜的**（补进 build.prop/gen_props 即可）；
+  · 两者相加就是「继续 shim」的真实工作量。
