@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""B1.1: 只打 mesa 软件 GL（llvmpipe）那一小组文件 —— **不做递归闭包**。
+
+理由（实测）：mesa 各库的 NEEDED 全是 bionic 基础库（libc/libm/libdl/libdrm/libcutils/
+libc++/liblog/libnativewindow/libsync/libhardware/libhidlbase/libutils/libgralloctypes），
+这些 guest 里都有；而递归闭包会拖进一个 105MB 的大家伙（把包从 ~50MB 未压缩吹到 165MB）。
+"""
+import os, shutil, subprocess, tarfile
+
+VEN = "/mnt/b11ven"
+STAGE = "/root/b1_blobs/mstage"
+OUT = "/root/b1_blobs/mesa-gl.tar.gz"
+
+os.makedirs(VEN, exist_ok=True)
+if not os.path.ismount(VEN):
+    subprocess.run(["mount", "-o", "ro,loop", "/root/x86guest/vendor-ex/vendor.img", VEN], check=False)
+if not os.path.ismount(VEN):
+    raise SystemExit("!! vendor 未挂载")
+
+FILES = [
+    ("lib64/egl/libEGL_mesa.so",       "system/lib64/egl/libEGL_mesa.so"),
+    ("lib64/egl/libGLESv2_mesa.so",    "system/lib64/egl/libGLESv2_mesa.so"),
+    ("lib64/egl/libGLESv1_CM_mesa.so", "system/lib64/egl/libGLESv1_CM_mesa.so"),
+    ("lib64/libgallium_dri.so",        "system/lib64/libgallium_dri.so"),
+    ("lib64/libgbm_mesa.so",           "system/lib64/libgbm_mesa.so"),
+    ("lib64/libgbm_mesa_wrapper.so",   "system/lib64/libgbm_mesa_wrapper.so"),
+    ("lib64/dri_gbm.so",               "system/lib64/dri_gbm.so"),
+    ("lib64/libminigbm_gralloc_gbm_mesa.so", "system/lib64/libminigbm_gralloc_gbm_mesa.so"),
+    # gallium 链接了各家的 DRM 后端；缺一个 dlopen 就直接失败
+    # （实测：只有 libdrm_intel.so 缺失时报 "library \"libdrm_intel.so\" not found"）。
+    ("lib64/libdrm_intel.so",   "system/lib64/libdrm_intel.so"),
+    ("lib64/libdrm_amdgpu.so",  "system/lib64/libdrm_amdgpu.so"),
+    ("lib64/libdrm_radeon.so",  "system/lib64/libdrm_radeon.so"),
+    ("lib64/libdrm.so",         "system/lib64/libdrm.so"),
+]
+
+shutil.rmtree(STAGE, ignore_errors=True)
+total = 0
+for src, rel in FILES:
+    p = os.path.join(VEN, src)
+    if not os.path.exists(p):
+        print("  跳过（缺）:", src)
+        continue
+    dst = os.path.join(STAGE, rel)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copy2(p, dst)
+    total += os.path.getsize(dst)
+    # 同名软链：bionic 也按 SONAME 找
+    dirn, base = os.path.split(dst)
+    soname = os.path.basename(os.path.realpath(p))
+    if base != soname:
+        link = os.path.join(dirn, soname)
+        if not os.path.lexists(link):
+            os.symlink(base, link)
+
+# mesa 的驱动按 dri/<name>_dri.so 找（108 上实测过同一坑）
+dri = os.path.join(STAGE, "system/lib64/dri")   # system 命名空间
+os.makedirs(dri, exist_ok=True)
+for n in ("iris_dri.so", "llvmpipe_dri.so", "swrast_dri.so"):
+    os.symlink("../libgallium_dri.so", os.path.join(dri, n))
+
+if os.path.exists(OUT):
+    os.remove(OUT)
+with tarfile.open(OUT, "w:gz") as t:
+    for root, _, files in os.walk(STAGE):
+        for f in files:
+            full = os.path.join(root, f)
+            t.add(full, arcname=os.path.relpath(full, STAGE))
+
+print("  未压缩: %.1f MB" % (total / 1024 / 1024))
+print("  tar.gz: %d B (%.1f MB)" % (os.path.getsize(OUT), os.path.getsize(OUT) / 1024 / 1024))
+for root, _, files in os.walk(STAGE):
+    for f in sorted(files):
+        full = os.path.join(root, f)
+        print("    %10d  %s" % (os.path.getsize(full), os.path.relpath(full, STAGE)))

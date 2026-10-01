@@ -1280,9 +1280,14 @@ public class Server {
                         "hwservicemanager.ready=true"
                         + ";ro.hardware.hwcomposer=waydroid"
                         + ";ro.hardware.gralloc=minigbm_gbm_mesa"
+                        + ";ro.hardware.egl=mesa"
                         + ";gralloc.gbm.device=/dev/dri/renderD128"
-                        + ";debug.renderengine.backend=skiacpu");
-                pb.environment().put("LD_LIBRARY_PATH", "/system/lib64");
+                        + ";debug.renderengine.backend=skiagl");
+                // mesa 的软件光栅化（llvmpipe）：本 guest 没有 GPU，iris 起不来，强制软件路径。
+                pb.environment().put("GALLIUM_DRIVER", "llvmpipe");
+                pb.environment().put("LIBGL_ALWAYS_SOFTWARE", "1");
+                pb.environment().put("MESA_LOADER_DRIVER_OVERRIDE", "llvmpipe");
+                pb.environment().put("LD_LIBRARY_PATH", "/vendor/lib64/egl:/vendor/lib64:/system/lib64");
                 pb.environment().put("WAYLAND_DISPLAY", "wl-0");
                 pb.environment().put("XDG_RUNTIME_DIR", "/tmp/wrt");
                 pb.redirectErrorStream(true);

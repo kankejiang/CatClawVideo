@@ -335,6 +335,8 @@ def main():
             '\n# ── B1.1：Android binder 服务栈 ──\n'
             'if [ -f /b1/android-stack.tar.gz ]; then\n'
             '    $BB tar xzf /b1/android-stack.tar.gz -C / && echo "[astack] 解包完成"\n'
+            '    # mesa 软件 GL（llvmpipe）：这个 SF 版本没有 CPU 渲染后端，RenderEngine 必须有 EGL。\n'
+            '    [ -f /b1/mesa-gl.tar.gz ] && $BB tar xzf /b1/mesa-gl.tar.gz -C / && echo "[astack] mesa GL 已解包"\n'
             '    $BB mkdir -p /dev/binderfs\n'
             '    $BB mount -t binder binder /dev/binderfs 2>/dev/null && echo "[astack] binderfs 已挂载"\n'
             '    for b in binder hwbinder vndbinder; do [ -e /dev/binderfs/$b ] && ln -sf /dev/binderfs/$b /dev/$b; done\n'
