@@ -63,7 +63,18 @@ public class TextView extends View {
     public void setTextAppearance(Context context, int resId) { }
     public void setAllCaps(boolean allCaps) { }
     public void setPaintFlags(int flags) { }
-    public Paint getPaint() { return new Paint(); }
+    /**
+     * ⚠ <b>返回类型必须是 {@link android.text.TextPaint}</b>，不是 {@code Paint}：
+     * ART 的方法描述符包含返回类型，真机签名是 {@code getPaint()Landroid/text/TextPaint;}。
+     * 以前这里返回 {@code Paint} ⇒ jar 的二维码视图一调就
+     * {@code NoSuchMethodError: No virtual method getPaint()Landroid/text/TextPaint;}，
+     * 且它跑在壳的 {@code [Init]} 后台线程里（异常只打日志不上抛），
+     * 结果是「对话框弹了但里面什么都没有」——2026-09-30 网盘扫码链路卡在这一步的定位。
+     * 同一个实例返回（壳会 {@code getPaint().setColor(..)} 再量字，返回新对象等于把它设的值丢掉）。
+     */
+    private android.text.TextPaint paintStub;
+    public android.text.TextPaint getPaint() { return paintStub != null ? paintStub : (paintStub = new android.text.TextPaint()); }
+    public android.text.TextPaint getTextPaint() { return getPaint(); }
     public void setShadowLayer(float radius, float dx, float dy, int color) { }
     public void setLetterSpacing(float letterSpacing) { }
     public void setIncludeFontPadding(boolean includepad) { }

@@ -51,6 +51,29 @@ public class Dialog implements DialogInterface {
                     .put("message", message == null ? "" : message.toString())
                     .put("cancelable", cancelable);
             fillSpec(spec);
+            // 裸 Dialog 以前根本不找码：三层取码只写在 AlertDialog.fillSpec 里，而壳的扫码二维码
+            // 正是 new Dialog + setContentView(qrView) 那条路 ⇒ 宿主只收到 68B 的空框
+            // （2026-10-01 实测 seq=3 有框无码）。这里补一次同样的搜索。
+            if (!spec.has("qr") && !spec.has("qrText")) {
+                JSONObject q = AlertDialog.huntQr(view, false);
+                if (q != null) {
+                    spec.put("qr", q);
+                    System.err.println("[ui] 裸 Dialog 取到码 " + q.optInt("w") + "x" + q.optInt("h")
+                            + " png=" + (q.has("png") ? "有" : "无"));
+                } else {
+                    // 契约通道（与源无关）：没有位图就看有没有登录 URL 文本，有就上行 qrText，
+                    // 图由宿主出。裸 Dialog 以前只找位图 ⇒ 只给链接的源在这里也会被丢成空框。
+                    String u = AlertDialog.firstUrl(view);
+                    if (u != null) {
+                        spec.put("qrText", u);
+                        System.err.println("[ui] 裸 Dialog 视图树里有登录 URL " + u.length()
+                                + " 字符 → 上行 qrText（宿主出码）");
+                    } else {
+                        System.err.println("[ui] 裸 Dialog 没取到码（视图树 "
+                                + (view == null ? "空" : view.getClass().getName()) + "）");
+                    }
+                }
+            }
         } catch (Throwable ignored) { }
 
         // 自定义 View 树摊平成条目 —— 必须在 register 之前，点击路由要进 Pending
@@ -62,6 +85,9 @@ public class Dialog implements DialogInterface {
                 onCancel, onDismiss, viewFlattened));
         if (spec != null) UiBridge.shown(seq, spec);
         if (onShow != null) { try { onShow.onShow(this); } catch (Throwable ignored) { } }
+        // 记下「当前对话框」并起刷新线程：壳异步取到码后那次 View.invalidate() 才有落点
+        dirty = false; qrSent = false; sLastShown = this;
+        startRefresherIfNeeded();
     }
 
     /**
@@ -121,7 +147,7 @@ public class Dialog implements DialogInterface {
             if (l == null) { System.err.println("[ui] 行 " + which + " 没有 OnClickListener，忽略"); return; }
             // 异常必须打出来：jar 的监听器里可能是「dismiss + 重开一个框」（切换启用状态），
             // 也可能是弹扫码框失败。静默吞掉的话宿主只表现为「点了没反应」。
-            System.err.println("[ui] 行点击 #" + which + " " + labels.get(which));
+            System.err.println("[ui] 行点击 #" + which + " " + AlertDialog.mask(labels.get(which)));
             try { l.onClick(v); } catch (Throwable t) {
                 Throwable c = t;
                 while (c.getCause() != null) c = c.getCause();
@@ -252,6 +278,80 @@ public class Dialog implements DialogInterface {
     protected DialogInterface.OnClickListener negClick() { return null; }
     protected DialogInterface.OnClickListener neuClick() { return null; }
 
+    // ── 异步取码回灌（2026-10-01 扫码链路）───────────────────────────────
+    /**
+     * 最近一次 show 的对话框。壳的登录二维码多是「先弹框 → 异步取回登录 URL → invalidate()」，
+     * 桌面没有真重绘管线时这条链路会静默断掉（宿主只收到一个没有码的框）。
+     */
+    private static volatile Dialog sLastShown;
+    private static volatile Thread sRefresher;
+    /** 视图树里有人 invalidate() 过 ⇒ 重新取一次码。 */
+    private volatile boolean dirty;
+    /** 已经补发过二维码 ⇒ 不再刷（一次登录框只出一张码）。 */
+    private volatile boolean qrSent;
+    /** 补发轮次跳过「等码」重试（见 AlertDialog.fillSpec），避免刷新线程一卡 4s。 */
+    volatile boolean quickHunt;
+
+    /** {@link android.view.View#invalidate()} 的上报口：只有当前对话框视图树内的节点才算脏。 */
+    public static void noteInvalidate(android.view.View v) {
+        Dialog d = sLastShown;
+        if (d == null || v == null || d.view == null || d.seq < 0) return;
+        if (!nodeIn(d.view, v)) return;
+        d.dirty = true;
+    }
+
+    private static boolean nodeIn(android.view.View n, android.view.View t) {
+        if (n == t) return true;
+        if (n instanceof android.view.ViewGroup vg) {
+            for (int i = 0; i < vg.getChildCount(); i++) {
+                if (nodeIn(vg.getChildAt(i), t)) return true;
+            }
+        }
+        return false;
+    }
+
+    /** 盯 120s（240×500ms）：一旦脏了就重建 spec，取到码就按 seq 补发 ui-qr（宿主据此换成扫码页）。 */
+    private static void startRefresherIfNeeded() {
+        if (sRefresher != null) return;
+        Thread t = new Thread(() -> {
+            try {
+                for (int i = 0; i < 240; i++) {
+                    try { Thread.sleep(500); } catch (InterruptedException e) { return; }
+                    Dialog d = sLastShown;
+                    if (d == null || !d.dirty || d.qrSent || !UiBridge.isPending(d.seq)) continue;
+                    d.dirty = false;
+                    JSONObject spec = new JSONObject();
+                    d.quickHunt = true;
+                    try { d.fillSpec(spec); } catch (Throwable ignored) { } finally { d.quickHunt = false; }
+                    if (spec.opt("qr") instanceof JSONObject q) {
+                        d.qrSent = true;
+                        try {
+                            UiBridge.emit(new JSONObject().put("ev", "ui-qr").put("seq", d.seq)
+                                    .put("title", d.title == null ? "" : d.title.toString()).put("qr", q));
+                            System.err.println("[ui] 补发 ui-qr seq=" + d.seq + " " + q.optInt("w") + "x" + q.optInt("h"));
+                        } catch (Throwable ignored) { }
+                    } else if (spec.opt("qrText") instanceof String u && u.length() > 0) {
+                        // 链接是异步才落进视图树的（壳先弹框、拿到 URL 再 setText+invalidate）：
+                        // 补发同一 seq 的 ui-qr，但带 qrText —— 宿主自己出码，桩侧不画任何东西。
+                        d.qrSent = true;
+                        try {
+                            UiBridge.emit(new JSONObject().put("ev", "ui-qr").put("seq", d.seq)
+                                    .put("title", d.title == null ? "" : d.title.toString()).put("qrText", u));
+                            System.err.println("[ui] 补发 ui-qr(qrText) seq=" + d.seq + " " + u.length() + " 字符");
+                        } catch (Throwable ignored) { }
+                    }
+                }
+            } finally {
+                // 线程到点/中断退出后必须清哨兵，否则之后所有对话框永远走不进 startRefresherIfNeeded
+                //（旧版 sRefresher 永不复位 ⇒ 120s 后扫码补发链路整条静默失效）
+                if (sRefresher == Thread.currentThread()) sRefresher = null;
+            }
+        }, "claw-ui-refresh");
+        t.setDaemon(true);
+        sRefresher = t;
+        t.start();
+    }
+
     public void dismiss() { UiBridge.dismissed(this, false); }
     public void cancel() { UiBridge.dismissed(this, true); }
     public boolean isShowing() { return seq >= 0 && UiBridge.isPending(seq); }
@@ -263,9 +363,19 @@ public class Dialog implements DialogInterface {
     public android.content.Context getContext() { return android.app.Application.getInstance(); }
     public android.view.View getCurrentFocus() { return null; }
     public android.view.View findViewById(int p0) { return null; }
+    /**
+     * ⚠ 必须真的存住内容视图：裸 {@code android.app.Dialog} 的扫码二维码就是走
+     * {@code setContentView(qrView)} 上屏的，旧实现是三个空覆写 ⇒ 内容被静默丢掉 ⇒
+     * 宿主只收到 68B 的空对话框（2026-10-01 实测 seq=3 有框无码）。
+     * show() 之后才 setContentView 的情况也要重取一次码，所以顺手标脏。
+     */
     public void setContentView(int p0) { }
-    public void setContentView(android.view.View p0) { }
-    public void setContentView(android.view.View p0, android.view.ViewGroup.LayoutParams p1) { }
+
+    public void setContentView(android.view.View p0) { view = p0; dirty = true; }
+
+    public void setContentView(android.view.View p0, android.view.ViewGroup.LayoutParams p1) {
+        view = p0; dirty = true;
+    }
     public boolean requestWindowFeature(int p0) { return false; }
     public void setOnKeyListener(android.content.DialogInterface.OnKeyListener p0) { }
 }

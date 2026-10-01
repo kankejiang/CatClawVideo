@@ -1,4 +1,4 @@
-﻿﻿using System.Text;
+﻿using System.Text;
 using CatClawVideo.Maui.Services;
 using CatClawVideo.Maui.ViewModels;
 using Microsoft.Extensions.DependencyInjection;

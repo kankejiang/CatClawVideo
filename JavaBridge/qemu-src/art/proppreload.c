@@ -155,9 +155,78 @@ int __system_property_wdev_l(const prop_info *pi, uint32_t old_serial, const cha
     return 0;
 }
 
+/* ── 桥进程内的 fork 拦截（2026-10-01 扫码链路实测）─────────────────────────
+ * 现象：壳的爬虫代码在桥进程里起子进程（Go 代理自更新、chmod、shell 探测……）时，
+ *       **父进程**（ART）当场 SIGSEGV：PC 恒落在 /memfd:jit-cache (deleted) 区，
+ *       退出码 139，随后整个 x86 mini guest 陪葬，用户侧症状就是「点扫码登录没反应」
+ *       （点击落在已经死掉的桥上）。
+ * 关键更正：把那条 arm64 二进制的下载/执行挡掉之后（GoProxy 改报
+ *       `path= chmod=false reason=下载失败`），**同一时刻依旧 [sig] s=11**
+ *       （2026-10-01 03:33:30.831 实测）。⇒ 致命的不是子进程跑的是什么，而是
+ *       「桥进程 fork 出子进程」这件事本身在这个 guest 里就不安全。
+ *       （早先两条猜测——LD_PRELOAD 被继承踩坏父进程、ENOEXEC 回落 sh 解析二进制——
+ *        都被这一条推翻，报告 §11.1/§11.5 已更正。）
+ * 处置：在 artlaunch 进程里让 fork/vfork/posix_spawn* 直接失败（EAGAIN）。
+ *       Java 侧只会看到 IOException，壳记一条 start failed 继续跑，桥与 guest 都不再陪葬。
+ *       本垫片只预加载进 artlaunch（init 里那一行 LD_PRELOAD=），constructor 又已
+ *       unsetenv("LD_PRELOAD")，所以 guest 里真正需要 fork 的进程（init/busybox/harness）不受影响。
+ */
+#include <errno.h>
+#include <spawn.h>
+#include <sys/types.h>
+
+#define FORK_BLOCK_MAX_LOG 8
+
+static int g_fork_blocked = 0;
+
+static void fork_block_note(const char *who) {
+    if (g_fork_blocked++ < FORK_BLOCK_MAX_LOG)
+        fprintf(stderr, "[proppreload] 拦下 %s：桥进程 fork 会打死 ART（guest 陪葬）\n", who);
+}
+
+pid_t fork(void) { fork_block_note("fork"); errno = EAGAIN; return -1; }
+pid_t vfork(void) { fork_block_note("vfork"); errno = EAGAIN; return -1; }
+pid_t __clone(int (*fn)(void *), void *stack, int flags, void *arg, ...) {
+    (void) fn; (void) stack; (void) flags; (void) arg;
+    fork_block_note("__clone"); errno = EAGAIN; return -1;
+}
+
+/* posix_spawn 系列返回**正数错误码**（不是 -1/errno），bionic 就是这么规定的。 */
+int posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_actions_t *fa,
+                const posix_spawnattr_t *at, char *const argv[], char *const envp[]) {
+    (void) path; (void) fa; (void) at; (void) argv; (void) envp;
+    fork_block_note("posix_spawn"); if (pid) *pid = -1; return EAGAIN;
+}
+
+int posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file_actions_t *fa,
+                 const posix_spawnattr_t *at, char *const argv[], char *const envp[]) {
+    (void) file; (void) fa; (void) at; (void) argv; (void) envp;
+    fork_block_note("posix_spawnp"); if (pid) *pid = -1; return EAGAIN;
+}
+
+int posix_clone_file_actions(const posix_spawn_file_actions_t *fa, posix_spawn_file_actions_t *to) {
+    (void) fa; (void) to;
+    fork_block_note("posix_clone_file_actions"); return EINVAL;
+}
+
+/* ⚠ 试过再拦 `syscall(__NR_clone/57/58)`（qrG，2026-10-01 03:45:47）：**倒退**——
+ * 一次启动 6ms 内连爆 7 条 [sig] s=11 pc=fffffffffffffb17（=把 -1 当指针解引用），
+ * 桥读循环随即退出。原因是替身 syscall 少报参数时按 6 个 va_arg 读会读到脏值，
+ * bionic 里合法的 syscall 调用被一起打坏。⇒ 只保留符号级的 fork/vfork/posix_spawn* 拦截。
+ */
+
 static void __attribute__((constructor)) proppreload_note(void) {
     ensure_pool();
     fprintf(stderr, "[proppreload] 接管 Android 属性 API：%d 条\n", NPROPS);
+    /* 立刻把 LD_PRELOAD 从**本进程环境**里抹掉：它会被 artlaunch 的每个子进程继承，
+     * 于是壳的 Go 代理自更新（fork 后 exec /data/files/moyu_go/pvideo-arm64-v8a，
+     * x86_64 内核认不了 arm64 ELF → 回落 busybox sh 逐行「解析」那 3MB 二进制）里，
+     * 我们的 constructor 在 fork 与 exec 之间又跑了一遍 —— 往与父进程共享的页上写，
+     * 父进程（ART）随后 SIGSEGV（退出码 139），整个 guest 跟着没了。
+     * 2026-10-01 实测：5/5 次「GoProxy start failed」都紧跟着 [sig] s=11 + 桥退出 139。
+     * 本进程早在此前就已完成符号插入（interposition 是进程内的），撤掉环境变量不影响
+     * 已生效的接管，只让子进程干净地不加载它。 */
+    unsetenv("LD_PRELOAD");
 }
 
 #ifdef X86_GUEST

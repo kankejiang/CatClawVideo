@@ -33,7 +33,10 @@ public static class SpiderUiHost
         {
             // 原文留痕：「弹了但没东西」这类问题只能看 jar 到底上行了什么规格
             // （qr.pixels 会很长，故截断）
-            var raw = ev.ToJsonString();
+            var raw = RedactUrls(ev.ToJsonString());
+            // token 不落盘：登录 URL 的会话 token 在 query 里。2026-10-01 op=qrtext 自检实测：
+            // 只 mask `qrText` 字段不够——同一段 URL 也会作为 jar 的可见文本落进 message，
+            // 所以整份留痕（日志行与 spider-ui-last.json）统一按 URL 掩掉。
             DiagLog.Write($"[spider-ui] ⬆ {raw.Length}B {(raw.Length > 900 ? raw[..900] + "…" : raw)}");
             // 全量另存一份：日志里那行截断到 900 字符，比对「点了之后框有没有真的变」要看全文
             try { File.WriteAllText(Core.AppPaths.Of("spider-ui-last.json"), raw); } catch { }
@@ -45,6 +48,20 @@ public static class SpiderUiHost
                         QemuSeqs.Add(ev["seq"]?.GetValue<int>() ?? 0);
                     _dialogSeen?.TrySetResult(true);   // 等待方（网盘入口）确认 jar 已弹窗
                     await ShowDialogAsync(ev).ConfigureAwait(true);
+                    break;
+                case "ui-qr":
+                    // 桥先弹了「还没有码」的框（壳异步取回登录 URL 才把码画出来），码到了按 seq
+                    // 补发一条：直接把界面升级成扫码整页（ShowQrAsync 连「取消」的路由都挂在这个 seq 上）。
+                    // 触发点在桩侧 View.invalidate() → Dialog 刷新线程（2026-10-01 扫码链路）。
+                    _dialogSeen?.TrySetResult(true);
+                    // 补发的可能是像素码（jar 自己建的位图），也可能是 qrText（只给链接的源）——
+                    // 后者宿主出码，同一条 seq 升级成扫码页。
+                    if (ev["qr"] is JsonObject qrLate)
+                        await ShowQrAsync(ev["seq"]?.GetValue<int>() ?? 0,
+                            ev["title"]?.GetValue<string>() ?? "扫码登录", qrLate).ConfigureAwait(true);
+                    else if (HostQrFromText(ev["qrText"]?.GetValue<string>()) is JsonObject qrFromText)
+                        await ShowQrAsync(ev["seq"]?.GetValue<int>() ?? 0,
+                            ev["title"]?.GetValue<string>() ?? "扫码登录", qrFromText).ConfigureAwait(true);
                     break;
                 case "ui-dismiss":
                     Close(ev["seq"]?.GetValue<int>() ?? 0);
@@ -80,6 +97,13 @@ public static class SpiderUiHost
         return _rt?.SendUiResultAsync(seq, which) ?? Task.CompletedTask;
     }
 
+    /// <summary>
+    /// 宿主自己发起的对话框/扫码页用的 seq：负数递降，永不与桥的 seq（从 1 起）相撞。
+    /// 用户点「取消」时会把这个负 seq 回传桥，桥侧按“无此待决”丢弃即可。
+    /// </summary>
+    private static int _localSeq = -1000;
+    private static int NextLocalSeq() => System.Threading.Interlocked.Decrement(ref _localSeq);
+
     private static async Task ShowDialogAsync(JsonObject ev)
     {
         var seq = ev["seq"]?.GetValue<int>() ?? 0;
@@ -90,6 +114,15 @@ public static class SpiderUiHost
         if (ev["qr"] is JsonObject qr)
         {
             await ShowQrAsync(seq, title, qr).ConfigureAwait(true);
+            return;
+        }
+
+        // ★ 通用通道（对齐 TVBox：爬虫给 URL、宿主出码）：桥只需带 `qrText`，
+        //   图由 QrPng 生成——不需要任何 Android 绘制仿真，任何源共用一条路。
+        if (HostQrFromText(ev["qrText"]?.GetValue<string>()) is JsonObject qrFromText)
+        {
+            await ShowQrAsync(seq, string.IsNullOrWhiteSpace(title) ? "扫码登录" : title, qrFromText)
+                .ConfigureAwait(true);
             return;
         }
 
@@ -167,6 +200,27 @@ public static class SpiderUiHost
             VerticalOptions = LayoutOptions.Center,
             Margin = 24,
         };
+        // 宿主把码**解回 URL**（与源无关）：日志里能看到"这张码到底是什么"，界面上给一行可复制文本
+        // ——手机不在手边时可以直接在电脑浏览器里打开完成授权。token 不外泄：日志只记长度与 host。
+        var loginUrl = Core.Services.QrDecode.FromPng(img);
+        Label? urlLabel = string.IsNullOrEmpty(loginUrl) ? null : new Label
+        {
+            Text = loginUrl,
+            FontSize = 11,
+            TextColor = Colors.Gray,
+            Margin = new Thickness(24, 0, 24, 8),
+            HorizontalOptions = LayoutOptions.Center,
+            HorizontalTextAlignment = TextAlignment.Center,
+            LineBreakMode = LineBreakMode.TailTruncation,
+        };
+        if (urlLabel is not null)
+            // HostOf 自带 try：像素路径解出的内容未经 FirstUrl 正则筛选，万一是非 URL 文本，
+            // 不能让 UriFormatException 把这个 seq 的扫码页整条打断（表现成静默无框）
+            DiagLog.Write($"[spider-ui] 宿主解码扫码 URL 成功：{loginUrl!.Length} 字符，host={HostOf(loginUrl!)}" +
+                          "（日志不记 token）");
+        else
+            DiagLog.Write("[spider-ui] 宿主未能从二维码解出 URL（不影响显示，仅少一行可复制文本）");
+
         var cancel = new Button
         {
             Text = "取消",
@@ -194,7 +248,16 @@ public static class SpiderUiHost
             },
         };
         grid.Children.Add(image);
-        grid.Add(cancel, 0, 1);
+        if (urlLabel is not null)
+        {
+            grid.RowDefinitions.Add(new RowDefinition(GridLength.Auto));   // 中间插一行可复制的 URL
+            grid.Add(urlLabel, 0, 1);
+            grid.Add(cancel, 0, 2);
+        }
+        else
+        {
+            grid.Add(cancel, 0, 1);
+        }
         var page = new ContentPage
         {
             Title = string.IsNullOrWhiteSpace(title) ? "扫码登录" : title,
@@ -203,6 +266,51 @@ public static class SpiderUiHost
         };
         Windows[seq] = page;
         await Shell.Current.Navigation.PushModalAsync(page).ConfigureAwait(true);
+    }
+
+    /// <summary>URL 的 host（日志只到这一层——登录 URL 的 token 在 query 里，不能落盘）。</summary>
+    private static string HostOf(string url)
+    {
+        try { return new Uri(url).Host; } catch { return "?"; }
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex UrlRx =
+        new(@"https?://[^\s""'<>\u005c]+", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>把留痕文本里的每个 URL 换成「长度+host」：登录 URL 与推送页 URL 的 query 都带会话 token。</summary>
+    private static string RedactUrls(string json)
+    {
+        try
+        {
+            return UrlRx.Replace(json, m => $"<{m.Value.Length}B·host={HostOf(m.Value)}>");
+        }
+        catch { return json; }
+    }
+
+    /// <summary>
+    /// 契约通道出码（源无关）：爬虫只给登录 URL 时，PNG 由宿主 <see cref="Core.Services.QrPng"/> 生成。
+    /// 三个入口共用它——<c>ui-dialog.qrText</c>、异步补发的 <c>ui-qr.qrText</c>、<c>action()</c> 返回里带的链接。
+    /// </summary>
+    private static JsonObject? HostQrFromText(string? qrText)
+    {
+        if (string.IsNullOrWhiteSpace(qrText)) return null;
+        // 桥侧不切边界（切错过一次，见 AlertDialog.firstUrl 的注释），可能连中文尾巴一起上行：
+        // 用与 action 返回同一把尺子截出纯 URL，再出码。
+        var url = Core.Services.QrPng.FirstUrl(qrText);
+        if (string.IsNullOrEmpty(url))
+        {
+            DiagLog.Write($"[spider-ui] qrText {qrText!.Length} 字符里截不出 URL（宿主不出码）");
+            return null;
+        }
+        var png = Core.Services.QrPng.FromText(url);
+        if (png is not { Length: > 0 })
+        {
+            DiagLog.Write($"[spider-ui] qrText 出码失败（{url!.Length} 字符，编码异常）");
+            return null;
+        }
+        DiagLog.Write($"[spider-ui] qrText {qrText!.Length} 字符 → 截出 URL {url!.Length} 字符 → " +
+                      $"宿主出码 PNG {png!.Length}B");
+        return new JsonObject { ["w"] = 0, ["h"] = 0, ["png"] = Convert.ToBase64String(png!) };
     }
 
     /// <summary>解析桥的 <c>rows</c>（每格 <c>{t:文本, i:条目下标}</c>）；首次渲染与后续刷新共用。</summary>
@@ -310,7 +418,8 @@ public static class SpiderUiHost
             //    那条路只会走到 Pan.proxyInput() 的贴 Cookie HTML 页（2026-09-24 实测确认）。
             if (item.Action.Length > 0 && provider is Core.Interfaces.IActionVodSourceProvider ap)
             {
-                var wAction = WaitForDialogAsync(TimeSpan.FromSeconds(3));
+                // 桩侧取码最多再等 1.5s（见 AlertDialog.huntQr 的重试），窗口要盖住这段
+                var wAction = WaitForDialogAsync(TimeSpan.FromSeconds(5));
                 var acted = await ap.DoActionAsync(site, item).ConfigureAwait(true);
                 if (acted is not null)
                 {
@@ -319,6 +428,18 @@ public static class SpiderUiHost
                     // ——2026-09-24 用户实测「点清除却进推送页」正是这么来的。
                     if (await wAction.ConfigureAwait(true)) return;
                     var msg = PickMsg(acted);
+                    // ★ 通用登录接线（对齐 TVBox 契约：爬虫给串、宿主出码）：action 的返回里
+                    //   只要有 http(s) 链接（msg/content/url 任一处），就直接把它渲染成二维码整页，
+                    //   不再依赖 jar 的 Android 对话框——这条对**任何**照契约回 URL 的源都成立。
+                    var loginUrl = Core.Services.QrPng.FirstUrl(acted);
+                    if (HostQrFromText(loginUrl) is JsonObject actionQr)
+                    {
+                        var seq = NextLocalSeq();
+                        DiagLog.Write($"[spider-ui] action 返回登录 URL → 宿主自己出码 " +
+                            $"{loginUrl!.Length} 字符（不依赖 jar 绘制）");
+                        await ShowQrAsync(seq, site.Name, actionQr).ConfigureAwait(true);
+                        return;
+                    }
                     if (!string.IsNullOrWhiteSpace(msg)) { await ShowToastAsync(msg!); return; }
                     // 但「既没弹窗、又没回话」不能静默 return：2026-09-30 实测用户连点三次
                     // 「扫码登录」毫无反应，日志里 `FishConfig.action(quark_scan) → `（空），

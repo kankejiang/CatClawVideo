@@ -192,7 +192,15 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
                     {
                         var t = lines[cursor].Trim();
                         if (t.Length == 0 || t.StartsWith("#")) { cursor++; continue; }
-                        if (!IsBridgeReady) break;   // 桥未就绪：停在此行，下一轮重试
+                        if (!IsBridgeReady)
+                        {
+                            // 泵不能只「等下一轮」：桥读循环退出后没人会主动重连（真实调用走 CallAsync
+                            // 才会 EnsureBridge），台架就会 40s 空转到超时（2026-10-01 扫码复测踩到）。
+                            // 这里替用户拉一次重连，保证判据走的是生产装配路径。
+                            try { await EnsureBridgeAsync(CancellationToken.None).ConfigureAwait(false); }
+                            catch (Exception ex) { Log($"[dbg] 泵触发重连失败: {ex.Message}"); }
+                            break;
+                        }
                         var sw = System.Diagnostics.Stopwatch.StartNew();
                         try
                         {
@@ -218,6 +226,16 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
                                     "playerContent" => await PlayerContentAsync(hsite, Arg(0), Arg(1), CancellationToken.None),
                                     _ => throw new ArgumentException("op=host 不认的方法: " + req["method"]),
                                 };
+                            }
+                            else if (req["op"]?.GetValue<string>() == "ui-result")
+                            {
+                                // 桥对 ui-result **不写响应**（Server 主循环里直接派发给 UiBridge），
+                                // 用 RoundTripAsync 等回包会把泵的队列永久卡住 —— 之后每条请求都
+                                // 30s 无响应（2026-10-01 台架实测：点完扫码行后 ping 都不通了）。
+                                // 这类「只发不等」的操作在这里单独走。
+                                _stdin.WriteLine(t);
+                                _stdin.Flush();
+                                payload = "(已投递 ui-result，桥侧不回包)";
                             }
                             else
                             {

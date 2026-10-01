@@ -176,36 +176,84 @@ public final class UiBridge {
             // 同时出一张 PNG：宿主手搓 24 位 BMP 在 WinUI 上渲染不出来（整页只剩「取消」），
             // 而 java.desktop（ImageIO）在随包的 jlink 运行时里就有，桥侧出图最稳。
             String png = pngB64(px, w, h);
-            if (png != null) o.put("png", png);
+            if (png != null) {
+                o.put("png", png);
+                // 有 png 就别再带上点阵：480×480 的 0/1 数组 = 46 万字符（实测事件体 470KB），
+                // 而宿主 ShowQrAsync 本来就优先吃 png（SpiderUiHost.cs:147）
+                o.remove("pixels");
+            }
             return o;
         } catch (Throwable t) {
             return null;
         }
     }
 
-    /** 黑白矩阵 → 放大 4 倍的 PNG（base64，无换行）。任何 AWT 异常都退回 null（宿主仍可用 pixels 兜底）。 */
+    /**
+     * 黑白矩阵 → 放大 4 倍的 PNG（base64，无换行）。
+     *
+     * <p>不用 AWT：ART guest 里没有 {@code java.awt}（2026-10-01 实测
+     * {@code NoClassDefFoundError: Ljava/awt/image/BufferedImage;}），原来的 ImageIO 出图
+     * 在 guest 里必然失败，宿主只能收 46 万字符的 {@code pixels} 兜底 —— 而手搓 24 位 BMP
+     * 在 WinUI 上根本解不出来（2026-09-24「扫码框空白」就是这个）。这里改用手写 PNG 封装：
+     * 灰度 8bit + 每行 filter 0，压缩用 {@link java.util.zip.Deflater}（zlib 流正是 PNG
+     * IDAT 要求的格式），CRC 用 {@link java.util.zip.CRC32}。</p>
+     */
     private static String pngB64(int[] px, int w, int h) {
         try {
-            final int scale = 4;
+            // 目标边长 ~720px：壳自己的码就是 720×720（约 19px/模块，够手机扫），
+            // 再放大到 2880 只是白烧体积（实测 base64 133080 字符 / PNG 99809B）；
+            // 而 240 一类的小码要放大约 3 倍才不会掉到 6px/模块。
+            final int scale = Math.max(1, Math.min(4, 720 / Math.max(1, Math.min(w, h))));
             int ow = w * scale, oh = h * scale;
-            java.awt.image.BufferedImage img = new java.awt.image.BufferedImage(
-                    ow, oh, java.awt.image.BufferedImage.TYPE_INT_RGB);
+            byte[] raw = new byte[oh * (ow + 1)];
             for (int y = 0; y < oh; y++) {
-                int sy = y / scale;
+                int sy = y / scale, row = y * (ow + 1);
+                raw[row] = 0;                       // filter type 0（None）
                 for (int x = 0; x < ow; x++) {
                     int m = px[sy * w + x / scale];
-                    boolean black = (m & 0xFF) < 128 && ((m >> 24) & 0xFF) > 0
+                    boolean black = ((m & 0xFF) < 128 && ((m >> 24) & 0xFF) > 0)
                             || (m & 0xFFFFFF) == 0 && ((m >> 24) & 0xFF) > 0;
-                    img.setRGB(x, y, black ? 0xFF000000 : 0xFFFFFFFF);
+                    raw[row + 1 + x] = (byte) (black ? 0x00 : 0xFF);
                 }
             }
-            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
-            if (!javax.imageio.ImageIO.write(img, "png", bos)) return null;
-            return java.util.Base64.getEncoder().encodeToString(bos.toByteArray());
+            java.io.ByteArrayOutputStream idat = new java.io.ByteArrayOutputStream();
+            java.util.zip.Deflater def = new java.util.zip.Deflater(6);
+            try {
+                def.setInput(raw);
+                def.finish();
+                byte[] buf = new byte[16384];
+                while (!def.finished()) idat.write(buf, 0, def.deflate(buf));
+            } finally {
+                def.end();
+            }
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            out.write(new byte[]{(byte) 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'});
+            byte[] ihdr = new byte[]{(byte) (ow >> 24), (byte) (ow >> 16), (byte) (ow >> 8), (byte) ow,
+                    (byte) (oh >> 24), (byte) (oh >> 16), (byte) (oh >> 8), (byte) oh,
+                    8, 0, 0, 0, 0};                   // bitdepth 8, colortype 0=灰度, 其余 0
+            pngChunk(out, "IHDR", ihdr);
+            pngChunk(out, "IDAT", idat.toByteArray());
+            pngChunk(out, "IEND", new byte[0]);
+            return java.util.Base64.getEncoder().encodeToString(out.toByteArray());
         } catch (Throwable t) {
             System.err.println("[ui] 二维码转 PNG 失败（宿主改用 pixels 兜底）: " + t);
             return null;
         }
+    }
+
+    /** PNG 分块：长度(4) + 类型(4) + 数据 + CRC32(类型+数据)。 */
+    private static void pngChunk(java.io.ByteArrayOutputStream out, String type, byte[] data)
+            throws java.io.IOException {
+        byte[] t = type.getBytes("US-ASCII");
+        int n = data.length;
+        out.write(new byte[]{(byte) (n >> 24), (byte) (n >> 16), (byte) (n >> 8), (byte) n});
+        int mark = out.size();
+        out.write(t);
+        out.write(data);
+        java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+        crc.update(out.toByteArray(), mark, t.length + n);
+        long c = crc.getValue();
+        out.write(new byte[]{(byte) (c >> 24), (byte) (c >> 16), (byte) (c >> 8), (byte) c});
     }
 
     /**
