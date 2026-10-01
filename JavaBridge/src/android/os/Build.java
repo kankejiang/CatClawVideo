@@ -10,24 +10,29 @@ package android.os;
  */
 public class Build {
 
-    public static final String MODEL = "CatClawVideo-Windows";
+    // ── 设备身份（2026-10-01 起对齐真机：Xiaomi Mi 11 / venus）──
+    // 此前报的是 "CatClawVideo-Windows"/"CatClaw" 这种一眼假的身份。壳会把设备指纹报给
+    // 服务端（真机 spUtils 里存着 hide_appgz_android_id，说明它确实在用设备身份），
+    // 假身份是「真机行、虚拟机不行」类问题（扫码成功却取不到账号信息）的常见根因。
+    // ⚠ 同一进程内必须稳定（壳做指纹校验，飘了会重新注册）。
+    public static final String MODEL = "M2011K2C";
 
-    public static final String MANUFACTURER = "CatClaw";
+    public static final String MANUFACTURER = "Xiaomi";
 
-    public static final String BRAND = "CatClaw";
+    public static final String BRAND = "Xiaomi";
 
-    public static final String DEVICE = "catclaw_windows";
+    public static final String DEVICE = "venus";
 
-    public static final String PRODUCT = "catclaw_windows";
+    public static final String PRODUCT = "venus";
 
-    public static final String BOARD = "catclaw";
+    public static final String BOARD = "venus";
 
-    public static final String HARDWARE = "desktop";
+    public static final String HARDWARE = "qcom";
 
-    public static final String FINGERPRINT = "catclaw/catclaw_windows/catclaw:13/TQ3A/1:user/release-keys";
+    public static final String FINGERPRINT = "Xiaomi/venus/venus:13/TKQ1.221114.001/V14.0.6.0.TKBCNXM:user/release-keys";
 
-    /** 序列号：老 API 用（实测「瓜子」站就调它）。给固定值，别用随机。 */
-    public static final String SERIAL = "catclaw0000000001";
+    /** 序列号：老 API 用（实测「瓜子」站就调它）。与真机一致；给固定值，别用随机。 */
+    public static final String SERIAL = "93ea7079";
 
     /**
      * ABI 字段。实测 2026-09-24：缺失会让 jar 的弹幕服务初始化直接失败 ——
@@ -59,17 +64,17 @@ public class Build {
 
     public static String getRadioVersion() { return RADIO; }
 
-    public static final String ID = "TQ3A.230805.001";
+    public static final String ID = "TKQ1.221114.001";
 
-    public static final String DISPLAY = "TQ3A.230805.001";
+    public static final String DISPLAY = "TKQ1.221114.001";
 
     public static final String TYPE = "user";
 
     public static final String TAGS = "release-keys";
 
-    public static final String HOST = "catclaw";
+    public static final String HOST = "cmbuild";
 
-    public static final String USER = "catclaw";
+    public static final String USER = "builder";
 
     public static final String BOOTLOADER = "unknown";
 
