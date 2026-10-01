@@ -1,5 +1,5 @@
 == audit_rc ==
-来源: file:art_initrd_x64.gz sha256=7f5817748ac1dd3e size=362396964
+来源: file:art_initrd_x64.gz sha256=be7a93078609ace3 size=362769022
 rc 文件: 69 个，共 3557 行
 
 总量级（真 init 路线要吃下的配置）:

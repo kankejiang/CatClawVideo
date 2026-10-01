@@ -1,5 +1,5 @@
 == audit_selinux ==
-来源: file:art_initrd_x64.gz sha256=705100fa099e76f2 size=362768385
+来源: file:art_initrd_x64.gz sha256=be7a93078609ace3 size=362769022
 
 ── SELinux / 属性区产物盘点 ──
    产物                                         状态  大小/条目     为什么框架要它                            
@@ -19,7 +19,7 @@
   VINTF 条目 13 个：[('system/etc/vintf/compatibility_matrix.6.xml', 131020), ('system/etc/vintf/compatibility_matrix.5.xml', 123749), ('system/etc/vintf/compatibility_matrix.4.xml', 114849), ('system/etc/vintf/compatibility_matrix.7.xml', 104528), ('system/etc/vintf/compatibility_matrix.3.xml', 90917), ('system/etc/vintf/manifest.xml', 3078)]
   libvintf.so: [640512]
   rc 里：seclabel 行 5、写 /sys/fs/selinux/enforce 0、restorecon 21
-  运行日志 qemu-console-art.log：30174 行，命中 {'servicemanager': 62, 'apex': 7, 'Dalvik cache': 2, 'SELinux': 1, 'selinux': 1}
+  运行日志 qemu-console-art.log：79466 行，命中 {'servicemanager': 54, 'apex': 2, 'Dalvik cache': 2, 'SELinux': 1, 'selinux': 1}
   （⚠ 这是**当前这次启动**的日志；判「没有 denial」之前要确认日志覆盖到了框架尝试启动的那段）
 
 结论与判读:
