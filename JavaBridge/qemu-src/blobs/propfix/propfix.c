@@ -393,6 +393,25 @@ int __android_log_buf_write(int bufId, int prio, const char *tag, const char *te
     return real ? real(bufId, prio, tag, text) : 0;
 }
 
+
+// ── 诊断：服务注册（AIDL/NDK 路径）──
+// 现象：screencap 等 AIDL 服务名 SurfaceFlingerAIDL（libgui.so 字符串实证），而 SF 日志里看不到注册行。
+// 这里拦截 NDK 的 AServiceManager_addService（纯 C 符号，interpose 安全），
+// 把"谁注册了什么、返回什么"打出来，直接判定注册是否发生/成功。
+// 注意：binder_status_t 是 int32_t 的枚举（0=OK）。
+typedef int32_t propfix_status_t;
+
+propfix_status_t AServiceManager_addService(void *binder, const char *instance) {
+    static propfix_status_t (*real)(void *, const char *) = NULL;
+    if (!real)
+        real = (propfix_status_t (*)(void *, const char *))
+            dlsym(RTLD_NEXT, "AServiceManager_addService");
+    propfix_status_t rc = real ? real(binder, instance) : -1;
+    fprintf(stderr, "[propfix] addService(\"%s\") -> %d %s\n",
+            instance ? instance : "(null)", rc, rc == 0 ? "OK" : "**失败**");
+    return rc;
+}
+
 EGLBoolean eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list, EGLConfig *configs,
                            EGLint config_size, EGLint *num_config) {
     static EGLBoolean (*real)(EGLDisplay, const EGLint *, EGLConfig *, EGLint, EGLint *) = NULL;
