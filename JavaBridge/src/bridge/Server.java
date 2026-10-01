@@ -1310,7 +1310,7 @@ public class Server {
                 // crash_dump64 拿不到 tombstone，致命信号与回溯在日志里完全看不到。
                 pb.environment().put("PROPFIX_CRASH", "1");
                 pb.environment().put("LD_LIBRARY_PATH", "/vendor/lib64/egl:/vendor/lib64:/system/lib64:/system/lib64/egl");
-                pb.environment().put("WAYLAND_DISPLAY", "wl-0");
+                pb.environment().put("WAYLAND_DISPLAY", "wayland-0");
                 pb.environment().put("XDG_RUNTIME_DIR", "/tmp/wrt");
                 pb.redirectErrorStream(true);
                 Process p = pb.start();

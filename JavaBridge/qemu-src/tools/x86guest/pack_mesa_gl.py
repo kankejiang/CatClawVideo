@@ -82,37 +82,6 @@ for src, rel in FILES:
         if not os.path.lexists(link):
             os.symlink(base, link)
 
-# mesa 的驱动按 dri/<name>_dri.so 找（108 上实测过同一坑）
-dri = os.path.join(STAGE, "system/lib64/dri")   # system 命名空间
-os.makedirs(dri, exist_ok=True)
-for n in ("iris_dri.so", "llvmpipe_dri.so", "swrast_dri.so"):
-    os.symlink("../libgallium_dri.so", os.path.join(dri, n))
-
-# ── 同时挂到 /vendor/lib64（sphal 命名空间）──
-# 根因（实测）：SF 是 system 进程，它拿到的 EGL display 自述为
-#   "1.4 Android META-EGL"
-# 即 libEGL.so 这个 loader **没能加载任何驱动**，回落成内置空壳，于是 eglChooseConfig 一个配置都不给。
-# loader 在 sphal 命名空间里找 /vendor/lib64/egl/libEGL_<driver>.so ⇒ 这里用**符号链接**
-# 指向 /system/lib64 下的真身（零体积代价；绝对路径在同一进程里可达）。
-vlinks = [
-    ("vendor/lib64/egl/libEGL_mesa.so",       "../../../system/lib64/egl/libEGL_mesa.so"),
-    ("vendor/lib64/egl/libGLESv2_mesa.so",    "../../../system/lib64/egl/libGLESv2_mesa.so"),
-    ("vendor/lib64/egl/libGLESv1_CM_mesa.so", "../../../system/lib64/egl/libGLESv1_CM_mesa.so"),
-    ("vendor/lib64/libgallium_dri.so",        "../../system/lib64/libgallium_dri.so"),
-    ("vendor/lib64/libgbm_mesa.so",           "../../system/lib64/libgbm_mesa.so"),
-    ("vendor/lib64/libgbm_mesa_wrapper.so",   "../../system/lib64/libgbm_mesa_wrapper.so"),
-    ("vendor/lib64/dri_gbm.so",               "../../system/lib64/dri_gbm.so"),
-    ("vendor/lib64/libdrm.so",                "../../system/lib64/libdrm.so"),
-    ("vendor/lib64/libdrm_intel.so",          "../../system/lib64/libdrm_intel.so"),
-    ("vendor/lib64/libdrm_amdgpu.so",         "../../system/lib64/libdrm_amdgpu.so"),
-    ("vendor/lib64/libdrm_radeon.so",         "../../system/lib64/libdrm_radeon.so"),
-    ("vendor/lib64/libLLVM22.so",             "../../system/lib64/libLLVM22.so"),
-]
-for rel, target in vlinks:
-    full = os.path.join(STAGE, rel)
-    os.makedirs(os.path.dirname(full), exist_ok=True)
-    if not os.path.lexists(full):
-        os.symlink(target, full)
 if os.path.exists(OUT):
     os.remove(OUT)
 with tarfile.open(OUT, "w:gz") as t:
@@ -127,3 +96,5 @@ for root, _, files in os.walk(STAGE):
     for f in sorted(files):
         full = os.path.join(root, f)
         print("    %10d  %s" % (os.path.getsize(full), os.path.relpath(full, STAGE)))
+# （已删：mesa 时代的 dri/ 符号链接块 —— 随 mesa 一起去掉，否则是悬空链接，打包末尾列目录会报错）
+

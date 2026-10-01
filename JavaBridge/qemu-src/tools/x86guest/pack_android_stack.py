@@ -37,6 +37,7 @@ SEEDS = [
     f"{VEN}/bin/hw/android.hardware.graphics.allocator@4.0-service.minigbm_gbm_mesa",
     f"{VEN}/bin/hw/android.hardware.graphics.composer@2.1-service",
     f"{VEN}/bin/hw/android.hardware.graphics.allocator@2.0-service",
+    f"{VEN}/bin/hw/android.hardware.configstore@1.1-service",
     f"{SYS}/system/bin/servicemanager",
     f"{SYS}/system/bin/hwservicemanager",
     f"{SYS}/system/bin/surfaceflinger",
@@ -127,42 +128,6 @@ for d in SEARCH:
                 os.symlink(os.path.basename(os.path.realpath(full)), dst)
                 extra += 1
 
-# mesa 的驱动按 `dri/<name>_dri.so` 查找，而包里只有 mega-driver 本体
-# （108 上实测过同一个坑：只补 libgallium_dri.so 不够，EGL 会报
-#  "failed to get driver name for fd -1" / "failed to retrieve device information"）。这里补链接。
-for base in (libdir, os.path.join(STAGE, "vendor/lib64")):
-    dridir = os.path.join(base, "dri")
-    os.makedirs(dridir, exist_ok=True)
-    for name in ("iris_dri.so", "llvmpipe_dri.so", "swrast_dri.so"):
-        dst = os.path.join(dridir, name)
-        if not os.path.lexists(dst):
-            os.symlink("../libgallium_dri.so", dst)
-
-# ── VINTF manifest：HIDL 服务**必须**在 manifest 里才能注册 ──
-# 实测根因链：/vendor/manifest.xml 缺失 ⇒ hwservicemanager 报
-#   getTransport: Cannot find entry …IAllocator/default in either framework or device VINTF manifest.
-#   Service … must be in VINTF manifest in order to register/get.
-# ⇒ mapper@4.0 注册不上 ⇒ libui 的 GraphicBufferMapper 构造 LOG_ALWAYS_FATAL ⇒ SurfaceFlinger abort。
-# hwservicemanager 读的是**字面路径** /vendor/manifest.xml 与 /system/manifest.xml
-# （真实设备上由 init 建符号链接；我们不跑 init，所以直接放这个路径）。
-VINTF = [
-    (f"{VEN}/etc/vintf/manifest.xml", "vendor/manifest.xml"),
-    (f"{SYS}/system/etc/vintf/manifest.xml", "system/manifest.xml"),
-    # gbm_mesa 的 allocator/mapper fragment 默认是 disabled（rc 里靠 bind mount 启用），
-    # 我们不跑 init ⇒ 直接把它作为 vendor manifest（覆盖上面那份，二者取其一）。
-    (f"{VEN}/etc/vintf/manifest.disabled/gbm_mesa.allocator@4.0.xml", "vendor/manifest.xml"),
-    (f"{VEN}/etc/vintf/manifest.disabled/gbm_mesa.mapper@4.0.xml",
-     "vendor/etc/vintf/manifest.disabled/gbm_mesa.mapper@4.0.xml"),
-]
-for src, rel in VINTF:
-    if not os.path.exists(src):
-        print("  vintf 跳过（缺）:", src)
-        continue
-    dst = os.path.join(STAGE, rel)
-    os.makedirs(os.path.dirname(dst), exist_ok=True)
-    shutil.copy2(src, dst)
-    print("  vintf: %s → %s" % (os.path.basename(src), rel))
-
 if os.path.exists(OUT):
     os.remove(OUT)
 with tarfile.open(OUT, "w:gz") as t:
@@ -178,3 +143,5 @@ for root, _, files in os.walk(STAGE):
     for f in sorted(files)[:6]:
         full = os.path.join(root, f)
         print("    %8d  %s" % (os.path.getsize(full), os.path.relpath(full, STAGE)))
+# （已删：mesa 时代的 dri/ 符号链接块 —— 随 mesa 一起去掉，否则是悬空链接，打包末尾列目录会报错）
+
