@@ -246,6 +246,37 @@ for src, rel in VINTF_COPY:
     shutil.copy2(src, dst)
     print("  vintf: %s → %s" % (os.path.basename(src), rel))
 
+
+# ── mapper / gralloc 别名（libui 的 passthrough 查找可能拼不同名字）──
+# 实测：/data/abort.txt 里 "gralloc-mapper is missing"（libui GraphicBufferMapper FATAL），
+# 而 vendor 里只有 <flavor>=minigbm_gbm_mesa 那套名字 ⇒ 这里把候选名都补上（复制，体积小）。
+_alias_src = {
+    "android.hardware.graphics.mapper@4.0-impl.minigbm_gbm_mesa.so": [
+        "android.hardware.graphics.mapper@4.0-impl.so",
+        "android.hardware.graphics.mapper@4.0-impl.gbm.so",
+        "android.hardware.graphics.mapper@4.0-impl.minigbm.so",
+        "mapper.minigbm_gbm_mesa.so",
+        "mapper.gbm.so",
+    ],
+    "gralloc.minigbm_gbm_mesa.so": ["gralloc.minigbm.so", "gralloc.so"],
+}
+for _base, _alts in _alias_src.items():
+    _found = None
+    for _d in (hwdir_s, hwdir_v):
+        _p = os.path.join(_d, _base)
+        if os.path.exists(_p):
+            _found = _p
+            break
+    if not _found:
+        print("  别名跳过（缺实现）:", _base)
+        continue
+    for _a in _alts:
+        for _d in (hwdir_s, hwdir_v):
+            _dst = os.path.join(_d, _a)
+            if not os.path.exists(_dst):
+                shutil.copy2(_found, _dst)
+    print("  别名已补: %s → %d 个候选名" % (_base, len(_alts)))
+
 if os.path.exists(OUT):
     os.remove(OUT)
 with tarfile.open(OUT, "w:gz") as t:
