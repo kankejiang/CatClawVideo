@@ -14,7 +14,11 @@ if not defined JAVAC (
   echo javac.exe not found. Install JDK 17+. >&2
   exit /b 2
 )
-if not exist build mkdir build
+rem -- 2026-10-01: 必须**先清空** build\ —— 否则删掉的类（如 SQLiteDatabase/CookieManager 桩）
+rem -- 会以旧 .class 的形式留在 build\ 里、被打进 bridge.jar -> gb.dex，出现「源码删了、dex 里还在」
+rem -- （实测：删源码后重建，gb.dex 里仍定义 android/database/sqlite/SQLiteDatabase）。
+if exist build rmdir /s /q build
+mkdir build
 dir /s /b src\*.java > sources.txt
 rem 运行时不再依赖 unidbg（2026-09-25 定案：ARM 原生码一律在 QEMU guest 里执行），所以编译类路径里
 rem 没有 vendor\unidbg\* —— 这是有意为之：哪天有人把 unidbg 的调用加回 src\，这里会直接编译不过。
