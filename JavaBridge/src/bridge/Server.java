@@ -1275,18 +1275,26 @@ public class Server {
                 // "跨进程约定"属性，其余用 dlsym(RTLD_NEXT) 转发给 proppreload（每进程一份的编译期表）。
                 // 没有它，SF 的 HIDL 客户端会死等 hwservicemanager.ready（实测）——
                 // 因为桥里 set 的属性，别的进程根本看不到。
-                pb.environment().put("LD_PRELOAD", "/system/lib64/libpropfix.so:/proppreload.so");
+                pb.environment().put("LD_PRELOAD",
+                        // libllvmstub：libgallium_dri.so 里 llvmpipe 用到 llvm:: 符号，bionic 加载时会全部解析；
+                        // 我们跑 swrast(softpipe) 不会调用它们，所以只提供地址的桩就够了（真 LLVM 未压缩 105MB）。
+                        "/system/lib64/libLLVM22.so:/system/lib64/libpropfix.so:/proppreload.so");
                 pb.environment().put("PROPFIX",
                         "hwservicemanager.ready=true"
                         + ";ro.hardware.hwcomposer=waydroid"
                         + ";ro.hardware.gralloc=minigbm_gbm_mesa"
                         + ";ro.hardware.egl=mesa"
                         + ";gralloc.gbm.device=/dev/dri/renderD128"
-                        + ";debug.renderengine.backend=skiagl");
+                        + ";debug.renderengine.backend=skiagl"
+                        // softpipe 只提供标准 EGL 配置；不关掉这两个，SF 会去找广色域/HDR 配置并报
+                        // "no suitable EGLConfig found, giving up"（实测）。
+                        + ";ro.surface_flinger.has_wide_color_display=false"
+                        + ";ro.surface_flinger.has_HDR_display=false"
+                        + ";ro.surface_flinger.use_color_management=false");
                 // mesa 的软件光栅化（llvmpipe）：本 guest 没有 GPU，iris 起不来，强制软件路径。
-                pb.environment().put("GALLIUM_DRIVER", "llvmpipe");
+                pb.environment().put("GALLIUM_DRIVER", "swrast");   // softpipe：不需要 LLVM（llvmpipe 需要 libLLVM22）
                 pb.environment().put("LIBGL_ALWAYS_SOFTWARE", "1");
-                pb.environment().put("MESA_LOADER_DRIVER_OVERRIDE", "llvmpipe");
+                pb.environment().put("MESA_LOADER_DRIVER_OVERRIDE", "swrast");
                 // 诊断开关：让 libpropfix 把 SF 的每一次属性读取打到控制台
                 // （EGL 找不到实现时，靠它看 libEGL 到底问哪个键、拿到什么值）。
                 // 临时无条件开启做一次诊断；查清后改回按环境变量开关。

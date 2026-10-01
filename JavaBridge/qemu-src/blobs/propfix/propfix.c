@@ -83,8 +83,17 @@ const void *__system_property_find(const char *name) {
     static const void *(*real)(const char *) = NULL;
     if (!real) real = (const void *(*)(const char *))dlsym(RTLD_NEXT, "__system_property_find");
     int i = name ? idx_of(name) : -1;
-    if (i >= 0) return (const void *)g_fake[i];
-    return real ? real(name) : NULL;
+    if (i >= 0) {
+        if (getenv("PROPFIX_DEBUG")) fprintf(stderr, "[propfix] find %s -> 我方表\n", name);
+        return (const void *)g_fake[i];
+    }
+    const void *r = real ? real(name) : NULL;
+    // ⚠ 关键诊断：把"**没找到**"的键也打出来 —— EGL 找不到驱动时，
+    // 真正有用的信息是"它问的是哪个键、而这个键不存在"（实测 get 通道只出现过一次，
+    // 说明 libEGL 走的是 find/read_callback 这条路）。
+    if (getenv("PROPFIX_DEBUG") && name && !r)
+        fprintf(stderr, "[propfix] find %s -> NULL（其实现里没有）\n", name);
+    return r;
 }
 
 int __system_property_read(const void *pi, char *name, char *value) {
@@ -122,4 +131,34 @@ uint32_t __system_property_serial(const void *pi) {
     for (int i = 0; i < g_n; i++)
         if ((const void *)g_fake[i] == pi) return 1;
     return real ? real(pi) : 0;
+}
+
+// ── 诊断：把 dlopen 的失败原因抓下来 ──
+// EGL 驱动加载走 android_dlopen_ext（不是普通 dlopen），失败时上层只打印一句
+// "couldn't find an OpenGL ES implementation"，真正的原因在 dlerror() 里。
+// 这里两个入口都挂上，失败时把 dlerror 打到控制台。
+// （PROPFIX_DEBUG=1 时才打印，避免刷屏。）
+#include <dlfcn.h>
+
+typedef void *(*android_dlopen_ext_fn)(const char *, int, const void *);
+
+void *android_dlopen_ext(const char *filename, int flags, const void *extinfo) {
+    static android_dlopen_ext_fn real = NULL;
+    if (!real) real = (android_dlopen_ext_fn)dlsym(RTLD_NEXT, "android_dlopen_ext");
+    void *h = real ? real(filename, flags, extinfo) : NULL;
+    if (!h && getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] dlopen 失败: %s → %s\n", filename ? filename : "(null)", dlerror());
+    else if (h && getenv("PROPFIX_DEBUG") && filename && strstr(filename, "egl"))
+        fprintf(stderr, "[propfix] dlopen 成功: %s\n", filename);
+    return h;
+}
+
+void *dlopen(const char *filename, int flags) {
+    static void *(*real)(const char *, int) = NULL;
+    if (!real) real = (void *(*)(const char *, int))dlsym(RTLD_NEXT, "dlopen");
+    void *h = real ? real(filename, flags) : NULL;
+    if (!h && getenv("PROPFIX_DEBUG") && filename &&
+        (strstr(filename, "egl") || strstr(filename, "EGL") || strstr(filename, "gallium")))
+        fprintf(stderr, "[propfix] dlopen 失败: %s → %s\n", filename, dlerror());
+    return h;
 }
