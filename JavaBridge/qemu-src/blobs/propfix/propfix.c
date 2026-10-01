@@ -230,7 +230,7 @@ uint32_t __system_property_serial(const void *pi) {
 // （PROPFIX_DEBUG=1 时才打印，避免刷屏。）
 #include <dlfcn.h>
 
-#if 0  // ⚠ 2026-10-01 实测：这里的 dlopen/android_dlopen_ext 拦截返回**垃圾句柄**
+// 2026-10-01 曾误判为坏（其实句柄正常）而关闭；现重新启用，用于看 HWC 进程的 EGL 驱动加载
        // （探针里 dlopen(libEGL_mesa.so) = 0xfe1db3c7f55d9c75），而它正是唯一会干扰
        // libEGL loader 驱动加载的挂钩 ⇒ 极可能就是把驱动搞坏的原因。诊断使命已完成，关掉。
 typedef void *(*android_dlopen_ext_fn)(const char *, int, const void *);
@@ -271,43 +271,6 @@ typedef uint32_t EGLBoolean;
 typedef void *EGLDisplay;
 typedef void *EGLConfig;
 
-static const char *egl_attr_name(EGLint a) {
-    switch (a) {
-        case 0x3022: return "ALPHA_SIZE";
-        case 0x3023: return "BLUE_SIZE";
-        case 0x3024: return "GREEN_SIZE";
-        case 0x3025: return "RED_SIZE";
-        case 0x3026: return "DEPTH_SIZE";
-        case 0x3027: return "STENCIL_SIZE";
-        case 0x3028: return "CONFIG_CAVEAT";
-        case 0x3029: return "CONFIG_ID";
-        case 0x302A: return "LEVEL";
-        case 0x302B: return "MAX_PBUFFER_HEIGHT";
-        case 0x302C: return "MAX_PBUFFER_WIDTH";
-        case 0x302D: return "NATIVE_RENDERABLE";
-        case 0x302E: return "NATIVE_VISUAL_ID";
-        case 0x302F: return "NATIVE_VISUAL_TYPE";
-        case 0x3030: return "PRESERVED_RESOURCES";
-        case 0x3031: return "SAMPLES";
-        case 0x3032: return "SAMPLE_BUFFERS";
-        case 0x3033: return "SURFACE_TYPE";
-        case 0x3034: return "TRANSPARENT_TYPE";
-        case 0x3038: return "NONE";
-        case 0x3040: return "RENDERABLE_TYPE";
-        case 0x3142: return "RECORDABLE_ANDROID";
-        case 0x3080: return "ALPHA_MASK_SIZE";
-        case 0x3081: return "BIND_TO_TEXTURE_RGB";
-        case 0x3082: return "BIND_TO_TEXTURE_RGBA";
-        case 0x3083: return "BUFFER_SIZE";
-        case 0x3084: return "COLOR_BUFFER_TYPE";
-        case 0x3085: return "CONFORMANT";
-        case 0x3086: return "LUMINANCE_SIZE";
-        case 0x3200: return "COLORSPACE(android)";
-        case 0x3201: return "FRAMEBUFFER_TARGET_ANDROID";
-        case 0x3202: return "SWAP_BEHAVIOR_PRESERVED(android)";
-        default:     return "?";
-    }
-}
 
 // ── 诊断：EGL 平台初始化 / GBM ──
 // 实测：libEGL_mesa.so 能加载，但**从未尝试加载 dri 驱动**，且 eglChooseConfig 一个配置都不给
@@ -361,7 +324,6 @@ const char *eglQueryString(EGLDisplay dpy, EGLint name) {
 
 #endif  // ← 反向验证结束（eglGetDisplay/eglInitialize/eglQueryString 三条拦截已关）
 
-#endif  // ← dlopen 拦截结束
 
 // ── 诊断：把本进程的 Android 日志转到 stderr ──
 // 为什么需要：libEGL.so loader 判定"驱动不可用"时会打 ERROR（tag=libEGL），但那些日志走
