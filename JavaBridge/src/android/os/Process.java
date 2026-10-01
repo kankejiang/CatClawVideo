@@ -48,7 +48,22 @@ public class Process {
     public static void setThreadPriority(int priority) { }
     public static void setThreadPriority(int tid, int priority) { }
     public static void setPriority(int priority) { }
-    public static boolean is64Bit() { return "64".equals(System.getProperty("sun.arch.data.model")); }
+    /**
+     * ⚠️ ART guest 里**必须**返回 true（2026-10-01 实测根因）：
+     * <p>原实现只读 {@code sun.arch.data.model} —— 那是 <b>HotSpot 专有属性，ART 里不存在</b>，
+     * {@code getProperty} 返回 null ⇒ 恒 false ⇒ 插件判定「32 位设备」，去加载
+     * {@code assets/FishGuard-v7.so}（ARM32）而不是 {@code FishGuard-v8.so}（ARM64）；
+     * x86_64 guest 只能跑 ARM64（ndk_translation），ARM32 的 dlopen 必失败：
+     * <pre>UnsatisfiedLinkError: dlopen failed: ".../libFishGuard-v7-….so" is 32-bit instead of 64-bit</pre>
+     * 加密层因此全灭（FishCrypto 从未加载成功）→ 网盘登录态交换不出 refresh_token →
+     * 界面永远显示「未登录」（而 cookie 走不需签名的路，所以点播照样能播）。</p>
+     * <p>桌面 JRE 桥有该属性，行为不变；属性缺失时按 64 位处理 —— 本 guest 是
+     * x86_64 + arm64 用户态转译，32 位 ARM 在这里根本不能执行，回去只会更坏。</p>
+     */
+    public static boolean is64Bit() {
+        String m = System.getProperty("sun.arch.data.model");
+        return m == null || m.isEmpty() || "64".equals(m);
+    }
     public static void killProcess(int pid) { }
     public static void sendSignal(int pid, int signal) { }
 }

@@ -39,6 +39,9 @@ public class Context {
         File f = new File(getDir("databases", 0), name);
         File p = f.getParentFile();
         if (p != null) p.mkdirs();
+        // 留痕（2026-10-01 网盘登录态排障）：壳若把登录态放数据库，必先经过这里。
+        System.err.println("[db] getDatabasePath(" + name + ") → " + f.getAbsolutePath()
+                + (f.isFile() ? " 已存在 " + f.length() + "B" : " 不存在"));
         return f;
     }
 
@@ -50,16 +53,22 @@ public class Context {
     public File[] getExternalMediaDirs() { return new File[]{ getExternalFilesDir("media") }; }
 
     public java.io.FileOutputStream openFileOutput(String name, int mode) throws java.io.FileNotFoundException {
-        return new java.io.FileOutputStream(new File(getFilesDir(), name));
+        File f = new File(getFilesDir(), name);
+        System.err.println("[file] openFileOutput(" + name + ") → " + f.getAbsolutePath());
+        return new java.io.FileOutputStream(f);
     }
 
     public java.io.FileInputStream openFileInput(String name) throws java.io.FileNotFoundException {
-        return new java.io.FileInputStream(new File(getFilesDir(), name));
+        File f = new File(getFilesDir(), name);
+        System.err.println("[file] openFileInput(" + name + ") → " + (f.isFile() ? "存在 " + f.length() + "B" : "不存在"));
+        return new java.io.FileInputStream(f);
     }
 
     public String[] fileList() {
         String[] r = getFilesDir().list();
-        return r == null ? new String[0] : r;
+        r = r == null ? new String[0] : r;
+        System.err.println("[file] fileList() → " + r.length + " 项" + (r.length > 0 ? "：" + String.join(",", r) : ""));
+        return r;
     }
 
     /** 资源表桩：字符串空串、尺寸 0、drawable null（详见 {@link android.content.res.Resources}）。 */

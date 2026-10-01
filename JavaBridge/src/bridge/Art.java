@@ -418,7 +418,12 @@ public final class Art {
             // ①②③。反过来会坏 —— 内层爬虫的 proxy(Map) 见谁都回 Cookie 粘贴页，把荐片 init 里的
             // do=ck 握手也换成了 HTML，load 直接 NPE（2026-09-26 一轮改错顺序的回归记录）。
             Object[] r = Server.jarProxy(sp, q);
-            writeResult(out, r != null ? r : Server.proxyDispatch(sp, new java.util.HashMap<String, String>(q)));
+            Object[] rr = r != null ? r : Server.proxyDispatch(sp, new java.util.HashMap<String, String>(q));
+            // 诊断探针（2026-10-01）：网盘交互的应答形状。壳的 ④ 步会回「Cookie 粘贴页 HTML」，
+            // 插件按 JSON 解析就永远拿不到账号信息（界面卡在「正在获取账号信息…」）——
+            // 只打 do=quark 这一类，且**先读头再拼接回原流**，不能吞掉 body。
+            if (q.containsKey("do")) rr = probeBody("do=" + q.get("do") + " type=" + q.get("type"), rr);
+            writeResult(out, rr);
         } catch (Throwable e) {
             System.err.println("[art] proxy 服务一条失败: " + e + "  请求=" + line);
             // 必须回话：掐连接在宿主侧是 RemoteDisconnected，WebView 只会显示一片空白，
@@ -429,6 +434,51 @@ public final class Art {
 
     /** 壳的流服务端口（play URL 形如 http://127.0.0.1:6678/proxy/play/...）。 */
     static final int GUEST_STREAM_PORT = 6678;
+
+    /**
+     * 诊断探针（2026-10-01）：把 {@code /proxy?do=…} 的应答形状打出来 —— 状态码 / mime /
+     * 头部若干字节（**脱敏**）。用于「夸克正在获取账号信息…」这类卡死：宿主只看到请求进了
+     * 四步分派，看不到拿到的是账号 JSON 还是 Cookie 粘贴页 HTML。
+     *
+     * <p>关键实现细节：壳的应答体是 {@link java.io.InputStream}，{@link #writeResult} 会把它
+     * 流式写给对端 —— 探针**必须先读头、再把「已读前缀 + 剩余流」拼回去**，否则 body 被吃掉，
+     * 诊断本身就变成了故障。</p>
+     */
+    static Object[] probeBody(String tag, Object[] r) {
+        if (r == null || r.length < 3 || !(r[2] instanceof java.io.InputStream)) {
+            System.err.println("[probe] " + tag + " → 形状异常（" + (r == null ? "null" : r.length + " 段") + "）");
+            return r;
+        }
+        try {
+            java.io.InputStream in = (java.io.InputStream) r[2];
+            byte[] pre = new byte[4096];
+            int n = 0, k;
+            while (n < pre.length && (k = in.read(pre, n, pre.length - n)) > 0) n += k;
+            System.err.println("[probe] " + tag + " → " + r[0] + " " + r[1] + " 头 " + n + "B: "
+                    + redact(new String(pre, 0, n, "UTF-8")));
+            java.io.InputStream back = n < pre.length
+                    ? new java.io.ByteArrayInputStream(pre, 0, n)
+                    : new java.io.SequenceInputStream(new java.io.ByteArrayInputStream(pre, 0, n), in);
+            r[2] = back;
+            return r;
+        } catch (Throwable t) {
+            System.err.println("[probe] " + tag + " 读取失败: " + t);
+            return r;
+        }
+    }
+
+    /**
+     * 探针脱敏：cookie/令牌值折叠成 {@code <N>}，长串（≥32 的 URL-safe 串，base64/hex）也折叠，
+     * 再压空白并截断到 220 字符。**日志里绝不出现可用凭据**（与「登录 URL 只记长度+host」同规矩）。
+     */
+    static String redact(String s) {
+        if (s == null) return "";
+        s = s.replaceAll("(?i)((?:ck|cookie|token|ticket|auth|sign|utdid|st)[\"']?\\s*[:=]\\s*[\"']?)"
+                + "[A-Za-z0-9_\\-+./=%]{12,}", "$1<N>");
+        s = s.replaceAll("[A-Za-z0-9_\\-]{32,}", "<N>");
+        s = s.replaceAll("\\s+", " ").trim();
+        return s.length() > 220 ? s.substring(0, 220) + "…" : s;
+    }
 
     /**
      * 单个端口的应答预算。两个数都来自实测：僵尸壳的服务「accept 了但一个字节都不回」（实测 0B 到对端关闭），
@@ -919,6 +969,13 @@ public final class Art {
             ai.dataDir = files.getAbsolutePath();
             ai.nativeLibraryDir = lib.getAbsolutePath();
             ai.sourceDir = cache.getAbsolutePath();
+            // ABI 面必须补齐（2026-10-01）：插件装载原生库时会读 primaryCpuAbi / secondaryCpuAbi
+            // （不设就是 null），加上 Process.is64Bit() 曾恒 false —— 两处一起把它推去挑
+            // assets/FishGuard-v7.so（ARM32），在 x86_64 guest 里必然 dlopen 失败。
+            // 本 guest 是「x86_64 原生 + arm64 用户态转译」，对外统一报 arm64-v8a（与
+            // Build.SUPPORTED_ABIS / ro.product.cpu.abilist64 一致），32 位一律留空。
+            ai.primaryCpuAbi = "arm64-v8a";
+            ai.secondaryCpuAbi = null;
             return ai;
         }
 

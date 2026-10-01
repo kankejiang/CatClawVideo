@@ -132,6 +132,7 @@ public class Server {
         if (System.getProperty("data.dir") == null)
             System.setProperty("data.dir", new File("data").getAbsolutePath());
         startParentWatchdog();
+        startDataWatcher();
         BufferedReader in = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
         // ⚠ proxy op 必须与 call 并行：call(detailContent) 在主循环同步执行期间，spider 内部
         //   会同步发 HTTP 请求（do=config）→ 宿主 → proxy op。若在主循环排队，call 不返回
@@ -299,6 +300,138 @@ public class Server {
                         }
                         yield arr.toString();
                     }
+                    case "readfile" -> {
+                        // 只读取证（CATCLAW_BRIDGE_DEBUG 泵才有意义）：把 guest 里的一个文件原样带回宿主，
+                        // 用来取壳运行时才解出的 /data/cache/sharedb/config.db —— 里面才有
+                        // `do=quark&type=<词>` 的词表（宿主侧回显探针已确认键名是 type，值全被拒）。
+                        // 安全边界：只允许读普通文件、有体积上限、不带写路径的能力。
+                        java.io.File rf = new java.io.File(req.optString("path"));
+                        if (rf.isDirectory()) {
+                            // 只读取证也用来**定位**文件（壳解出的 dex 名字带哈希/按需生成）
+                            org.json.JSONArray ls = new org.json.JSONArray();
+                            java.io.File[] kids = rf.listFiles();
+                            if (kids != null) {
+                                java.util.Arrays.sort(kids);
+                                for (java.io.File k : kids)
+                                    ls.put(new org.json.JSONObject()
+                                            .put("n", k.getName())
+                                            .put("dir", k.isDirectory())
+                                            .put("len", k.length()));
+                            }
+                            yield ls.toString();
+                        }
+                        if (!rf.isFile()) throw new IllegalArgumentException("不是普通文件: " + rf);
+                        long len = rf.length();
+                        long roff = Math.max(0L, req.optLong("off", 0L));
+                        long cap = Math.max(1L, req.optLong("cap", 24L * 1024 * 1024));
+                        // 一律按窗口搬：cap 就是"这一次最多多少字节"，大文件从 off=0 分几次读就行
+                        if (roff >= len) throw new IllegalArgumentException("off 超过文件长度 " + len);
+                        try (java.io.RandomAccessFile ra = new java.io.RandomAccessFile(rf, "r")) {
+                            ra.seek(roff);
+                            int n = (int) Math.min(len - roff, cap);
+                            byte[] part = new byte[n];
+                            ra.readFully(part);
+                            yield java.util.Base64.getEncoder().encodeToString(part);
+                        }
+                    }
+                    case "qrtext" -> {
+                        // 「爬虫给 URL、宿主出码」这条契约通道的受控自检（调试泵专用，与任何源无关）：
+                        // 造一个只含 URL 文本的对话框走完整生产管线（show → 取不到位图 → qrText 上行
+                        // → 宿主 QrPng 出码）。必须经 Art.stubFirst() 反射：直接 new android.app.*
+                        // 会解析到 guest 框架里的真类（boot 命名空间），那样一条事件都不会发。
+                        ClassLoader sf = bridge.Art.stubFirst();
+                        String url = req.optString("url", "https://su.quark.cn/selftest?token=CTRLQRTEXT77");
+                        boolean late = req.optBoolean("async", false);
+                        Object r;
+                        try {
+                            r = sf.loadClass("android.app.AlertDialog")
+                                    .getMethod("selftest", String.class, boolean.class)
+                                    .invoke(null, url, late);
+                        } catch (Throwable t) {
+                            Throwable c = t.getCause() != null ? t.getCause() : t;
+                            yield "{\"error\":\"" + c.getClass().getName() + ": " + c.getMessage() + "\"}";
+                        }
+                        yield String.valueOf(r);
+                    }
+                    case "dumpstr" -> {
+                        // 反射取证（只读，CATCLAW_BRIDGE_DEBUG 泵用）：把壳在运行时才解出的那份 dex
+                        // （config.db）里某个类的**编码字符串表**整本解出来。
+                        // 不猜词：拿一段已知明文（jar 自己回给我们的报错句 "Unknown quark proxy type: "）
+                        // 在表里定位，用首字符反推 key（减/异或各试一次），命中就整表解码 ——
+                        // 那张表里的兄弟常量正是 switch 比对的 type 取值。
+                        String needle = req.optString("needle", "Unknown quark proxy type: ");
+                        String[] clss = req.optString("cls",
+                                "com.github.catvod.spider.ProxyOrigin,com.github.catvod.spider.Quark,"
+                                        + "com.github.catvod.spider.merge.A.b0").split(",");
+                        java.util.LinkedHashSet<ClassLoader> loaders = new java.util.LinkedHashSet<>();
+                        for (Object sp : SPIDERS.values()) {
+                            for (Class<?> c = sp.getClass(); c != null; c = c.getSuperclass()) {
+                                if (c.getClassLoader() != null) loaders.add(c.getClassLoader());
+                            }
+                        }
+                        StringBuilder dbg = new StringBuilder();
+                        org.json.JSONArray toks = new org.json.JSONArray();
+                        for (ClassLoader cl : loaders) {
+                            dbg.append("loaders=").append(loaders.size()).append(' ');
+                            for (String cn : clss) {
+                                Class<?> target;
+                                try { target = Class.forName(cn.trim(), false, cl); }
+                                catch (Throwable t) { continue; }
+                                for (java.lang.reflect.Field f : target.getDeclaredFields()) {
+                                    if (!java.lang.reflect.Modifier.isStatic(f.getModifiers())
+                                            || !f.getType().isArray()) continue;
+                                    long[] t2;
+                                    try {
+                                        f.setAccessible(true);
+                                        Object arr = f.get(null);
+                                        if (arr instanceof short[] s) {
+                                            t2 = new long[s.length];
+                                            for (int i = 0; i < s.length; i++) t2[i] = s[i];
+                                        } else if (arr instanceof char[] s) {
+                                            t2 = new long[s.length];
+                                            for (int i = 0; i < s.length; i++) t2[i] = s[i];
+                                        } else if (arr instanceof int[] s) {
+                                            t2 = new long[s.length];
+                                            for (int i = 0; i < s.length; i++) t2[i] = s[i];
+                                        } else if (arr instanceof byte[] s) {
+                                            t2 = new long[s.length];
+                                            for (int i = 0; i < s.length; i++) t2[i] = s[i];
+                                        } else continue;
+                                    } catch (Throwable t) { continue; }
+                                    int nl = needle.length();
+                                    for (int i = 0; i + nl <= t2.length; i++) {
+                                        for (int mode = 0; mode < 2; mode++) {
+                                            long key = mode == 0 ? (t2[i] - needle.charAt(0)) : (t2[i] ^ needle.charAt(0));
+                                            boolean ok = true;
+                                            for (int j = 1; j < nl; j++) {
+                                                int c = mode == 0 ? (int) ((t2[i + j] - key) & 0xFFFF)
+                                                        : (int) ((t2[i + j] ^ key) & 0xFFFF);
+                                                if (c != needle.charAt(j)) { ok = false; break; }
+                                            }
+                                            if (!ok) continue;
+                                            dbg.append("HIT ").append(target.getName()).append('.').append(f.getName())
+                                                    .append(" mode=").append(mode == 0 ? "sub" : "xor")
+                                                    .append(" key=0x").append(Long.toHexString(key))
+                                                    .append(" @").append(i).append(" len=").append(t2.length).append("; ");
+                                            StringBuilder cur = new StringBuilder();
+                                            for (int j = 0; j < t2.length; j++) {
+                                                int c = mode == 0 ? (int) ((t2[j] - key) & 0xFFFF)
+                                                        : (int) ((t2[j] ^ key) & 0xFFFF);
+                                                if (c >= 32 && c < 127) cur.append((char) c);
+                                                else {
+                                                    if (cur.length() >= 2 && toks.length() < 900) toks.put(cur.toString());
+                                                    cur.setLength(0);
+                                                }
+                                            }
+                                            if (cur.length() >= 2 && toks.length() < 900) toks.put(cur.toString());
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        yield new JSONObject().put("note", dbg.toString()).put("tokens", toks).toString();
+                    }
                     case "netstat" -> {
                         // guest 监听端口盘点（/proc/net/tcp{,6}，st=0A 即 LISTEN）：
                         // 诊断壳的流中转服务（6678）是否真的活着。
@@ -316,6 +449,31 @@ public class Server {
                             } catch (Throwable e) { sb.append('!').append(f).append('=').append(e).append(' '); }
                         }
                         yield sb.toString();
+                    }
+                    case "ls" -> {
+                        // 诊断（2026-10-01）：列目录（递归、带大小/mtime）。起因 —— Guard 网盘源的
+                        // 登录态靠 refresh_token，而 prefs 里没有这个键；令牌必然是**文件**，
+                        // 落在 <data.dir>（guest 的 /data/catclaw 是 initramfs，VM 冷启即清）。
+                        // GUI 与日志都看不到这个目录，只能从桥里列。纯 java.io（不 fork）。
+                        String dir = req.optString("dir", System.getProperty("data.dir", "/data/catclaw"));
+                        int depth = req.optInt("depth", 3);
+                        StringBuilder sb = new StringBuilder("[ls] " + dir + "\n");
+                        walk(new java.io.File(dir), depth, sb, "");
+                        yield sb.toString();
+                    }
+                    case "cat" -> {
+                        // 诊断：读小文件。文本直出；b64=1 时给 base64（SQLite/二进制用）。默认上限 16KB。
+                        String path = req.optString("path", "");
+                        int max = req.optInt("max", 16384);
+                        java.io.File f = new java.io.File(path);
+                        if (!f.isFile()) yield "不是文件: " + path;
+                        byte[] all = java.nio.file.Files.readAllBytes(f.toPath());
+                        int n = Math.min(all.length, max);
+                        byte[] part = java.util.Arrays.copyOf(all, n);
+                        String body = req.optBoolean("b64", false)
+                                ? java.util.Base64.getEncoder().encodeToString(part)
+                                : new String(part, "UTF-8");
+                        yield "[" + path + " " + all.length + "B，显示前 " + n + "B]\n" + body;
                     }
                     case "fetch" -> {
                         // 通用 guest 内探针（2026-09-27 壳流服务 6678 排查）：原始 socket 直连
@@ -964,6 +1122,10 @@ public class Server {
         // —— 宿主 JRE 时代 SPIDERS 里存的是解壳后的真类，ART 里存的是壳，两边形状不一样。
         Object target = guardTarget(instance);
         Object[] rs = invokeProxyMethod(target, param);
+        // 诊断探针（2026-10-01）：记「四步里哪一步应答」。夸克「正在获取账号信息…」卡住时，
+        // 宿主只看到请求进了分派、看不到是 ①壳 proxy 还是 ③proxyInput（Cookie 粘贴页 HTML）
+        // 应答的 —— 拿到 JSON 还是 HTML 决定了插件能不能解析出账号信息，必须打出来。
+        String hit = rs != null ? "①壳实例 proxy" : null;
 
         // ② Guard 系网盘源平台分发：do=<平台> → Cloud_<平台>.proxy(Map)——
         //    夸父(夸克)/优汐(UC)/嘟嘟(百度)/阿狸(阿里) 的登录页/扫码/启停/推送
@@ -978,6 +1140,7 @@ public class Server {
                     java.lang.reflect.Method m = clz.getMethod("proxy", java.util.Map.class);
                     Object r = m.invoke(null, param);
                     if (r instanceof Object[] arr) rs = arr;
+                    if (rs != null) hit = "②Cloud_" + doVal + ".proxy";
                 } catch (ClassNotFoundException ignored) {
                 } catch (Throwable t) {
                     Throwable root = t;
@@ -994,6 +1157,7 @@ public class Server {
                 java.lang.reflect.Method m = target.getClass().getMethod("proxyInput");
                 Object r = m.invoke(null);
                 if (r instanceof Object[] arr) rs = arr;
+                if (rs != null) hit = "③" + target.getClass().getSimpleName() + ".proxyInput";
             } catch (NoSuchMethodException ignored) {
             } catch (Throwable t) {
                 Throwable root = t;
@@ -1005,11 +1169,94 @@ public class Server {
 
         // ④ 壳自带的静态 Proxy.proxy(Map)（真机 JarLoader.invokeProxy 语义；荐片 do=ck 握手归它）
         if (rs == null) rs = jarProxy(instance, param);
+        if (rs != null && hit == null) hit = "④壳静态 Proxy.proxy";
+        String doVal = param.getOrDefault("do", "");
+        if (doVal.length() > 0)
+            System.err.println("[probe] do=" + doVal + " type=" + param.getOrDefault("type", "")
+                    + " site=" + param.getOrDefault("site", "") + " 命中=" + (hit == null ? "四步都不接" : hit));
         return rs;
+    }
+
+    /**
+     * 数据目录观察者（诊断，2026-10-01）：每 20s 走一遍 {@code <data.dir>}，**清单有变化时**
+     * 把全量清单打到 stderr（→ guest console → 宿主日志）。
+     *
+     * <p>为什么需要：Guard 网盘源的登录态靠 {@code refresh_token}，而插件写过的所有 prefs 键里
+     * **没有**这个键 —— 令牌是**文件**。guest 的 {@code /data/catclaw} 落在 initramfs（VM 冷启即清），
+     * 宿主只同步了 {@code shared_prefs/*.xml}，于是 cookie 活着（能播）、令牌死掉（界面显示未登录）。
+     * 要证明「令牌文件落在哪个子目录」，GUI 和日志都看不到，只能让 guest 自己报出来。</p>
+     */
+    private static volatile boolean DATA_WATCH_STARTED = false;
+
+    private static void startDataWatcher() {
+        if (DATA_WATCH_STARTED) return;
+        DATA_WATCH_STARTED = true;
+        Thread t = new Thread(() -> {
+            String last = null;
+            while (true) {
+                try { Thread.sleep(20000); } catch (InterruptedException e) { return; }
+                try {
+                    // 三个根一起看：<data.dir>（桥的 Context 文件操作）、/data/fishso（插件解出来的
+                    // 原生库，v7=ARM32 / v8=ARM64 就看这里）、/data/cache（壳的 sharedb 缓存）。
+                    String[] roots = { System.getProperty("data.dir", "/data/catclaw"), "/data/fishso", "/data/cache" };
+                    StringBuilder sb = new StringBuilder();
+                    for (String r : roots) {
+                        java.io.File root = new java.io.File(r);
+                        if (!root.isDirectory()) continue;
+                        sb.append('[').append(r).append("]\n");
+                        walkData(root, 3, sb, "  ");
+                    }
+                    String sig = sb.toString();
+                    if (!sig.equals(last)) {
+                        last = sig;
+                        System.err.println("[datawatch] 数据面清单变化:\n" + sig);
+                    }
+                } catch (Throwable ignored) { }
+            }
+        }, "datawatch");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /** 列 &lt;data.dir&gt;；跳过 art/inbox 与 art/lib（大且可再取），其余全列（目录/文件 + 大小）。 */
+    static void walkData(java.io.File f, int depth, StringBuilder sb, String indent) {
+        if (depth <= 0 || sb.length() > 8000) return;
+        java.io.File[] kids = f.listFiles();
+        if (kids == null) return;
+        java.util.Arrays.sort(kids, (a, b) -> a.getName().compareTo(b.getName()));
+        for (java.io.File k : kids) {
+            if (sb.length() > 8000) return;
+            String n = k.getName();
+            boolean skip = k.isDirectory() && ("inbox".equals(n) || "lib".equals(n));
+            sb.append(indent).append(k.isDirectory() ? "d " : "f ").append(n);
+            if (k.isDirectory()) sb.append(skip ? "/  (跳过)" : "/");
+            else sb.append("  ").append(k.length()).append("B  mtime=").append(k.lastModified());
+            sb.append('\n');
+            if (k.isDirectory() && !skip) walkData(k, depth - 1, sb, indent + "  ");
+        }
     }
 
     /** 给 guest 内的 /proxy 服务取已装载的爬虫实例（站点键 → 实例）。 */
     static Object spiderOf(String site) { return SPIDERS.get(site); }
+
+    /**
+     * 诊断用的递归列目录（见 {@code op=ls}）：带 {@code d/f}、大小、mtime；限层数与总输出长度，
+     * 免得把 initramfs 整个刷回来。纯 java.io —— guest 里不依赖 fork/exec。
+     */
+    static void walk(java.io.File f, int depth, StringBuilder sb, String indent) {
+        if (depth <= 0 || sb.length() > 24000) return;
+        java.io.File[] kids = f.listFiles();
+        if (kids == null) { sb.append(indent).append(f.getName()).append("  [不可读或不存在]\n"); return; }
+        java.util.Arrays.sort(kids, java.util.Comparator.comparing(java.io.File::getName));
+        for (java.io.File k : kids) {
+            if (sb.length() > 24000) return;
+            sb.append(indent).append(k.isDirectory() ? "d " : "f ").append(k.getName());
+            if (k.isDirectory()) sb.append('/');
+            else sb.append("  ").append(k.length()).append("B  ").append(k.lastModified());
+            sb.append('\n');
+            if (k.isDirectory()) walk(k, depth - 1, sb, indent + "  ");
+        }
+    }
 
     /**
      * guest 内 Guard 解密：经任意已装载 spider 的类加载器调其解密包装

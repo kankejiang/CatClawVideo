@@ -32,11 +32,33 @@ public class View {
 
     public void setId(int id) { }
 
-    public int getWidth() { return 0; }
+    // ── 尺寸（2026-09-30 扫码链路）：以前恒返 0，壳的自定义 View（zxing 的 QRCodeView 一族）
+    //    在 onDraw 里用 getWidth()/canvas.getWidth() 算模块边距 ⇒ 算出 0 就什么都画不出来。
+    //    现在 measure/layout 真记录尺寸，配合 Canvas 的录制实现才能把码画进位图。
+    private int measuredW, measuredH, viewW, viewH;
 
-    public int getHeight() { return 0; }
+    public int getWidth() { return viewW != 0 ? viewW : measuredW; }
 
-    public void invalidate() { }
+    public int getHeight() { return viewH != 0 ? viewH : measuredH; }
+
+    /**
+     * 桌面没有真正的重绘管线，但**不能当空操作**：壳的扫码二维码常是「先弹框 → 异步取到登录
+     * URL → invalidate()」的模型，任务落在这里就被丢掉，宿主永远只收到一个没有码的框
+     * （2026-10-01 实测：驱动 onDraw 两轮都是 着色像素=0/230400）。
+     * 这里把「某个 View 要重画」上报给当前对话框，由它重新取码并按 seq 补发 ui-qr。
+     */
+    public void invalidate() { android.app.Dialog.noteInvalidate(this); }
+
+    /** 局部失效重载：桌面不画脏区，一律按「整个 View 要重画」上报。 */
+    public void invalidate(int l, int t, int r, int b) { invalidate(); }
+
+    public void invalidate(android.graphics.Rect dirty) { invalidate(); }
+
+    public void postInvalidate() { invalidate(); }
+
+    public void postInvalidateDelayed(long delayMillis) {
+        android.os.Handler.schedule(this::invalidate, Math.max(0L, delayMillis));
+    }
 
     public void requestLayout() { }
 
@@ -132,10 +154,55 @@ public class View {
     public boolean isSelected() { return false; }
     public void setClickable(boolean clickable) { }
     public boolean isClickable() { return true; }
-    public int getMeasuredWidth() { return 0; }
-    public int getMeasuredHeight() { return 0; }
-    public void measure(int widthMeasureSpec, int heightMeasureSpec) { }
-    public void layout(int l, int t, int r, int b) { }
+    public int getMeasuredWidth() { return measuredW; }
+    public int getMeasuredHeight() { return measuredH; }
+
+    /**
+     * 真跑一遍 {@code onMeasure}（壳的二维码 View 在这里定尺寸），并把结果记进
+     * {@code measuredW/H}。以前是空实现 ⇒ 自定义 View 永远量出 0x0，
+     * {@code onDraw} 里按宽高算模块边距就什么都画不出来。
+     */
+    public void measure(int widthMeasureSpec, int heightMeasureSpec) {
+        try {
+            onMeasure(widthMeasureSpec, heightMeasureSpec);
+        } catch (Throwable t) {
+            System.err.println("[ui] onMeasure 失败 " + getClass().getSimpleName() + ": " + t);
+        }
+        if (measuredW == 0) measuredW = MeasureSpec.getSize(widthMeasureSpec);
+        if (measuredH == 0) measuredH = MeasureSpec.getSize(heightMeasureSpec);
+    }
+
+    /** 子类（zxing 的 QRCodeView 等）会覆写并调 {@link #setMeasuredDimension}。 */
+    public void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+        setMeasuredDimension(getDefaultSize(MeasureSpec.getSize(widthMeasureSpec), suggestedMinimumWidth()),
+                getDefaultSize(MeasureSpec.getSize(heightMeasureSpec), suggestedMinimumHeight()));
+    }
+
+    protected int suggestedMinimumWidth() { return 0; }
+    protected int suggestedMinimumHeight() { return 0; }
+
+    public static int getDefaultSize(int size, int minSize) { return size > minSize ? size : minSize; }
+
+    public void layout(int l, int t, int r, int b) {
+        viewW = Math.max(0, r - l);
+        viewH = Math.max(0, b - t);
+    }
+
+    /** 真机的 {@code View.MeasureSpec}：壳的 onMeasure 普遍用 {@code getSize}/{@code getMode}。 */
+    public static class MeasureSpec {
+        public static final int UNSPECIFIED = 0;
+        public static final int EXACTLY = 1 << 30;
+        public static final int AT_MOST = 2 << 30;
+
+        public static int makeMeasureSpec(int size, int mode) {
+            return (size & 0x3FFFFFFF) | (mode & (3 << 30));
+        }
+
+        public static int getMode(int spec) { return spec & (3 << 30); }
+
+        public static int getSize(int spec) { return spec & 0x3FFFFFFF; }
+    }
+
     public boolean isShown() { return true; }
     public boolean requestFocus() { return true; }
     public void clearFocus() { }
@@ -228,9 +295,27 @@ public class View {
     public int getLeft() { return 0; }
     public boolean getGlobalVisibleRect(android.graphics.Rect p0) { return false; }
     public void onDraw(android.graphics.Canvas p0) { }
+
+    /** 真机的 {@code View.draw(Canvas)} 会走到 {@code onDraw}；桩给同样的骨架
+     *  （壳自己 new Canvas(bmp) 再 draw 时要用）。⚠ 桩不再反向驱动这棵树离屏重绘：
+     *  替订阅源画 UI 这条路 2026-10-01 已整删，见 {@code graphics/Canvas} 的类注释。 */
+    public void draw(android.graphics.Canvas p0) { onDraw(p0); }
+
+    /** 记录子类量的尺寸（以前是空实现 ⇒ 自定义 View 永远 0x0）。 */
+    public void setMeasuredDimension(int p0, int p1) { measuredW = p0; measuredH = p1; }
     public android.os.IBinder getWindowToken() { return null; }
-    public void setMeasuredDimension(int p0, int p1) { }
     public int getSystemUiVisibility() { return 0; }
     public static int generateViewId() { return 0; }
-    public android.view.ViewPropertyAnimator animate() { return null; }
+    /**
+     * ⚠️ 绝不能返回 null（2026-10-01 实测根因）：Guard 系壳登录后会走
+     * {@code view.animate().alpha(..)} 这类链式动画，null 直接抛
+     * {@code NullPointerException: Attempt to invoke virtual method
+     * 'ViewPropertyAnimator ViewPropertyAnimator.alpha(float)' on a null object reference}，
+     * 把壳的 {@code [Init] async task} 整个打死 —— 表现就是「扫码成功、却永远卡在
+     * 『正在获取账号信息…』、登录态也存不下来」。返回单例桩即可：{@link ViewPropertyAnimator}
+     * 的每个方法都是 no-op 且 {@code return this}，链式调用天然安全。
+     */
+    public android.view.ViewPropertyAnimator animate() { return ANIMATOR; }
+
+    private static final android.view.ViewPropertyAnimator ANIMATOR = new android.view.ViewPropertyAnimator();
 }
