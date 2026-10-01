@@ -1263,12 +1263,12 @@ public class Server {
                 setProp("hwservicemanager.ready", "true");
                 // 图形栈属性：HAL 变体与 DRM 设备（值取自 108 上跑通的 Waydroid 配置）
                 setProp("ro.hardware.hwcomposer", "waydroid");
-                setProp("ro.hardware.gralloc", "minigbm_gbm_mesa");
+                setProp("ro.hardware.gralloc", "gbm");
                 setProp("gralloc.gbm.device", "/dev/dri/renderD128");
                 // 无 GL 环境：让 RenderEngine 走 Skia CPU（否则 SF 会去找 EGL 驱动）
                 setProp("debug.renderengine.backend", "skiacpu");
                 try {
-                    new java.io.File("/tmp/wrt").mkdirs();
+                    new java.io.File("/run/user/0").mkdirs();
                 } catch (Throwable ignored) { }
                 ProcessBuilder pb = new ProcessBuilder("/system/bin/surfaceflinger");
                 // libpropfix 必须排在 /proppreload.so **前面**：它只回答环境变量里声明的那几个
@@ -1282,7 +1282,7 @@ public class Server {
                 pb.environment().put("PROPFIX",
                         "hwservicemanager.ready=true"
                         + ";ro.hardware.hwcomposer=waydroid"
-                        + ";ro.hardware.gralloc=minigbm_gbm_mesa"
+                        + ";ro.hardware.gralloc=gbm"
                         + ";ro.hardware.egl=angle"
                         + ";ro.hardware.vulkan=lvp"
                         + ";gralloc.gbm.device=/dev/dri/renderD128"
@@ -1311,7 +1311,7 @@ public class Server {
                 pb.environment().put("PROPFIX_CRASH", "1");
                 pb.environment().put("LD_LIBRARY_PATH", "/vendor/lib64/egl:/vendor/lib64:/system/lib64:/system/lib64/egl");
                 pb.environment().put("WAYLAND_DISPLAY", "wayland-0");
-                pb.environment().put("XDG_RUNTIME_DIR", "/tmp/wrt");
+                pb.environment().put("XDG_RUNTIME_DIR", "/run/user/0");
                 pb.redirectErrorStream(true);
                 Process p = pb.start();
                 System.err.println("[sf] 已拉起 surfaceflinger pid=" + p.hashCode());
