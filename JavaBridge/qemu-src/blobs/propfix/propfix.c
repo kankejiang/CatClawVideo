@@ -52,6 +52,20 @@ static void propfix_crash_handler(int sig, siginfo_t *si, void *ctx) {
     if (fd >= 0) {
         if (k > 0) (void)!write(fd, buf, (size_t)k);
         backtrace_symbols_fd(bt, n, fd);
+        // 主可执行段的基址：发布版二进制被 strip，backtrace 只显示 "surfaceflinger(+0x0)"，
+        // 有了基址就能用 (addr - base) 对照该二进制的**导出符号表**（readelf --dyn-syms）定位函数。
+        const char *mp = "/proc/self/maps";
+        int mf = open(mp, O_RDONLY);
+        if (mf >= 0) {
+            char mbuf[2048];
+            int got = (int)read(mf, mbuf, sizeof(mbuf) - 1);
+            if (got > 0) {
+                mbuf[got] = 0;
+                (void)!write(fd, "\n[propfix] /proc/self/maps 头部（含主模块基址）:\n", 48);
+                (void)!write(fd, mbuf, (size_t)got);
+            }
+            close(mf);
+        }
         close(fd);
     }
 
@@ -332,9 +346,13 @@ const char *eglQueryString(EGLDisplay dpy, EGLint name) {
 // ⚠ 只打印 libEGL/EGL/MESA/gralloc/hwc 相关，避免刷屏。
 static int log_interesting(const char *tag) {
     if (!tag) return 0;
+    // ⚠ 放宽：SF 自己的 assert/abort 文本 tag 是 SurfaceFlinger（此前被过滤掉，导致
+    // "为什么 abort" 一直看不到）。现在把 SurfaceFlinger/DEBUG/libc 也放行。
     return strstr(tag, "EGL") || strstr(tag, "egl") || strstr(tag, "MESA") ||
            strstr(tag, "gralloc") || strstr(tag, "hwc") || strstr(tag, "HWC") ||
-           strstr(tag, "RenderEngine") || strstr(tag, "Composer");
+           strstr(tag, "RenderEngine") || strstr(tag, "Composer") ||
+           strstr(tag, "SurfaceFlinger") || strstr(tag, "surfaceflinger") ||
+           strstr(tag, "DEBUG") || strstr(tag, "libc") || strstr(tag, "crash");
 }
 
 int __android_log_write(int prio, const char *tag, const char *text) {
