@@ -1,3 +1,12 @@
 # initrd 里的 /init 是 busybox sh 脚本：CRLF 会让 sh 崩，必须锁 LF（本仓 core.autocrlf 默认开）
 JavaBridge/qemu-src/initrd/*.sh text eol=lf
 JavaBridge/qemu-src/tools/*.py text eol=lf
+# 要按字节注入 guest 镜像的文本件（build.prop 若被换成 CRLF，属性值会静默多一个 \r：
+# init 不报错，但 `ro.hardware=waydroid\r` 这种键就再也匹配不上 rc 里的 trigger）
+JavaBridge/qemu-src/blobs/*.prop text eol=lf
+JavaBridge/qemu-src/blobs/**/*.prop text eol=lf
+JavaBridge/qemu-src/blobs/**/*.sh text eol=lf
+JavaBridge/qemu-src/blobs/**/*.c text eol=lf
+JavaBridge/qemu-src/blobs/**/*.xml text eol=lf
+docs/research/framework/evidence/*.txt text eol=lf
+tools/b1-build/*.py text eol=lf
