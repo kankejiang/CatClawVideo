@@ -148,7 +148,8 @@ void *android_dlopen_ext(const char *filename, int flags, const void *extinfo) {
     void *h = real ? real(filename, flags, extinfo) : NULL;
     if (!h && getenv("PROPFIX_DEBUG"))
         fprintf(stderr, "[propfix] dlopen 失败: %s → %s\n", filename ? filename : "(null)", dlerror());
-    else if (h && getenv("PROPFIX_DEBUG") && filename && strstr(filename, "egl"))
+    else if (h && getenv("PROPFIX_DEBUG") && filename &&
+             (strstr(filename, "dri") || strstr(filename, "gallium") || strstr(filename, "egl")))
         fprintf(stderr, "[propfix] dlopen 成功: %s\n", filename);
     return h;
 }
@@ -157,8 +158,94 @@ void *dlopen(const char *filename, int flags) {
     static void *(*real)(const char *, int) = NULL;
     if (!real) real = (void *(*)(const char *, int))dlsym(RTLD_NEXT, "dlopen");
     void *h = real ? real(filename, flags) : NULL;
-    if (!h && getenv("PROPFIX_DEBUG") && filename &&
-        (strstr(filename, "egl") || strstr(filename, "EGL") || strstr(filename, "gallium")))
-        fprintf(stderr, "[propfix] dlopen 失败: %s → %s\n", filename, dlerror());
+    // 放宽到"任何失败都打"：EGL 的 DRI 驱动内部加载失败是静默的（上层只看到"没有配置"），
+    // 实测 SF 请求标准配置但驱动返回 0 个 —— 真相就在这里的 dlopen 结果里。
+    if (!h && getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] dlopen 失败: %s → %s\n", filename ? filename : "(null)", dlerror());
+    else if (h && getenv("PROPFIX_DEBUG") && filename &&
+             (strstr(filename, "dri") || strstr(filename, "gallium") || strstr(filename, "egl")))
+        fprintf(stderr, "[propfix] dlopen 成功: %s\n", filename);
     return h;
+}
+
+// ── 诊断 + 兜底：eglChooseConfig ──
+// 实测 SurfaceFlinger 走到 "no suitable EGLConfig found, giving up" 就退出：
+// 它按一组属性向驱动要配置，而我们的 softpipe 一个都不匹配。
+// 这里①把请求的属性打出来（看清它要什么），②驱动给不出时用 eglGetConfigs 的第一个配置兜底，
+// 让 SF 至少能拿到一个 config 继续往下走。
+typedef int32_t EGLint;
+typedef uint32_t EGLBoolean;
+typedef void *EGLDisplay;
+typedef void *EGLConfig;
+
+static const char *egl_attr_name(EGLint a) {
+    switch (a) {
+        case 0x3022: return "ALPHA_SIZE";
+        case 0x3023: return "BLUE_SIZE";
+        case 0x3024: return "GREEN_SIZE";
+        case 0x3025: return "RED_SIZE";
+        case 0x3026: return "DEPTH_SIZE";
+        case 0x3027: return "STENCIL_SIZE";
+        case 0x3028: return "CONFIG_CAVEAT";
+        case 0x3029: return "CONFIG_ID";
+        case 0x302A: return "LEVEL";
+        case 0x302B: return "MAX_PBUFFER_HEIGHT";
+        case 0x302C: return "MAX_PBUFFER_WIDTH";
+        case 0x302D: return "NATIVE_RENDERABLE";
+        case 0x302E: return "NATIVE_VISUAL_ID";
+        case 0x302F: return "NATIVE_VISUAL_TYPE";
+        case 0x3030: return "PRESERVED_RESOURCES";
+        case 0x3031: return "SAMPLES";
+        case 0x3032: return "SAMPLE_BUFFERS";
+        case 0x3033: return "SURFACE_TYPE";
+        case 0x3034: return "TRANSPARENT_TYPE";
+        case 0x3038: return "NONE";
+        case 0x3040: return "RENDERABLE_TYPE";
+        case 0x3142: return "RECORDABLE_ANDROID";
+        case 0x3080: return "ALPHA_MASK_SIZE";
+        case 0x3081: return "BIND_TO_TEXTURE_RGB";
+        case 0x3082: return "BIND_TO_TEXTURE_RGBA";
+        case 0x3083: return "BUFFER_SIZE";
+        case 0x3084: return "COLOR_BUFFER_TYPE";
+        case 0x3085: return "CONFORMANT";
+        case 0x3086: return "LUMINANCE_SIZE";
+        case 0x3200: return "COLORSPACE(android)";
+        case 0x3201: return "FRAMEBUFFER_TARGET_ANDROID";
+        case 0x3202: return "SWAP_BEHAVIOR_PRESERVED(android)";
+        default:     return "?";
+    }
+}
+
+EGLBoolean eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list, EGLConfig *configs,
+                           EGLint config_size, EGLint *num_config) {
+    static EGLBoolean (*real)(EGLDisplay, const EGLint *, EGLConfig *, EGLint, EGLint *) = NULL;
+    if (!real) real = (EGLBoolean (*)(EGLDisplay, const EGLint *, EGLConfig *, EGLint, EGLint *))
+        dlsym(RTLD_NEXT, "eglChooseConfig");
+    int dbg = getenv("PROPFIX_DEBUG") != NULL;
+    if (dbg) {
+        fprintf(stderr, "[propfix] eglChooseConfig 请求属性:");
+        if (attrib_list) {
+            for (int i = 0; attrib_list[i] != 0x3038 && i < 64; i += 2)
+                fprintf(stderr, " %s=%d", egl_attr_name(attrib_list[i]), attrib_list[i + 1]);
+        } else {
+            fprintf(stderr, " (null)");
+        }
+        fprintf(stderr, "\n");
+    }
+    EGLBoolean ok = real ? real(dpy, attrib_list, configs, config_size, num_config) : 0;
+    EGLint n = num_config ? *num_config : 0;
+    if (dbg) fprintf(stderr, "[propfix] eglChooseConfig → ok=%d n=%d\n", ok, n);
+    if (n == 0 && configs && config_size > 0) {
+        static EGLBoolean (*getcfgs)(EGLDisplay, EGLConfig *, EGLint, EGLint *) = NULL;
+        if (!getcfgs)
+            getcfgs = (EGLBoolean (*)(EGLDisplay, EGLConfig *, EGLint, EGLint *))
+                dlsym(RTLD_NEXT, "eglGetConfigs");
+        EGLint total = 0;
+        if (getcfgs && getcfgs(dpy, configs, config_size, &total) && total > 0) {
+            if (num_config) *num_config = 1;
+            fprintf(stderr, "[propfix] eglChooseConfig 兜底：改用 eglGetConfigs 的第 1 个配置（共 %d 个）\n", total);
+            return 1;
+        }
+    }
+    return ok;
 }
