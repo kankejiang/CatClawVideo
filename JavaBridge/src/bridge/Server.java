@@ -134,6 +134,7 @@ public class Server {
         startParentWatchdog();
         startDataWatcher();
         startAdbd();
+        startSurfaceFlinger();
         BufferedReader in = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
         // ⚠ proxy op 必须与 call 并行：call(detailContent) 在主循环同步执行期间，spider 内部
         //   会同步发 HTTP 请求（do=config）→ 宿主 → proxy op。若在主循环排队，call 不返回
@@ -1211,6 +1212,9 @@ public class Server {
                 try { new java.io.File("/data/misc/adb").mkdirs(); } catch (Throwable ignored) { }
                 setProp("service.adb.tcp.port", "5555");
                 setProp("ro.adb.secure", "0");
+                // B1.1 排障用：允许 `adb root` 拿到 guest 内的 root shell（要看 /dev、挂载、/data 里的东西）
+                setProp("service.adb.root", "1");
+                setProp("ro.debuggable", "1");
                 java.io.File bin = new java.io.File("/system/bin/adbd");
                 if (!bin.isFile()) {
                     System.err.println("[adbd] 缺 " + bin + "（镜像里没注入？见 .zwork/rebuild_gb.cmd）");
@@ -1237,6 +1241,50 @@ public class Server {
         } catch (Throwable e) {
             System.err.println("[adbd] prop " + k + " 设置失败: " + e);
         }
+    }
+
+    /**
+     * B1.1：拉起 <b>SurfaceFlinger</b>。必须由本进程（Java）而不是 init 脚本拉起，原因有二：
+     * <ol>
+     *   <li><b>HIDL 的 ready 属性</b>：hwservicemanager 上线后，客户端靠属性
+     *       {@code hwservicemanager.ready} 判断"注册表可用了"。我们的属性服务是 proppreload 假装的，
+     *       没人 set 这个属性 ⇒ SF 的 HIDL 客户端会一直打
+     *       「Waited for hwservicemanager.ready for a second, waiting another...」（实测）。</li>
+     *   <li><b>必须 root</b>：{@code /dev/binder} 是 0600 root；用 adb shell(uid=shell) 手推只会得到
+     *       「Binder driver could not be opened」的假象（实测）。</li>
+     * </ol>
+     * 依赖 init 段先起好 servicemanager / hwservicemanager / weston 与 /dev/dri。
+     * {@code -Dbridge.sf=0} 可关。
+     */
+    private static void startSurfaceFlinger() {
+        if ("0".equals(System.getProperty("bridge.sf"))) return;
+        Thread t = new Thread(() -> {
+            try {
+                setProp("hwservicemanager.ready", "true");
+                // 图形栈属性：HAL 变体与 DRM 设备（值取自 108 上跑通的 Waydroid 配置）
+                setProp("ro.hardware.hwcomposer", "waydroid");
+                setProp("ro.hardware.gralloc", "minigbm_gbm_mesa");
+                setProp("gralloc.gbm.device", "/dev/dri/renderD128");
+                // 无 GL 环境：让 RenderEngine 走 Skia CPU（否则 SF 会去找 EGL 驱动）
+                setProp("debug.renderengine.backend", "skiacpu");
+                try {
+                    new java.io.File("/tmp/wrt").mkdirs();
+                } catch (Throwable ignored) { }
+                ProcessBuilder pb = new ProcessBuilder("/system/bin/surfaceflinger");
+                pb.environment().put("LD_PRELOAD", "/proppreload.so");
+                pb.environment().put("LD_LIBRARY_PATH", "/system/lib64");
+                pb.environment().put("WAYLAND_DISPLAY", "wl-0");
+                pb.environment().put("XDG_RUNTIME_DIR", "/tmp/wrt");
+                pb.redirectErrorStream(true);
+                Process p = pb.start();
+                System.err.println("[sf] 已拉起 surfaceflinger pid=" + p.hashCode());
+                pump(p.getInputStream(), "[sf] ");
+            } catch (Throwable e) {
+                System.err.println("[sf] 启动失败: " + e);
+            }
+        }, "sf-launch");
+        t.setDaemon(true);
+        t.start();
     }
 
     /** 把子进程输出转发到控制台（排障用；每个流一个守护线程）。 */

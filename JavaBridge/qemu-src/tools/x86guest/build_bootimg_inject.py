@@ -328,6 +328,43 @@ def main():
             init_i = next(i for i, e in enumerate(merged) if e[0] == "init")
             merged[init_i] = merged[init_i][:6] + (init,) + merged[init_i][7:]
             print("④e init 已插入 DRM 模块加载段（B1.1）")
+    # ── B1.1：Android binder 服务栈（servicemanager / hwservicemanager）──
+    # 依赖：binder 设备（本脚本前面已按 binderfs 建好）；属性由 proppreload 提供（LD_PRELOAD 继承）。
+    if os.environ.get("B1_ASTACK", "1") != "0":
+        ast_sh = (
+            '\n# ── B1.1：Android binder 服务栈 ──\n'
+            'if [ -f /b1/android-stack.tar.gz ]; then\n'
+            '    $BB tar xzf /b1/android-stack.tar.gz -C / && echo "[astack] 解包完成"\n'
+            '    $BB mkdir -p /dev/binderfs\n'
+            '    $BB mount -t binder binder /dev/binderfs 2>/dev/null && echo "[astack] binderfs 已挂载"\n'
+            '    for b in binder hwbinder vndbinder; do [ -e /dev/binderfs/$b ] && ln -sf /dev/binderfs/$b /dev/$b; done\n'
+            '    # binderfs 没挂成（或内核未建默认节点）时的回落：同实例符号链接。\n'
+            '    # 严格说 hwbinder 应有独立实例，但我们的服务栈只需要"能把服务注册进注册表"，同实例可用。\n'
+            '    [ -e /dev/hwbinder ] || ln -sf /dev/binder /dev/hwbinder\n'
+            '    [ -e /dev/vndbinder ] || ln -sf /dev/binder /dev/vndbinder\n'
+            '    $BB ls -la /dev/binder /dev/hwbinder /dev/vndbinder 2>&1 | $BB head -6\n'
+            '    export LD_LIBRARY_PATH=/system/lib64\n'
+            '    ( LD_PRELOAD=/proppreload.so /system/bin/servicemanager >/tmp/sm.log 2>&1 ) &\n'
+            '    ( LD_PRELOAD=/proppreload.so /system/bin/hwservicemanager >/tmp/hsm.log 2>&1 ) &\n'
+            '    $BB sleep 3\n'
+            '    echo "[astack] servicemanager pid=$($BB pidof servicemanager 2>/dev/null)"\n'
+            '    echo "[astack] hwservicemanager pid=$($BB pidof hwservicemanager 2>/dev/null)"\n'
+            '    # SurfaceFlinger 不在这里起：必须由桥（Java）起 —— 它要先 set 属性\n'
+            '    # hwservicemanager.ready / ro.hardware.hwcomposer / debug.renderengine.backend，\n'
+            '    # 而 init 脚本没有 setprop（我们的属性服务是 proppreload 假装的）。见 Server.startSurfaceFlinger。\n'
+            '    echo "[astack] sm.log:"; $BB head -4 /tmp/sm.log 2>/dev/null\n'
+            '    echo "[astack] hsm.log:"; $BB head -4 /tmp/hsm.log 2>/dev/null\n'
+            'else\n'
+            '    echo "[astack] 未注入 /b1/android-stack.tar.gz（跳过）"\n'
+            'fi\n').encode("utf-8")
+        if "B1.1：Android binder 服务栈".encode("utf-8") not in init:
+            # ⚠ 不能复用 anchor2：它定义在上面「调试后门」分支里，而后门已改 opt-in（默认不执行）
+            # ⇒ 复用会 UnboundLocalError（2026-10-01 实测）。这里用独立锚点。
+            _a_ast = b'LD_PRELOAD=/proppreload.so /system/bin/artlaunch'
+            init = init.replace(_a_ast, ast_sh + _a_ast, 1)
+            init_i = next(i for i, e in enumerate(merged) if e[0] == "init")
+            merged[init_i] = merged[init_i][:6] + (init,) + merged[init_i][7:]
+            print("④f init 已插入 Android 服务栈段（B1.1）")
         anchor3 = b'LD_PRELOAD=/proppreload.so /system/bin/artlaunch'
         if b"weston --backend=headless" not in init and anchor3 in init:
             init = init.replace(anchor3, we_sh + b"\n" + anchor3, 1)
