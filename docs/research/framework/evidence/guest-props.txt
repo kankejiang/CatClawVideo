@@ -1,7 +1,7 @@
 == audit_props ==
 对照表: D:\Code\CatClawVideo\JavaBridge\qemu-src\art\props_gen_x64.h
   我们的编译期属性表: 161 条（其中 ro. 98 条 / 非 ro. 63 条）
-来源: file:art_initrd_x64.gz sha256=be7a93078609ace3 size=362769022（rc 与 property_contexts 已读回内容）
+来源: file:art_initrd_x64.gz sha256=74531c46b01ff042 size=374588473（rc 与 property_contexts 已读回内容）
 
 ① rc 在启动过程写的属性: 共 47 个键（非 ro. 46 个 ⇒ 编译期表**不可能**满足；ro. 被 setprop 1 个）
 

@@ -15,7 +15,15 @@ import argparse
 import collections
 import os
 import re
+import sys
 import zipfile
+
+# 同 cpioimg.py：GBK 控制台下 ✔/⇒ 会崩，且重定向时证据被截断 ⇒ 强制 UTF-8 输出。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_APK = r"D:\Code\sourceCode-ccc25f6\app\build\outputs\apk\java64\debug\TVBox_debug-java64.apk"

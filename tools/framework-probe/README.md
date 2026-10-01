@@ -28,6 +28,21 @@ for s in apex rc props selinux; do python tools/framework-probe/audit_$s.py \
 
 零第三方依赖（只用标准库）。Python ≥3.8。
 
+## 退出码与运行环境（2026-10-02 审核后的定稿）
+
+- **退出码语义**：`0` = 正常跑完（**不代表"没有差距"** —— 差距是输出里的内容，不是退出码）；
+  `1` = 未捕获异常（会带 Traceback）；`2` = 输入不可用（如 `audit_apk_needs.py` 找不到 APK）。
+- **不再需要 `PYTHONIOENCODING=utf-8`**：`cpioimg.py` 与 `audit_apk_needs.py` 开头已把
+  stdout/stderr 重设成 UTF-8。修之前的实测正控制：HEAD 版在 GBK 控制台下于
+  `cpioimg.py:172 table()` 抛 `UnicodeEncodeError: 'gbk' codec can't encode character '\u2714'`，
+  **exit=1、证据文件只写下 407 B（完整版 2,211 B ⇒ 截掉 82%）** —— 审核说的"证据在首个特殊
+  字符处截断"成立。
+- ⚠ **别用 `env`/`env -u VAR` 启动这些脚本**：Git Bash 的 `env` 起 Windows 原生 python 时
+  会丢继承来的 stdout 句柄，症状是 **exit=0、输出 0 字节**（看着像"探针修坏了"，其实是启动器）。
+  要清环境变量就用 `PYTHONIOENCODING= python …` 或直接依赖上面那条 UTF-8 重设。
+- 判"跑好了"的最低标准：`exit=0` **且** 输出字节数与预期同量级 **且** `grep -c Traceback` 为 0。
+  只看退出码会同时放过"0 字节的 env 坑"和"截断的编码坑"。
+
 ## 结论摘要（数字都出自本目录 `evidence/`，可复现）
 
 | 事实 | 我们的 guest | 108 参照系（框架完整在跑） |

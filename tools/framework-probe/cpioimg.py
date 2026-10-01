@@ -14,6 +14,17 @@ import gzip
 import hashlib
 import os
 import re
+import sys
+
+# 探针输出里有 ✔/⇒/⚠ 这类字符。Windows 默认控制台/重定向用 GBK 编码 ⇒ 中途
+# UnicodeEncodeError 崩掉，而 `> evidence/xxx.txt` 的用法恰恰是重定向 ⇒ **证据会在第一个
+# 特殊字符处被截断**（2026-10-02 审核实测五支探针全崩）。四个 audit_*.py 都 import 本模块，
+# 所以这一处就够（audit_apk_needs.py 不依赖本模块，它自己再设一次）。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 HDR = 110                                   # newc 固定头长度（不含文件名）
 MAGIC = (b"070701", b"070702")
