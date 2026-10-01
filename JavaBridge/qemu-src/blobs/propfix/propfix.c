@@ -167,8 +167,12 @@ propfix_status2_t gba_alloc8(uint32_t w, uint32_t h, int fmt, uint32_t layers, u
     static propfix_status2_t (*real)(uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, void *) = NULL;
     if (!real) real = (propfix_status2_t (*)(uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, void *))
         dlsym(RTLD_NEXT, "_ZN7android22GraphicBufferAllocator8allocateEjjijmPPK13native_handlePjNSt3__112basic_stringIcNS6_11char_traitsIcEENS6_9allocatorIcEEEE");
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] >> GraphicBufferAllocator::allocate(8) w=%u h=%u fmt=0x%x layers=%u usage=0x%llx\n",
+                w, h, fmt, layers, (unsigned long long)usage);
     propfix_status2_t rc = real ? real(w, h, fmt, layers, usage, handle, stride, err) : -1;
-    log_alloc("GraphicBufferAllocator::allocate(8)", w, h, fmt, layers, usage, rc);
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] << GraphicBufferAllocator::allocate(8) rc=%d\n", rc);
     return rc;
 }
 
@@ -181,8 +185,26 @@ propfix_status2_t gba_alloc9(uint32_t w, uint32_t h, int fmt, uint32_t layers, u
     static propfix_status2_t (*real)(uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, unsigned long, void *) = NULL;
     if (!real) real = (propfix_status2_t (*)(uint32_t, uint32_t, int, uint32_t, uint64_t, void **, uint32_t *, unsigned long, void *))
         dlsym(RTLD_NEXT, "_ZN7android22GraphicBufferAllocator8allocateEjjijmPPK13native_handlePjmNSt3__112basic_stringIcNS6_11char_traitsIcEENS6_9allocatorIcEEEE");
+    // 尺寸兜底：HWC 上报的显示宽度是未初始化垃圾（实测每轮不同：2435611472 / 1599797008）
+    // ⇒ SF 会以 w*h*4 ≈ 12TB 去分配 ⇒ bad_alloc ⇒ 启动即崩。Waydroid 的 HWC 改不了 ✗
+    //   ⇒ 这里把荒谬尺寸夹到 weston 的真实尺寸（init: --width=1280 --height=720）。
+    if (w > (1u << 20) || h > (1u << 20)) {
+        if (getenv("PROPFIX_DEBUG"))
+            fprintf(stderr, "[propfix] !! HWC 尺寸荒谬 w=%u h=%u ⇒ 夹到 1280x720\n", w, h);
+        w = 1280; h = 720;
+    }
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] >> GraphicBufferAllocator::allocate(9) w=%u h=%u fmt=0x%x layers=%u usage=0x%llx extra=0x%lx\n",
+                w, h, fmt, layers, (unsigned long long)usage, extra);
+        if (w > (1u << 20) || h > (1u << 20)) {
+            void *bt[16];
+            int n = backtrace(bt, 16);
+            fprintf(stderr, "[propfix] !! 尺寸异常（w=%u h=%u）调用栈：\n", w, h);
+            backtrace_symbols_fd(bt, n, 2);
+        }
     propfix_status2_t rc = real ? real(w, h, fmt, layers, usage, handle, stride, extra, err) : -1;
-    log_alloc("GraphicBufferAllocator::allocate(9)", w, h, fmt, layers, usage, rc);
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] << GraphicBufferAllocator::allocate(9) rc=%d\n", rc);
     return rc;
 }
 
