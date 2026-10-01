@@ -200,7 +200,10 @@ def main():
     print("④ init 已打 bootimg 补丁（-Xnorelocate + -Ximage 15 组件全列）")
 
     # ── 调试后门（排障用，可撤）：反向 shell——guest 拨出 10.0.2.2:18777 供排障/dump ──
-    if os.environ.get("DBGPORT") != "0":
+    # 2026-10-01：改为 **opt-in** —— 后门是 while 循环每 2s 重试 10.0.2.2:18777，
+    # 没有监听时会在 guest 控制台刷出 795 次 nc: can't connect to remote host（实测），
+    # 既淹没有效日志、又是个常开的后门。现在只有显式设 DBGPORT=<非0> 才插入。
+    if os.environ.get("DBGPORT") not in (None, "", "0"):
         bd_sh = (
             '\n# ── 调试后门（排障用，可撤）：反向 shell（硬编码 18777）──\n'
             '(while true; do\n'

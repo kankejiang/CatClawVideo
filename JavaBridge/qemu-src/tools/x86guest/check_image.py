@@ -87,7 +87,11 @@ def main():
          b"qemu-aarch64-static -L /thunder-arm /harness" in init),
         ("init 含 bootimg 补丁 -Ximage 全列",
          b"-Ximage:/system/framework/x86_64/boot.art" in init),
-        ("init 含排障反向后门（18777）", b"10.0.2.2:18777" in init),
+        # 2026-10-01：排障反向后门改为 opt-in（构建时设 DBGPORT=<非0> 才插）。
+        # 默认镜像里**不应**有它：它是 while 循环每 2s 重试 10.0.2.2:18777，
+        # 没有监听时会把 guest 控制台刷满 "nc: can't connect to remote host"
+        # （实测 795 次），淹没有效日志、且是个常开的后门。
+        ("init 不含排障反向后门（默认 opt-in，18777 应缺席）", b"10.0.2.2:18777" not in init),
         ("ARM 库路径只在 harness 命令行上（恰好 1 处）", init.count(arm_path) == 1),
         ("harness 资产在位", "harness" in by),
         ("qemu-aarch64-static 资产在位", "qemu-aarch64-static" in by),
