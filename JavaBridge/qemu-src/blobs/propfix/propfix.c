@@ -721,6 +721,28 @@ long sfp_present_time_offset_from_vsync_ns(long d) {
     return d;
 }
 
+
+// ── 探针：mapper passthrough 入口 + mapper 单例构造 ──
+// ① HIDL_FETCH_IMapper(const char*) -> IMapper*（passthrough 实现由 libhidlbase dlopen 该库后调用）
+void *HIDL_FETCH_IMapper(const char *name) {
+    static void *(*real)(const char *) = NULL;
+    if (!real) real = (void *(*)(const char *))dlsym(RTLD_NEXT, "HIDL_FETCH_IMapper");
+    void *r = real ? real(name) : NULL;
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] HIDL_FETCH_IMapper(%s) -> %p\n", name ? name : "?", r);
+    return r;
+}
+
+// ② GraphicBufferMapper 构造（this 在 rdi）：只记录
+void gbm_ctor(void *self) __asm__("_ZN7android19GraphicBufferMapperC1Ev");
+void gbm_ctor(void *self) {
+    static void (*real)(void *) = NULL;
+    if (!real) real = (void (*)(void *))dlsym(RTLD_NEXT, "_ZN7android19GraphicBufferMapperC1Ev");
+    if (getenv("PROPFIX_DEBUG"))
+        fprintf(stderr, "[propfix] GraphicBufferMapper::ctor(this=%p)\n", self);
+    if (real) real(self);
+}
+
 static void parse_once(void) {
     if (g_n >= 0) return;
     g_n = 0;
