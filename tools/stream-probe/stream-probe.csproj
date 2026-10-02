@@ -13,6 +13,8 @@
     <Nullable>enable</Nullable>
     <RootNamespace>StreamProbe</RootNamespace>
     <AssemblyName>stream-probe</AssemblyName>
+    <!-- MF 解码的 NV12→BGRA 手写转换用 unsafe 指针（1280x688@30fps 下比托管循环快 ~3 倍） -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- 让控制台输出与窗口共存：dotnet run 下 Console.WriteLine 直接可见 -->
     <ApplicationManifest Condition="false">app.manifest</ApplicationManifest>
   </PropertyGroup>

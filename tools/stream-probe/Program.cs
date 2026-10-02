@@ -28,6 +28,10 @@ internal static class Program
         bool verbose = args.Contains("--verbose");
         int port = 27183;
         string? connect = null;
+        string? saveStream = null;
+        string? decodeFile = null;
+        int? widthHint = null, heightHint = null;
+        int maxAu = 0;
         int dump = 0, seconds = 0;
         bool autoInput = false;
 
@@ -39,6 +43,16 @@ internal static class Program
                     port = p; break;
                 case "--connect" when i + 1 < args.Length:
                     connect = args[++i]; break;
+                case "--save-stream" when i + 1 < args.Length:
+                    saveStream = args[++i]; break;
+                case "--decode-file" when i + 1 < args.Length:
+                    decodeFile = args[++i]; break;
+                case "--width" when i + 1 < args.Length && int.TryParse(args[++i], out var w) && w > 0:
+                    widthHint = w; break;
+                case "--height" when i + 1 < args.Length && int.TryParse(args[++i], out var h) && h > 0:
+                    heightHint = h; break;
+                case "--max-au" when i + 1 < args.Length && int.TryParse(args[++i], out var ma) && ma > 0:
+                    maxAu = ma; break;
                 case "--dump" when i + 1 < args.Length && int.TryParse(args[++i], out var d) && d > 0:
                     dump = d; break;
                 case "--seconds" when i + 1 < args.Length && int.TryParse(args[++i], out var s2) && s2 > 0:
@@ -56,12 +70,17 @@ internal static class Program
                         用法:
                           stream-probe --mock [--port N] [--verbose]
                           stream-probe --connect host:port [--dump N] [--auto-input] [--seconds N] [--verbose]
+                          stream-probe --connect host:port --save-stream <文件.h264> [--seconds N]   # raw 裸流抓取（N2-1 判据素材）
+                          stream-probe --decode-file <文件.h264> [--verbose]                        # 离线解码统计（N2-1 判据）
                         """);
                     return 2;
             }
         }
 
         if (mock) return await RunMockAsync(port, verbose);
+        if (decodeFile is not null) return RunDecodeFile(decodeFile, verbose, widthHint, heightHint, maxAu);
+        if (connect is not null && saveStream is not null)
+            return await SaveStreamAsync(connect, saveStream, seconds, port);
         if (connect is not null) return RunClient(connect, dump, seconds, autoInput, verbose);
 
         Console.WriteLine("需要 --mock 或 --connect（用法见 --help）");
@@ -85,6 +104,201 @@ internal static class Program
             Console.WriteLine($"[mock] 端口 {port} 监听失败：{ex.Message}（被占用？换 --port）");
             return 1;
         }
+    }
+
+    // ── N2-1 判据工具：raw 裸流抓取 + 离线解码统计 ──────────────────────
+
+    /// <summary>
+    /// 抓 T3 的 raw 裸流（连上后不发握手行 → 服务端 1.5s 后按裸流吐 Annex-B），
+    /// 存盘供 <see cref="RunDecodeFile"/> 做离线解码判据（喂的是 T3 实拍流，不是合成流）。
+    /// </summary>
+    private static async Task<int> SaveStreamAsync(string connect, string outFile, int seconds, int port)
+    {
+        string host = connect;
+        if (connect.Contains(':'))
+        {
+            var hi = connect.LastIndexOf(':');
+            host = connect[..hi];
+            if (!int.TryParse(connect[(hi + 1)..], out port)) { Console.WriteLine($"端口解析失败：{connect}"); return 2; }
+        }
+        seconds = seconds is > 0 ? seconds : 12;
+
+        Console.WriteLine($"[save] raw TCP 连 {host}:{port}（不发握手行 → 裸流模式），抓 {seconds}s …");
+        using var tcp = new System.Net.Sockets.TcpClient();
+        await tcp.ConnectAsync(host, port);
+        await using var ns = tcp.GetStream();
+        await using var fs = File.Create(outFile);
+
+        var buf = new byte[64 * 1024];
+        long total = 0;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (sw.Elapsed.TotalSeconds < seconds)
+        {
+            var n = await ns.ReadAsync(buf);
+            if (n <= 0) break;
+            await fs.WriteAsync(buf.AsMemory(0, n));
+            total += n;
+        }
+        Console.WriteLine($"[save] 完成：{total} B → {outFile}（{sw.Elapsed.TotalSeconds:F1}s）");
+        return total > 0 ? 0 : 1;
+    }
+
+    /// <summary>
+    /// N2-1 判据：把 T3 实拍的 h264 流按访问单元切开喂 <see cref="H264Decoder"/>，
+    /// 统计解码率（≥90%）、首帧延迟（≤1s）、单帧解码耗时（无累积延迟 ⇒ 出帧即时返回）。
+    /// 开头 ~8 帧因缺 PPS 被跳过是 T3 预期行为，判据分母从首个 SPS/PPS 起。
+    /// </summary>
+    private static int RunDecodeFile(string path, bool verbose, int? widthHint = null, int? heightHint = null, int maxAu = 0)
+    {
+        if (!File.Exists(path)) { Console.WriteLine($"[decode] 文件不存在：{path}"); return 2; }
+        var data = File.ReadAllBytes(path);
+        Console.WriteLine($"[decode] {path}：{data.Length} B");
+
+        var aus = SplitAnnexB(data);
+        if (maxAu > 0 && aus.Count > maxAu) aus = aus.Take(maxAu).ToList();
+        Console.WriteLine($"[decode] 访问单元总数 {aus.Count}");
+        if (aus.Count == 0) return 1;
+
+        H264Decoder decoder;
+        try { decoder = new H264Decoder(verbose, widthHint, heightHint); }
+        catch (Exception ex) { Console.WriteLine($"[decode] 解码器初始化失败：{ex.Message}"); return 1; }
+        Console.WriteLine("[decode] 后端：" + decoder.DescribeBackend());
+
+        long decoded = 0;
+        long totalDecodeTicks = 0;
+        var firstFeed = TimeSpan.Zero;
+        TimeSpan? firstFrameAt = null;
+        int firstFrameAUIdx = -1;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        double maxDecodeMs = 0;
+
+        for (int i = 0; i < aus.Count; i++)
+        {
+            var au = aus[i];
+            if (firstFrameAt is null && firstFeed == TimeSpan.Zero) firstFeed = sw.Elapsed;
+            var t0 = sw.Elapsed;
+            bool got = decoder.TryDecode(au, out var frame);
+            var dt = (sw.Elapsed - t0).TotalMilliseconds;
+            if (dt > maxDecodeMs) maxDecodeMs = dt;
+            totalDecodeTicks += sw.ElapsedTicks - (long)(t0.TotalSeconds * System.Diagnostics.Stopwatch.Frequency);
+
+            if (got && frame is not null)
+            {
+                decoded++;
+                firstFrameAt ??= sw.Elapsed;
+                if (firstFrameAUIdx < 0) firstFrameAUIdx = i + 1;
+                if (decoded <= 3 || decoded % 100 == 0)
+                    Console.WriteLine($"[decode] 帧 #{decoded}（AU #{i + 1}/{aus.Count}，{au.Length}B，{dt:F1}ms，{frame.Width}x{frame.Height}）");
+                frame.Dispose();
+            }
+            else if (verbose && firstFrameAUIdx > 0)
+            {
+                Console.WriteLine($"[decode] AU #{i + 1}（{au.Length}B）未出帧（{dt:F1}ms）");
+            }
+        }
+
+        double totalMs = totalDecodeTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+        var firstLatency = (firstFrameAt ?? TimeSpan.Zero) - firstFeed;
+        Console.WriteLine("[decode] " + decoder.DiagStats());
+
+        // 排空实验：不 DRAIN 直接连取（对照组），再 DRAIN 连取
+        var drained = decoder.DrainAll(false);
+        Console.WriteLine($"[decode] 无 DRAIN 连取出帧：{drained.Count} 帧");
+        foreach (var f in drained) f.Dispose();
+        var drained2 = decoder.DrainAll(true);
+        Console.WriteLine($"[decode] DRAIN 排空出帧：{drained2.Count} 帧");
+        foreach (var f in drained2) f.Dispose();
+
+        Console.WriteLine("──── N2-1 判据 ────");
+        Console.WriteLine($"解码帧数：{decoded} / AU {aus.Count}（全体 {100.0 * decoded / aus.Count:F1}%）");
+        if (decoded > 0 && firstFrameAt is not null)
+            Console.WriteLine($"首帧延迟：{firstLatency.TotalMilliseconds:F0}ms（判据 ≤1000ms）");
+        int ausAfter = firstFrameAUIdx > 0 ? aus.Count - firstFrameAUIdx + 1 : 0;
+        double rate = ausAfter > 0 ? 100.0 * (decoded - 1) / ausAfter : 0;
+        Console.WriteLine($"首帧后解码率：{decoded - 1}/{ausAfter} = {rate:F1}%（判据 ≥90%）");
+        Console.WriteLine($"单 AU 平均解码耗时：{totalMs / Math.Max(aus.Count, 1):F2}ms，峰值 {maxDecodeMs:F1}ms（30fps 预算 33ms）");
+        int verdict = (decoded > 0 && firstLatency.TotalMilliseconds <= 1000
+                       && ausAfter > 0 && rate >= 90) ? 0 : 1;
+        Console.WriteLine(verdict == 0 ? "[decode] ✅ N2-1 判据全部达标" : "[decode] ❌ 判据未达标（见上）");
+        return verdict;
+    }
+
+    /// <summary>
+    /// Annex-B 切<b>访问单元</b>（不是逐 NAL！MF 要求每个输入样本含完整 AU）：
+    /// 参数集 NAL（SPS/PPS/SEI/AUD 等）挂到其后首个 VCL NAL；连续 VCL（多切片）并作一个 AU。
+    /// </summary>
+    private static List<byte[]> SplitAnnexB(byte[] data)
+    {
+        // ① 找全部起始码
+        var starts = new List<(int off, int len)>();
+        int i = 0;
+        while (i < data.Length - 3)
+        {
+            if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1)
+            {
+                starts.Add((i, 3));
+                i += 3;
+            }
+            else if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 0 && i + 3 < data.Length && data[i + 3] == 1)
+            {
+                starts.Add((i, 4));
+                i += 4;
+            }
+            else i++;
+        }
+        if (starts.Count == 0) return new List<byte[]>();
+
+        // ② NAL 类型（起始码后首字节低 5 位）
+        int NalType(int s)
+        {
+            int p = starts[s].off + starts[s].len;
+            return p < data.Length ? data[p] & 0x1F : 0;
+        }
+        bool IsVcl(int t) => t is >= 1 and <= 5;
+
+        // first_mb_in_slice 是切片头第一个 ue(v)：前导零数=0 ⇒ 值 0 ⇒ 帧首切片
+        bool IsFirstSlice(int s)
+        {
+            int bit = (starts[s].off + starts[s].len) * 8 + 8;   // 跳过 1 字节 NAL 头
+            for (int z = 0; z < 32; z++)
+            {
+                if (bit / 8 >= data.Length) return true;
+                bool one = (data[bit / 8] & (1 << (7 - bit % 8))) != 0;
+                if (one) return z == 0;
+                bit++;
+            }
+            return true;
+        }
+
+        // ③ 聚合 AU：VCL 首切片（first_mb_in_slice==0）开新 AU，其余全部挂到当前 AU
+        var aus = new List<byte[]>();
+        int auStart = 0;            // 本 AU 的首个起始码索引
+        bool auHasVcl = false;
+        for (int s = 1; s <= starts.Count; s++)
+        {
+            int t = s < starts.Count ? NalType(s) : 0;
+            bool boundary = s == starts.Count
+                            || (IsVcl(t) && auHasVcl && IsFirstSlice(s))
+                            || (t == 7 && auHasVcl);      // 中途再现 SPS 也开新帧
+            if (boundary)
+            {
+                int end = s == starts.Count ? data.Length : starts[s].off;
+                int payloadStart = starts[auStart].off;
+                if (end > payloadStart)
+                {
+                    var au = new byte[end - payloadStart];
+                    Array.Copy(data, payloadStart, au, 0, au.Length);
+                    aus.Add(au);
+                }
+                auStart = s;
+                auHasVcl = false;
+            }
+            else if (IsVcl(t))
+            {
+                auHasVcl = true;
+            }
+        }
+        return aus;
     }
 
     // ── 客户端 ────────────────────────────────────────────────────────
@@ -189,7 +403,8 @@ internal sealed class ClientSession
         Console.WriteLine($"[client] 已连接，握手（{Protocol.HandshakeRequest}）…");
         Info = Protocol.HandshakeAsClientAsync(_stream, cts.Token).GetAwaiter().GetResult();
         Console.WriteLine($"[client] 握手成功：{Info.Width}x{Info.Height} {Info.Codec}@{Info.Fps}fps");
-        if (Info.Codec == "h264") Console.WriteLine("[client] " + H264Decoder.StubNotice);
+        if (Info.Codec == "h264")
+            Console.WriteLine("[client] H.264 后端：" + _h264.DescribeBackend());
     }
 
     /// <summary>发送帧（收流线程与 UI 线程都会用 —— 写锁保护）。</summary>
@@ -242,9 +457,12 @@ internal sealed class ClientSession
                     break;
 
                 case Protocol.TypeVideo:
-                    // h264：交给解码桩（未实现时只计数，不崩）
+                    // h264：解码出帧 → 显示（--dump 时顺带落 PNG）
                     if (_h264.TryDecode(payload, out var frame) && frame is not null)
+                    {
+                        DumpBitmapIfNeeded(frame);
                         _view?.SubmitBitmap(frame);
+                    }
                     break;
 
                 case Protocol.TypeHeartbeat:
@@ -263,6 +481,24 @@ internal sealed class ClientSession
             }
         }
         return 0;
+    }
+
+    /// <summary>h264 解码帧落盘（--dump N；PNG，因为源不是 JPEG）。</summary>
+    private void DumpBitmapIfNeeded(Bitmap bmp)
+    {
+        if (_dumped >= _dumpCount) return;
+        var n = Interlocked.Increment(ref _dumped);
+        try
+        {
+            Directory.CreateDirectory("dump");
+            var path = Path.Combine("dump", $"frame_{n:D4}.png");
+            bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+            if (n == _dumpCount) Console.WriteLine($"[client] --dump 完成：{_dumpCount} 帧已存 dump\\frame_*.png");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[client] dump 失败：{ex.Message}");
+        }
     }
 
     private void DumpIfNeeded(byte[] jpeg)
