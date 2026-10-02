@@ -348,6 +348,18 @@ public static class MauiProgram
         // 走上面的 byte[] 回调等于整部片子进宿主内存（必 OOM，且要等下完才起播）。
         // jar 隧道这条实现了流式（ResponseHeadersRead），这里只把请求交给它；
         // 返回 null（无流式实现 / 桥不可用）时服务端自动落回 byte[] 老路，行为不变。
+        // 第二参传原始请求头：壳的 Range 约定走 query（见 ProxyStreamAsync 注释）。
+        spiderProxy.JsProxyStreamHandler = (query, requestHeaders, ct) =>
+        {
+            if (jarRuntime is CatClawVideo.Core.Providers.JavaSpiderRuntime streaming)
+                return streaming.ProxyStreamAsync(query, requestHeaders, ct);
+            return Task.FromResult<(int Status, string Mime, Stream Body, IReadOnlyDictionary<string, string>? Headers)?>(null);
+        };
+
+        // 流式中继（2026-10-02）：网盘取流 do=proxy&key=… 是 883MB~2.35GB 的连续流，
+        // 走上面的 byte[] 回调等于整部片子进宿主内存（必 OOM，且要等下完才起播）。
+        // jar 隧道这条实现了流式（ResponseHeadersRead），这里只把请求交给它；
+        // 返回 null（无流式实现 / 桥不可用）时服务端自动落回 byte[] 老路，行为不变。
         spiderProxy.JsProxyStreamHandler = (query, ct) =>
         {
             if (jarRuntime is CatClawVideo.Core.Providers.JavaSpiderRuntime streaming)

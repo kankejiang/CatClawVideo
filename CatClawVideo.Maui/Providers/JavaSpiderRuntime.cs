@@ -1332,6 +1332,73 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     }
 
     /// <summary>
+    /// 流式版 <see cref="ProxyAsync"/>：网盘取流（<c>do=proxy&amp;key=…</c>）是**连续大流**
+    /// （实测单集 883MB ~ 2.35GB），老路把整段读进 <c>byte[]</c> 会 OOM 且要等下完才起播。
+    /// 这里用 <c>ResponseHeadersRead</c> 只等头，body 作为流交回给宿主边收边写。
+    ///
+    /// <para><b>Range（2026-10-03）</b>：壳从 **query 参数 <c>range</c>** 读区间（实测验证：
+    /// 带 <c>&amp;range=bytes=1e8-</c> 与不带返回的数据不同；不带则永远从 0 开始流，
+    /// FFmpeg 拿不到尾部索引 → 黑屏）。播放器的 <c>Range</c> 头由 <paramref name="requestHeaders"/>
+    /// 传入，这里同时做两件事：① 塞进隧道 query 的 <c>range</c>；② 原样放进隧道请求头
+    /// （双保险，壳哪个认就用哪个）。guest 应答头（Content-Range 等）原样交回给宿主透传。</para>
+    ///
+    /// <para>返回的 <see cref="Stream"/> 与底层连接同生命周期：调用方写完即弃（不 dispose 也可，
+    /// 连接随响应对象回收）。</para>
+    /// </summary>
+    public async Task<(int Status, string Mime, Stream Body, IReadOnlyDictionary<string, string>? Headers)?> ProxyStreamAsync(
+        IReadOnlyDictionary<string, string> query, string[] requestHeaders, CancellationToken ct = default)
+    {
+        var key = query.GetValueOrDefault("siteKey");
+        var site = string.IsNullOrEmpty(key) ? null : SiteRegistry.Find(key);
+        site ??= _lastSite;
+        if (site is null)
+        {
+            Log("proxy 流：siteKey 缺失且无最近站点");
+            return null;
+        }
+        try
+        {
+            await EnsureBridgeAsync(ct).ConfigureAwait(false);
+            var jarPath = await EnsureConvertedJarAsync(site, ct).ConfigureAwait(false);
+            await EnsureSiteLoadedAsync(site, jarPath, ct).ConfigureAwait(false);
+            if (_art?.ProxyBase is not { } tunnel)
+            {
+                Log("proxy 流：隧道不可用（ART guest 未连接）");
+                return null;
+            }
+
+            var q = new Dictionary<string, string>(query) { ["site"] = site.Key };
+            var range = CatClawVideo.Core.Services.SpiderProxyServer.Header(requestHeaders, "Range");
+            if (!string.IsNullOrEmpty(range)) q["range"] = range;   // ★ 壳的 Range 约定走 query
+            var url = tunnel + "/proxy?" + string.Join("&",
+                q.Select(kv => Uri.EscapeDataString(kv.Key) + "=" + Uri.EscapeDataString(kv.Value ?? "")));
+
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            if (!string.IsNullOrEmpty(range)) req.Headers.TryAddWithoutValidation("Range", range);
+            var resp = await TunnelHttp.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct)
+                .ConfigureAwait(false);
+            var body = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+            var headers = new Dictionary<string, string>();
+            foreach (var h in resp.Headers)
+                if (h.Key.Equals("Content-Range", StringComparison.OrdinalIgnoreCase))
+                    headers[h.Key] = string.Join(",", h.Value);
+            foreach (var h in resp.Content.Headers)
+                if (h.Key.Equals("Content-Range", StringComparison.OrdinalIgnoreCase) ||
+                    h.Key.Equals("Content-Length", StringComparison.OrdinalIgnoreCase))
+                    headers[h.Key] = string.Join(",", h.Value);
+            Log($"proxy 流：{site.Key} do={query.GetValueOrDefault("do")} → {(int)resp.StatusCode}"
+                + (range is null ? "" : $"（Range={range}）") + "（不缓冲）");
+            return ((int)resp.StatusCode,
+                resp.Content.Headers.ContentType?.MediaType ?? "application/octet-stream", body, headers);
+        }
+        catch (Exception ex)
+        {
+            Log($"proxy 流异常：{ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
     /// 把爬虫的 proxy 回调原样交给 guest 里那个由壳自己应答的服务
     /// （<c>bridge.Art.serveProxy</c> 起的，内部就是 jar 的 <c>Proxy.proxy → Init.proxyInvoke</c>）。
     /// </summary>

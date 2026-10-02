@@ -104,10 +104,16 @@ public sealed class SpiderProxyServer : IDisposable
     /// 这里改成边收边写：状态行与 Content-Type 先落，然后 64KB 一块泵给 socket，
     /// 用「Connection: close」界定长度（与 TVBox <c>newChunkedResponse</c> 同款做法）。</para>
     ///
+    /// <para><b>Range 必须透传（2026-10-03）</b>：<c>requestHeaders</c> 是播放器的原始请求头；
+    /// 壳从 **query 参数 <c>range</c>** 读区间（实测：带 <c>&amp;range=bytes=1e8-</c> 返回的数据
+    /// 与不带完全不同，不带则永远从 0 开始 → FFmpeg 拿不到 MKV/MP4 尾部索引 → 黑屏无限重试，
+    /// 日志特征 <c>Unexpected offset: expected 4290224755, got 0</c>）。
+    /// 返回的 <c>Headers</c> 会透传给播放器（Content-Range / Content-Length 等）。</para>
+    ///
     /// <para>返回 null = 该运行时没有流式实现，调用方自动落回 byte[] 老路（行为不变）。</para>
     /// </summary>
-    public Func<IReadOnlyDictionary<string, string>, CancellationToken,
-        Task<(int Status, string Mime, Stream Body)?>?>? JsProxyStreamHandler { get; set; }
+    public Func<IReadOnlyDictionary<string, string>, string[], CancellationToken,
+        Task<(int Status, string Mime, Stream Body, IReadOnlyDictionary<string, string>? Headers)?>?>? JsProxyStreamHandler { get; set; }
 
     /// <summary>
     /// <c>/cache?do=get|set|del</c> 端点背后的 KV（对位 TVBox 用 Hawk 存 <c>cache_&lt;rule&gt;_&lt;key&gt;</c>）。
@@ -282,10 +288,10 @@ public sealed class SpiderProxyServer : IDisposable
                     var streamer = JsProxyStreamHandler;
                     if (streamer is not null)
                     {
-                        var sres = await streamer(args, timeout.Token).ConfigureAwait(false);
+                        var sres = await streamer(args, lines, timeout.Token).ConfigureAwait(false);
                         if (sres is { } sr)
                         {
-                            await WriteStreamAsync(stream, sr.Status, sr.Mime, sr.Body).ConfigureAwait(false);
+                            await WriteStreamAsync(stream, sr.Status, sr.Mime, sr.Body, sr.Headers).ConfigureAwait(false);
                             return;
                         }
                     }
@@ -633,18 +639,33 @@ public sealed class SpiderProxyServer : IDisposable
     /// <summary>
     /// 流式应答：状态行 + Content-Type 先落，body 边收边写（64KB 一块）。
     ///
-    /// <para><b>刻意不发 Content-Length</b>：网盘直链长度事先未知（jar 侧是转发流），
-    /// 用「Connection: close」界定 body 边界 —— 与 TVBox <c>newChunkedResponse</c> 的做法一致，
-    /// 播放器读到连接关闭即视为结束。</para>
+    /// <para><b>206/Content-Range 必须透传（2026-10-03）</b>：网盘源seek 时壳回 206，
+    /// FFmpeg 靠 <c>Content-Range</c> 校验数据起点——不透传就报
+    /// <c>Unexpected offset: expected X, got 0</c>（实测黑屏无限重试）。
+    /// 无 Content-Range 时按起点未知处理，Accept-Ranges 一律回 bytes（此前写死 none，
+    /// 会让播放器认为不可 seek）。</para>
     ///
     /// <para>播放器中途断开（换集/退出）会让拷贝抛 IOException，属正常收摊，吞掉即可。</para>
     /// </summary>
-    private static async Task WriteStreamAsync(NetworkStream stream, int status, string mime, Stream body)
+    private static async Task WriteStreamAsync(NetworkStream stream, int status, string mime, Stream body,
+        IReadOnlyDictionary<string, string>? extra = null)
     {
         var sb = new StringBuilder();
         sb.Append("HTTP/1.1 ").Append(status >= 200 && status < 600 ? $"{status} OK" : "200 OK").Append("\r\n");
         sb.Append("Content-Type: ").Append(string.IsNullOrEmpty(mime) ? "application/octet-stream" : mime).Append("\r\n");
-        sb.Append("Accept-Ranges: none\r\n");
+        var sawContentRange = false;
+        if (extra is not null)
+        {
+            foreach (var (k, v) in extra)
+            {
+                if (k.Equals("Connection", StringComparison.OrdinalIgnoreCase) ||
+                    k.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase) ||
+                    k.Equals("Content-Type", StringComparison.OrdinalIgnoreCase)) continue;
+                if (k.Equals("Content-Range", StringComparison.OrdinalIgnoreCase)) sawContentRange = true;
+                sb.Append(k).Append(": ").Append(v).Append("\r\n");
+            }
+        }
+        if (!sawContentRange) sb.Append("Accept-Ranges: bytes\r\n");
         sb.Append("Connection: close\r\n\r\n");
         await stream.WriteAsync(Encoding.ASCII.GetBytes(sb.ToString())).ConfigureAwait(false);
         await stream.FlushAsync().ConfigureAwait(false);
