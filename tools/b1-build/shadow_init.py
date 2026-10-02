@@ -181,8 +181,14 @@ if [ -e /shadow-init ]; then
     # 这文件是 init 用 libprocessgroup 生成的**二进制表**（version u32 + 条目数 7 + 定长记录），
     # 手写不如直接取参照系的：108 容器里 `/dev/cgroup_info/cgroup.rc` 共 400 B，原样搬来。
     # 顺手把表里点名的 cgroup2 与 freezer/pids 也补上（缺一个控制器就是另一条 CgroupMap 报错）。
-    $BB mkdir -p /dev/cgroup_info
-    $BB cp /e2-cgroup.rc /dev/cgroup_info/cgroup.rc 2>/dev/null
+    $BB mkdir -p /dev/cgroup_info /dev/stune
+    $BB mount -t cgroup none /dev/stune -o cpu 2>/dev/null
+    # 表里只留真挂上的控制器：cgroup2 挂得上才用带 UNIFIED 的 v2 版，否则 logd 照着表找不到的那两条就 abort。
+    if [ "$($BB grep -c 'type cgroup2' /proc/mounts 2>/dev/null)" -gt 0 ]; then
+        $BB cp /e2-cgroup-v2.rc /dev/cgroup_info/cgroup.rc 2>/dev/null
+    else
+        $BB cp /e2-cgroup-v1.rc /dev/cgroup_info/cgroup.rc 2>/dev/null
+    fi
     $BB mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null
     $BB mkdir -p /sys/fs/cgroup/unified 2>/dev/null
     $BB chmod 755 /dev/cgroup_info 2>/dev/null
@@ -219,6 +225,11 @@ if [ -e /shadow-init ]; then
         . /e2-android-env.sh
         echo "[init] 环境已补：BOOTCLASSPATH $($BB echo -n $BOOTCLASSPATH | $BB wc -c)B SYSTEMSERVERCLASSPATH $($BB echo -n $SYSTEMSERVERCLASSPATH | $BB wc -c)B"
     fi
+    # ── N1-1 取证（2026-10-02）：shadow 形态下 init 起服务时会按 rc 的 socket 语句**重建**
+    # /dev/socket/logdw ⇒ 早先 bind 的 fakelogd 持有的是被换掉的旧 inode，一条也收不到
+    # （实测 09:31 开机 [logd] 输出 0 条）。监视 inode 变化，一变就杀旧实例重新 bind ——
+    # ART 的 LOG(FATAL) 原文走的就是 logdw，拿到它 = 拿到 abort 原文。
+    $BB sh -c 'L=; FP=; while :; do I=$(ls -i /dev/socket/logdw 2>/dev/null); if [ -n "$I" ] && [ "$I" != "$L" ]; then L=$I; kill -9 $FP 2>/dev/null; /fakelogd & FP=$!; fi; sleep 1; done' &
 __CLAWBG__
 __E2RUN__
 fi
@@ -391,6 +402,22 @@ diag() {
     done
     echo "<3>[E2] logcat -b crash: $(nsh /system/bin/logcat -d -b crash -t 25 2>&1 | $BB tr '\n' '~' | $BB cut -c1-300)" > /dev/kmsg
     echo "<3>[E2] logcat zygote: $(nsh /system/bin/logcat -d -s Zygote ART SystemServerActivityManager 2>&1 | $BB tr '\n' '~' | $BB cut -c1-300)" > /dev/kmsg
+    # ── N1-2/N1-3 采集（2026-10-02）：与 108 zygote64 逐字 diff 的 guest 侧原始数据 ──
+    # 属性差：getprop | grep dalvik 逐行进 kmsg（<4>，行数少，直接全文）
+    echo "<3>[N1] dalvik 属性条数: $(gp | $BB grep -c dalvik)" > /dev/kmsg
+    gp | $BB grep dalvik | $BB sort | while read -r _l; do echo "<4>[N1-DP] $_l" > /dev/kmsg; done
+    # 环境差：guest 侧 zygote64 的 environ / cmdline / maps 里的 art apex（拿不到就明说，别装）
+    _zp=$($BB pidof zygote64 2>/dev/null || $BB pidof zygote 2>/dev/null)
+    if [ -n "$_zp" ]; then
+        echo "<3>[N1] guest zygote pid=$_zp cmdline=$($BB tr '\\0' ' ' < /proc/$_zp/cmdline 2>&1 | $BB cut -c1-120)" > /dev/kmsg
+        $BB tr '\\0' '\\n' < /proc/$_zp/environ 2>/dev/null | $BB sort | while read -r _l; do echo "<4>[N1-ENV] $_l" > /dev/kmsg; done
+        $BB grep 'apex/com.android.art' /proc/$_zp/maps 2>/dev/null | $BB sed 's/.*\\//\\//' | $BB sort -u | while read -r _l; do echo "<4>[N1-MAPS] $_l" > /dev/kmsg; done
+        # tombstone 路线：zygote 活着的窗口里抓一次裸回溯（abort 原文若 fakelogd 仍收不到就靠它）
+        $BB timeout -s 9 6 $BB nsenter -t 1 -m -- /system/bin/debuggerd -b $_zp > /tmp/d.zb 2>&1
+        echo "<3>[N1] debuggerd -b zygote 前 240B: $($BB head -c 240 /tmp/d.zb 2>&1 | $BB tr '\n' '~')" > /dev/kmsg
+    else
+        echo "<3>[N1] zygote 不在（pidof 空）——environ/maps 取证跳过本轮" > /dev/kmsg
+    fi
     # 上一轮 `ls /data/tombstones` 报 **Input/output error** ⇒ /data 这个挂载点本身在坏，
     # 而 logd/tombstoned/zygote 全都要写 /data ⇒ 这才是"起来就 SIGABRT"的候选根因。
     # 先把 /data 到底是什么、挂在哪、能不能列，一次性问清楚。
@@ -424,6 +451,26 @@ RC=$?
 echo "<3>[$TAG] 退出码=$RC ｜ 输出: $($BB head -c 320 /tmp/$TAG.out 2>&1 | $BB tr '\n' '~')" > /dev/kmsg
 exit $RC
 """
+
+
+def cgroup_rc(entries):
+    """参照系倒推出的二进制表布局：u32 version + u32 count + 每条 {u32 mode, name[28], path[24]} = 56B/条。
+
+    mode：1=LEGACY（cgroup v1 控制器）、2=UNIFIED（cgroup2）。
+    我们这内核 cgroup2 挂不上（分发器实测 `cgroup2=0`），而 logd/libprocessgroup 会**照着这张表**
+    去找控制器 ⇒ 表里写了我们没有的那两条，它就 abort（实测 logd 退出码 134 且零输出）。
+    所以按"实际挂上了什么"生成两版，分发器按 `grep type cgroup2 /proc/mounts` 二选一。
+    """
+    import struct
+    out = struct.pack("<II", 1, len(entries))
+    for mode, name, path in entries:
+        out += struct.pack("<I", mode) + name.encode().ljust(28, b"\0") + path.encode().ljust(24, b"\0")
+    return out
+
+
+LEGACY_CGROUPS = [(1, "blkio", "/dev/blkio"), (1, "cpu", "/dev/cpuctl"), (1, "cpuset", "/dev/cpuset"),
+                  (1, "memory", "/dev/memcg"), (1, "schedtune", "/dev/stune")]
+UNIFIED_CGROUPS = [(2, "cgroup2", "/sys/fs/cgroup"), (2, "freezer", "/sys/fs/cgroup")]
 
 
 def extract(image, names):
@@ -513,6 +560,10 @@ def main():
         f.write(E2PROBE)
     with open(os.path.join(gen, "zygwrap.sh"), "w", encoding="utf-8", newline="\n") as f:
         f.write(ZYGWRAP)
+    with open(os.path.join(gen, "e2-cgroup-v1.rc"), "wb") as f:
+        f.write(cgroup_rc(LEGACY_CGROUPS))
+    with open(os.path.join(gen, "e2-cgroup-v2.rc"), "wb") as f:
+        f.write(cgroup_rc(LEGACY_CGROUPS + UNIFIED_CGROUPS))
     with open(os.path.join(gen, "shadow-init"), "w", encoding="utf-8") as f:
         f.write("")
     for src_name, dst_name in (("system.build.prop", os.path.join(gen, "system.build.prop")),
@@ -617,7 +668,9 @@ def main():
             "+0755:zygwrap.sh=%s" % os.path.join(gen, "zygwrap.sh"),
             "+0644:e2-vendor-build.prop=%s" % os.path.join(gen, "e2-vendor-build.prop"),
             "+0644:e2-android-env.sh=%s" % os.path.join(gen, "e2-android-env.sh"),
-            "+0644:e2-cgroup.rc=%s" % os.path.join(gen, "e2-cgroup.rc")] + rc_args
+            "+0644:e2-cgroup.rc=%s" % os.path.join(gen, "e2-cgroup.rc"),
+            "+0644:e2-cgroup-v1.rc=%s" % os.path.join(gen, "e2-cgroup-v1.rc"),
+            "+0644:e2-cgroup-v2.rc=%s" % os.path.join(gen, "e2-cgroup-v2.rc")] + rc_args
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
     r = subprocess.run(args, capture_output=True, text=True, encoding="utf-8",
                        errors="replace", env=env)
