@@ -55,7 +55,13 @@ if [ -n "$PDD" ] && [ -b "$PDD" ]; then
     fi
     if $BB mount | $BB grep -q "on /data "; then
         echo "[persist] /data -> 持久盘 $PDD（跨重启存活）"
-        $BB mkdir -p /data/catclaw /data/local/tmp /data/dalvik-cache/x86_64 /data/media
+        # ★ 无损扩容（2026-10-03）：宿主把镜像文件 SetLength 调大后，ext4 自己的
+        #   超级块还停在旧容量上（df 仍显示旧值），必须在挂载状态下 resize2fs 扩满。
+        #   幂等：已经扩满时它什么也不做。不跑这一步，改容量等于白改。
+        e2fsck -f -p "$PDD" >/dev/null 2>&1
+        echo "[persist] resize2fs: $(resize2fs "$PDD" 2>&1 | $BB tail -2 | $BB tr '
+' ' ')"
+                $BB mkdir -p /data/catclaw /data/local/tmp /data/dalvik-cache/x86_64 /data/media
     else
         echo "[persist] 警告：/data 持久盘未挂成（退回内存态）"
     fi

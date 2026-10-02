@@ -80,8 +80,30 @@ public sealed class SparseBlockStore : IDisposable
     /// </summary>
     public void EnsureCreated()
     {
-        if (File.Exists(ImagePath) && new FileInfo(ImagePath).Length == CapacityBytes)
+        if (File.Exists(ImagePath))
         {
+            var existing = new FileInfo(ImagePath).Length;
+            if (existing == CapacityBytes)
+            {
+                IsSparse = QuerySparseFlag();
+                return;
+            }
+            // ★ 容量调大：只扩文件长度，**绝不删重建**（2026-10-03）
+            //   持久盘里存着登录态（spUtils / config.db / Cookie），删掉等于清空用户登录态。
+            //   ext4 超级块仍停在旧容量上 → 文件系统自身的扩容由 guest 内 resize2fs 完成
+            //   （见 init 的 persist 段），这一步只负责把块设备变大。
+            if (existing < CapacityBytes)
+            {
+                try
+                {
+                    using var fs = new FileStream(ImagePath, FileMode.Open, FileAccess.Write, FileShare.ReadWrite);
+                    fs.SetLength(CapacityBytes);
+                }
+                catch { }
+                IsSparse = QuerySparseFlag() || TrySetSparse();
+                return;
+            }
+            // 容量调小：改造现有 ext4 会破坏数据，不做——沿用文件自身大小（只读属性，改不了就按现状走）
             IsSparse = QuerySparseFlag();
             return;
         }
