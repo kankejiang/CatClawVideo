@@ -548,6 +548,17 @@ def main():
     claw = "\n".join(("# [E2 跳过：属性区归真 init] " + l
                       if l.strip().startswith("[ -x /system/bin/propinit ]") else l)
                      for l in claw.splitlines()) + "\n"
+    # ── N1 稳定性（2026-10-02 实测 09:40 开机）：shadow 形态下编排会被 claw-bg（exec 前后台）
+    # 与 rc 的 clawboot 服务（post-fs-data / early-boot / boot / boot_completed /
+    # hwservicemanager.ready 一堆触发器，服务退出后 start 会**再次拉起**）各跑一遍 ——
+    # 实测 [astack] 解包完成 ×7、ENOSPC ×2、servicemanager 4 实例 ⇒ tmpfs 挤爆、
+    # 属性区被冲掉（props=0 / getprop 0 行的"坏开机"）。编排必须幂等：守卫文件只放行第一遍。
+    _shebang, _rest = claw.split("\n", 1)
+    claw = (_shebang + "\n" +
+            "if [ -e /tmp/claw.done ]; then exit 0; fi\n"
+            "/bin/busybox touch /tmp/claw.done\n"
+            "# [N1 守卫] 上面的 exit 0 之外的第二遍编排一概不跑（见 shadow_init.py 注释）\n"
+            + _rest)
     run = (RUN_CHILD if a.child else RUN_EXEC) % a.init_args
     with open(os.path.join(gen, "init"), "w", encoding="utf-8", newline="\n") as f:
         f.write(DISPATCH.replace("__CLAWBG__", CLAW_BG if a.claw_bg else "")
