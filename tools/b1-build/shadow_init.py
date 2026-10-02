@@ -114,13 +114,48 @@ if [ -e /shadow-init ]; then
         _a=/apex/com.android.runtime/bin/$_l
         if $BB test -L /system/bin/$_l && $BB test -f $_a; then
             $BB rm -f /system/bin/$_l
-            $BB cp $_a /system/bin/$_l
+            $BB ln $_a /system/bin/$_l 2>/dev/null || $BB cp $_a /system/bin/$_l
             $BB chmod 755 /system/bin/$_l
             echo "[init] $_l: 软链→实体 $($BB wc -c < /system/bin/$_l 2>/dev/null)B"
         else
             echo "[init] $_l: 未替换 islink=$($BB test -L /system/bin/$_l && echo Y || echo N) apex=$($BB test -f $_a && echo Y || echo N)"
         fi
     done
+    # 石头⑧（07:44 诊断原文）：手跑 logd/servicemanager/hwservicemanager/lmkd/vdc 全部报
+    #   CANNOT LINK EXECUTABLE "...": library "libc.so" not found: needed by main executable
+    # —— /system/lib64 里 **libc / libdl / libdl_android / libm 这 4 个是指向
+    # /apex/com.android.runtime/lib64/bionic/ 的软链**（其余 153 个都是实体），
+    # 和 linker64 同一类病：过了 init 的 SetupMountNamespaces 就解析不到。
+    # 解法用**硬链接**：同一个 initrd tmpfs ⇒ 零额外体积，也不需要 cp 一份 1.7MB。
+    for _n in libc libdl libdl_android libm; do
+        _t=/apex/com.android.runtime/lib64/bionic/$_n.so
+        if $BB test -L /system/lib64/$_n.so && $BB test -f $_t; then
+            $BB rm -f /system/lib64/$_n.so
+            $BB ln $_t /system/lib64/$_n.so
+            echo "[init] $_n.so 软链→硬链 $?"
+        else
+            echo "[init] $_n.so 未替换 islink=$($BB test -L /system/lib64/$_n.so && echo Y || echo N) 目标在=$($BB test -f $_t && echo Y || echo N)"
+        fi
+    done
+    # 石头⑨（08:05 诊断原文）：手跑 zygote ⇒
+    #   CANNOT LINK EXECUTABLE "/system/bin/app_process": library "libnativeloader.so" not found
+    # —— ART 的库在 /apex/com.android.art/lib64 里，靠 apex 链接命名空间接入；而本次开机
+    # linkerconfig 跑失败（`failed to execute linkerconfig: No such device` + 缺 VNDK apex），
+    # /linkerconfig/ld.config.txt 还是烘进去的旧件 ⇒ 链接器在 system 命名空间里找不到 apex 库。
+    # 实验性绕过：把 apex 里的 64 位库**硬链接**进 /system/lib64（同一个 tmpfs ⇒ 零额外体积；
+    # 已有的名字一律不覆盖），让 zygote 先过了链接这一关，好把"下一道墙在哪"看清楚。
+    $BB find /apex -maxdepth 3 -type f -name "*.so" -path "*/lib64/*" 2>/dev/null | while read _p; do
+        _b=$($BB basename $_p)
+        if [ ! -e /system/lib64/$_b ]; then
+            $BB ln $_p /system/lib64/$_b 2>/dev/null
+        fi
+    done
+    echo "[init] /system/lib64 现有 $($BB ls /system/lib64 2>/dev/null | $BB wc -l) 项；libnativeloader.so 在=$($BB test -e /system/lib64/libnativeloader.so && echo Y || echo N)"
+    # 石头⑩（08:12）：logd / zygote / mediaextractor 全报 `received signal 6`，且
+    # `code -1 (SI_QUEUE)` ⇒ 不是自己 abort()，而是 crash_handler 拦下段错误后再补刀；
+    # 而 `/data/tombstones` **压根不存在**（探测 `ls` 输出为空）⇒ 唯一能拿到一手原因的落点被漏建。
+    $BB mkdir -p /data/tombstones /data/anr /data/misc/logd /data/local/tmp /data/dalvik-cache /metadata
+    $BB chmod 777 /data/tombstones /data/anr 2>/dev/null
     [ -f /modules/binder_linux.ko ] && $BB insmod /modules/binder_linux.ko devices=binder,hwbinder,vndbinder 2>&1
 __CLAWBG__
 __E2RUN__
@@ -201,17 +236,75 @@ BB=/bin/busybox
 # 实测：PID1 的 PATH 里没有 /system/bin ⇒ 裸 getprop 找不到，probe 会误报"读不到属性"。
 PATH=/system/bin:/bin:/bin/busybox
 export PATH
+# PID1 换成真 init 之后，属性区与 /data 都在**它的挂载命名空间**里；我们的探测是在
+# `exec` 之前 fork 的 ⇒ 数得到 /dev/__properties__ 的文件、getprop 却输出 0 行，
+# /data/tombstones 还报 EIO（实测 08:16/08:20）。busybox 带 nsenter applet ⇒
+# 进 PID1 的 mount ns 问出来的才是真值（判据 `init.svc.*` 必须这么读）。
+gp() { $BB nsenter -t 1 -m -- /system/bin/getprop "$@" 2>/dev/null; }
+nsh() { $BB nsenter -t 1 -m -- $BB "$@" 2>&1; }
 line() {
     T=$($BB cut -d. -f1 /proc/uptime 2>/dev/null)
-    SVC=$(getprop 2>/dev/null | $BB grep -c "init.svc")
-    GP=$(getprop 2>/dev/null | $BB wc -l)
+    SVC=$(gp | $BB grep -c "init.svc")
+    GP=$(gp | $BB wc -l)
     PROPS=$(ls /dev/__properties__ 2>/dev/null | $BB wc -l)
-    echo "<4>[E2] t=${T}s init.svc=${SVC:-?} props=${PROPS:-?} getprop可读=${GP:-?} zygote=$(getprop init.svc.zygote 2>/dev/null) boot=$(getprop sys.boot_completed 2>/dev/null) sdk=$(getprop ro.build.version.sdk 2>/dev/null) hw=$(getprop ro.hardware 2>/dev/null) svcmgr=$(getprop servicemanager.ready 2>/dev/null)" > /dev/kmsg
+    echo "<4>[E2] t=${T}s init.svc=${SVC:-?} props=${PROPS:-?} getprop可读=${GP:-?} zygote=$(gp init.svc.zygote) boot=$(gp sys.boot_completed) sdk=$(gp ro.build.version.sdk) hw=$(gp ro.hardware) svcmgr=$(gp servicemanager.ready)" > /dev/kmsg
 }
 if [ "$1" = once ]; then line; exit 0; fi
+# 诊断档：E4 之前必须回答"服务为什么起来就退（status 1 / 127）"。
+# 直接在探测里手跑那几个二进制，把 linker/内核给的**原文**打到 kmsg（init 只报退出码，不报原因）。
+diag() {
+    # ⚠ 不能用 `timeout … | head`：守护型进程（hwservicemanager）会让管道在 timeout 之后
+    #   仍等输出，实测整条 diag 卡死在第 3 个（07:59 那次只打出两条）。
+    #   改成"后台跑 + 落文件 + 定时 kill + 读文件"，每条最多 5s，互不牵连。
+    run1() {
+        N=$1; shift
+        $BB rm -f /tmp/d.$N
+        $BB timeout -s 9 4 "$@" > /tmp/d.$N 2>&1 &
+        P=$!
+        $BB sleep 5
+        $BB kill -9 $P 2>/dev/null
+        echo "<3>[E2] 手跑 $N → $($BB head -6 /tmp/d.$N 2>/dev/null | $BB tr '\n' '~' | $BB cut -c1-300)" > /dev/kmsg
+    }
+    echo "<3>[E2] getprop 的 stderr: $($BB nsenter -t 1 -m -- /system/bin/getprop 2>&1 >/dev/null | $BB head -2 | $BB tr '\n' '~' | $BB cut -c1-140)" > /dev/kmsg
+    echo "<3>[E2] linkerconfig: $(nsh ls /linkerconfig | $BB tr '\n' ' ')" > /dev/kmsg
+    for b in logd servicemanager hwservicemanager lmkd; do
+        run1 $b $BB nsenter -t 1 -m -- /system/bin/$b
+    done
+    # E4 的前题就是 zygote：init 现在每 5s 起它一次、每次 status 1 就退。
+    # 把 rc 里那行命令原样拿来手跑一次，把 ART 自己吐的**第一手原因**送进串口。
+    # ⚠ `service zygote <cmd> <args…>` ⇒ 命令从第 3 个字段开始（第一次跑成 f2- 把服务名当成了程序名）。
+    Z=$($BB grep -h -m1 "^service zygote " /system/etc/init/hw/init.zygote*.rc 2>/dev/null | $BB cut -d" " -f3-)
+    echo "<3>[E2] zygote 命令: $Z" > /dev/kmsg
+    run1 zygote $BB nsenter -t 1 -m -- $Z
+    # zygote 现在能过链接期、改成 signal 6（SIGABRT）——ART 的 abort 原文只落在 tombstone 里。
+    # /data 挂在 init 的命名空间内（我们在 exec 之前 fork ⇒ 看到的是坏视图，报 EIO），
+    # 所以 tombstone 也必须进 ns 读。
+    _tl=$(nsh ls -t /data/tombstones 2>/dev/null | $BB head -1)
+    echo "<3>[E2] tombstones: $(nsh ls /data/tombstones | $BB tr '\n' ' ' | $BB cut -c1-160)" > /dev/kmsg
+    echo "<3>[E2] 最新 tombstone($_tl) 摘要: $(nsh head -c 300 /data/tombstones/$_tl 2>&1 | $BB tr '\n' '~')" > /dev/kmsg
+    echo "<3>[E2] /data 挂载: $(nsh grep ' /data ' /proc/mounts | $BB tr '\n' '~' | $BB cut -c1-200)" > /dev/kmsg
+    # ⚠ 遗留待判（本轮没解掉）：进 init 命名空间后 `getprop` 仍输出 0 行，而
+    #   `ls /dev/__properties__` = 264、init 自己 `Setting property 'ro.build.fingerprint'` 成功。
+    #   三个候选，下次按这条顺序一次判掉：
+    #     (a) nsenter 自己失败被我 2>/dev/null 吞了 ⇒ 下面这行会把 stderr 原文打出来；
+    #     (b) 客户端 mmap 属性文件被 SELinux 拒（我们进程没标签，hwservicemanager 也报过
+    #         `Using old property service protocol ("ro.property_service.version" is not set)`）；
+    #     (c) `property_info` 这张 trie 是空的 ⇒ foreach 直接 0 条。
+    echo "<3>[E2] nsenter 自检: $(nsh echo 在-init-ns) ｜ id: $($BB id 2>&1 | $BB cut -c1-70)" > /dev/kmsg
+    echo "<3>[E2] property_info: $(nsh ls -l /dev/__properties__/property_info 2>&1 | $BB cut -c1-90) ｜ serial: $(nsh ls -l /dev/__properties__/properties_serial 2>&1 | $BB cut -c1-90)" > /dev/kmsg
+    echo "<3>[E2] ns 里的 getprop stderr: $($BB nsenter -t 1 -m -- /system/bin/getprop 2>&1 >/dev/null | $BB head -2 | $BB tr '\n' '~' | $BB cut -c1-140) ｜ 行数: $($BB nsenter -t 1 -m -- /system/bin/getprop 2>/dev/null | $BB wc -l)" > /dev/kmsg
+    # 上一轮 `ls /data/tombstones` 报 **Input/output error** ⇒ /data 这个挂载点本身在坏，
+    # 而 logd/tombstoned/zygote 全都要写 /data ⇒ 这才是"起来就 SIGABRT"的候选根因。
+    # 先把 /data 到底是什么、挂在哪、能不能列，一次性问清楚。
+    echo "<3>[E2] /data 挂载: $($BB grep ' /data ' /proc/mounts 2>&1 | $BB tr '\n' '~' | $BB cut -c1-200)" > /dev/kmsg
+    echo "<3>[E2] /data ls: $($BB ls /data 2>&1 | $BB tr '\n' ' ' | $BB cut -c1-160)" > /dev/kmsg
+    echo "<3>[E2] /data stat: $($BB stat -c '%m %T %s' /data 2>&1) df: $($BB df /data 2>&1 | $BB tail -1)" > /dev/kmsg
+}
+if [ "$1" = diag ]; then diag; exit 0; fi
 i=0
 while [ $i -lt 24 ]; do
     line
+    [ $i -eq 2 ] && diag
     $BB sleep 5
     i=$((i+1))
 done
@@ -247,6 +340,8 @@ def main():
                     help="诊断形态：真 init 作为 PID1 的子进程跑，死了上报退出码（默认 exec 顶替 PID1）")
     ap.add_argument("--strip-seclabel", action="store_true",
                     help="摘掉所有 rc 服务的 seclabel（内核 SELinux 开着但没策略 ⇒ setexeccon 一律 EACCES）")
+    ap.add_argument("--no-rc-guard", action="store_true",
+                    help="摘掉所有 rc 里的 reboot_on_failure（真机失败即重启的安全闸；实验里它只会把进度挡住）")
     ap.add_argument("--claw-bg", action="store_true",
                     help="exec 真 init 之前先在后台挂上原编排 + 探测器（rc 触发器实测不生效，用它替代）")
     a = ap.parse_args()
@@ -275,6 +370,13 @@ def main():
         return 1
     if not claw:
         claw = cur["init"]
+    # 石头⑪（08:29 实测）：编排里那句 `propinit` 会 remove()+mkdir() **重建 /dev/__properties__**，
+    # 于是真 init 写的 `properties_serial` 被抹掉 —— property_info(74,112B) 还在、serial 没了，
+    # 之后所有客户端 `getprop` 都输出 0 行（nsenter 进 init 的命名空间也一样，已排除命名空间因素）。
+    # E2 形态下属性区归真 init 所有，这句必须跳过（非 shadow 路径仍按原样跑）。
+    claw = "\n".join(("# [E2 跳过：属性区归真 init] " + l
+                      if l.strip().startswith("[ -x /system/bin/propinit ]") else l)
+                     for l in claw.splitlines()) + "\n"
     run = (RUN_CHILD if a.child else RUN_EXEC) % a.init_args
     with open(os.path.join(gen, "init"), "w", encoding="utf-8", newline="\n") as f:
         f.write(DISPATCH.replace("__CLAWBG__", CLAW_BG if a.claw_bg else "")
@@ -315,7 +417,7 @@ def main():
     BO = "reboot_on_failure reboot,boringssl-self-check-failed"
     raw = {"system/etc/init/hw/init.rc": cur.get("system/etc/init/hw/init.rc") or "",
            "init.rc": cur.get("init.rc") or cur.get("system/etc/init/hw/init.rc") or ""}
-    if a.strip_seclabel:
+    if a.strip_seclabel or a.no_rc_guard:
         for e in C.load(SRC, want=lambda n: n.endswith(".rc"))[0]:
             if e.data and e.name.startswith(("system/etc/init/", "vendor/etc/init/")):
                 raw[e.name] = e.text
@@ -325,9 +427,15 @@ def main():
         if not body:
             continue
         new = body
+        drops = set()
         if a.strip_seclabel:
-            new = "\n".join(l for l in new.splitlines() if l.strip().split(" ")[0] != "seclabel") + "\n"
-        if BO in new:
+            drops.add("seclabel")
+        if a.no_rc_guard:
+            drops.add("reboot_on_failure")
+        if drops:
+            new = "\n".join(l for l in new.splitlines()
+                            if l.strip().split(" ")[0] not in drops) + "\n"
+        elif BO in new:                       # 默认只摘 boringssl 那一条自杀闸
             new = "\n".join(l for l in new.splitlines() if l.strip() != BO) + "\n"
         if new == body:
             continue

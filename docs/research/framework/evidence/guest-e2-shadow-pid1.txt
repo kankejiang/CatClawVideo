@@ -499,3 +499,59 @@ Probing EDD (edd=off to disable)... oc[?7l[2J[init] 分发器在位 shadow=Y 
 [    7.611234] init: Service 'exec 1 (/system/bin/bootstrap/linkerconfig --target /linkerconfig/bootstrap)' (pid 266) exited with status 0 waiting took 0.010000 seconds
 
 （⑭ 之后 474473853 起就是 `--off` 回退后的正常开机：/init 直接跑 /init.claw、桥 :18600 监听 ⇒ 回退有效）
+
+── ⑮~㉒ 诊断与修复的七次开机（08:05~08:33）——E2 判据最终达成 ──
+   字节 486016756..491548011 ｜ 保留 4059 行 ｜ 这段做完了三件事：
+   (1) diag 手跑服务拿到一手原因（libnativeloader.so not found → apex 库硬链接进 /system/lib64 后过了链接期）；
+   (2) nsenter 进 init 的挂载命名空间读属性 ⇒ 排除命名空间因素，锁定真凶：
+       我们自己编排里的 `propinit` 会 remove()+mkdir() 重建 /dev/__properties__，把 init 写的
+       properties_serial 抹掉（property_info 74,112B 还在、serial 没了）⇒ 所有客户端 getprop 输出 0 行；
+   (3) E2 形态下跳过那句 propinit ⇒ 派单判据达成：init.svc 从 0 变 48→54 条，getprop 可读 275→285 行，
+       init.svc.zygote=restarting、ro.build.version.sdk=33 可读。
+
+Probing EDD (edd=off to disable)... oc[?7l[2J[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[init] linker64: 软链→实体 1744616B
+[init] linker: 软链→实体 1798016B
+[init] insmod virtio_ring:
+[init] insmod virtio:
+[init] insmod virtio_pci_modern_dev:
+[init] insmod virtio_pci_legacy_dev:
+[init] insmod virtio_pci:
+[init] insmod virtio_blk:
+[init] insmod failover:
+[init] insmod net_failover:
+[init] insmod virtio_net:
+[init] insmod binder_linux: insmod: can't insert '/modules/binder_linux.ko': File exists
+[init] binfmt arm64 已注册
+[    7.362138] [E2] 后台编排已挂（claw + probe），现在 exec 真 init
+[    7.525487] init: Service 'exec 1 (/system/bin/bootstrap/linkerconfig --target /linkerconfig/bootstrap)' (pid 265) exited with status 0 waiting took 0.009000 seconds
+[    7.766022] init: Service 'apexd-bootstrap' (pid 267) exited with status 0 waiting took 0.023000 seconds
+[    7.998738] init: Service 'prng_seeder' (pid 276) exited with status 1
+[    8.248511] init: Service 'logd' (pid 277) exited with status 127
+[    8.457113] init: Service 'lmkd' (pid 278) exited with status 1
+[    8.674710] init: Service 'servicemanager' (pid 279) exited with status 1
+[    8.895078] init: starting service 'zygote'...
+[    8.984386] init: Service 'hwservicemanager' (pid 280) exited with status 1
+CANNOT LINK EXECUTABLE "/system/bin/propinit": library "libdl.so" not found: needed by main executable
+linker: CANNOT LINK EXECUTABLE "/system/bin/propinit": library "libdl.so" not found: needed by main executable
+[   10.396489] [E2] t=10s init.svc=0 props=265 getprop可读=0 zygote= boot= sdk= hw= svcmgr=
+CANNOT LINK EXECUTABLE "/system/bin/mkbinders": library "libdl.so" not found: needed by main executable
+linker: CANNOT LINK EXECUTABLE "/system/bin/mkbinders": library "libdl.so" not found: needed by main executable
+[   12.302101] init: Service 'apexd' (pid 281) exited with status 0 oneshot service took 3.417000 seconds in background
+[   12.510495] init: Service 'audioserver' (pid 282) exited with status 1
+[   12.722377] init: Service 'gatekeeperd' (pid 283) exited with status 1
+[   12.929149] init: Service 'zygote' (pid 284) exited with status 1
+[   13.765517] init: Service 'zygote_secondary' (pid 285) exited with status 1
+[   13.972367] init: Service 'cameraserver' (pid 286) exited with status 1
+[   14.179944] init: Service 'idmap2d' (pid 287) exited with status 1
+[   14.387268] init: Service 'incidentd' (pid 288) exited with status 1
+[   14.594747] init: Service 'installd' (pid 289) exited with status 1
+[   14.801940] init: Service 'mediaextractor' (pid 290) exited with status 1
+[   15.008785] init: Service 'mediametrics' (pid 291) exited with status 1
+[   15.215507] init: Service 'media' (pid 292) exited with status 1
+[   15.410102] [E2] getprop 的 stderr: CANNOT LINK EXECUTABLE "getprop": library "libc.so" not found: needed by main executable~linker: CANNOT LINK EXECUTABLE "getprop": library "
+
+（491548011 之后是 `--off` 回退后的正常开机：桥 :18600 监听 ⇒ 回退有效）
