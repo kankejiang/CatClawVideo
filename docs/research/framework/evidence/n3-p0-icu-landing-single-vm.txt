@@ -1,0 +1,72 @@
+N3｜P0 收口取证（2026-10-02 11:10-12:00，执行人：N3 窗口）
+================================================================
+
+【N3-0】单 VM 进程表（11:10:01 本窗自己起的轮次）
+----------------------------------------------------------------
+Name                  Id StartTime
+----                  -- ---------
+CatClawVideo.Maui     37372 2026/10/2 11:10:01
+qemu-system-x86_64    39368 2026/10/2 11:10:04
+→ 一一对应，qemu 进程表只有一行 ✔
+（注：11:46 起 b1.2/E4 线又起新 app/VM（24628/18516），本窗已停自己的实例让路；
+  此后 VM 归该线，其内有重启循环，见 STATUS）
+
+【N3-1】正在跑的 guest 内验证（adb -s 127.0.0.1:18603 / 18607）
+----------------------------------------------------------------
+1) ICU 三库（**两台先后 VM 均验证**）✔
+$ ls -la /system/lib64/libicu.so /system/lib64/libicuuc.so /system/lib64/libicui18n.so
+-rw-r--r-- 1 root root   62384 2026-04-03 19:39 /system/lib64/libicu.so
+-rw-r--r-- 1 root root 2920976 2026-04-03 19:39 /system/lib64/libicui18n.so
+-rw-r--r-- 1 root root 1996000 2026-04-03 19:39 /system/lib64/libicuuc.so
+
+2) 落地链三环核对 ✔
+- 打包产物：tar tzf blobs/astack/android-stack.tar.gz（08:12:36, 29,967,054B）
+  → system/lib64/{libicu.so, libicuuc.so, libicui18n.so} 都在 ✔
+- 运行时镜像：cpio 条目 b1/android-stack.tar.gz = 29,967,054B（同 08:12 版）✔
+- guest：如上 ls ✔
+⇒ 判读：**镜像不陈旧**；screencap 的 `CANNOT LINK … libicu.so not found` 已消失
+  （不再出现在任何输出里）——之前的报错属于双 VM/旧镜像混跑的陈旧证据。
+
+3) 分配链（gbmprobe，card0 修复在位）✔
+[gbmprobe] open(/dev/dri/card0) = 3 errno=0(Success)
+[gbmprobe]   gbm_bo_create(1280x720 fmt=0x34325258 flags=0x1b00) = 0x7f1fec220210 errno=0(Success)
+[gbmprobe]   gbm_bo_create(128x128 fmt=0x34325258 flags=0x300) = 0x7f1fec21fd90 errno=0(Success)
+
+【N3-2】干净重建（11:09，rebuild_gb.cmd）
+----------------------------------------------------------------
+产物: art_initrd_x64_bootimg.gz 309.6 MB → final.gz 405,383,005B（2214 条目）
+12 项自检全部 PASS（init/gb.dex/ui_stub.dex/ARM 路径/…）⇒ DEPLOYED ✔
+（打包器/astack 产物 mtime 08:12 未变 ⇒ 无需重跑 108 打包器；mesa tar 05:44 在位）
+
+【N3-3】PNG：未达成 ✗ —— 卡点已从 "ICU linker" 前移到 "SurfaceFlinger 未注册"
+----------------------------------------------------------------
+$ screencap -p /data/local/tmp/s.png   → 0 字节 / 无文件，无任何报错
+$ service check SurfaceFlinger         → "Service SurfaceFlinger: not found"
+$ service list                          → 仅 1-2 条（manager …）
+$ pidof surfaceflinger                  → "274 353"（**两个实例**：ppid=1 孤儿 + ppid=318）
+⇒ screencap 拿不到 SurfaceFlinger binder 服务 ⇒ 静默退出。
+SF 链的一手证据（本日多轮开机一致）：
+- ANGLE 后端本体完全可用（编排拉起的 eglprobe，带垫片）：
+    [eglprobe] eglGetDisplay=0x… err=0x3000
+    [eglprobe] eglInitialize=1 (v=1.5)   VENDOR=Android  CLIENT_APIS=OpenGL_ES
+    [eglprobe] chooseConfig(RGBA8888/ES2) ok=1 n=15
+    libEGL Loader: loaded /system/lib64/egl/libEGL_angle.so ×3, dlopen success
+    ANGLE: Vulkan 1.4.335 (llvmpipe (LLVM 22.0.0, 256 bits))
+- "couldn't find an OpenGL ES implementation" abort **只发生在没有 proppreload 垫片的
+  进程**（假属性表的 ro.hardware.egl=angle 读不到 ⇒ EGL Loader 无 driver tag）；
+  带垫片的进程读 egl=angle 正常（sf-init.log: find ro.hardware.egl → 我方表 → angle）。
+- SF 双实例互相干扰 + init 侧与编排侧同时拉起（astack v9 在途形态）⇒ 谁都没走到 addService。
+- 08:21:23 开机（v7、单实例、垫片齐）SF 全链走得通：
+    RenderEngine with SkiaGL Backend → GBA::allocate rc=0 ×2 → rc=7(fmt 0x16) → rc=5(usage 0xb33)
+    （rc=5 即 card0 修复前的 renderD128 EACCES；该修复 09:35 已入镜像 ✔）
+⚠ 附带发现（给 astack 后续）：
+- mesa-gl.tar.gz（05:44, 32 条目）只含 GBM/DRI 栈 + ANGLE 三件，**没有
+  libEGL_mesa/libGLESv2_mesa/libGLESv1_CM_mesa**；108 参照系 /vendor/lib64/egl/
+  是 angle+mesa 双后端 ⇒ 若要弃 ANGLE 投 mesa，需把 mesa EGL 驱动三件补进包。
+- linkerconfig 重新生成的 /linkerconfig/ld.config.txt（2732B）**没有 sphal 命名空间**
+  （grep -c sphal = 0），GLES 驱动经 android_load_sphal_library 加载当前靠
+  default ns + permitted.paths 补丁兜底，属隐患。
+- guest 有重启循环（本次窗内 ≥4 次 S5），且 fakelogd 正被二进制 datagram 高频轰炸
+  （[logd][e] 乱码刷屏，20 分钟 ~100MB 控制台日志）——证据归属与磁盘都要防它。
+- STATUS 六 "10:20:29 开机 allocate rc=0 ×2" 为**旧开机污染**：
+  10:03-10:20 各开机段 allocate 命中 0；rc=0×2 的真实出处是 **08:21:23** 开机。
