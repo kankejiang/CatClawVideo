@@ -153,22 +153,25 @@ def main():
                   "png": "png_magic", "init_svc": "init_svc", "aidl": "aidl_lazy",
                   "ebadf": "area_init_fail", "zyg_kill": "zygote_kill", "crash": "crashed"}
         print("log: %.1f MB   boots: %d   (newest %d)" % (size_mb, len(boots), n_m))
-        print("  %-19s %-11s %7s %s" % ("boot", "mode", "alive", " ".join("%9s" % c[1] for c in cols)))
+        print("  %-19s %-11s %9s %s" % ("boot", "mode", "klog-last", " ".join("%9s" % c[1] for c in cols)))
         for k in range(n_m, 0, -1):
             i = len(boots) - k
             so = boots[i][0]
             eo = boots[i + 1][0] if i + 1 < len(boots) else None
-            c, _, _, lt = scan_range(a.log, so, eo)
+            c, _, lines_i, lt = scan_range(a.log, so, eo)
             vals = []
             for key, _ in cols:
                 v = c[lookup[key]]
                 vals.append("%9d" % v)
             mode = "real-init" if c["init_svc"] > 20 else "claw-legacy"
-            print("  %-19s %-11s %6.0fs %s" % (boots[i][1][-19:], mode, lt, " ".join(vals)))
+            if lines_i < 50:
+                mode = "EMPTY/FAIL"
+            print("  %-19s %-11s %8.0fs %s" % (boots[i][1][-19:], mode, lt, " ".join(vals)))
         print()
         print("  reading: SFstart>0 = SF started; alloc=0>0 = allocation OK; PNG>0 = screencap OK;")
         print("           AIDLspam high with SFstart=0 => screencap will hang; areaERR>0 => getprop empty.")
-        print("           mode: real-init = init.svc present (shadow/real init); claw-legacy = absent.")
+        print("           mode: real-init = init.svc present; claw-legacy = absent; EMPTY/FAIL = <50 lines (failed start).")
+        print("           klog-last = last KERNEL timestamp, NOT lifetime (logd lines carry no kernel time).")
         print("           NEVER compare results across modes -- they are different guests.")
         return 0
 
@@ -217,7 +220,8 @@ def main():
     print("log size     : %.1f MB   (large log => ALWAYS scope to one boot)" % size_mb)
     print("boot count   : %d" % len(boots))
     print("analyzed     : QEMU boot @ %s   (#%d from newest)" % (start_txt, n))
-    print("lines in boot: %d" % lines)
+    print("lines in boot: %d   %s" % (lines, "(EMPTY/FAILED START -- do not treat as a real run)" if lines < 50 else ""))
+    print("klog-last    : %.0fs  (last KERNEL timestamp; NOT lifetime: logd lines carry no kernel time)" % last_t)
     print()
     print("-- gates --")
     for g, ok, d in gates:
@@ -232,6 +236,10 @@ def main():
         print("  %-18s %6d   last: %s" % (k, counts[k], lasts[k][:110]))
     print()
     print("-- hints --")
+    if counts["sf_starting"] > 1:
+        print("  * SurfaceFlinger started %d times in ONE boot => multiple instances."
+              % counts["sf_starting"])
+        print("    (N3 2026-10-02: two SF procs, NEITHER reached addService => screencap hangs.)")
     if counts["aidl_lazy"] > 0 and counts["sf_line"] == 0:
         print("  * SurfaceFlingerAIDL lazy-start spam with no [sf] output")
         print("    => SurfaceFlinger never started/failed silently; screencap will hang.")
