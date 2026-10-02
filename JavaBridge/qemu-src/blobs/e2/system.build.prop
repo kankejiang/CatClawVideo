@@ -164,3 +164,6 @@ media.recorder.show_manufacturer_and_model=true
 # Auto-added by post_process_props.py
 persist.sys.usb.config=adb
 # end of file
+# === E2/N1-3：从 108 zygote64 的 getprop 全量 diff 出来的缺项（ART 找 ISA 映射要用）===
+ro.dalvik.vm.isa.arm=x86
+ro.dalvik.vm.isa.arm64=x86_64
