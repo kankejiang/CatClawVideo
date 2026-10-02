@@ -24,6 +24,10 @@ $BB mount -t devtmpfs devtmpfs /dev 2>/dev/null || $BB mount -t tmpfs tmpfs /dev
 
 # B1.1: binder 三实例（binderfs 不可用时的正解）
 [ -f /modules/binder_linux.ko ] && $BB insmod /modules/binder_linux.ko devices=binder,hwbinder,vndbinder && echo '[init] binder: 三实例已建'
+for m in crc16 crc32c_generic mbcache jbd2 ext4 binfmt_misc; do
+    [ -f /modules/$m.ko ] || continue
+    echo "[init] insmod $m: $($BB insmod /modules/$m.ko 2>&1)" || true
+done
 for m in virtio_ring virtio virtio_pci_modern_dev virtio_pci_legacy_dev virtio_pci virtio_blk failover net_failover virtio_net binder_linux; do
     echo "[init] insmod $m: $($BB insmod /modules/$m.ko 2>&1)" || true
 done
