@@ -43,7 +43,12 @@ public sealed class ViewWindow : Form
         _ct = ct;
 
         Text = $"stream-probe — CATCLAW/1 {info.Width}x{info.Height} {info.Codec}@{info.Fps}";
-        ClientSize = new Size(Math.Min(info.Width * 3 / 2, 1200), Math.Min(info.Height * 3 / 2, 800));
+        // 窗口按设备宽高比自适应：占工作区 ≤85%，且不超过设备尺寸的 1.5 倍
+        var wa = Screen.PrimaryScreen.WorkingArea;
+        double scale = Math.Min(0.85 * wa.Width / info.Width, 0.85 * wa.Height / info.Height);
+        scale = Math.Min(scale, 1.5);
+        ClientSize = new Size(Math.Max((int)(info.Width * scale), 640),
+                              Math.Max((int)(info.Height * scale), 360));
         StartPosition = FormStartPosition.CenterScreen;
         KeyPreview = true;
         DoubleBuffered = true;
@@ -181,6 +186,14 @@ public sealed class ViewWindow : Form
 
     private void OnKeyDown(object? s, KeyEventArgs e)
     {
+        // Esc = 退出投屏（一键启动场景；右键 = Android BACK）
+        if (e.KeyCode == Keys.Escape)
+        {
+            Close();
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+            return;
+        }
         uint code = AndroidKeys.FromWinForms(e.KeyCode);
         if (code != AndroidKeys.Unknown)
         {

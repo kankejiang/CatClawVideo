@@ -6,6 +6,15 @@
 
 > 本目录为独立 csproj，**不在 .sln 内**，不依赖 `CatClawVideo.Maui` / `CatClawVideo.Core`。
 
+## 一键投屏（N2-3：三步看到 108 的安卓画面）
+
+1. **双击 `launch-cast.cmd`**（首次运行会自动编译）
+2. 等待窗口弹出（服务端没起会**自动 ssh 拉起** 108:/root/waydroid-stream 并等源预热）
+3. 看画面 —— 鼠标点击/拖动=触摸，右键=BACK，滚轮=滚动；**Esc 退出**；断线自动重连
+
+前提（一次性）：`ssh root@10.0.0.108` 免密可登录、108 上存在 `/root/waydroid-stream/serve.sh`。
+窗口按设备宽高比自适应，标题栏实时显示帧率与累计帧数。
+
 ## 构建 & 运行
 
 ```powershell
@@ -17,6 +26,9 @@ dotnet run --project tools\stream-probe -- --mock --port 27183 --verbose
 
 # 自测：终端 B 起客户端连上去
 dotnet run --project tools\stream-probe -- --connect 127.0.0.1:27183
+
+# 真机投屏（108 的 waydroid）
+dotnet run --project tools\stream-probe -- --connect 10.0.0.108:27283
 ```
 
 客户端窗口显示 640×360 合成画面（弹跳色块 + 帧号 + 状态行）。
@@ -29,10 +41,13 @@ dotnet run --project tools\stream-probe -- --connect 127.0.0.1:27183
 | `--mock` | 启动模拟服务端（合成 JPEG 30fps + 打印输入帧） |
 | `--connect host:port` | 作为客户端连接服务端（默认端口 27183） |
 | `--port N` | `--mock` 模式监听端口（默认 27183） |
-| `--dump N` | 把收到的前 N 个视频帧存为 `dump\frame_%04d.jpg` |
+| `--dump N` | 把收到的前 N 个视频帧存为 `dump\frame_%04d.jpg/png` |
 | `--auto-input` | 连接后 2s 自动发一组触摸/按键/滚轮帧（无人值守自测用） |
 | `--seconds N` | N 秒后自动退出（无人值守自测用） |
 | `--verbose` | 打印前若干帧的帧头（长度/类型）与心跳 |
+| `--save-stream 文件` | 连接后不发握手（raw 裸流模式）抓 T3 的 Annex-B 流存盘 |
+| `--decode-file 文件` | 离线解码统计：AU 数/解码率/首帧延迟/单帧耗时（N2-1 判据） |
+| `--width N --height N` | `--decode-file` 时把握手分辨率作为解码器尺寸提示 |
 
 ### 输入映射
 
@@ -86,21 +101,23 @@ stream-probe.exe --connect 127.0.0.1:27183 --dump 30 --auto-input --seconds 12 -
 
 ## 未验证项 / 已知限制
 
-- **H.264 解码（`codec=h264`）为桩**：`H264Decoder.cs` 目前返回 false（每 100 帧提示一次）。
-  计划用 Media Foundation `MFCreateTransform` 实现；若 MF 做不动则 `ffmpeg.exe` 子进程兜底
-  （届时会在本 README 声明该外部依赖）。**jpeg 链路已完整验证**，h264 待 T3 服务端就绪后联调。
 - **右键 = BACK** 是本工具的映射约定（模拟遥控返回），非协议内容；联调时可按需调整。
 - 触摸坐标按 **Zoom（保持比例 letterbox）** 反算：窗口黑边区域点击会 clamp 到边缘坐标。
+- **显示帧率受 T3 源上限约束**：screencap 源采集 ~2.3fps → 宿主 CFR 复制后发布 ~14fps
+  （设备独占时）；客户端显示 100% 收到的帧，解码本身无瓶颈（单 AU 均值 16ms）。
+- 解码器初始化日志较多（槽位自检/哨兵），属刻意排障输出；初始化失败会直接抛错。
 
 ## 文件结构
 
 ```
 tools/stream-probe/
   stream-probe.csproj   # 独立工程：net11.0-windows + UseWindowsForms，不进 .sln
+  launch-cast.cmd       # 一键投屏：探活→ssh 自动拉起服务端→断线重连（N2-3）
   Program.cs            # 命令行解析、客户端会话（收流/dump/auto-input/退出码）
   Protocol.cs           # CATCLAW/1 编解码：握手 + 长度前缀帧 + 各类型负载（全部大端）
   AndroidKeys.cs        # Android 键码子集 + WinForms Keys → keycode 窄映射
   MockServer.cs         # --mock：30fps 合成 JPEG + 输入帧打印 + 心跳
-  ViewWindow.cs         # WinForms 显示（双缓冲）+ 鼠标/键盘/滚轮捕获 → 输入帧
-  H264Decoder.cs        # Media Foundation 解码桩（TODO：待 T3 联调时实现）
+  ViewWindow.cs         # WinForms 显示（双缓冲）+ 鼠标/键盘/滚轮捕获 → 输入帧；Esc=退出
+  H264Decoder.cs        # Media Foundation 解码门面（N2-1 定稿，无外部依赖）
+  MediaFoundationH264Decoder.cs # MF H264 解码实现（裸 vtable 直调 + 槽位哨兵自检）
 ```
