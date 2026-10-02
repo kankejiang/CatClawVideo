@@ -245,6 +245,20 @@ public class Server {
                         try (java.io.FileOutputStream fo = new java.io.FileOutputStream(f)) { fo.write(data); }
                         yield "written " + data.length + "B";
                     }
+                    case "stackdump" -> {
+                        // 自打线程栈（guest 里没有 tombstoned/debuggerd，卡死时这是唯一的眼睛）：
+                        // 全部线程的 name + 状态 + 顶层 12 帧进 stderr（→ 宿主 DiagLog）。
+                        StringBuilder sb = new StringBuilder("\n=== stackdump ===\n");
+                        for (java.util.Map.Entry<Thread, StackTraceElement[]> e : Thread.getAllStackTraces().entrySet()) {
+                            Thread th = e.getKey();
+                            sb.append("── ").append(th.getName()).append(" state=").append(th.getState())
+                              .append(" daemon=").append(th.isDaemon()).append('\n');
+                            StackTraceElement[] st = e.getValue();
+                            for (int i = 0; i < Math.min(12, st.length); i++) sb.append("    at ").append(st[i]).append('\n');
+                        }
+                        System.err.print(sb.toString());
+                        yield "dumped " + Thread.getAllStackTraces().size() + " threads";
+                    }
                     case "ping" -> "pong";
                     case "guard-encrypt" -> {
                         // guest 内 Guard 加密：凭据回写 spUtils 前的逆向操作（同 Rc.KJ 体系）
@@ -1578,8 +1592,12 @@ public class Server {
                 m.setAccessible(true);
                 Object r = m.invoke(null, data);
                 if (r instanceof String str && !str.isEmpty()) return str;
-            } catch (Throwable ignored) { }
+                System.err.println("[guard-decrypt] " + spider.getClass().getSimpleName() + ".KJ 返回空（data=" + data.length() + "B）");
+            } catch (Throwable t) {
+                System.err.println("[guard-decrypt] " + spider.getClass().getSimpleName() + ".KJ 异常: " + t);
+            }
         }
+        System.err.println("[guard-decrypt] 解密失败：SPIDERS=" + SPIDERS.size() + "，无可用的 Rc.KJ");
         return null;
     }
 
