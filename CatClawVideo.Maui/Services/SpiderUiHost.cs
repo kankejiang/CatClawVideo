@@ -165,29 +165,65 @@ public static class SpiderUiHost
             }
         }
 
-        // 列表选择（如「我的夸父- 未登录 / 停用中」）——ActionSheet 单层最贴 Android setItems
+        // 列表选择（AlertDialog.setItems）：合成树页渲染（每项 = 可点行，点击回传下标），
+        // 不再用 MAUI ActionSheet（2026-10-02 用户反馈统一视觉）。点项后 jar 自己 dismiss。
         if (ev["items"] is System.Text.Json.Nodes.JsonArray arr && arr.Count > 0)
         {
-            var list = arr.Select(x => x?.GetValue<string>() ?? "").ToArray();
-            var pick = await Shell.Current.DisplayActionSheet(
-                string.IsNullOrWhiteSpace(title) ? message : title, "取消", null, list).ConfigureAwait(true);
-            var idx = pick is null ? -2 : Array.IndexOf(list, pick);
-            await SendUiResultAsync(seq, idx < 0 ? -2 : idx).ConfigureAwait(true);
+            var rowsJson = new System.Text.Json.Nodes.JsonArray();
+            var n = 0;
+            foreach (var x in arr)
+                rowsJson.Add(new JsonObject
+                {
+                    ["k"] = "LinearLayout", ["i"] = n++,
+                    ["p"] = new JsonArray(14, 13, 14, 13),
+                    ["c"] = new JsonArray(new JsonObject
+                    {
+                        ["k"] = "TextView", ["t"] = x?.GetValue<string>() ?? "",
+                        ["ts"] = 14, ["tc"] = -16777216,
+                    }),
+                });
+            var synth = new JsonObject
+            {
+                ["k"] = "LinearLayout", ["o"] = 1,
+                ["p"] = new JsonArray(8, 8, 8, 8),
+                ["bg"] = new JsonObject { ["c"] = -1, ["r"] = 14.0 },
+                ["c"] = rowsJson,
+            };
+            var tp = new Pages.SpiderTreeDialogPage(seq, synth.ToJsonString(),
+                idx => _ = SendUiResultAsync(seq, idx),
+                () => _ = SendUiResultAsync(seq, -2),
+                negative: "取消");
+            Windows[seq] = tp;
+            await Shell.Current.Navigation.PushModalAsync(tp).ConfigureAwait(true);
             return;
         }
 
-        // 按钮组合
+        // 按钮组合（无自定义 View 的纯 AlertDialog）：合成一棵最小树走树渲染页（白卡片 +
+        // 底部按钮），视觉与其余对话框统一，不再用 MAUI DisplayAlert（2026-10-02 用户反馈）。
         var pos = ev["positive"]?.GetValue<string>();
         var neg = ev["negative"]?.GetValue<string>();
-        if (pos is not null && neg is not null)
+        var neu = ev["neutral"]?.GetValue<string>();
         {
-            var ok = await Shell.Current.DisplayAlertAsync(title, message, pos, neg).ConfigureAwait(true);
-            await SendUiResultAsync(seq, ok ? -1 : -2).ConfigureAwait(true);
-        }
-        else
-        {
-            await Shell.Current.DisplayAlertAsync(title, message, pos ?? "确定").ConfigureAwait(true);
-            await SendUiResultAsync(seq, -1).ConfigureAwait(true);
+            JsonObject TV(string t, double ts, int tc) => new()
+            {
+                ["k"] = "TextView", ["t"] = t, ["ts"] = ts, ["tc"] = tc,
+            };
+            var synth = new JsonObject
+            {
+                ["k"] = "LinearLayout", ["o"] = 1,
+                ["p"] = new JsonArray(24, 20, 24, 20),
+                ["bg"] = new JsonObject { ["c"] = -1, ["r"] = 14.0 },
+                ["c"] = new JsonArray(
+                    string.IsNullOrEmpty(title) ? null : TV(title!, 17, -16777216),
+                    string.IsNullOrEmpty(message) ? null : TV(message!, 13.5, -8355712)),
+            };
+            var tp = new Pages.SpiderTreeDialogPage(seq, synth.ToJsonString(),
+                idx => _ = SendUiResultAsync(seq, idx),
+                () => _ = SendUiResultAsync(seq, -2),
+                pos ?? (string.IsNullOrEmpty(neu) && string.IsNullOrEmpty(neg) ? "确定" : ""),
+                neg ?? "", neu ?? "");
+            Windows[seq] = tp;
+            await Shell.Current.Navigation.PushModalAsync(tp).ConfigureAwait(true);
         }
     }
 

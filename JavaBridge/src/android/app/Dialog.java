@@ -114,6 +114,9 @@ public class Dialog implements DialogInterface {
             if (plain.length() > 0 && (message == null || message.length() == 0)) {
                 try { spec.put("message", plain.toString()); } catch (Throwable ignored) { }
             }
+            // A 路线（2026-10-02）：没有可点行也可能是要展示的界面（「加载中…正在获取账号信息」
+            // 进度框）——树照样上行，宿主树页连底部按钮一起渲染，不再掉进 MAUI DisplayAlert。
+            try { if (tree != null) spec.put("tree", tree); } catch (Throwable ignored) { }
             return null;
         }
         try {
