@@ -9,16 +9,15 @@ public class LinearLayout extends ViewGroup {
     public LinearLayout() { super(); }
     public LinearLayout(Context c) { super(c); }
     public LinearLayout(Context c, AttributeSet attrs) { super(c, attrs); }
-    public void setOrientation(int o) { }
+    /** 方向真存（A 路线树序列化要用；真机 LinearLayout 默认 HORIZONTAL）。 */
+    private int orientation = HORIZONTAL;
+    public void setOrientation(int o) { orientation = o; }
+    public int getOrientation() { return orientation; }
 
-    /**
-     * ⚠ 必须转交 {@code super}：jar 的调用点描述符写死 {@code LinearLayout.addView(View)}，
-     * 这里留空实现会把 ViewGroup 那个真正存子节点的实现挡掉 —— 网盘对话框的
-     * LinearLayout 于是永远是空的，宿主只收到一个没有内容的框（2026-09-24 实测）。
-     */
-    @Override public void addView(View v) { super.addView(v); }
-
-    public void setGravity(int gravity) { }
+    /** gravity 真存（渲染器用它决定行的对齐）。 */
+    private int gravity;
+    public void setGravity(int g) { gravity = g; }
+    public int getGravity() { return gravity; }
     public void setWeightSum(float weightSum) { }
 
     /** LinearLayout.LayoutParams 桩（真实父类 ViewGroup.MarginLayoutParams）。 */
@@ -38,5 +37,4 @@ public class LinearLayout extends ViewGroup {
     }
 
     // ── 自动补齐：jar 引用到但桩缺失的成员（android-33 签名，空实现）──
-    public int getOrientation() { return 0; }
 }

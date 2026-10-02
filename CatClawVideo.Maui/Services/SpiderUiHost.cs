@@ -71,6 +71,10 @@ public static class SpiderUiHost
                     if (Windows.TryGetValue(ev["seq"]?.GetValue<int>() ?? -1, out var host)
                         && host is Pages.SpiderDialogPage sdp && ev["rows"] is JsonArray ra)
                         MainThread.BeginInvokeOnMainThread(() => sdp.UpdateRows(ParseRows(ra)));
+                    // A 路线：树渲染页整树换新（jar 改的不只是可点行，还有状态文本）
+                    else if (Windows.TryGetValue(ev["seq"]?.GetValue<int>() ?? -1, out var host2)
+                        && host2 is Pages.SpiderTreeDialogPage tp2 && ev["tree"] is JsonObject tr2)
+                        MainThread.BeginInvokeOnMainThread(() => tp2.UpdateTree(tr2.ToJsonString()));
                     break;
                 case "ui-toast":
                     var text = ev["text"]?.GetValue<string>() ?? "";
@@ -126,7 +130,20 @@ public static class SpiderUiHost
             return;
         }
 
-        // 行 / 格结构（桥摊平 jar 的自定义 View 树而来）→ 两栏对话框：
+        // A 路线（2026-10-02）：桥上行了整棵 View 树（tree 字段）→ 树渲染页按 jar 的
+        // 文本/字号/颜色/背景/结构 1:1 还原（对齐真机观感）。rows 只作降级兜底。
+        if (ev["tree"] is JsonObject tree)
+        {
+            var tSeq = ev["seq"]?.GetValue<int>() ?? 0;
+            var tp = new Pages.SpiderTreeDialogPage(tSeq, tree.ToJsonString(),
+                idx => _ = SendUiResultAsync(tSeq, idx),
+                () => _ = SendUiResultAsync(tSeq, -2));   // ✕/遮罩/Back = 取消
+            Windows[tSeq] = tp;
+            await Shell.Current.Navigation.PushModalAsync(tp).ConfigureAwait(true);
+            return;
+        }
+
+        // 行 / 格结构（桥摊平的自定义 View 树而来）→ 两栏对话框：
         // 网盘行是「盘名占宽 + 启用/停用占窄」，用 ActionSheet 平铺会排成 8 行、和真机差很远
         if (ev["rows"] is JsonArray { Count: > 0 } rowArr)
         {

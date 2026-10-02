@@ -16,6 +16,9 @@ public class GradientDrawable extends Drawable {
     }
 
     private int color;
+    private float cornerRadius;
+    private int strokeColor; private int strokeWidth;
+    private int shape = RECTANGLE;
 
     public GradientDrawable() { }
 
@@ -28,13 +31,18 @@ public class GradientDrawable extends Drawable {
 
     public void setColors(int[] colors) { }
 
-    public void setCornerRadius(float radius) { }
+    /** 圆角真存（A 路线树序列化还原卡片观感）。 */
+    public void setCornerRadius(float radius) { this.cornerRadius = radius; }
+    public float getCornerRadius() { return cornerRadius; }
 
     public void setCornerRadii(float[] radii) { }
 
-    public void setStroke(int width, int color) { }
+    /** 描边真存（禁用态/边框样式）。 */
+    public void setStroke(int width, int color) { this.strokeWidth = width; this.strokeColor = color; }
 
-    public void setStroke(int width, int color, float dashWidth, float dashGap) { }
+    public void setStroke(int width, int color, float dashWidth, float dashGap) {
+        this.strokeWidth = width; this.strokeColor = color;
+    }
 
     public void setGradientType(int gradient) { }
 

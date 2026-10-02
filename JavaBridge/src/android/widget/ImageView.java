@@ -31,5 +31,5 @@ public class ImageView extends View {
     public void setImageMatrix(android.graphics.Matrix p0) { }
     public void setCropToPadding(boolean p0) { }
     public void onDraw(android.graphics.Canvas p0) { }
-    public void setVisibility(int p0) { }
+    @Override public void setVisibility(int p0) { super.setVisibility(p0); }
 }

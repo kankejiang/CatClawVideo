@@ -81,9 +81,10 @@ public class TextView extends View {
     public void setLineSpacing(float add, float mult) { }
 
     // ── 行 / 排版 ──
-    public void setGravity(int gravity) { }
-    public int getGravity() { return 0; }
-    public void setGravity(int gravity, int textAlignment) { }
+    private int gravity = -1;
+    public void setGravity(int gravity) { this.gravity = gravity; }
+    public int getGravity() { return gravity; }
+    public void setGravity(int gravity, int textAlignment) { this.gravity = gravity; }
     public void setSingleLine() { }
     public void setSingleLine(boolean singleLine) { }
     public void setMaxLines(int maxLines) { }
@@ -102,7 +103,7 @@ public class TextView extends View {
     public void setInputType(int type) { }
     public void setImeOptions(int imeOptions) { }
     public void setFilters(Object[] filters) { }
-    public void setEnabled(boolean enabled) { }
+    @Override public void setEnabled(boolean enabled) { super.setEnabled(enabled); }
 
     // ── 内嵌图标 ──
     public void setCompoundDrawables(Drawable left, Drawable top, Drawable right, Drawable bottom) { }
@@ -111,7 +112,7 @@ public class TextView extends View {
 
     // ── 自动补齐：jar 引用到但桩缺失的成员（android-33 签名，空实现）──
     public TextView(android.content.Context p0, android.util.AttributeSet p1, int p2) { }
-    public void setPadding(int p0, int p1, int p2, int p3) { }
+    @Override public void setPadding(int p0, int p1, int p2, int p3) { super.setPadding(p0, p1, p2, p3); }
     public void setHintTextColor(android.content.res.ColorStateList p0) { }
     public void setHint(int p0) { }
     public void setOnEditorActionListener(android.widget.TextView.OnEditorActionListener p0) { }

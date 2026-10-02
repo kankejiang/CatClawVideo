@@ -14,12 +14,18 @@ public class ViewGroup extends View {
 
     public void addView(View child) { if (child != null) children.add(child); }
     public void addView(View child, int index) { if (child != null) children.add(Math.max(0, Math.min(index, children.size())), child); }
-    public void addView(View child, LayoutParams params) { addView(child); }
+    /** LayoutParams 真存（A 路线树序列化要读 width/height/margins 语义）。 */
+    public void addView(View child, LayoutParams params) {
+        if (child != null) { child.setLayoutParams(params); children.add(child); }
+    }
+    public void addView(View child, int index, LayoutParams params) {
+        if (child != null) { child.setLayoutParams(params); children.add(Math.max(0, Math.min(index, children.size())), child); }
+    }
     public void removeView(View view) { children.remove(view); }
     public void removeAllViews() { children.clear(); }
     public int getChildCount() { return children.size(); }
     public View getChildAt(int index) { return index >= 0 && index < children.size() ? children.get(index) : null; }
-    public void setPadding(int l, int t, int r, int b) { }
+    @Override public void setPadding(int l, int t, int r, int b) { super.setPadding(l, t, r, b); }
     public void setClipToPadding(boolean clip) { }
     public void setDescendantFocusability(int focusability) { }
     public void setOnHierarchyChangeListener(Object listener) { }

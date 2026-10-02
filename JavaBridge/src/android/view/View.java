@@ -14,12 +14,15 @@ public class View {
     public View(Context c) { }
     public View(Context c, AttributeSet attrs) { }
 
-    public void setVisibility(int v) { }
-    public int getVisibility() { return VISIBLE; }
-    public void setEnabled(boolean e) { }
-    public boolean isEnabled() { return true; }
-    public void setLayoutParams(ViewGroup.LayoutParams params) { }
-    public ViewGroup.LayoutParams getLayoutParams() { return new ViewGroup.LayoutParams(0, 0); }
+    public void setVisibility(int v) { visFlag = v; }
+    public int getVisibility() { return visFlag; }
+    public void setEnabled(boolean e) { enFlag = e; }
+    public boolean isEnabled() { return enFlag; }
+    /** LayoutParams 真存（A 路线树序列化要读宽高语义）；jar 没设过时回落旧行为（不落盘）。 */
+    public void setLayoutParams(ViewGroup.LayoutParams params) { layoutParams = params; }
+    public ViewGroup.LayoutParams getLayoutParams() {
+        return layoutParams != null ? layoutParams : new ViewGroup.LayoutParams(0, 0);
+    }
     public Context getContext() { return android.app.Application.getInstance(); }
 
     public View findViewById(int id) { return null; }
@@ -95,7 +98,7 @@ public class View {
 
     public Object getTag() { return tag; }
 
-    public void setBackgroundColor(int color) { }
+    public void setBackgroundColor(int color) { bgColor = color; bgSet = true; }
 
     public void setImportantForAccessibility(int mode) { }
 
@@ -123,20 +126,25 @@ public class View {
     // ═══════════ 布局 / 外观 ═══════════
     // Guard 壳框架弹网盘对话框时会逐个设这些属性，**缺任意一个就 NoSuchMethodError**
     // 打断整条 UI 链（2026-09-24 实测：Pan.tF 卡在 View.setPadding 上）。
-    public void setPadding(int left, int top, int right, int bottom) { }
-    public void setPaddingRelative(int start, int top, int end, int bottom) { }
-    public int getPaddingLeft() { return 0; }
-    public int getPaddingTop() { return 0; }
-    public int getPaddingRight() { return 0; }
-    public int getPaddingBottom() { return 0; }
+    // A 路线（2026-10-02）：padding/背景/布局位置真存——整树序列化要靠它们还原 jar 的界面。
+    public void setPadding(int left, int top, int right, int bottom) {
+        padL = left; padT = top; padR = right; padB = bottom;
+    }
+    public void setPaddingRelative(int start, int top, int end, int bottom) {
+        setPadding(start, top, end, bottom);
+    }
+    public int getPaddingLeft() { return padL; }
+    public int getPaddingTop() { return padT; }
+    public int getPaddingRight() { return padR; }
+    public int getPaddingBottom() { return padB; }
     public void setMinimumWidth(int minWidth) { }
     public void setMinimumHeight(int minHeight) { }
     public int getMinimumWidth() { return 0; }
     public int getMinimumHeight() { return 0; }
-    public void setBackground(android.graphics.drawable.Drawable background) { }
-    public void setBackgroundDrawable(android.graphics.drawable.Drawable background) { }
+    public void setBackground(android.graphics.drawable.Drawable background) { bgDrawable = background; }
+    public void setBackgroundDrawable(android.graphics.drawable.Drawable background) { bgDrawable = background; }
     public void setBackgroundResource(int resid) { }
-    public android.graphics.drawable.Drawable getBackground() { return null; }
+    public android.graphics.drawable.Drawable getBackground() { return bgDrawable; }
     public void setBackgroundTintList(android.content.res.ColorStateList tint) { }
     public void setAlpha(float alpha) { }
     public float getAlpha() { return 1f; }
@@ -150,10 +158,10 @@ public class View {
     }
 
     public Object getTag(int key) { return tagged == null ? null : tagged.get(key); }
-    public void setSelected(boolean selected) { }
-    public boolean isSelected() { return false; }
-    public void setClickable(boolean clickable) { }
-    public boolean isClickable() { return true; }
+    public void setSelected(boolean selected) { selFlag = selected; }
+    public boolean isSelected() { return selFlag; }
+    public void setClickable(boolean clickable) { clickFlag = clickable; }
+    public boolean isClickable() { return clickSet ? clickFlag : true; }
     public int getMeasuredWidth() { return measuredW; }
     public int getMeasuredHeight() { return measuredH; }
 
@@ -186,6 +194,7 @@ public class View {
     public void layout(int l, int t, int r, int b) {
         viewW = Math.max(0, r - l);
         viewH = Math.max(0, b - t);
+        uiLeft = l; uiTop = t;
     }
 
     /** 真机的 {@code View.MeasureSpec}：壳的 onMeasure 普遍用 {@code getSize}/{@code getMode}。 */
@@ -318,4 +327,35 @@ public class View {
     public android.view.ViewPropertyAnimator animate() { return ANIMATOR; }
 
     private static final android.view.ViewPropertyAnimator ANIMATOR = new android.view.ViewPropertyAnimator();
+
+    // ═══════════ A 路线：整树序列化用的真实属性存储（2026-10-02）═══════════
+    // jar 设置的视觉信息以前全被空 setter 丢掉（宿主只能按自己主题重画，见 2026-10-02
+    // 用户对比截图「夸克网盘登录框」）。这里真存 padding/背景/位置/状态，供
+    // Dialog.flattenView 序列化整棵树。ui* 前缀 = 专给序列化器的访问器，不与真机签名冲突。
+    private int visFlag = VISIBLE;
+    private boolean enFlag = true;
+    private boolean selFlag;
+    private boolean clickSet; private boolean clickFlag;
+    private int padL, padT, padR, padB;
+    private int uiLeft, uiTop;
+    private int bgColor; private boolean bgSet;
+    private android.graphics.drawable.Drawable bgDrawable;
+    private ViewGroup.LayoutParams layoutParams;
+
+    /** 背景Drawable（ColorDrawable/GradientDrawable 时序列化色值/圆角）。 */
+    public android.graphics.drawable.Drawable uiBgDrawable() { return bgDrawable; }
+    /** setBackgroundColor 设置的纯色背景（与 uiBgDrawable 二选一，bgSet 才有效）。 */
+    public int uiBgColor() { return bgColor; }
+    public boolean uiBgColorSet() { return bgSet; }
+    public int uiVisibility() { return visFlag; }
+    public boolean uiEnabled() { return enFlag; }
+    public boolean uiSelected() { return selFlag; }
+    public int uiPadL() { return padL; }
+    public int uiPadT() { return padT; }
+    public int uiPadR() { return padR; }
+    public int uiPadB() { return padB; }
+    /** layout() 的左/上坐标（jar 自定义 View 自己 layout 过才有值，多数节点是 0）。 */
+    public int uiLeft() { return uiLeft; }
+    public int uiTop() { return uiTop; }
+    public ViewGroup.LayoutParams uiLayoutParams() { return layoutParams; }
 }

@@ -106,7 +106,9 @@ public class Dialog implements DialogInterface {
         java.util.List<String> labels = new java.util.ArrayList<>();
         java.util.List<java.util.List<Integer>> rows = new java.util.ArrayList<>();
         StringBuilder plain = new StringBuilder();
-        collectRows(view, nodes, labels, rows, plain);
+        // A 路线（2026-10-02）：一遍 DFS 同时产出「树 + 行」，下标分配规则与旧 collectRows
+        // 完全一致 ⇒ 点击路由（which = 节点下标）零变化；tree 带全部视觉属性，宿主 1:1 渲染。
+        JSONObject tree = treeOf(view, nodes, labels, rows, plain);
         if (nodes.isEmpty()) {
             // 纯展示型视图：没有可点行，但至少把文本搬上去，别留空框
             if (plain.length() > 0 && (message == null || message.length() == 0)) {
@@ -136,6 +138,7 @@ public class Dialog implements DialogInterface {
                 rowsArr.put(cells);
             }
             spec.put("rows", rowsArr);
+            if (tree != null) spec.put("tree", tree);
         } catch (Throwable ignored) { }
         viewFlattened = true;
         flatNodes = nodes;
@@ -174,7 +177,19 @@ public class Dialog implements DialogInterface {
                 for (int i : r) cells.put(new JSONObject().put("t", nodeText(flatNodes.get(i))).put("i", i));
                 out.put(cells);
             }
-            UiBridge.emit(new JSONObject().put("ev", "ui-rows").put("seq", seq).put("rows", out));
+            JSONObject ev = new JSONObject().put("ev", "ui-rows").put("seq", seq).put("rows", out);
+            // A 路线（2026-10-02）：jar 就地 setText 改的不只是可点行（还有「未登录→已登录」这类
+            // 状态文本）——整树重序列化上行，宿主树渲染页整树换新。节点下标分配规则不变，
+            // 点击路由不受影响。
+            if (view != null) {
+                java.util.List<android.view.View> nodes2 = new java.util.ArrayList<>();
+                java.util.List<String> labels2 = new java.util.ArrayList<>();
+                java.util.List<java.util.List<Integer>> rows2 = new java.util.ArrayList<>();
+                StringBuilder plain2 = new StringBuilder();
+                org.json.JSONObject tree = treeOf(view, nodes2, labels2, rows2, plain2);
+                if (tree != null) ev.put("tree", tree);
+            }
+            UiBridge.emit(ev);
         } catch (Throwable t) {
             System.err.println("[ui] 重发行数据失败: " + t);
         }
@@ -191,36 +206,50 @@ public class Dialog implements DialogInterface {
     protected boolean viewFlattened;
 
     /**
-     * 深度优先找「可点行」。
-     * <para>带 OnClickListener 的节点算一行且不再深入。同一容器里有多个可点控件时
-     * （网盘行 = 盘名 + 启用/停用两个按钮），除主角外都给标签补上盘名 ——
-     * 宿主是平铺列表,光看「停用中」分不清是哪家盘。</para>
+     * 深度优先序列化整棵 View 树（A 路线核心，2026-10-02）。
+     * <para>与旧 {@code collectRows} 同一套行规则（下标分配完全一致）：</para>
+     * <list>带 OnClickListener 的节点 = 一行（记下标、不再深入）；同一容器 ≥2 个可点
+     * 子控件 = 一行多格；其余节点照常下钻，叶子文本进 plain。</list>
+     * <para>每个节点带视觉属性（文本/字号/颜色/padding/背景色圆角/方向/禁用态/位图），
+     * 宿主按它 1:1 还原 jar 作者设计的界面（不再是宿主主题的胶囊按钮）。</para>
      */
-    private static void collectRows(android.view.View v, java.util.List<android.view.View> nodes,
-                                    java.util.List<String> labels,
-                                    java.util.List<java.util.List<Integer>> rows, StringBuilder plain) {
-        if (v == null) return;
+    private org.json.JSONObject treeOf(android.view.View v, java.util.List<android.view.View> nodes,
+                                       java.util.List<String> labels,
+                                       java.util.List<java.util.List<Integer>> rows, StringBuilder plain) {
+        if (v == null) return null;
+        org.json.JSONObject n = nodeJson(v);
         if (v.clickListener() != null) {
-            labels.add(rowLabel(v, v, nodes.size()));
+            int idx = nodes.size();
+            labels.add(rowLabel(v, v, idx));
             nodes.add(v);
-            rows.add(java.util.List.of(nodes.size() - 1));
-            return;
+            rows.add(java.util.List.of(idx));
+            try { n.put("i", idx); } catch (Throwable ignored) { }
+            return n;
         }
         if (v instanceof ViewGroup g) {
             java.util.List<android.view.View> kids = clickableChildren(g);
+            org.json.JSONArray arr = new org.json.JSONArray();
             if (kids.size() > 1) {
                 // 一个容器里并排多个可点控件 = 一行（行内不再深入，免得子控件重复成行）
                 java.util.List<Integer> row = new java.util.ArrayList<>();
                 for (android.view.View k : kids) {
-                    labels.add(rowLabel(k, kids.get(0), nodes.size()));
+                    int idx = nodes.size();
+                    labels.add(rowLabel(k, kids.get(0), idx));
                     nodes.add(k);
-                    row.add(nodes.size() - 1);
+                    row.add(idx);
+                    org.json.JSONObject kn = nodeJson(k);
+                    try { kn.put("i", idx); } catch (Throwable ignored) { }
+                    arr.put(kn);
                 }
                 rows.add(row);
-                return;
+            } else {
+                for (int i = 0; i < g.getChildCount(); i++) {
+                    org.json.JSONObject cn = treeOf(g.getChildAt(i), nodes, labels, rows, plain);
+                    if (cn != null) arr.put(cn);
+                }
             }
-            for (int i = 0; i < g.getChildCount(); i++) collectRows(g.getChildAt(i), nodes, labels, rows, plain);
-            return;
+            try { if (arr.length() > 0) n.put("c", arr); } catch (Throwable ignored) { }
+            return n;
         }
         StringBuilder sb = new StringBuilder();
         textOf(v, sb);
@@ -229,6 +258,58 @@ public class Dialog implements DialogInterface {
             if (plain.length() > 0) plain.append('\n');
             plain.append(s);
         }
+        return n;
+    }
+
+    /** 单个节点的视觉属性（字段名缩写位：树会跟着每个对话框上行，省体积）。 */
+    private static org.json.JSONObject nodeJson(android.view.View v) {
+        org.json.JSONObject n = new org.json.JSONObject();
+        try {
+            n.put("k", v.getClass().getSimpleName());
+            if (v instanceof android.widget.TextView t) {
+                n.put("t", String.valueOf(t.getText()));
+                n.put("ts", (double) t.getTextSize());
+                n.put("tc", t.getCurrentTextColor());
+                int g = t.getGravity();
+                if (g >= 0) n.put("g", g);
+            }
+            if (v instanceof android.widget.ImageView iv && iv.getImageBitmap() != null) {
+                org.json.JSONObject img = UiBridge.qrJson(iv.getImageBitmap());
+                if (img != null) n.put("img", img);
+            }
+            int w = v.getWidth(), h = v.getHeight();
+            if (w > 0) n.put("w", w);
+            if (h > 0) n.put("h", h);
+            ViewGroup.LayoutParams lp = v.uiLayoutParams();
+            if (lp != null) {
+                if (lp.width > 0) n.put("w", lp.width);
+                if (lp.height > 0) n.put("h", lp.height);
+                if (lp.width == ViewGroup.LayoutParams.MATCH_PARENT) n.put("wm", 1);
+                if (lp.height == ViewGroup.LayoutParams.MATCH_PARENT) n.put("hm", 1);
+            }
+            int pl = v.uiPadL(), pt = v.uiPadT(), pr = v.uiPadR(), pb = v.uiPadB();
+            if (pl != 0 || pt != 0 || pr != 0 || pb != 0) {
+                org.json.JSONArray p = new org.json.JSONArray();
+                p.put(pl).put(pt).put(pr).put(pb);
+                n.put("p", p);
+            }
+            int color = 0; float radius = 0; boolean has = false;
+            if (v.uiBgColorSet()) { color = v.uiBgColor(); has = true; }
+            else if (v.uiBgDrawable() instanceof android.graphics.drawable.ColorDrawable cd) {
+                color = cd.getColor(); has = true;
+            } else if (v.uiBgDrawable() instanceof android.graphics.drawable.GradientDrawable gd) {
+                color = gd.getColor(); radius = gd.getCornerRadius(); has = true;
+            }
+            if (has && (color != 0 || radius > 0)) {
+                org.json.JSONObject bg = new org.json.JSONObject().put("c", color);
+                if (radius > 0) bg.put("r", (double) radius);
+                n.put("bg", bg);
+            }
+            if (v instanceof android.widget.LinearLayout ll) n.put("o", ll.getOrientation());
+            if (v.uiVisibility() != android.view.View.VISIBLE) n.put("gone", 1);
+            if (!v.uiEnabled()) n.put("dis", 1);
+        } catch (Throwable ignored) { }
+        return n;
     }
 
     /** 容器的直接可点子控件（按原顺序）——第一个是这一行的「主角」（通常是盘名）。 */
