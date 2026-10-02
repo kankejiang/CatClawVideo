@@ -60,3 +60,27 @@ python tools/triage/boot_triage.py --json
 3. 结论之前先确认**进程唯一性** ✔：只能有一个 `CatClawVideo.Maui` ✔ 和一个 `qemu-system-x86_64` ✔
    （重复实例会连到**另一台** guest ✗ —— 当天因此产生过假结论 ✗）。
 4. 这个工具**只读** ✔：不改仓库、不动镜像、不碰 VM ✔，可以随时跑 ✔。
+
+## 另一个工具：packer_drift.py（副本漂移守卫）
+
+```bash
+python tools/triage/packer_drift.py          # 人类可读
+python tools/triage/packer_drift.py --json   # 机器可读
+```
+退出码：`0` = 无漂移；`1` = **有漂移**；`2` = 路径错误。
+
+**首次运行的实际结论（2026-10-02 ✗）**：
+```
+[DRIFT] astack packer
+   仓库版 pack_android_stack.py / .zwork 版：hash e1284060237d，libicu=0 ✗
+   tools/b1-build 版：hash 804650a4df6f，libicu=8 ✔      <- 修复只在这里
+[DRIFT] mesa packer：三份 hash 互不相同（321aa332297e / bf75e9efb62d / b8689848a64b）✗
+[OK]   init/bootimg builder：仓库只有一份 ✔ ⇒ 它的改动确实会生效 ✔
+```
+⇒ 同一逻辑多副本、且**跑哪份取决于手工 scp** ✗ ⇒ **"我改好了但镜像没变"是结构性必然** ✔。
+
+⚠ 注意：脚本里的标记计数（`libicu=8` 等）统计的是**文本出现次数**，注释也算 ✗ ——
+所以**判定漂移要看 hash** ✗，标记计数只作定位参考 ✔。
+
+**建议** ✔：指定**唯一权威路径**（推荐 `tools/b1-build/` ✗），其余改为生成副本 ✔，
+并在构建输出里**打印所选路径 + hash** ✗ ⇒ 否则每次重建都可能跑错版本 ✔。
