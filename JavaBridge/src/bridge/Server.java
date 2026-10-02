@@ -232,6 +232,19 @@ public class Server {
                             req.optString("shellJar", null), req.optString("rawJar", null), req.optString("realJar", null),
                             req.optInt("guardPort", 0), req.optBoolean("force", false));
                     case "call" -> call(req.optString("site"), req.optString("method"), req.optJSONArray("args"));
+                    case "writefile" -> {
+                        // 宿主回灌持久化文件（网盘 Cookie 的 sharedb）：guest /data 是 tmpfs，
+                        // VM 冷启即清，握手后把上次会话保存的文件写回来。路径白名单防任意写。
+                        String p = req.optString("path", "");
+                        if (!p.startsWith("/data/cache/sharedb/") || p.contains(".."))
+                            throw new IllegalArgumentException("writefile: path 不在白名单");
+                        byte[] data = java.util.Base64.getDecoder().decode(req.optString("data", ""));
+                        java.io.File f = new java.io.File(p);
+                        java.io.File parent = f.getParentFile();
+                        if (parent != null && !parent.exists()) parent.mkdirs();
+                        try (java.io.FileOutputStream fo = new java.io.FileOutputStream(f)) { fo.write(data); }
+                        yield "written " + data.length + "B";
+                    }
                     case "ping" -> "pong";
                     case "guard-encrypt" -> {
                         // guest 内 Guard 加密：凭据回写 spUtils 前的逆向操作（同 Rc.KJ 体系）
@@ -1037,9 +1050,50 @@ public class Server {
             if (("playerContent".equals(method) || "detailContent".equals(method)) && out.length() > 2 && out.length() < 40000) {
                 System.err.println("[srv-resp] " + site + "." + method + " ← " + out);
             }
+            // 网盘 Cookie 持久化：spider 刚跑完，sharedb（config.db 等）可能被写——变化就推给宿主
+            sharedbSync();
             return out;
         } finally {
             siteLock.unlock();
+        }
+    }
+
+    /** sharedb 上次同步状态（内容键）：变了才上行，避免每个 call 都刷事件。 */
+    private static volatile String sharedbKey;
+
+    /**
+     * 网盘 Cookie 等持久化文件的同步（2026-10-02）：{@code /data/cache/sharedb/config.db}
+     * 是 FishConfig 存夸克/GitHub Cookie 的地方，而 guest /data 是 tmpfs——VM 冷启即清，
+     * 登录态跟着丢（用户实测「重启后登入状态消失」）。宿主偏好链（prefs-sync）只覆盖
+     * SharedPreferences XML，管不到这里 ⇒ 每个 call 结束后 stat 一遍，变化就把整个目录
+     * 内容上行（ev=file-sync），宿主落 guest-prefs\sharedb\，下次握手回灌。
+     */
+    private static void sharedbSync() {
+        try {
+            java.io.File dir = new java.io.File("/data/cache/sharedb");
+            java.io.File[] fs = dir.listFiles();
+            StringBuilder key = new StringBuilder();
+            org.json.JSONArray files = new org.json.JSONArray();
+            if (fs != null) {
+                java.util.Arrays.sort(fs, java.util.Comparator.comparing(java.io.File::getName));
+                for (java.io.File f : fs) {
+                    if (!f.isFile()) continue;
+                    key.append(f.getName()).append(':').append(f.length()).append(':').append(f.lastModified()).append(';');
+                    byte[] data = java.nio.file.Files.readAllBytes(f.toPath());
+                    files.put(new org.json.JSONObject()
+                            .put("name", f.getName())
+                            .put("b64", java.util.Base64.getEncoder().encodeToString(data)));
+                }
+            }
+            String k = key.toString();
+            if (k.equals(sharedbKey)) return;
+            sharedbKey = k;
+            if (files.length() > 0) {
+                UiBridge.emit(new org.json.JSONObject().put("ev", "file-sync").put("files", files));
+                System.err.println("[srv] sharedb 变化 → 上行 " + files.length() + " 个文件（网盘 Cookie 持久化）");
+            }
+        } catch (Throwable t) {
+            System.err.println("[srv] sharedb 同步失败: " + t);
         }
     }
 

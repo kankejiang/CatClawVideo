@@ -796,6 +796,33 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
                     ? $"guest 偏好回灌：{Path.GetFileName(f)}（{xml.Length}B）"
                     : $"guest 偏好回灌失败 {Path.GetFileName(f)}: {resp["error"]}");
             }
+
+            // 网盘 Cookie 等（/data/cache/sharedb/*，FishConfig 的 config.db）：同样 tmpfs 冷启即清，
+            // 且不走 PrefsStore（没有 prefs-sync）⇒ 桥的 file-sync 事件存下来的文件在这里写回 guest。
+            // 必须在任何 spider 代码运行之前——FishConfig.init 就会读 config.db。
+            var sbDir = Path.Combine(_workDir, "guest-prefs", "sharedb");
+            if (Directory.Exists(sbDir))
+            {
+                foreach (var f in Directory.GetFiles(sbDir))
+                {
+                    try
+                    {
+                        var b64 = Convert.ToBase64String(await File.ReadAllBytesAsync(f, ct));
+                        var req = new JsonObject
+                        {
+                            ["id"] = Interlocked.Increment(ref _id),
+                            ["op"] = "writefile",
+                            ["path"] = "/data/cache/sharedb/" + Path.GetFileName(f),
+                            ["data"] = b64,
+                        };
+                        var resp = await RoundTripAsync(req, TimeSpan.FromSeconds(15), ct);
+                        Log(resp["ok"]?.GetValue<bool>() == true
+                            ? $"guest sharedb 回灌：{Path.GetFileName(f)}"
+                            : $"guest sharedb 回灌失败 {Path.GetFileName(f)}: {resp["error"]}");
+                    }
+                    catch (Exception ex) { Log($"guest sharedb 回灌异常 {Path.GetFileName(f)}: {ex.Message}"); }
+                }
+            }
         }
         catch (Exception ex) { Log($"guest 偏好回灌异常: {ex.Message}"); }
     }
@@ -990,6 +1017,28 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
                             Directory.CreateDirectory(dir);
                             File.WriteAllText(Path.Combine(dir, pname + ".xml"), xml);
                             Log($"guest 偏好同步落盘：{pname}（{xml.Length}B）");
+                        }
+                        catch { }
+                    }
+                    // file-sync：网盘 Cookie 等（/data/cache/sharedb/*，tmpfs 冷启即清）——
+                    // 桥在每个 call 后检测到变化就上行，存 guest-prefs\sharedb\ 下次回灌
+                    else if (obj["ev"]?.GetValue<string>() == "file-sync")
+                    {
+                        try
+                        {
+                            var dir = Path.Combine(_workDir, "guest-prefs", "sharedb");
+                            Directory.CreateDirectory(dir);
+                            var n = 0;
+                            if (obj["files"] is JsonArray fa)
+                                foreach (var f in fa.OfType<JsonObject>())
+                                {
+                                    var name = f["name"]?.GetValue<string>() ?? "";
+                                    var b64 = f["b64"]?.GetValue<string>() ?? "";
+                                    if (name.Length == 0 || name.Contains('/') || name.Contains("..")) continue;
+                                    File.WriteAllBytes(Path.Combine(dir, name), Convert.FromBase64String(b64));
+                                    n++;
+                                }
+                            Log($"guest sharedb 同步落盘（{n} 个文件，网盘 Cookie 等）");
                         }
                         catch { }
                     }
