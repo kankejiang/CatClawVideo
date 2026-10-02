@@ -101,6 +101,17 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
     private IDispatcherTimer? _coldStartTimer;
     private readonly DateTime _coldStartUtc = DateTime.UtcNow;
 
+    /// <summary>本轮首页取数真的开跑过没有（IsHomeLoading 出现过 true）——
+    /// 没有它就无法区分「还没开跑」与「已经失败」，后者必须立刻收遮罩。</summary>
+    private bool _coldLoadStarted;
+
+    /// <summary>取数已收工（IsHomeLoading 由 true 翻回 false）。配合分类仍为空 = 这轮失败了。</summary>
+    private bool _coldLoadFinished;
+
+    /// <summary>冷启动遮罩最长停留（秒）。实测正常路径 36~46s（ART guest 冷启），
+    /// 超时无条件收起——宁可露出错误提示让人操作，也不能把人永远困在 97%。</summary>
+    private const int ColdStartCapSeconds = 90;
+
     private void StartColdStartOverlay()
     {
         _coldStartTimer = Dispatcher.CreateTimer();
@@ -112,23 +123,55 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
 
     private void UpdateColdStartOverlay()
     {
+        // 取数生命周期：true = 正在跑；由 true 翻回 false 而分类仍空 = 这轮已经失败收工
+        if (_vm.IsHomeLoading) _coldLoadStarted = true;
+        else if (_coldLoadStarted) _coldLoadFinished = true;
+
         // 数据就绪（分类已上屏）= 冷启动结束：停表并淡出进主界面
         if (_vm.Categories.Count > 0)
         {
-            _coldStartTimer?.Stop();
-            _coldStartTimer = null;
-            // 就绪 ≠ 立刻消失：先跳 100%（用户要求「一下子加载到 100% 再进程序」），
-            // 停 ~0.5s 让最后一帧可见，再淡出。直接淡出会让数字永远停在 80 多。
-            MainThread.BeginInvokeOnMainThread(async () =>
+            FinishColdStartOverlay(jumpTo100: true);
+            return;
+        }
+
+        // ⚠ 兜底（2026-10-02 新增，用户反馈「启动卡在 97%」）：
+        // 旧逻辑只认「分类 > 0」这一条出路，于是 ART guest 起不来 / 订阅站全挂时遮罩永不淡出，
+        // HomeStatus（"订阅站点均拉取失败…"）被压在遮罩下面 —— 用户只看到一个不动的百分比。
+        // 两条收摊条件：① 取数已失败收工（IsHomeLoading 翻回 false）；② 总时长超上限（兜底中的兜底，
+        // 防「一直 true 不翻转」的假挂起）。
+        if (_coldLoadFinished || (DateTime.UtcNow - _coldStartUtc).TotalSeconds > ColdStartCapSeconds)
+        {
+            FinishColdStartOverlay(jumpTo100: false);
+            return;
+        }
+
+        MainThread.BeginInvokeOnMainThread(ApplyColdStartStatus);
+    }
+
+    /// <summary>停表并淡出遮罩。<paramref name="jumpTo100"/>=数据就绪（走 100% 庆祝帧）；
+    /// false = 失败/超时（先把真实原因写在遮罩上停 0.9s 再淡出，让用户读得到）。</summary>
+    private void FinishColdStartOverlay(bool jumpTo100)
+    {
+        _coldStartTimer?.Stop();
+        _coldStartTimer = null;
+        // 就绪 ≠ 立刻消失：先跳 100%（用户要求「一下子加载到 100% 再进程序」），
+        // 停 ~0.5s 让最后一帧可见，再淡出。直接淡出会让数字永远停在 80 多。
+        MainThread.BeginInvokeOnMainThread(async () =>
+        {
+            if (jumpTo100)
             {
                 ColdStartPct.Text = "100%";
                 _ = ColdStartProgress.ProgressTo(1.0, 150, Easing.Linear);
                 await Task.Delay(500);
-                await FadeOutColdStartOverlayAsync();
-            });
-            return;
-        }
-        MainThread.BeginInvokeOnMainThread(ApplyColdStartStatus);
+            }
+            else if (!string.IsNullOrEmpty(_vm.HomeStatus))
+            {
+                ColdStartStatus.Text = _vm.HomeStatus;
+                ColdStartPct.Text = "";
+                await Task.Delay(900);
+            }
+            await FadeOutColdStartOverlayAsync();
+        });
     }
 
     private void ApplyColdStartStatus()
@@ -604,6 +647,7 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
     {
         try { await Shell.Current.GoToAsync("live"); } catch { }
     }
+
 
     private async void OnSwitchSiteTapped(object? sender, TappedEventArgs e)
     {

@@ -310,6 +310,7 @@ public partial class HomeViewModel : ObservableObject
                 for (var attempt = 1; attempt <= 5 && usedSite == null; attempt++)
                 {
                     string why;
+                    var fatal = false;
                     try
                     {
                         cats = await _provider.GetCategoriesAsync(preferred);
@@ -321,8 +322,20 @@ public partial class HomeViewModel : ObservableObject
                         }
                         why = "分类为空";
                     }
-                    catch (Exception ex) { why = $"{ex.GetType().Name}: {ex.Message}"; }
+                    catch (Exception ex)
+                    {
+                        why = $"{ex.GetType().Name}: {ex.Message}";
+                        fatal = IsSpiderEngineDown(ex);
+                    }
                     DiagLog.Write($"[home] 首选 {preferred.Name} 第 {attempt} 次取分类失败：{why}");
+                    // 爬虫引擎（QEMU ART guest）整个起不来 ⇒ 间隔 4s 再试也是白等（VM 已经没了，
+                    // 不会自己长出来），5 次重试纯把首页冻住 ~8 分钟（2026-10-02 实测 22:09 那轮）。
+                    // 立刻回退自动探测：并发探测里不依赖 guest 的 MacCMS 站能先把首页顶起来。
+                    if (fatal)
+                    {
+                        DiagLog.Write("[home] 爬虫引擎不可用，跳过剩余重试，直接回退自动探测");
+                        break;
+                    }
                     if (attempt < 5) await Task.Delay(4000);
                 }
             }
@@ -360,6 +373,23 @@ public partial class HomeViewModel : ObservableObject
 
         DiagLog.Write($"[home] 首载 site={usedSite.Name} 分类={cats.Count} 耗时={sw.ElapsedMilliseconds}ms");
         await EnterDefaultViewAsync();
+    }
+
+    /// <summary>
+    /// 判断这次失败是不是「爬虫引擎整个不可用」（QEMU ART guest 起不来 / 桥链路不可用）。
+    ///
+    /// <para>这类失败**不会自愈**：VM 已经没了，隔几秒重试同一个 jar 源还是同样结果，
+    /// 5 次重试白等 8 分钟（2026-10-02 实测：22:09 那轮首载耗时 8 分钟后报
+    /// 「ART guest 起不来」，而同一时刻订阅里 111 个站有大量不依赖 guest 的 MacCMS 站可用）。
+    /// 命中即让首选站快速让位给自动探测。</para>
+    /// </summary>
+    private static bool IsSpiderEngineDown(Exception ex)
+    {
+        var msg = ex.Message;
+        return msg.Contains("ART guest 起不来", StringComparison.Ordinal)
+            || msg.Contains("guest 桥", StringComparison.Ordinal)
+            || msg.Contains("爬虫引擎不可用", StringComparison.Ordinal)
+            || msg.Contains("ART 桥会话", StringComparison.Ordinal);
     }
 
     /// <summary>
