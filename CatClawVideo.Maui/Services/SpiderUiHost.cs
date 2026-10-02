@@ -132,12 +132,18 @@ public static class SpiderUiHost
 
         // A 路线（2026-10-02）：桥上行了整棵 View 树（tree 字段）→ 树渲染页按 jar 的
         // 文本/字号/颜色/背景/结构 1:1 还原（对齐真机观感）。rows 只作降级兜底。
+        // 底部按钮（positive/negative/neutral）不在树里 —— AlertDialog 的 Builder 按钮，
+        // 一并传给页面画出来（真机「禁用(左)/取消(右)」就是它们）。
         if (ev["tree"] is JsonObject tree)
         {
             var tSeq = ev["seq"]?.GetValue<int>() ?? 0;
+            string Pos() => ev["positive"]?.GetValue<string>() ?? "";
+            string Neg() => ev["negative"]?.GetValue<string>() ?? "";
+            string Neu() => ev["neutral"]?.GetValue<string>() ?? "";
             var tp = new Pages.SpiderTreeDialogPage(tSeq, tree.ToJsonString(),
                 idx => _ = SendUiResultAsync(tSeq, idx),
-                () => _ = SendUiResultAsync(tSeq, -2));   // ✕/遮罩/Back = 取消
+                () => _ = SendUiResultAsync(tSeq, -2),   // ✕/遮罩/Back = 取消
+                Pos(), Neg(), Neu());
             Windows[tSeq] = tp;
             await Shell.Current.Navigation.PushModalAsync(tp).ConfigureAwait(true);
             return;

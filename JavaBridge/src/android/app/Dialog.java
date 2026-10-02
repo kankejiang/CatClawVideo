@@ -308,6 +308,9 @@ public class Dialog implements DialogInterface {
                 if (lp.height > 0) n.put("h", lp.height);
                 if (lp.width == ViewGroup.LayoutParams.MATCH_PARENT) n.put("wm", 1);
                 if (lp.height == ViewGroup.LayoutParams.MATCH_PARENT) n.put("hm", 1);
+                // weight：真机标题行的「已登录」徽章靠它被推到最右（flex-grow）
+                if (lp instanceof android.widget.LinearLayout.LayoutParams llp && llp.weight > 0)
+                    n.put("wt", (double) llp.weight);
             }
             int pl = v.uiPadL(), pt = v.uiPadT(), pr = v.uiPadR(), pb = v.uiPadB();
             if (pl != 0 || pt != 0 || pr != 0 || pb != 0) {

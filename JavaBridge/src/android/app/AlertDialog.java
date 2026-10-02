@@ -51,11 +51,28 @@ public class AlertDialog extends Dialog {
             // 刷新节拍（Dialog 的补发线程）走的那一遍要安静：2026-10-01 实测 90s 刷出 2044 行，
             // 「兜底未命中/空白」每 250ms 一轮，把真正的轮询/授权回执行埋掉了。
             JSONObject qr = huntQr(view, quickHunt);
-            // 壳的二维码常在 show() 之后才画（异步取登录 URL）：最多再等 4s，每 500ms 重找一遍
-            // （宿主侧 OpenDriveEntryAsync 等弹窗的窗口是 5s，这里必须留余量）
-            for (int retry = 1; qr == null && !quickHunt && retry <= 8; retry++) {
-                try { Thread.sleep(500); } catch (InterruptedException ie) { break; }
-                qr = huntQr(view, true);
+            // 壳的二维码常在 show() 之后才画（异步取登录 URL）。⚠ 不能在 show() 里阻塞等：
+            // 8×500ms 的重试让**每个**对话框都慢 4s 才弹出来（2026-10-02 用户实测）。
+            // 改为后台线程继续找，找到就经 ui-qr 按补发通道升级界面（宿主已支持）；show() 立即返回。
+            if (qr == null && !quickHunt) {
+                final View v0 = view;
+                Thread t = new Thread(() -> {
+                    for (int retry = 1; retry <= 8; retry++) {
+                        try { Thread.sleep(500); } catch (InterruptedException ie) { return; }
+                        JSONObject q = huntQr(v0, true);
+                        if (q == null) continue;
+                        try {
+                            if (isShowing()) {
+                                UiBridge.emit(new JSONObject().put("ev", "ui-qr").put("seq", seq)
+                                        .put("title", title == null ? "" : title.toString()).put("qr", q));
+                                System.err.println("[ui] 后台补码 " + q.optInt("w") + "x" + q.optInt("h") + " seq=" + seq);
+                            }
+                        } catch (Throwable ignored) { }
+                        return;
+                    }
+                }, "claw-qr-late");
+                t.setDaemon(true);
+                t.start();
             }
             // 抓不到位图时改走**契约通道**：视图树里有 http(s) 链接文本就把它作为 `qrText` 上行，
             // 由宿主自己出码（对齐 TVBox：爬虫给串、宿主 QRCodeGen）。这条路不需要任何绘制仿真。

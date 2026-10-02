@@ -18,18 +18,21 @@ public partial class SpiderTreeDialogPage : ContentPage, IRemoteKeyHandler
 {
     private readonly Action<int> _onPick;
     private readonly Action? _onCancel;
+    private readonly string _positive, _negative, _neutral;
     private WebView _web = null!;
     private bool _loaded;
 
-    public SpiderTreeDialogPage(int seq, string treeJson, Action<int> onPick, Action? onCancel = null)
+    public SpiderTreeDialogPage(int seq, string treeJson, Action<int> onPick, Action? onCancel = null,
+        string positive = "", string negative = "", string neutral = "")
     {
         _onPick = onPick;
         _onCancel = onCancel;
+        _positive = positive; _negative = negative; _neutral = neutral;
         BackgroundColor = Color.FromArgb("#B3000000");
 
         _web = new WebView
         {
-            Source = new HtmlWebViewSource { Html = BuildHtml(treeJson) },
+            Source = new HtmlWebViewSource { Html = BuildHtml(treeJson, positive, negative, neutral) },
         };
         // MAUI WebView 没有跨平台 WebMessageReceived：JS 用自定义 scheme 导航 + Navigating 拦截
         //（clsk:clk:<节点下标> / clsk:cancel）
@@ -75,6 +78,13 @@ public partial class SpiderTreeDialogPage : ContentPage, IRemoteKeyHandler
         e.Cancel = true;
         var msg = e.Url["clsk:".Length..];
         if (msg == "cancel") { _ = CloseAsync(); return; }
+        // 底部按钮：neutral=-3 / negative=-2 / positive=-1（UiBridge 的按钮语义），jar 收到后自行 dismiss
+        if (msg.StartsWith("btn:", StringComparison.Ordinal) &&
+            int.TryParse(msg.AsSpan(4), out var which))
+        {
+            _onPick(which);
+            return;
+        }
         if (msg.StartsWith("clk:", StringComparison.Ordinal) &&
             int.TryParse(msg.AsSpan(4), out var idx))
         {
@@ -114,10 +124,11 @@ public partial class SpiderTreeDialogPage : ContentPage, IRemoteKeyHandler
 
     // ═══════════ HTML 渲染器 ═══════════
 
-    private static string BuildHtml(string treeJson)
+    private static string BuildHtml(string treeJson, string positive, string negative, string neutral)
     {
         // "</script>" 防提前闭合（树里的文本来自 jar，理论可能出现）
         treeJson = treeJson.Replace("</script", "<\\/script", StringComparison.OrdinalIgnoreCase);
+        var btns = System.Text.Json.JsonSerializer.Serialize(new { pos = positive, neg = negative, neu = neutral });
         return $$"""
 <!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -125,9 +136,14 @@ public partial class SpiderTreeDialogPage : ContentPage, IRemoteKeyHandler
 html,body{margin:0;padding:0;width:100%;height:100%;background:rgba(0,0,0,.55);
   font-family:'Segoe UI',Roboto,'Microsoft YaHei',sans-serif;
   display:flex;align-items:center;justify-content:center;overflow:hidden}
-#wrap{max-width:92vw;max-height:86vh;display:flex;flex-direction:column;border-radius:14px;
-  overflow:hidden;box-shadow:0 12px 48px rgba(0,0,0,.45)}
+#wrap{width:min(640px,92vw);max-height:86vh;display:flex;flex-direction:column;border-radius:14px;
+  overflow:hidden;box-shadow:0 12px 48px rgba(0,0,0,.45);zoom:1.45}
 #scroll{overflow-y:auto}
+#btns{display:flex;justify-content:space-between;align-items:center;padding:14px 18px}
+#btns span{cursor:pointer;font-weight:600;font-size:15px}
+#btns .neu{color:#E8A33D}
+#btns .neg{color:#8a8a8a}
+#btns .pos{color:#1976D2}
 .vg{display:flex;flex-direction:column}
 .vg.row{flex-direction:row}
 .tv{white-space:pre-wrap;word-break:break-word}
@@ -136,9 +152,10 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:rgba(0,0,0,.55);
 .dis{opacity:.45;pointer-events:none}
 img{max-width:100%;display:block}
 </style></head>
-<body><div id="wrap"><div id="scroll"><div id="root"></div></div></div>
+<body><div id="wrap"><div id="scroll"><div id="root"></div></div><div id="btns"></div></div>
 <script>
 const TREE = {{treeJson}};
+const BTNS = {{btns}};
 function hex(c){
   if(c==null) return '';
   c = c>>>0;
@@ -191,6 +208,7 @@ function build(n){
     gravityStyle(el,n.g,false);
   }
   if(n.wm){ el.style.width='100%'; }
+  if(n.wt){ el.style.flexGrow=n.wt; }
   applyCommon(el,n);
   if(n.i!=null){
     el.classList.add('clk');
@@ -207,11 +225,30 @@ function clk(i){
       const root=document.getElementById('root');
       root.innerHTML='';
       const el=build(tree);
-      if(tree.bg&&tree.bg.c!=null){ document.getElementById('wrap').style.background=hex(tree.bg.c); }
+      const wrap=document.getElementById('wrap');
+      if(tree.bg&&tree.bg.c!=null){ wrap.style.background=hex(tree.bg.c); }
+      // jar 的树没有布局尺寸（桩里没人跑 measure）⇒ 内容会缩成一团；
+      // 卡片宽度定 640（与旧 SpiderDialogPage 一致），jar 显式给了宽度才听它的。
+      wrap.style.width = tree.w ? tree.w+'px' : 'min(640px,92vw)';
       root.appendChild(el);
     }
     window.__setTree=function(tree){ setTree(tree); };
     setTree(TREE);
+    // 底部按钮（AlertDialog 的 neutral/negative/positive，真机「禁用左/取消右」）
+    (function(){
+      var box=document.getElementById('btns');
+      function add(text,which,cls){
+        if(!text) return;
+        var s=document.createElement('span');
+        s.className=cls; s.textContent=text;
+        s.addEventListener('click',function(){ window.location='clsk:btn:'+which; });
+        box.appendChild(s);
+      }
+      add(BTNS.neu,-3,'neu');
+      var sp=document.createElement('span'); sp.style.flex='1'; box.appendChild(sp);
+      add(BTNS.neg,-2,'neg');
+      add(BTNS.pos,-1,'pos');
+    })();
     window.location='clsk:ready';
 </script></body></html>
 """;
