@@ -678,3 +678,89 @@ Probing EDD (edd=off to disable)... oc[?7l[2J[init] 分发器在位 shadow=Y 
 [init] 环境已补：BOOTCLASSPATH 1624B SYSTEMSERVERCLASSPATH 463B
    …
 （493043909 之后是最后一次 `--off` 回退的正常开机：桥 :18600 监听 ⇒ 回退有效）
+
+── 第三轮（09:12~09:42，㉓~㉘）：logd/zygote 为什么起不来 ──
+
+── ㉓ 硬链接 apex 库 + diag 手跑 ⇒ 抓到 `libandroid_runtime.so not found` ──（字节 493083595..493285150，保留 78 行，init 最晚 34.74 s）
+Probing EDD (edd=off to disable)... oc[?7l[2J[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[init] linker64: 软链→实体 1744616B
+[init] linker: 软链→实体 1798016B
+[init] libc.so 软链→硬链 0
+[init] libdl.so 软链→硬链 0
+[init] libdl_android.so 软链→硬链 0
+[init] libm.so 软链→硬链 0
+[init] /system/lib64 现有 721 项；libnativeloader.so 在=Y
+   …
+
+── ㉔ cgroup 四个 legacy 控制器挂上（logd 仍 126：mode 0550） ──（字节 493285150..493460017，保留 74 行，init 最晚 29.59 s）
+Probing EDD (edd=off to disable)... oc[?7l[2J[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[init] linker64: 软链→实体 1744616B
+[init] linker: 软链→实体 1798016B
+[init] libc.so 软链→硬链 0
+[init] libdl.so 软链→硬链 0
+[init] libdl_android.so 软链→硬链 0
+[init] libm.so 软链→硬链 0
+[init] /system/lib64 现有 721 项；libnativeloader.so 在=Y
+   …
+
+── ㉕ chmod logd + crash_dump64 实体化 ⇒ init 稳到 107s、init.svc=79 ──（字节 493460017..493643499，保留 103 行，init 最晚 29.97 s）
+c[?7l[2J[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[init] linker64: 软链→实体 1744616B
+[init] linker: 软链→实体 1798016B
+[init] libc.so 软链→硬链 0
+[init] libdl.so 软链→硬链 0
+[init] libdl_android.so 软链→硬链 0
+[init] libm.so 软链→硬链 0
+[init] /system/lib64 现有 721 项；libnativeloader.so 在=Y
+   …
+
+── ㉖ 搬入 108 的 /dev/cgroup_info/cgroup.rc(400B)：init 不再报读不到 ──（字节 493643499..494390217，保留 540 行，init 最晚 200.74 s）
+c[?7l[2J[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[init] linker64: 软链→实体 1744616B
+[init] linker: 软链→实体 1798016B
+[init] libc.so 软链→硬链 0
+[init] libdl.so 软链→硬链 0
+[init] libdl_android.so 软链→硬链 0
+[init] libm.so 软链→硬链 0
+[init] /system/lib64 现有 721 项；libnativeloader.so 在=Y
+   …
+
+── ㉗ chmod 666 /dev/kmsg ⇒ [LOGD]/[ZYGOTE] 才终于能写 kmsg（logd 134、零输出） ──（字节 494390217..494578622，保留 323 行，init 最晚 21.65 s）
+[   12.462936] [E2] t=12s init.svc=64 props=265 getprop可读=309 zygote=restarting boot= sdk=33 hw=unknown svcmgr=
+[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[init] linker64: 软链→实体 1744616B
+[init] linker: 软链→实体 1798016B
+[init] libc.so 软链→硬链 0
+[init] libdl.so 软链→硬链 0
+[init] libdl_android.so 软链→硬链 0
+[init] libm.so 软链→硬链 0
+   …
+
+── ㉘ tombstone 改指 /tmp（探测读仍 EIO ⇒ 必须走 nsh，已修） ──（字节 494578622..494617598，保留 234 行，init 最晚 22.65 s）
+[   21.939513] [E2] 手跑 logd → libc: Unable to set property "ro.logd.kernel" to "true": error code: 0xb~libc: Fatal signal 6 (SIGABRT), code -1 (SI_QUEUE) in tid 1269 (log
+c[?7l[2J[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[init] linker64: 软链→实体 1744616B
+[init] linker: 软链→实体 1798016B
+[init] libc.so 软链→硬链 0
+[init] libdl.so 软链→硬链 0
+[init] libdl_android.so 软链→硬链 0
+[init] libm.so 软链→硬链 0
+   …

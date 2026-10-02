@@ -377,11 +377,13 @@ diag() {
     echo "<3>[E2] ns 里的 getprop stderr: $($BB nsenter -t 1 -m -- /system/bin/getprop 2>&1 >/dev/null | $BB head -2 | $BB tr '\n' '~' | $BB cut -c1-140) ｜ 行数: $($BB nsenter -t 1 -m -- /system/bin/getprop 2>/dev/null | $BB wc -l)" > /dev/kmsg
     # logd 修好之后才有的读法：向 logd 直接拉崩溃缓冲与 zygote 相关日志（nsh = 进 init 的挂载命名空间）。
     # tombstone 里有 `Abort message: '……'` —— 这一轮要的就是那一行。
-    _ts=$($BB ls -t /tmp/tombstones 2>/dev/null | $BB head -1)
-    echo "<3>[E2] /tmp/tombstones: $($BB ls /tmp/tombstones 2>&1 | $BB tr '
+    # ⚠ 这三条必须走 nsh：init 会往 /tmp、/data 上盖自己的 tmpfs，
+    #   我们在 exec 之前 fork 的探测看这两个路径只会得到 EIO（实测 09:42 就这样白读一轮）。
+    _ts=$(nsh /bin/busybox ls -t /tmp/tombstones 2>/dev/null | $BB head -1)
+    echo "<3>[E2] /tmp/tombstones: $(nsh /bin/busybox ls /tmp/tombstones 2>&1 | $BB tr '
 ' ' ' | $BB cut -c1-120)" > /dev/kmsg
-    echo "<3>[E2] tombstone($_ts) 摘要: $($BB grep -a -m1 'Abort message' /tmp/tombstones/$_ts 2>&1 | $BB cut -c1-300)" > /dev/kmsg
-    echo "<3>[E2] tombstone 前 6 行: $($BB head -6 /tmp/tombstones/$_ts 2>&1 | $BB tr '
+    echo "<3>[E2] tombstone($_ts) Abort message: $(nsh /bin/busybox grep -a -m1 'Abort message' /tmp/tombstones/$_ts 2>&1 | $BB cut -c1-300)" > /dev/kmsg
+    echo "<3>[E2] tombstone 前 6 行: $(nsh /bin/busybox head -6 /tmp/tombstones/$_ts 2>&1 | $BB tr '
 ' '~' | $BB cut -c1-300)" > /dev/kmsg
     for _w in LOGD ZYGOTE LMKD; do
         echo "<3>[E2] 包装落点 /tmp/$_w.out: $($BB head -c 300 /tmp/$_w.out 2>&1 | $BB tr '
