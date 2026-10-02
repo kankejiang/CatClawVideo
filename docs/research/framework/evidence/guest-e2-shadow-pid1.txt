@@ -555,3 +555,126 @@ linker: CANNOT LINK EXECUTABLE "/system/bin/mkbinders": library "libdl.so" not f
 [   15.410102] [E2] getprop 的 stderr: CANNOT LINK EXECUTABLE "getprop": library "libc.so" not found: needed by main executable~linker: CANNOT LINK EXECUTABLE "getprop": library "
 
 （491548011 之后是 `--off` 回退后的正常开机：桥 :18600 监听 ⇒ 回退有效）
+
+── 第二轮（08:05~01:09，同一个串口文件后半段）：内容层石头 ⑧~⑫ 的取证与修复 ──
+
+── ⑬ diag 手跑服务（拿到一手 linker 原文） ──（字节 486016756..486235430，保留 189 行，最后 init 时刻 46.09 s）
+Probing EDD (edd=off to disable)... oc[?7l[2J[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[init] linker64: 软链→实体 1744616B
+[init] linker: 软链→实体 1798016B
+[init] insmod virtio_ring:
+[init] insmod virtio:
+[init] insmod virtio_pci_modern_dev:
+[init] insmod virtio_pci_legacy_dev:
+[init] insmod virtio_pci:
+[init] insmod virtio_blk:
+   …
+
+── ⑭ apex 库硬链接进 /system/lib64（153→721） ──（字节 486235430..486482008，保留 211 行，最后 init 时刻 41.53 s）
+c[?7l[2J[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[init] linker64: 软链→实体 1744616B
+[init] linker: 软链→实体 1798016B
+[init] libc.so 软链→硬链 0
+[init] libdl.so 软链→硬链 0
+[init] libdl_android.so 软链→硬链 0
+[init] libm.so 软链→硬链 0
+[init] insmod virtio_ring:
+[init] insmod virtio:
+   …
+
+── ⑮ 建 /data/tombstones（外部读 EIO ⇒ 发现 /data 在 init 的 ns） ──（字节 486482008..487283293，保留 637 行，最后 init 时刻 164.20 s）
+c[?7l[2J[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[init] linker64: 软链→实体 1744616B
+[init] linker: 软链→实体 1798016B
+[init] libc.so 软链→硬链 0
+[init] libdl.so 软链→硬链 0
+[init] libdl_android.so 软链→硬链 0
+[init] libm.so 软链→硬链 0
+[init] insmod virtio_ring:
+[init] insmod virtio:
+   …
+
+── ⑯~⑱ nsenter 版判据 + 跳过 propinit ⇒ 判据达成 ──（字节 487283293..491865778，保留 3611 行，最后 init 时刻 155.05 s）
+Probing EDD (edd=off to disable)... oc[?7l[2J[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[init] linker64: 软链→实体 1744616B
+[init] linker: 软链→实体 1798016B
+[init] libc.so 软链→硬链 0
+[init] libdl.so 软链→硬链 0
+[init] libdl_android.so 软链→硬链 0
+[init] libm.so 软链→硬链 0
+[init] insmod virtio_ring:
+[init] insmod virtio:
+   …
+
+── ⑲ zygote 包 wrapper（ANDROID_DATA unset 暴露） ──（字节 491865778..492065074，保留 182 行，最后 init 时刻 35.23 s）
+[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[init] linker64: 软链→实体 1744616B
+[init] linker: 软链→实体 1798016B
+[init] libc.so 软链→硬链 0
+[init] libdl.so 软链→硬链 0
+[init] libdl_android.so 软链→硬链 0
+[init] libm.so 软链→硬链 0
+[init] /system/lib64 现有 721 项；libnativeloader.so 在=Y
+[init] insmod virtio_ring:
+   …
+
+── ⑳ ENV_RC 补 ANDROID_*（rc 幂等基线修好前被守卫吃掉） ──（字节 492065074..492268605，保留 194 行，最后 init 时刻 35.55 s）
+Probing EDD (edd=off to disable)... oc[?7l[2J[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[init] linker64: 软链→实体 1744616B
+[init] linker: 软链→实体 1798016B
+[init] libc.so 软链→硬链 0
+[init] libdl.so 软链→硬链 0
+[init] libdl_android.so 软链→硬链 0
+[init] libm.so 软链→硬链 0
+[init] /system/lib64 现有 721 项；libnativeloader.so 在=Y
+[init] insmod virtio_ring:
+   …
+
+── ㉑ ANDROID_* 生效：64 位 zygote 退出码 0 / 32 位缺 libandroid_runtime ──（字节 492268605..492839929，保留 500 行，最后 init 时刻 35.32 s）
+Probing EDD (edd=off to disable)... oc[?7l[2J[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[init] linker64: 软链→实体 1744616B
+[init] linker: 软链→实体 1798016B
+[init] libc.so 软链→硬链 0
+[init] libdl.so 软链→硬链 0
+[init] libdl_android.so 软链→硬链 0
+[init] libm.so 软链→硬链 0
+[init] /system/lib64 现有 721 项；libnativeloader.so 在=Y
+[init] insmod virtio_ring:
+   …
+
+── ㉒ 补 BOOTCLASSPATH/SYSTEMSERVERCLASSPATH ⇒ zygote 走到 ART 主线程后 SIGABRT ──（字节 492839929..493043909，保留 182 行，最后 init 时刻 35.49 s）
+Probing EDD (edd=off to disable)... oc[?7l[2J[init] 分发器在位 shadow=Y initd=Y
+[init] shadow-PID1：exec /system/bin/init second_stage
+[init] build.prop: system=6359B vendor=2700B
+[init] /dev/socket=/dev/socket pts=1
+[init] linker64: 软链→实体 1744616B
+[init] linker: 软链→实体 1798016B
+[init] libc.so 软链→硬链 0
+[init] libdl.so 软链→硬链 0
+[init] libdl_android.so 软链→硬链 0
+[init] libm.so 软链→硬链 0
+[init] /system/lib64 现有 721 项；libnativeloader.so 在=Y
+[init] 环境已补：BOOTCLASSPATH 1624B SYSTEMSERVERCLASSPATH 463B
+   …
+（493043909 之后是最后一次 `--off` 回退的正常开机：桥 :18600 监听 ⇒ 回退有效）

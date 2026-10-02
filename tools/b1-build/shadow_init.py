@@ -53,7 +53,8 @@ INJECT = find_tool(os.path.join(HERE, "inject_dex.py"),
 CHECK = os.path.join(REPO, "JavaBridge", "qemu-src", "tools", "x86guest", "check_image.py")
 MARK = "# shadow-PID1 分发器"
 WANT_IN_IMAGE = {"init", "init.claw", "init.rc", "system/etc/init/init.claw.rc",
-                 "e2probe.sh", "shadow-init", "system/build.prop", "e2-vendor-build.prop"}
+                 "e2probe.sh", "shadow-init", "system/build.prop", "e2-vendor-build.prop",
+                 "e2-android-env.sh"}
 # 108 参照系（Waydroid x86_64 / Android 13）里逐字取回的两份 build.prop：
 #   ssh root@10.0.0.108 'mount -o ro,loop /var/lib/waydroid/images/system.img /tmp/e2pk; \
 #     mount -o ro,loop /root/x86guest/vendor-ex/vendor.img /tmp/e2pv; \
@@ -157,6 +158,14 @@ if [ -e /shadow-init ]; then
     $BB mkdir -p /data/tombstones /data/anr /data/misc/logd /data/local/tmp /data/dalvik-cache /metadata
     $BB chmod 777 /data/tombstones /data/anr 2>/dev/null
     [ -f /modules/binder_linux.ko ] && $BB insmod /modules/binder_linux.ko devices=binder,hwbinder,vndbinder 2>&1
+    # 石头⑫（09:02 一手）：64 位 zygote 起来后 **退出码=0、一个字都不印** —— hw/init.rc 里
+    # 只有 1 行 export，BOOTCLASSPATH / SYSTEMSERVERCLASSPATH 全缺。108 参照系的这两个值是
+    # lxc 容器环境喂进 init 的（grep 遍 /system/etc 也没有），而 PID1 就是我们这个 shell：
+    # exec 之前 export 的东西会随环境传给真 init、再传给所有服务 ⇒ 直接 source 取回的那份。
+    if [ -f /e2-android-env.sh ]; then
+        . /e2-android-env.sh
+        echo "[init] 环境已补：BOOTCLASSPATH $($BB echo -n $BOOTCLASSPATH | $BB wc -c)B SYSTEMSERVERCLASSPATH $($BB echo -n $SYSTEMSERVERCLASSPATH | $BB wc -c)B"
+    fi
 __CLAWBG__
 __E2RUN__
 fi
@@ -190,6 +199,24 @@ RUN_CHILD = """    /system/bin/init %s > /tmp/init.err 2>&1 &
     $BB head -40 /tmp/init.err > /dev/kmsg 2>/dev/null
     $BB sh /e2probe.sh once
     while true; do $BB sleep 3600; done"""
+
+# 实测 08:44（zygote 包了 stderr→kmsg 之后拿到的**一手**原因）：
+#   [ZYGOTE] ANDROID_DATA environment variable unset  ⇒ app_process64 立刻 SIGABRT
+# 真 init 不会替服务导出 ANDROID_*（hw/init.rc 里 export 行数为 0），我们原来的编排是自己
+# export 的 —— 换成真 init 当 PID1 之后这层就没了。用 `on early-init` 补回去（早于 zygote 起）。
+ENV_RC = """# === E2：给所有服务补 ANDROID_* 环境（实测缺它 app_process64 直接 abort）===
+on early-init
+    export ANDROID_ROOT /system
+    export ANDROID_DATA /data
+    export ANDROID_STORAGE /storage
+    export ANDROID_ART_ROOT /apex/com.android.art
+    export ANDROID_I18N_ROOT /apex/com.android.i18n
+    export ANDROID_TZDATA_ROOT /apex/com.android.tzdata
+    export EXTERNAL_STORAGE /sdcard
+    export DOWNLOAD_CACHE /data/download_cache
+    export TMPDIR /data/local/tmp
+    export PATH /product/bin:/apex/com.android.runtime/bin:/apex/com.android.art/bin:/system_ext/bin:/system/bin:/system/xbin:/odm/bin:/vendor/bin:/vendor/xbin
+"""
 
 CLAW_RC = """# E2：把原编排（网络/HAL/artlaunch 桥）作为 init 的服务拉回来。
 # 实测（06:45 / 07:19）：`Parsing file /system/etc/init/init.claw.rc` 有、无解析错，
@@ -311,6 +338,22 @@ done
 echo "<4>[E2] probe 结束" > /dev/kmsg
 """
 
+# init 起服务时 stdio 接到 /dev/null（cmdline 没有 init_debug，而我们改不了宿主 -append），
+# 所以 zygote 的 ART abort 原文既进不了 logd（logd 自己就 127）也上不了串口 ——
+# 这一层包装只为把 stderr 逐行搬进 /dev/kmsg，拿到一手原因。
+ZYGWRAP = """#!/bin/busybox sh
+BB=/bin/busybox
+TAG=$1
+shift
+# ⚠ 不能写成 `"$@" | while read …`：那样 sh 的退出码是 while 循环的 0，
+#   init 只会看到 "exited with status 0" ⇒ 真崩溃被伪装成正常退出（实测 08:52 就这样被骗过一次）。
+#   落文件 + 跑完再把原文送串口，退出码才保真。
+"$@" > /tmp/$TAG.out 2>&1
+RC=$?
+echo "<3>[$TAG] 退出码=$RC ｜ 输出: $($BB head -c 320 /tmp/$TAG.out 2>&1 | $BB tr '\n' '~')" > /dev/kmsg
+exit $RC
+"""
+
 
 def extract(image, names):
     want = lambda n: n in names                                    # noqa: E731
@@ -342,6 +385,8 @@ def main():
                     help="摘掉所有 rc 服务的 seclabel（内核 SELinux 开着但没策略 ⇒ setexeccon 一律 EACCES）")
     ap.add_argument("--no-rc-guard", action="store_true",
                     help="摘掉所有 rc 里的 reboot_on_failure（真机失败即重启的安全闸；实验里它只会把进度挡住）")
+    ap.add_argument("--zygote-log", action="store_true",
+                    help="把 zygote 换成 /zygwrap.sh 包装：stderr 逐行搬进 /dev/kmsg，拿 ART abort 的一手原因")
     ap.add_argument("--claw-bg", action="store_true",
                     help="exec 真 init 之前先在后台挂上原编排 + 探测器（rc 触发器实测不生效，用它替代）")
     a = ap.parse_args()
@@ -360,6 +405,12 @@ def main():
 
     cur, fp = extract(SRC, {"init", "init.claw", "system/etc/init/hw/init.rc"})
     print("源镜像:", fp)
+    # rc 的改写必须从**未改造过的那份**（--off 用的同一份备份）出发：
+    # 否则第二次部署会在"上一版结果"上再摘一遍/再追加一遍 —— 实测 08:48 那轮
+    # ENV_RC 就因为 "service clawboot" 已在文件里而被整段跳过（守卫判错了对象）。
+    BASE = BAK if os.path.exists(BAK) else SRC
+    base, _ = extract(BASE, {"system/etc/init/hw/init.rc", "init.rc"})
+    print("rc 基线:", "备份件（未改造）" if BASE == BAK else "现镜像")
     if "init" not in cur:
         print("!! 镜像里没有 /init")
         return 1
@@ -387,17 +438,20 @@ def main():
         f.write(CLAW_RC)
     with open(os.path.join(gen, "e2probe.sh"), "w", encoding="utf-8", newline="\n") as f:
         f.write(E2PROBE)
+    with open(os.path.join(gen, "zygwrap.sh"), "w", encoding="utf-8", newline="\n") as f:
+        f.write(ZYGWRAP)
     with open(os.path.join(gen, "shadow-init"), "w", encoding="utf-8") as f:
         f.write("")
     for src_name, dst_name in (("system.build.prop", os.path.join(gen, "system.build.prop")),
-                               ("vendor.build.prop", os.path.join(gen, "e2-vendor-build.prop"))):
+                               ("vendor.build.prop", os.path.join(gen, "e2-vendor-build.prop")),
+                               ("android-env.sh", os.path.join(gen, "e2-android-env.sh"))):
         p = os.path.join(BLOBS, src_name)
         if not os.path.exists(p):
             print("!! 缺少 %s（先从 108 取回，见 BLOBS 上方注释）" % p)
             return 1
         shutil.copyfile(p, dst_name)
     # 真 init 第二阶段要读 /init.rc（镜像里只有 system/etc/init/hw/init.rc）
-    hwrc = cur.get("system/etc/init/hw/init.rc")
+    hwrc = base.get("system/etc/init/hw/init.rc")
     if not hwrc:
         print("!! 取不到 system/etc/init/hw/init.rc")
         return 1
@@ -415,12 +469,27 @@ def main():
     #    （108 参照系是真容器、SELinux 关闭，我们没有这个条件 —— 这条推翻 T4 的"两边都 Disabled"。）
     # 两个开关都在 rc 里，所以按"整行精确匹配"摘除，别的字节不动。
     BO = "reboot_on_failure reboot,boringssl-self-check-failed"
-    raw = {"system/etc/init/hw/init.rc": cur.get("system/etc/init/hw/init.rc") or "",
-           "init.rc": cur.get("init.rc") or cur.get("system/etc/init/hw/init.rc") or ""}
-    if a.strip_seclabel or a.no_rc_guard:
-        for e in C.load(SRC, want=lambda n: n.endswith(".rc"))[0]:
+    raw = {"system/etc/init/hw/init.rc": base.get("system/etc/init/hw/init.rc") or "",
+           "init.rc": base.get("init.rc") or base.get("system/etc/init/hw/init.rc") or ""}
+    if a.strip_seclabel or a.no_rc_guard or a.zygote_log:
+        for e in C.load(BASE, want=lambda n: n.endswith(".rc"))[0]:
             if e.data and e.name.startswith(("system/etc/init/", "vendor/etc/init/")):
                 raw[e.name] = e.text
+    if a.zygote_log:
+        # 只换 `service zygote …` 那一行的**命令**，服务名与后续选项（socket/user/group/critical）全留。
+        for name in list(raw):
+            if "init.zygote" not in name:
+                continue
+            out2 = []
+            for l in raw[name].splitlines():
+                w = l.split()
+                if len(w) > 2 and w[0] == "service" and w[1].startswith("zygote"):
+                    # 标签必须每个服务唯一：上一版截成 6 字符 ⇒ zygote 与 zygote_secondary 共用
+                    # /tmp/ZYGOTE.out，64 位那份的输出被 32 位的报错刷掉，白读一轮。
+                    l = "service %s /bin/busybox sh /zygwrap.sh %s %s" % (w[1], w[1].upper(), " ".join(w[2:]))
+                out2.append(l)
+            raw[name] = "\n".join(out2) + "\n"
+            print("  zygote 包了一层 stderr→kmsg：%s" % name)
     rc_args = []
     for name in sorted(raw):
         body = raw[name]
@@ -437,7 +506,7 @@ def main():
                             if l.strip().split(" ")[0] not in drops) + "\n"
         elif BO in new:                       # 默认只摘 boringssl 那一条自杀闸
             new = "\n".join(l for l in new.splitlines() if l.strip() != BO) + "\n"
-        if new == body:
+        if new == body and not (a.zygote_log and "init.zygote" in name):
             continue
         if name == "system/etc/init/hw/init.rc" and "service clawboot" not in new:
             # 实测⑫（07:24）：单独放一份 /system/etc/init/init.claw.rc，init **会 parse**（无解析错），
@@ -446,7 +515,8 @@ def main():
             # 我们的 exec 哨兵没有）⇒ "extra rc 把编排 import 回去"这条路在 Android 13 上不成立。
             # ⇒ 直接追加进 init 第二阶段的主 rc 本体（本就要为 boringssl 改写它，改动面不变大）。
             new = (new.rstrip("\n") +
-                   "\n\n# === E2：claw 编排回挂（实测只有追加进主 rc 才生效）===\n" + CLAW_RC)
+                   "\n\n# === E2：claw 编排回挂（实测只有追加进主 rc 才生效）===\n" + CLAW_RC +
+                   "\n" + ENV_RC)
         p = os.path.join(gen, "rc_" + name.replace("/", "_"))
         with open(p, "w", encoding="utf-8", newline="\n") as f:
             f.write(new)
@@ -469,7 +539,9 @@ def main():
             "+0755:e2probe.sh=%s" % os.path.join(gen, "e2probe.sh"),
             "+0644:shadow-init=%s" % os.path.join(gen, "shadow-init"),
             "+0644:system/build.prop=%s" % os.path.join(gen, "system.build.prop"),
-            "+0644:e2-vendor-build.prop=%s" % os.path.join(gen, "e2-vendor-build.prop")] + rc_args
+            "+0755:zygwrap.sh=%s" % os.path.join(gen, "zygwrap.sh"),
+            "+0644:e2-vendor-build.prop=%s" % os.path.join(gen, "e2-vendor-build.prop"),
+            "+0644:e2-android-env.sh=%s" % os.path.join(gen, "e2-android-env.sh")] + rc_args
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
     r = subprocess.run(args, capture_output=True, text=True, encoding="utf-8",
                        errors="replace", env=env)
