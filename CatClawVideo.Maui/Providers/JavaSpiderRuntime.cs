@@ -1285,6 +1285,53 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         { Timeout = TimeSpan.FromSeconds(120) };
 
     /// <summary>
+    /// 流式版 <see cref="ProxyAsync"/>：网盘取流（<c>do=proxy&amp;key=…</c>）是**连续大流**
+    /// （实测单集 883MB ~ 2.35GB），老路把整段读进 <c>byte[]</c> 会 OOM 且要等下完才起播。
+    /// 这里用 <c>ResponseHeadersRead</c> 只等头，body 作为流交回给宿主边收边写。
+    ///
+    /// <para>返回的 <see cref="Stream"/> 与底层连接同生命周期：调用方写完即弃（不 dispose 也可，
+    /// 连接随响应对象回收）。</para>
+    /// </summary>
+    public async Task<(int Status, string Mime, Stream Body)?> ProxyStreamAsync(
+        IReadOnlyDictionary<string, string> query, CancellationToken ct = default)
+    {
+        var key = query.GetValueOrDefault("siteKey");
+        var site = string.IsNullOrEmpty(key) ? null : SiteRegistry.Find(key);
+        site ??= _lastSite;
+        if (site is null)
+        {
+            Log("proxy 流：siteKey 缺失且无最近站点");
+            return null;
+        }
+        try
+        {
+            await EnsureBridgeAsync(ct).ConfigureAwait(false);
+            var jarPath = await EnsureConvertedJarAsync(site, ct).ConfigureAwait(false);
+            await EnsureSiteLoadedAsync(site, jarPath, ct).ConfigureAwait(false);
+            if (_art?.ProxyBase is not { } tunnel)
+            {
+                Log("proxy 流：隧道不可用（ART guest 未连接）");
+                return null;
+            }
+
+            var q = new Dictionary<string, string>(query) { ["site"] = site.Key };
+            var url = tunnel + "/proxy?" + string.Join("&",
+                q.Select(kv => Uri.EscapeDataString(kv.Key) + "=" + Uri.EscapeDataString(kv.Value ?? "")));
+            var resp = await TunnelHttp.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct)
+                .ConfigureAwait(false);
+            var body = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+            Log($"proxy 流：{site.Key} do={query.GetValueOrDefault("do")} → {(int)resp.StatusCode}（不缓冲）");
+            return ((int)resp.StatusCode,
+                resp.Content.Headers.ContentType?.MediaType ?? "application/octet-stream", body);
+        }
+        catch (Exception ex)
+        {
+            Log($"proxy 流异常：{ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
     /// 把爬虫的 proxy 回调原样交给 guest 里那个由壳自己应答的服务
     /// （<c>bridge.Art.serveProxy</c> 起的，内部就是 jar 的 <c>Proxy.proxy → Init.proxyInvoke</c>）。
     /// </summary>

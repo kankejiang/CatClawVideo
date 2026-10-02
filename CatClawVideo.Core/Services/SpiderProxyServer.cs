@@ -96,6 +96,20 @@ public sealed class SpiderProxyServer : IDisposable
         Task<(int Status, string Mime, byte[]? Body)?>?>? JsProxyHandler { get; set; }
 
     /// <summary>
+    /// 流式转发回调（可选，优先级高于 <see cref="JsProxyHandler"/>）。
+    ///
+    /// <para><b>为什么必须有它</b>：网盘 VIP 取流（<c>do=proxy&amp;key=…</c>）是**连续大流**——
+    /// 实测单集 883MB ~ 2.35GB。老路 <see cref="JsProxyHandler"/> 约定返回
+    /// <c>byte[]</c>，等于把整部片子读进宿主内存（2GB+ 必 OOM，且要等下完才起播）。
+    /// 这里改成边收边写：状态行与 Content-Type 先落，然后 64KB 一块泵给 socket，
+    /// 用「Connection: close」界定长度（与 TVBox <c>newChunkedResponse</c> 同款做法）。</para>
+    ///
+    /// <para>返回 null = 该运行时没有流式实现，调用方自动落回 byte[] 老路（行为不变）。</para>
+    /// </summary>
+    public Func<IReadOnlyDictionary<string, string>, CancellationToken,
+        Task<(int Status, string Mime, Stream Body)?>?>? JsProxyStreamHandler { get; set; }
+
+    /// <summary>
     /// <c>/cache?do=get|set|del</c> 端点背后的 KV（对位 TVBox 用 Hawk 存 <c>cache_&lt;rule&gt;_&lt;key&gt;</c>）。
     /// 未注入时 get 回空串、set 静默丢弃——jar 侧表现为「登录态存了但重启就没了」，所以宿主必须接。
     /// </summary>
@@ -263,6 +277,19 @@ public sealed class SpiderProxyServer : IDisposable
 
                 if (args.GetValueOrDefault("from") == "catvod" || (doVal is not null && SpiderProxyDo.Contains(doVal)))
                 {
+                    // 流式优先：网盘取流是几百 MB ~ 数 GB 的连续流，整段缓冲会 OOM（见 JsProxyStreamHandler）。
+                    // 只有 jar 隧道这条实现了流式；JS 运行时返回 null，自然落回下面的 byte[] 老路。
+                    var streamer = JsProxyStreamHandler;
+                    if (streamer is not null)
+                    {
+                        var sres = await streamer(args, timeout.Token).ConfigureAwait(false);
+                        if (sres is { } sr)
+                        {
+                            await WriteStreamAsync(stream, sr.Status, sr.Mime, sr.Body).ConfigureAwait(false);
+                            return;
+                        }
+                    }
+
                     var handler = JsProxyHandler;
                     if (handler is null)
                     {
@@ -601,6 +628,45 @@ public sealed class SpiderProxyServer : IDisposable
         await stream.WriteAsync(head).ConfigureAwait(false);
         if (body.Length > 0) await stream.WriteAsync(body).ConfigureAwait(false);
         await stream.FlushAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 流式应答：状态行 + Content-Type 先落，body 边收边写（64KB 一块）。
+    ///
+    /// <para><b>刻意不发 Content-Length</b>：网盘直链长度事先未知（jar 侧是转发流），
+    /// 用「Connection: close」界定 body 边界 —— 与 TVBox <c>newChunkedResponse</c> 的做法一致，
+    /// 播放器读到连接关闭即视为结束。</para>
+    ///
+    /// <para>播放器中途断开（换集/退出）会让拷贝抛 IOException，属正常收摊，吞掉即可。</para>
+    /// </summary>
+    private static async Task WriteStreamAsync(NetworkStream stream, int status, string mime, Stream body)
+    {
+        var sb = new StringBuilder();
+        sb.Append("HTTP/1.1 ").Append(status >= 200 && status < 600 ? $"{status} OK" : "200 OK").Append("\r\n");
+        sb.Append("Content-Type: ").Append(string.IsNullOrEmpty(mime) ? "application/octet-stream" : mime).Append("\r\n");
+        sb.Append("Accept-Ranges: none\r\n");
+        sb.Append("Connection: close\r\n\r\n");
+        await stream.WriteAsync(Encoding.ASCII.GetBytes(sb.ToString())).ConfigureAwait(false);
+        await stream.FlushAsync().ConfigureAwait(false);
+
+        var buf = new byte[64 * 1024];
+        try
+        {
+            int n;
+            while ((n = await body.ReadAsync(buf).ConfigureAwait(false)) > 0)
+            {
+                await stream.WriteAsync(buf.AsMemory(0, n)).ConfigureAwait(false);
+                await stream.FlushAsync().ConfigureAwait(false);
+            }
+        }
+        catch (IOException)
+        {
+            // 播放器提前断开（换集/退出）：正常，不算错误
+        }
+        catch (ObjectDisposedException)
+        {
+            // 上游流被关闭：同上
+        }
     }
 
     /// <summary>取原始请求头（供 <see cref="GoLiveProxy"/> 复用：它要把播放器的 Range 带下去）。</summary>
