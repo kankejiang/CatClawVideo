@@ -115,6 +115,14 @@ public class Server {
     }
 
     public static void main(String[] args) throws Exception {
+        // 静默线程死亡的最后一道眼：网盘登录保存链若在某线程悄悄抛异常被壳吞掉，这里抓不到；
+        // 但**未捕获**的异常（保存线程被炸死）一定会从这里过 —— 配合 stackdump 定位（2026-10-02）。
+        Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
+            try {
+                System.err.println("[srv] 未捕获异常 thread=" + t.getName() + " : " + e);
+                for (StackTraceElement f : e.getStackTrace()) System.err.println("    at " + f);
+            } catch (Throwable ignored) { }
+        });
         // Guard 资源控制口：guest 内 harness 的 GLOAD 下发与 so/dex 条目服务（仅 spider guest 用）。
         // 桌面直跑模式该端口被占用时静默失败不影响主流程。
         try { bridge.GuardCtrl.start(); } catch (Throwable ig) { }
@@ -260,6 +268,63 @@ public class Server {
                         yield "dumped " + Thread.getAllStackTraces().size() + " threads";
                     }
                     case "ping" -> "pong";
+                    case "cookies" -> {
+                        // 2026-10-02 网盘登录态排障（CATCLAW_BRIDGE_DEBUG 泵用，只读）：
+                        // ① java.net.CookieHandler 默认层 ② android.webkit 真框架 CookieManager
+                        // ③ 已装载 spider 类的静态 String 字段 —— 三处一起看，
+                        //    判定扫码确认后「新鲜的登录态到底落在哪/哪一层丢了」。
+                        StringBuilder sb = new StringBuilder();
+                        java.net.CookieHandler h = java.net.CookieHandler.getDefault();
+                        sb.append("java.net.CookieHandler=").append(h == null ? "null" : h.getClass().getName()).append('\n');
+                        if (h instanceof java.net.CookieManager cm) {
+                            try {
+                                for (java.net.HttpCookie c : cm.getCookieStore().getCookies()) {
+                                    String v = c.getValue();
+                                    sb.append("  [jnet] ").append(c.getDomain()).append("  ").append(c.getName())
+                                      .append("  ").append(v == null ? -1 : v.length()).append("B\n");
+                                }
+                            } catch (Throwable t) { sb.append("  [jnet] store 读取失败: ").append(t).append('\n'); }
+                        }
+                        try {
+                            Object wk = Class.forName("android.webkit.CookieManager").getMethod("getInstance").invoke(null);
+                            for (String u : new String[]{"https://uop.quark.cn/", "https://pan.quark.cn/"}) {
+                                try {
+                                    Object c = wk.getClass().getMethod("getCookie", String.class).invoke(wk, u);
+                                    sb.append("  [webkit] getCookie(").append(u).append(") → ")
+                                      .append(c == null ? "null" : (c.toString().length() + "B: " + c.toString())).append('\n');
+                                } catch (Throwable t) { sb.append("  [webkit] ").append(u).append(" 探测失败: ").append(t).append('\n'); }
+                            }
+                        } catch (Throwable t) {
+                            Throwable c = t;
+                            while (c.getCause() != null) c = c.getCause();
+                            sb.append("  [webkit] getInstance 失败: ").append(t.getClass().getSimpleName())
+                              .append(" / root=").append(c.getClass().getName()).append(": ").append(c.getMessage()).append('\n');
+                        }
+                        // 壳类的静态 String 字段（登录态常驻处）：Quark / FishConfig 两个名字都试
+                        java.util.LinkedHashSet<ClassLoader> loaders = new java.util.LinkedHashSet<>();
+                        for (Object sp : SPIDERS.values()) {
+                            try { loaders.add(sp.getClass().getClassLoader()); } catch (Throwable ignored) { }
+                        }
+                        for (ClassLoader cl : loaders) {
+                            for (String cn : new String[]{"com.github.catvod.spider.Quark", "com.github.catvod.spider.FishConfig"}) {
+                                try {
+                                    Class<?> c = Class.forName(cn, false, cl);
+                                    for (java.lang.reflect.Field f : c.getDeclaredFields()) {
+                                        if (!java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
+                                        try {
+                                            f.setAccessible(true);
+                                            Object v = f.get(null);
+                                            if (v instanceof String s && !s.isEmpty())
+                                                sb.append("  [static] ").append(cn).append('.').append(f.getName())
+                                                  .append(" = ").append(s.length()).append("B: ")
+                                                  .append(s, 0, Math.min(60, s.length())).append("...\n");
+                                        } catch (Throwable ignored) { }
+                                    }
+                                } catch (Throwable ignored) { }
+                            }
+                        }
+                        yield sb.toString();
+                    }
                     case "guard-encrypt" -> {
                         // guest 内 Guard 加密：凭据回写 spUtils 前的逆向操作（同 Rc.KJ 体系）
                         String data = req.optString("data", "");
@@ -1278,6 +1343,19 @@ public class Server {
         Thread t = new Thread(() -> {
             try {
                 try { new java.io.File("/data/misc/adb").mkdirs(); } catch (Throwable ignored) { }
+                // 单实例守卫（2026-10-03）：init 侧（v9 段）已经拉起 adbd，桥侧再起一个的话，
+                // 两个 adbd 抢 5555 —— 输家 bind 失败却不退出，陷入错误重试循环：
+                // 实测恒定吃 ~2 核 CPU、其错误日志经 liblog→logdw 灌爆 fakelogd（1 核）→
+                // 串口 ~5500 中断/s（每次都是 VM exit）→ 桥的 pump 线程再吃 ~55% ⇒
+                // 整个 guest 空闲时白烧 ~4 核（qemu 宿主进程 560% 的主因）。
+                // 与 startSurfaceFlinger 的守卫同款：扫 /proc/*/cmdline，纯文件读，零 fork。
+                for (int w = 0; w < 30; w++) {
+                    if (adbdAlreadyRunning()) {
+                        System.err.println("[adbd] 已有实例（init 侧）→ 桥侧不再拉起（双实例会抢 5555 空转）");
+                        return;
+                    }
+                    Thread.sleep(500);
+                }
                 setProp("service.adb.tcp.port", "5555");
                 setProp("ro.adb.secure", "0");
                 // B1.1 排障用：允许 `adb root` 拿到 guest 内的 root shell（要看 /dev、挂载、/data 里的东西）
@@ -1432,6 +1510,27 @@ public class Server {
      * guest 里是否已有存活的 surfaceflinger（扫 /proc 各 pid 的 cmdline，零 fork ——
      * 桥的 fork 会被 proppreload 拦截，不能派 pidof 子进程）。
      */
+    /** 见 startAdbd 的单实例守卫：扫 /proc 下每个 pid 的 cmdline，出现 adbd 即认为已有实例。 */
+    private static boolean adbdAlreadyRunning() {
+        String[] list;
+        try { list = new java.io.File("/proc").list(); } catch (Throwable e) { return false; }
+        if (list == null) return false;
+        for (String name : list) {
+            int pid;
+            try { pid = Integer.parseInt(name); } catch (NumberFormatException e) { continue; }
+            if (pid <= 1) continue;
+            try (java.io.InputStream in = new java.io.FileInputStream("/proc/" + name + "/cmdline")) {
+                byte[] buf = new byte[128];
+                int n = in.read(buf);
+                if (n <= 0) continue;
+                String cmd = new String(buf, 0, n, java.nio.charset.StandardCharsets.UTF_8);
+                // cmdline 以 NUL 结尾（"/system/bin/adbd\0"），equals 永不命中 ⇒ 用 startsWith
+                if (cmd.startsWith("/system/bin/adbd")) return true;
+            } catch (Throwable ignored) { }
+        }
+        return false;
+    }
+
     private static boolean sfAlreadyRunning() {
         String[] list;
         try { list = new java.io.File("/proc").list(); } catch (Throwable e) { return false; }
