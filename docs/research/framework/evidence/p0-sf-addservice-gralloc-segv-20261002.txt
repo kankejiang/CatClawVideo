@@ -82,6 +82,32 @@ composer HAL（hwcomposer.waydroid）是**单客户端**：init 侧先起 SF 后
    [ ] screencap -p 出 PNG（89 50 4E 47）——卡 gralloc SEGV，见 §三
    [ ] 连续 2 次开机复现（等 PNG 通后一起跑）
 
+五点五、dumb 后端实现轮（15:30-16:10）—— 后端 ABI 打通 ✔，内核基座挡路 ✗
+---------------------------------------------------------------------
+按方案 1 实现了替位后端（JavaBridge/qemu-src/blobs/mesa/dumb_gbm.c，编译产物
+12KB）：
+   - mesa 后端 ABI 全量逆向成功：gbmint_get_backend(const struct gbm_core*)
+     → 返回静态 struct gbm_backend（dri_gbm.so 内 0x37d40：version=1 + 7 个
+     函数槽，与公开的 external/gbm_backend_abi.h v0 布局对齐）。
+   - dumb_gbm.c 实现 CREATE_DUMB/MAP_DUMB/PRIME_HANDLE_TO_FD 全套 device/bo
+     函数表；经 GBM_BACKENDS_PATH=/data/local/tmp 实测 **被 mesa core 正确
+     dlopen 并调用**（[dumb-gbm] get_backend → create_device 日志 ✔）——
+     本 guest 第一次有外部后端被加载。
+   - 但内核基座挡路 ✗：guest 6.1 内核 virtio-gpu 的用户态 dumb 分配
+     CREATE_DUMB 全 bpp EINVAL（card0），renderD128 EACCES，PRIME cap=0
+     （fbcon 内部路径可用但用户态 ioctl 不通）。裸 ioctl 探针 gbmprobe6/7
+     证实与 gbm/mesa 无关（见 .zwork/p0/gbmprobe6.c,gbmprobe7.c）。
+   - 尝试 host 侧开 blob：QEMU Windows 版拒绝 `virtio-gpu-pci,blob=true`
+     （"need rutabaga or udmabuf for blob"——两者都是 Linux 专属）✗。
+   - 已加 CATCLAW_ART_GPU_OPTS env 钩子（QemuHostRuntime.cs，默认空不变），
+     供后续在 Linux host / 新 QEMU 上继续。
+
+结论：dumb 后端方案本身成立，但它依赖的「内核用户态 dumb 分配」在本
+guest（Windows QEMU + Debian 6.1 内核 virtio-gpu）上不可用。P0 的 gralloc
+链需要内核/宿主设备特性支持（resource blob 或可用的 2D dumb 路径），
+属于 T1/E4 线的设备配置问题（换 Linux host / 升级 QEMU / 换内核模块版本），
+不是应用层可单独修完的。
+
 六、工件
 ---------------------------------------------------------------------
    .zwork/p0/ra.sh|rs.sh        手动拉起 allocator/SF 的实验脚本

@@ -345,7 +345,15 @@ public sealed class QemuHostRuntime : IDisposable
                 // 无头运行（-nographic）：只提供 DRM 节点；画面由 SurfaceFlinger 自己合成后用
                 // adb screencap 取。guest 侧要 insmod 与内核版本精确匹配的 drm/virtio-gpu 模块。
                 // 关掉：环境变量 CATCLAW_ART_GPU=0。
-                "-device", Environment.GetEnvironmentVariable("CATCLAW_ART_GPU") == "0" ? "virtio-gpu-pci,id=gpu0,disable-legacy=on" : "virtio-gpu-pci",
+                // P0（2026-10-02）：guest 内核 6.1 的 dumb 分配在裸 2D 资源路径上 EINVAL，
+                // 需要 host 侧 resource-blob 特性 —— CATCLAW_ART_GPU_OPTS 可追加设备参数
+                // （如 "blob=true"，等价 -device virtio-gpu-pci,blob=true），默认为空不变。
+                "-device", (Environment.GetEnvironmentVariable("CATCLAW_ART_GPU") == "0"
+                                ? "virtio-gpu-pci,id=gpu0,disable-legacy=on"
+                                : "virtio-gpu-pci")
+                           + (Environment.GetEnvironmentVariable("CATCLAW_ART_GPU_OPTS") is { Length: > 0 } o
+                                ? "," + o
+                                : ""),
             };
             // ── 诊断开关（默认关）：把 guest 的 slirp 流量 dump 成 pcap ──
             // 2026-10-01 夸克扫码排障：壳扫码后既不落盘、也不读任何存储，剩下的未知只有
