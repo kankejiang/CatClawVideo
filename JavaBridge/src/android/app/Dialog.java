@@ -223,7 +223,19 @@ public class Dialog implements DialogInterface {
             labels.add(rowLabel(v, v, idx));
             nodes.add(v);
             rows.add(java.util.List.of(idx));
-            try { n.put("i", idx); } catch (Throwable ignored) { }
+            try {
+                n.put("i", idx);
+                // 行容器 = 标题+副标题+箭头那组 TextView（jar 的网盘行），文字必须展示出来 ——
+                // 行内子树只作为显示内容序列化（displayOf，不带点击下标；点击是整行一个单元）。
+                if (v instanceof ViewGroup g) {
+                    org.json.JSONArray arr = new org.json.JSONArray();
+                    for (int i2 = 0; i2 < g.getChildCount(); i2++) {
+                        org.json.JSONObject cn = displayOf(g.getChildAt(i2));
+                        if (cn != null) arr.put(cn);
+                    }
+                    if (arr.length() > 0) n.put("c", arr);
+                }
+            } catch (Throwable ignored) { }
             return n;
         }
         if (v instanceof ViewGroup g) {
@@ -238,7 +250,17 @@ public class Dialog implements DialogInterface {
                     nodes.add(k);
                     row.add(idx);
                     org.json.JSONObject kn = nodeJson(k);
-                    try { kn.put("i", idx); } catch (Throwable ignored) { }
+                    try {
+                        kn.put("i", idx);
+                        if (k instanceof ViewGroup kg) {
+                            org.json.JSONArray karr = new org.json.JSONArray();
+                            for (int i2 = 0; i2 < kg.getChildCount(); i2++) {
+                                org.json.JSONObject cn = displayOf(kg.getChildAt(i2));
+                                if (cn != null) karr.put(cn);
+                            }
+                            if (karr.length() > 0) kn.put("c", karr);
+                        }
+                    } catch (Throwable ignored) { }
                     arr.put(kn);
                 }
                 rows.add(row);
@@ -309,6 +331,24 @@ public class Dialog implements DialogInterface {
             if (v.uiVisibility() != android.view.View.VISIBLE) n.put("gone", 1);
             if (!v.uiEnabled()) n.put("dis", 1);
         } catch (Throwable ignored) { }
+        return n;
+    }
+
+    /**
+     * 展示专用子树序列化（可点行内部）：带视觉属性、不带点击下标、不进 plain/行结构 ——
+     * jar 的网盘行内部是「标题+副标题+箭头」那组 TextView，文字必须展示出来。
+     */
+    private static org.json.JSONObject displayOf(android.view.View v) {
+        if (v == null) return null;
+        org.json.JSONObject n = nodeJson(v);
+        if (v instanceof ViewGroup g && g.getChildCount() > 0) {
+            org.json.JSONArray arr = new org.json.JSONArray();
+            for (int i = 0; i < g.getChildCount(); i++) {
+                org.json.JSONObject cn = displayOf(g.getChildAt(i));
+                if (cn != null) arr.put(cn);
+            }
+            try { if (arr.length() > 0) n.put("c", arr); } catch (Throwable ignored) { }
+        }
         return n;
     }
 
