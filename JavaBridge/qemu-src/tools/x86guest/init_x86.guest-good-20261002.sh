@@ -352,7 +352,7 @@ if [ -f /b1/android-stack.tar.gz ]; then
     # E2 模式曾试过 setprop 走真 init 的 rc adbd：实测 setprop rc=1、rc 服务环
     # 根本没起来（init.svc=0）⇒ 此路不通，两种模式统一自己拉。
     ( LD_PRELOAD=/system/lib64/libpropfix.so:/proppreload.so \
-      PROPFIX="hwservicemanager.ready=true;service.adb.tcp.port=5555;service.adb.root=1;ro.adb.secure=0;ro.debuggable=1;persist.adb.tls_server.enable=1" \
+      PROPFIX="hwservicemanager.ready=true;service.adb.tcp.port=5555;service.adb.root=1;ro.adb.secure=0;ro.debuggable=1;persist.adb.tls_server.enable=0" \
       LD_LIBRARY_PATH=/vendor/lib64:/system/lib64 /system/bin/adbd >/tmp/adbd-init.log 2>&1 ) &
     echo "[astack] SF/adbd 已由 init 拉起"
     # 1 秒同步探针：区分「子 shell 没跑/重定向失败」与「进程秒死但日志在」——

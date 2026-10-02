@@ -142,14 +142,119 @@ int __system_property_foreach(void (*report)(const prop_info *pi, void *cookie),
 
 int __system_property_wait(const prop_info *pi, uint32_t old_serial, uint32_t *new_serial_ptr,
                            const struct timespec *relative_timeout) {
+    /* bionic 契约：阻塞到该属性串号 != old_serial（返回 1），或 relative_timeout 到点（返回 0）。
+     * 2026-10-03 CPU 排障（profiler 实证）：调用方传进来的 pi 可能来自 **libpropfix** 的
+     * find（LD_PRELOAD 链里它排在我们前面），其占位 prop_info 的 serial 与我们 g_pool
+     * 的编号不是一套 —— 按 pi->serial 比较会得到"永远刚变化"，秒回 ⇒ libbase 的
+     * WaitForProperty 退化成纯用户态忙循环（adbd 单线程恒定 100% utime/stime=0）。
+     * 处置：不再比较任何串号，统一睡 20ms 后返回 —— wait 的语义在本 guest 退化为
+     * "每次至多 20ms 的轮询间隔"，对编译期写死+进程内 set 的静态表足够。 */
+    (void) pi;
+    (void) old_serial;
     (void) relative_timeout;
     ensure_pool();
-    uint32_t now = pi ? pi->u.v.serial : g_serial;
-    if (new_serial_ptr) *new_serial_ptr = now;
-    return now == old_serial ? 0 : 1;
+    struct timespec ts = {0, 20 * 1000 * 1000};   /* 20ms */
+    nanosleep(&ts, NULL);
+    if (new_serial_ptr) *new_serial_ptr = g_serial;
+    return 1;
 }
 
 /* 有些代码走的是这个（等待任意属性变化）。 */
+
+/* ── wait_any 接管（2026-10-03 CPU 排障）──
+ * bionic 老接口：阻塞到「任意」属性串号变化，返回其 prop_info。
+ * 不接管时调用方落到真 bionic —— guest 没有 /dev/__properties__，
+ * 属性区未初始化 ⇒ 秒回 NULL ⇒ adbd 的监视线程**纯用户态**忙循环
+ * （实测单线程恒定 100% utime / stime=0，从开机开始，即 adbd 空转的最后一块拼图）。
+ * 这里用 20ms 步进轮询模拟阻塞；表是编译期写死+进程内 set，灵敏度足够。 */
+const prop_info *__system_property_wait_any(uint32_t old_serial) {
+    /* 同 __system_property_wait：调用方手里的 old_serial 可能来自 libpropfix 的编号，
+     * 与我们 g_serial 不是一套 ⇒ 比较恒真 ⇒ 忙循环。统一退化为 20ms 轮询。 */
+    (void) old_serial;
+    ensure_pool();
+    struct timespec ts = {0, 20 * 1000 * 1000};   /* 20ms */
+    nanosleep(&ts, NULL);
+    return &g_pool[0];
+}
+
+/* ── 极简采样 profiler（PROPPROF=1 启用，2026-10-03 CPU 排障）─────────────────
+ * 背景：adbd 一个线程纯用户态 100% 空转（stime=0 ⇒ 无任何系统调用），内核接口
+ * （syscall/kstkeip/ptrace）全被权限挡死。这里用 ITIMER_PROF + SIGPROF 直接采样
+ * RIP，攒 90 秒直方图后由监控线程用 dladdr 归属模块并打到 stderr，供宿主侧
+ * 用 llvm-addr2line 对着 adbd/libc 符号化。只诊断不干预，采样成本可忽略。 */
+#include <signal.h>
+#include <sys/time.h>
+#include <pthread.h>
+#include <dlfcn.h>
+#include <unistd.h>
+
+#define PROF_SLOTS 256
+static uintptr_t g_prof_pc[PROF_SLOTS];
+static unsigned long long g_prof_n[PROF_SLOTS];
+static int g_prof_used;
+
+static void prof_handler(int sig, siginfo_t *si, void *uctx) {
+    (void) sig; (void) si;
+    ucontext_t *uc = (ucontext_t *) uctx;
+#if defined(__aarch64__)
+    uintptr_t pc = (uintptr_t) uc->uc_mcontext.pc;
+#elif defined(__x86_64__)
+    uintptr_t pc = (uintptr_t) uc->uc_mcontext.gregs[16];   /* x86_64: gregs[16] = RIP */
+#else
+    uintptr_t pc = 0;
+#endif
+    if (!pc) return;
+    for (int i = 0; i < g_prof_used; i++) {
+        uintptr_t d = pc > g_prof_pc[i] ? pc - g_prof_pc[i] : g_prof_pc[i] - pc;
+        if (d < 96) { g_prof_n[i]++; return; }
+    }
+    if (g_prof_used < PROF_SLOTS) {
+        g_prof_pc[g_prof_used] = pc;
+        g_prof_n[g_prof_used] = 1;
+        g_prof_used++;
+    }
+}
+
+static void *prof_monitor(void *arg) {
+    (void) arg;
+    for (int round = 0; round < 3; round++) {
+        sleep(90);
+        fprintf(stderr, "[prof] ===== round %d (%d slots) =====\n", round, g_prof_used);
+        for (int i = 0; i < g_prof_used; i++) {
+            void *pc = (void *) g_prof_pc[i];
+            Dl_info info;
+            const char *mod = "?";
+            uintptr_t base = 0;
+            if (dladdr(pc, &info) && info.dli_fname) {
+                mod = info.dli_fname;
+                base = (uintptr_t) info.dli_fbase;
+            }
+            fprintf(stderr, "[prof] pc=%lx n=%llu mod=%s off=%lx\n",
+                    (unsigned long) pc, g_prof_n[i], mod,
+                    (unsigned long) (pc - base));
+        }
+        fflush(stderr);
+    }
+    return NULL;
+}
+
+static void prof_init(void) __attribute__((constructor));
+static void prof_init(void) {
+    if (!getenv("PROPPROF")) return;
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = prof_handler;
+    sa.sa_flags = SA_SIGINFO | SA_RESTART;
+    sigaction(SIGPROF, &sa, NULL);
+    struct itimerval it;
+    it.it_interval.tv_sec = 0;
+    it.it_interval.tv_usec = 5 * 1000;   /* 5ms */
+    it.it_value = it.it_interval;
+    setitimer(ITIMER_PROF, &it, NULL);
+    pthread_t th;
+    pthread_create(&th, NULL, prof_monitor, NULL);
+}
+
 int __system_property_wdev_l(const prop_info *pi, uint32_t old_serial, const char *value, int vlen) {
     (void) pi; (void) old_serial; (void) value; (void) vlen;
     return 0;
