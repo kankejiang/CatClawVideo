@@ -764,3 +764,47 @@ Probing EDD (edd=off to disable)... oc[?7l[2J[init] 分发器在位 shadow=Y 
 [init] libdl_android.so 软链→硬链 0
 [init] libm.so 软链→硬链 0
    …
+
+── ㉙ 自杀闸其实摘了两份里的一份（工具自己的 bug，10:10 定位） ──
+部署件复核（改前）：system/etc/init/hw/init.rc 1375 行 reboot_on_failure=4 / 根 init.rc 1324 行 =4
+根因：根 /init.rc 走的是固定注入件 +0644:init.rc=%gen/init.rc（由未改写的 hw 文本直接写出），
+     rc 流水线（drops=reboot_on_failure）的产物 %gen/rc_init.rc 排在参数表最后，两份内容来源不同。
+改后（同一命令重跑）：hw 1371 行 =0、根 1320 行 =0、boringssl 闸 =0；追加段只进 hw（claw段=True/False）。
+
+── ㉚ zygote_secondary 用 onrestart 把活着的 64 位 zygote 打死（10:21 round A） ──
+[   24.858019] init: starting service 'boringssl_self_test32'...
+[   30.130074] init: Service 'boringssl_self_test32' (pid 544) exited with status 1      ← 闸摘掉后不再拖死全场
+[   26.  ] [E2] t=26s init.svc=52 props=265 getprop可读=285 zygote=stopping boot= sdk=33
+[   80.316679] init: Service 'zygote_secondary' (pid 1158) exited with status 1
+[   80.581285] init: Sending signal 9 to service 'zygote' (pid 1156) process group...     ← secondary 的 onrestart 链
+[   80.862883] init: Service 'zygote' (pid 1156) received signal 9                        ← 64 位那任是被人 SIGKILL 的
+[ZYGOTE_SECONDARY] 退出码=1 ｜ CANNOT LINK EXECUTABLE "/system/bin/app_process32": library "libandroid_runtime.so" not found
+处置：--no-zygote32 整段删除（镜像里没有 init.zygote64.rc，不能靠 ro.zygote=zygote64 绕 —— 那会一个都不定义）
+
+── ㉛ /init.environ.rc 没人写 ⇒ 服务的 ANDROID_* 全空（10:21 round A 发现，10:35 round B 踩坑） ──
+每次开机都有：init: Added '/init.environ.rc' to import list
+             init: Unable to read config file '/init.environ.rc': open() failed: No such file or directory
+连带现象：libprocessgroup: Failed to read task profiles from /etc/task_profiles.json  （= ANDROID_ROOT 为空拼出来的）
+第一版按 env 直接生成 26 行 `export 名 值` ⇒ init 报 /init.environ.rc: 1..26: Invalid section keyword found（整份被拒）
+   ⇒ 顶层 export 在 Android 13 的 rc 解析器里非法，必须有段头；export 只吃两个参数，值含空白的行要丢掉
+第二版加 `on early-init` 段头 + 缩进：[init] /init.environ.rc 2703B 条数=27，之后无一条 Invalid
+
+── ㉜ export 落地的一手证明 + zygote 首次 running（10:35 round C） ──
+包装层（服务的父进程 = init 给它的环境）自己报一行：
+[   25.123036] [LOGD] env: AR=[/system] AD=[/data] BCP=623B PATH=[/product/bin:/apex/com.android.runtime/b]
+[   54.925799] [ZYGOTE] env: AR=[/system] AD=[/data] BCP=623B PATH=[/system/bin:/bin:/bin/busybox]
+[   54.936093] [ZYGOTE] 退出码=134 ｜ libc: Fatal signal 6 (SIGABRT) ... in tid 1061 (main)
+[   66.685117] [E2] t=65s init.svc=54 props=265 getprop可读=288 zygote=running boot= sdk=33   ← E2/N1-1 判据首次达成
+cgroup 顺带修好：[init] cgroup /dev/cpuctl(cpu) 已挂（cpu,cpuacct 挂不上，单 cpu 可以）
+本轮末尾：init: critical process 'hwservicemanager' exited 4 times before boot completed
+         reboot: Restarting system with command 'bootloader'（t=67.79 / 第二循环 t=77.46）
+
+── ㉝ 摘掉 critical 后不重启了，露出真闸门：/dev/binder 权限（10:47 round D） ──
+t=99 / 104 / 110 连续三次采样：init.svc=54 props=265 getprop可读=288 zygote=running（中间一次 restarting）
+[   99.094895] [SERVICEMANAGER] 退出码=134 ｜ Binder driver '/dev/binder' could not be opened. Terminating:
+                    Opening '/dev/binder' failed: Permission denied
+[  109.423156] [HWSERVICEMANAGER] 退出码=134 ｜ Binder driver could not be opened. Terminating.
+[   25.226112] [LOGD] 退出码=134 ｜ 只有 libc: Fatal signal 6 (SIGABRT) ... in tid 659 (logd) 一句（首任无别的原文）
+反例记录：把 ro.logd.kernel=true 预置进注入的 system/build.prop 后，logd **第一任**就撞
+   init: Unable to set property 'ro.logd.kernel' ... Read-only property was already set ⇒ 0xb ⇒ 134
+   （ro. 是 read-once，已有值即失败，同值也不例外）⇒ 预置是错的方向，已回退。

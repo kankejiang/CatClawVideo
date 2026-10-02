@@ -167,3 +167,5 @@ persist.sys.usb.config=adb
 # === E2/N1-3：从 108 zygote64 的 getprop 全量 diff 出来的缺项（ART 找 ISA 映射要用）===
 ro.dalvik.vm.isa.arm=x86
 ro.dalvik.vm.isa.arm64=x86_64
+# 别在这里预置 ro.logd.kernel：logd 起来第一件事就是把它设成 true，而 `ro.` 是 read-once ——
+# 只要已有值（哪怕同值）init 就回 0xb，logd 把这次失败当致命错误直接 SIGABRT（实测 10:44 首任即死）。

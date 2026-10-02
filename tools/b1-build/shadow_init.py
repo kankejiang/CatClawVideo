@@ -63,7 +63,7 @@ WANT_IN_IMAGE = {"init", "init.claw", "init.rc", "system/etc/init/init.claw.rc",
 BLOBS = os.path.join(REPO, "JavaBridge", "qemu-src", "blobs", "e2")
 
 DISPATCH = """#!/bin/busybox sh
-%s
+__E2MARK__
 # 有 /shadow-init 标记 ⇒ 真 Android init 顶替同一个 PID1 接手（E2 实验）；
 # 没标记 ⇒ 原样跑我们自己的编排。两条路都不需要改宿主 -append。
 BB=/bin/busybox
@@ -88,7 +88,7 @@ if [ -e /shadow-init ]; then
               /first_stage_ramdisk /metadata /bootstrap; do
         $BB mkdir -p $_d
     done
-    echo "[init] shadow-PID1：exec /system/bin/init %s"
+    echo "[init] shadow-PID1：exec /system/bin/init __E2ARGS__"
     # 第二块石头（实测 2026-10-02 06:12）：second stage 的 SelinuxGetVendorAndroidVersion()
     # 要读 /vendor/etc/selinux/plat_sepolicy_vers.txt；我们的 initrd 里没有 /vendor，
     # 读不到就 LOG(FATAL) ⇒ InitFatalReboot。108 参照系该文件在 vendor.img 里，5 字节 "33.0\\n"，逐字补。
@@ -212,15 +212,39 @@ if [ -e /shadow-init ]; then
     #    ⇒ 所有用 libprocessgroup 的进程（logd/lmkd/ART）都没法继续。
     # /system/etc/cgroups.json 点名要四个 legacy 控制器目录，照它的清单挂：
     $BB mkdir -p /dev/blkio /dev/cpuctl /dev/cpuset /dev/memcg
-    for _c in "blkio:/dev/blkio" "cpu,cpuacct:/dev/cpuctl" "cpuset:/dev/cpuset" "memory:/dev/memcg"; do
-        _o=${_c%%:*}; _p=${_c##*:}
-        $BB mount -t cgroup none $_p -o $_o 2>/dev/null             && echo "[init] cgroup $_p($_o) 已挂"             || echo "[init] cgroup $_p($_o) 挂失败 rc=$?（当前 mount 数 $($BB grep -c cgroup /proc/mounts)）"
+    # 石头㉞（10:35 实测）：`cpu,cpuacct` 这一条挂失败（rc=255）**没有任何原文**，
+    # 而 logd 的第一句就是 `failed to set background scheduling policy: No such file or directory`
+    # 然后 SIGABRT —— 后台调度策略落在 /dev/cpuctl 上，挂不上就是它死的。
+    # ⇒ 把 mount 的 stderr 收回来，并挨个试 cpu,cpuacct / cpu / cpuacct（内核可能只编了其中一个）。
+    for _c in "blkio:/dev/blkio" "cpu,cpuacct|cpu|cpuacct:/dev/cpuctl" "cpuset:/dev/cpuset" "memory:/dev/memcg"; do
+        _p=${_c##*:}
+        _ok=
+        for _o in $($BB echo "${_c%%:*}" | $BB tr '|' ' '); do
+            _m=$($BB mount -t cgroup none $_p -o $_o 2>&1)
+            if [ -z "$_m" ]; then _ok=$_o; break; fi
+        done
+        if [ -n "$_ok" ]; then
+            echo "[init] cgroup $_p($_ok) 已挂"
+        else
+            echo "[init] cgroup $_p 挂失败: $_m（mount 数 $($BB grep -c cgroup /proc/mounts)）"
+        fi
     done
     [ -f /modules/binder_linux.ko ] && $BB insmod /modules/binder_linux.ko devices=binder,hwbinder,vndbinder 2>&1
+    # 石头㊱（10:50 实测）：servicemanager 与 hwservicemanager 死因同一句 ——
+    #   `Binder driver '/dev/binder' could not be opened. Terminating: Opening '/dev/binder' failed: Permission denied`
+    # 节点由 ueventd 在第二阶段 coldplomb 时创建（t=24.35 才起 ueventd），**晚于**分发器里的任何 chmod，
+    # 所以放一个常驻小工：节点一出现且权限不是 0666 就补上去（AOSP 出厂即 crw-rw-rw-），并只报一次变化。
+    $BB sh -c 'while :; do for _d in /dev/binder /dev/hwbinder /dev/vndbinder; do
+        [ -c $_d ] || continue
+        _m=$($BB ls -l $_d | $BB cut -c1-10)
+        [ "$_m" = "crw-rw-rw-" ] && continue
+        $BB chmod 666 $_d && echo "<3>[init] $_d 权限 $_m -> 666" > /dev/kmsg
+    done; $BB sleep 2; done' &
     # 石头⑫（09:02 一手）：64 位 zygote 起来后 **退出码=0、一个字都不印** —— hw/init.rc 里
     # 只有 1 行 export，BOOTCLASSPATH / SYSTEMSERVERCLASSPATH 全缺。108 参照系的这两个值是
-    # lxc 容器环境喂进 init 的（grep 遍 /system/etc 也没有），而 PID1 就是我们这个 shell：
-    # exec 之前 export 的东西会随环境传给真 init、再传给所有服务 ⇒ 直接 source 取回的那份。
+    # lxc 容器环境喂进 init 的（grep 遍 /system/etc 也没有）。
+    # ⚠ 但"exec 之前 export ⇒ 服务就能拿到"是**错的**（10:36 实测）：第二阶段 init 进来先 clean_env()，
+    #    真正通道是下面按当前环境生成的 /init.environ.rc（rc 的 export 只认两个参数、且必须挂在段头下面）。
     if [ -f /e2-android-env.sh ]; then
         . /e2-android-env.sh
         echo "[init] 环境已补：BOOTCLASSPATH $($BB echo -n $BOOTCLASSPATH | $BB wc -c)B SYSTEMSERVERCLASSPATH $($BB echo -n $SYSTEMSERVERCLASSPATH | $BB wc -c)B"
@@ -230,11 +254,34 @@ if [ -e /shadow-init ]; then
     # （实测 09:31 开机 [logd] 输出 0 条）。监视 inode 变化，一变就杀旧实例重新 bind ——
     # ART 的 LOG(FATAL) 原文走的就是 logdw，拿到它 = 拿到 abort 原文。
     $BB sh -c 'L=; FP=; while :; do I=$(ls -i /dev/socket/logdw 2>/dev/null); if [ -n "$I" ] && [ "$I" != "$L" ]; then L=$I; kill -9 $FP 2>/dev/null; /fakelogd & FP=$!; fi; sleep 1; done' &
+    # 石头㉜（10:22 一手）：串口里每个服务都在喊
+    #   init: Unable to read config file '/init.environ.rc': open() failed: No such file or directory
+    # 而 /init.environ.rc 正是**第一阶段**把 PID1 环境逐条写成 `export NAME value` 的产物 ——
+    # 我们跳过了第一阶段，所以没人写它；而第二阶段的 init 进来先 clean_env()，
+    # 于是"exec 之前 export 的东西会传给服务"这条**只在 child 形态成立**，exec 形态下全被抹掉
+    # ⇒ ANDROID_DATA 仍为空、/etc/task_profiles.json 仍是空路径拼出来的。
+    # 官方通道就在眼前：按当前环境把这份文件补出来（import 列表已经带着它，parse 期即生效）。
+__ENVEXPORT__
+    $BB env > /tmp/e2-env.txt
+    : > /init.environ.rc
+    echo "on early-init" > /init.environ.rc
+    while IFS= read -r _kv; do
+        _n=${_kv%%=*}
+        [ "$_n" = "$_kv" ] && continue
+        _v=${_kv#*=}
+        [ -z "$_v" ] && continue
+        # ① 名字必须是合法标识符；② 值不能含空白 —— rc 的 export 只吃两个参数，
+        #    多一个词就变成 "Invalid section keyword"（实测 10:35 那一轮 26 行全被拒）。
+        $BB printf '%s\n' "$_v" | $BB grep -q '[[:space:]]' && continue
+        $BB printf '%s\n' "$_n" | $BB grep -q '^[A-Za-z_][A-Za-z0-9_]*$' || continue
+        echo "    export $_n $_v" >> /init.environ.rc
+    done < /tmp/e2-env.txt
+    echo "[init] /init.environ.rc $($BB wc -c < /init.environ.rc)B 条数=$($BB wc -l < /init.environ.rc)"
 __CLAWBG__
 __E2RUN__
 fi
 exec $BB sh /init.claw
-""" % (MARK, "__E2ARGS__")
+""".replace("__E2MARK__", MARK)
 
 # 两种接手方式：
 #   exec  —— 真 init 顶替同一个 PID1（E2 的正式形态）；
@@ -266,8 +313,12 @@ RUN_CHILD = """    /system/bin/init %s > /tmp/init.err 2>&1 &
 
 # 实测 08:44（zygote 包了 stderr→kmsg 之后拿到的**一手**原因）：
 #   [ZYGOTE] ANDROID_DATA environment variable unset  ⇒ app_process64 立刻 SIGABRT
-# 真 init 不会替服务导出 ANDROID_*（hw/init.rc 里 export 行数为 0），我们原来的编排是自己
-# export 的 —— 换成真 init 当 PID1 之后这层就没了。用 `on early-init` 补回去（早于 zygote 起）。
+# 真 init 不会替服务导出 ANDROID_*（hw/init.rc 原厂只有 1 行 export），第二阶段进来还先 clean_env()。
+# 石头㉛/㉜ 的判读修正（10:44 实测）：`early-init` **在第二阶段确实会 fire**
+#   （`processing action (early-init) from (/system/etc/init/hw/init.rc:15)` @26.21，早于 logd @27.31），
+#   而我换上去的 `on init` 拖到 t=58.8 才 fire —— 对第一个实例来说太晚。
+# ⇒ 主通道是分发器按环境生成的 /init.environ.rc（挂在 `on early-init` 下，parse 期即生效），
+#   这一段留作同触发的备份（两处同一个值，重复 export 无副作用）。
 ENV_RC = """# === E2：给所有服务补 ANDROID_* 环境（实测缺它 app_process64 直接 abort）===
 on early-init
     export ANDROID_ROOT /system
@@ -448,7 +499,14 @@ shift
 #   落文件 + 跑完再把原文送串口，退出码才保真。
 "$@" > /tmp/$TAG.out 2>&1
 RC=$?
+# 一手证据：这个包装进程的环境**就是 init 给服务的环境**（rc 的 export 到底有没有落到服务上，
+# 看这一行就有答案，不用再靠 "/etc/task_profiles.json" 这种间接现象猜）。
+echo "<3>[$TAG] env: AR=[$ANDROID_ROOT] AD=[$ANDROID_DATA] BCP=$($BB printf %s "$BOOTCLASSPATH" | $BB wc -c)B PATH=[$(echo -n $PATH | $BB cut -c1-40)]" > /dev/kmsg
 echo "<3>[$TAG] 退出码=$RC ｜ 输出: $($BB head -c 320 /tmp/$TAG.out 2>&1 | $BB tr '\n' '~')" > /dev/kmsg
+# 尾部另送一次：ART 的 `Abort message:` 在文件最后几行，head -c 320 够不着
+# （实测 logd 的头部只有 "Aborted" 一个词）。多行进 kmsg 会被内核拆成多条记录，
+# 后续行没有 <3> 前缀 ⇒ 靠分发器把 console_loglevel 抬到 7 才看得见。
+echo "<3>[$TAG] 尾部: $($BB tail -c 420 /tmp/$TAG.out 2>&1)" > /dev/kmsg
 exit $RC
 """
 
@@ -471,6 +529,65 @@ def cgroup_rc(entries):
 LEGACY_CGROUPS = [(1, "blkio", "/dev/blkio"), (1, "cpu", "/dev/cpuctl"), (1, "cpuset", "/dev/cpuset"),
                   (1, "memory", "/dev/memcg"), (1, "schedtune", "/dev/stune")]
 UNIFIED_CGROUPS = [(2, "cgroup2", "/sys/fs/cgroup"), (2, "freezer", "/sys/fs/cgroup")]
+
+
+def env_exports_sh():
+    """把 ENV_RC 的 `export 名字 值` 换成 shell 的 `export 名字=值`。
+
+    单一事实来源：/init.environ.rc 与 rc 的 `on init` 补环境用的是同一张表，
+    改一处两边都跟着变（第一阶段被跳过 ⇒ 没人写 /init.environ.rc，只能自己按环境生成）。
+    """
+    out = []
+    for line in ENV_RC.splitlines():
+        w = line.strip().split()
+        if len(w) == 3 and w[0] == "export":
+            out.append("    export %s=%s" % (w[1], w[2]))
+    return "\n".join(out)
+
+
+def drop_service_stanza(text, names):
+    """整段删掉 `service <名> …`（声明行 + 其后所有缩进行）。
+
+    用途见 --no-zygote32：镜像里没有 init.zygote64.rc，只能从 64_32 那份里把 32 位段摘掉。
+    段边界按 rc 的书写惯例判 —— 缩进行属于当前段，遇到顶格的段头（service/on/import…）就结束。
+    """
+    kept, skip = [], False
+    for line in text.splitlines():
+        w = line.split()
+        if skip:
+            if line[:1] in (" ", "\t"):
+                continue
+            skip = False
+        if len(w) > 1 and w[0] == "service" and w[1] in names:
+            skip = True
+            continue
+        kept.append(line)
+    return "\n".join(kept) + "\n"
+
+
+def neuter_zygote_restarts(text):
+    """把缩进层里的 `restart zygote*` / `stop zygote*` 改成无害的 `trigger claw-noop`，返回 (文本, 条数)。
+
+    实测 10:50：netd 每 5s 退出码 1，而它的 `onrestart` 第一条就是 `restart zygote` ——
+      148.328514 Service 'netd' (pid 4382) exited with status 1
+      148.571525 Sending signal 9 to service 'zygote' (pid 4377) process group...
+      148.820852 Command 'restart zygote' action=onrestart (<Service 'netd' onrestart>:1) took 249ms
+    ⇒ zygote 每次刚活就被邻居的联动打死（`init.svc.zygote` 在 running/restarting/stopping 之间抖）。
+    只改**缩进行**（onrestart 里的命令都是缩进的），不动 `service zygote` 本体，也不改 rc 的段落结构，
+    所以不会像"删行"那样把后面的缩进命令变成孤儿。
+    """
+    out, n = [], 0
+    for line in text.splitlines():
+        w = line.split()
+        # 实测语法：`onrestart restart zygote` 是**一行**（onrestart 不是段头，后面直接跟命令）
+        if line[:1] in (" ", "\t") and len(w) == 3 and w[0] == "onrestart" and w[1] in ("restart", "stop") \
+                and w[2].startswith("zygote"):
+            indent = line[:len(line) - len(line.lstrip())]
+            out.append(indent + "onrestart trigger claw-noop")
+            n += 1
+            continue
+        out.append(line)
+    return "\n".join(out) + "\n", n
 
 
 def extract(image, names):
@@ -503,12 +620,24 @@ def main():
                     help="摘掉所有 rc 服务的 seclabel（内核 SELinux 开着但没策略 ⇒ setexeccon 一律 EACCES）")
     ap.add_argument("--no-rc-guard", action="store_true",
                     help="摘掉所有 rc 里的 reboot_on_failure（真机失败即重启的安全闸；实验里它只会把进度挡住）")
+    ap.add_argument("--no-critical", action="store_true",
+                    help="摘掉所有 rc 服务的 critical（critical 进程连死 4 次 = 整台机器 reboot，"
+                         "实验里等于每 70s 把证据抹一遍）")
+    ap.add_argument("--no-zygote32", action="store_true",
+                    help="删掉 service zygote_secondary 整段（镜像里没有 libandroid_runtime.so 的 32 位闭包，"
+                         "它秒退并用 onrestart 把好好的 64 位 zygote 一起打死）")
+    ap.add_argument("--protect-zygote", action="store_true",
+                    help="把 rc 里 `restart zygote` / `stop zygote*` 这类联动改成无害命令 —— "
+                         "netd/media/surfaceflinger 每 5s 死一次，它们的 onrestart 会把刚活下来的 zygote SIGKILL")
     ap.add_argument("--zygote-log", action="store_true",
                     help="= --wrap zygote,zygote_secondary：把服务的 stderr 落文件再送串口，并保住真实退出码")
     ap.add_argument("--wrap", default="",
                     help="逗号分隔的服务名，逐个包上 /zygwrap.sh（用来拿 logd/servicemanager 的 linker 原文）")
     ap.add_argument("--claw-bg", action="store_true",
                     help="exec 真 init 之前先在后台挂上原编排 + 探测器（rc 触发器实测不生效，用它替代）")
+    ap.add_argument("--no-deploy", action="store_true",
+                    help="只产出 .zwork/art_initrd_x64_shadow.gz，不写 SRC/RUN"
+                         "（别的会话在用现镜像时用它做私跑）")
     a = ap.parse_args()
 
     if a.off:
@@ -525,12 +654,14 @@ def main():
 
     cur, fp = extract(SRC, {"init", "init.claw", "system/etc/init/hw/init.rc"})
     print("源镜像:", fp)
-    # rc 的改写必须从**未改造过的那份**（--off 用的同一份备份）出发：
-    # 否则第二次部署会在"上一版结果"上再摘一遍/再追加一遍 —— 实测 08:48 那轮
-    # ENV_RC 就因为 "service clawboot" 已在文件里而被整段跳过（守卫判错了对象）。
-    BASE = BAK if os.path.exists(BAK) else SRC
+    # rc 的改写要从**没有被 E2 追加过**的那一份出发（否则第二轮会"在上一版结果上再摘一遍/再追加一遍"）。
+    # 但"哪一份没被改过"不能写死成备份件：实测 10:04 那轮 SRC 是 T1 的新镜像（rc 干净），
+    # 脚本却固定拿 06:00 的 BAK 当 rc 基线 —— 等于把两代内容混在一张镜像里。
+    # ⇒ 按镜像里自己的 E2 注释头判：SRC 的 rc 干净就用 SRC，只有它已经带追加段才退回 BAK。
+    already = "=== E2：claw 编排回挂" in (cur.get("system/etc/init/hw/init.rc") or "")
+    BASE = BAK if (already and os.path.exists(BAK)) else SRC
     base, _ = extract(BASE, {"system/etc/init/hw/init.rc", "init.rc"})
-    print("rc 基线:", "备份件（未改造）" if BASE == BAK else "现镜像")
+    print("rc 基线:", "备份件（未改造）" if BASE == BAK else "现镜像（其 rc 未带 E2 追加段）")
     if "init" not in cur:
         print("!! 镜像里没有 /init")
         return 1
@@ -562,7 +693,8 @@ def main():
     run = (RUN_CHILD if a.child else RUN_EXEC) % a.init_args
     with open(os.path.join(gen, "init"), "w", encoding="utf-8", newline="\n") as f:
         f.write(DISPATCH.replace("__CLAWBG__", CLAW_BG if a.claw_bg else "")
-                          .replace("__E2RUN__", run).replace("__E2ARGS__", a.init_args))
+                          .replace("__E2RUN__", run).replace("__E2ARGS__", a.init_args)
+                          .replace("__ENVEXPORT__", env_exports_sh()))
     with open(os.path.join(gen, "init.claw"), "w", encoding="utf-8", newline="\n") as f:
         f.write(claw)
     with open(os.path.join(gen, "init.claw.rc"), "w", encoding="utf-8", newline="\n") as f:
@@ -608,7 +740,7 @@ def main():
     raw = {"system/etc/init/hw/init.rc": base.get("system/etc/init/hw/init.rc") or "",
            "init.rc": base.get("init.rc") or base.get("system/etc/init/hw/init.rc") or ""}
     WRAP = set(x.strip() for x in (a.wrap + (",zygote,zygote_secondary" if a.zygote_log else "")).split(",") if x.strip())
-    if a.strip_seclabel or a.no_rc_guard or WRAP:
+    if a.strip_seclabel or a.no_rc_guard or a.no_critical or a.no_zygote32 or a.protect_zygote or WRAP:
         for e in C.load(BASE, want=lambda n: n.endswith(".rc"))[0]:
             if e.data and e.name.startswith(("system/etc/init/", "vendor/etc/init/")):
                 raw[e.name] = e.text
@@ -638,11 +770,29 @@ def main():
             drops.add("seclabel")
         if a.no_rc_guard:
             drops.add("reboot_on_failure")
+        if a.no_critical:
+            # 石头㉞（10:44 实测）：`init: critical process 'hwservicemanager' exited 4 times
+            # before boot completed` ⇒ `reboot: Restarting system with command 'bootloader'`
+            # —— 真机上这是对的（起不来就该重启），但实验里它每 70s 把整场开机和所有证据一起抹掉。
+            drops.add("critical")
         if drops:
             new = "\n".join(l for l in new.splitlines()
                             if l.strip().split(" ")[0] not in drops) + "\n"
         elif BO in new:                       # 默认只摘 boringssl 那一条自杀闸
             new = "\n".join(l for l in new.splitlines() if l.strip() != BO) + "\n"
+        if a.no_zygote32 and "service zygote_secondary " in new:
+            # 石头㉝（10:22 实测）：zygote_secondary 是 `CANNOT LINK EXECUTABLE app_process32:
+            # library "libandroid_runtime.so" not found`（镜像里只有 64 位闭包）⇒ 退出码 1，
+            # 而它的 onrestart 链是 `restart zygote / restart audioserver / …`，
+            # 于是**每一轮都把已经活着的 64 位 zygote 一起 SIGKILL**（串口实证
+            # "Sending signal 9 to service 'zygote'" 紧跟在 secondary 的 onrestart 后面）
+            # ⇒ zygote 永远停在 restarting。整段摘掉才是收敛，不是包装能救的。
+            new = drop_service_stanza(new, {"zygote_secondary"})
+            print("  摘掉 32 位 zygote 整段：%s" % name)
+        if a.protect_zygote:
+            new, kn = neuter_zygote_restarts(new)
+            if kn:
+                print("  解除 zygote 连动 %d 条：%s" % (kn, name))
         if new == body and not WRAP:
             continue
         if name == "system/etc/init/hw/init.rc" and "service clawboot" not in new:
@@ -671,7 +821,6 @@ def main():
     args = [sys.executable, INJECT, SRC, OUT,
             "init=%s" % os.path.join(gen, "init"),
             "+0755:init.claw=%s" % os.path.join(gen, "init.claw"),
-            "+0644:init.rc=%s" % os.path.join(gen, "init.rc"),
             "+0644:system/etc/init/init.claw.rc=%s" % os.path.join(gen, "init.claw.rc"),
             "+0755:e2probe.sh=%s" % os.path.join(gen, "e2probe.sh"),
             "+0644:shadow-init=%s" % os.path.join(gen, "shadow-init"),
@@ -681,7 +830,14 @@ def main():
             "+0644:e2-android-env.sh=%s" % os.path.join(gen, "e2-android-env.sh"),
             "+0644:e2-cgroup.rc=%s" % os.path.join(gen, "e2-cgroup.rc"),
             "+0644:e2-cgroup-v1.rc=%s" % os.path.join(gen, "e2-cgroup-v1.rc"),
-            "+0644:e2-cgroup-v2.rc=%s" % os.path.join(gen, "e2-cgroup-v2.rc")] + rc_args
+            "+0644:e2-cgroup-v2.rc=%s" % os.path.join(gen, "e2-cgroup-v2.rc")]
+    # 根 /init.rc 也必须走 rc 流水线：真 init 第二阶段会**同时** import /init.rc 与
+    # /system/etc/init/hw/init.rc，两份里的 boringssl 自杀闸都要摘，留一份就等于没摘
+    # （实测 10:04 那轮串口停在 reboot,boringssl-self-check-failed）。
+    # 追加段（claw/ENV）只进 hw 那一份 —— 两份都有的话编排会被跑两遍。
+    if not any(x.startswith("init.rc=") for x in rc_args):
+        args = args + ["+0644:init.rc=%s" % os.path.join(gen, "init.rc")]
+    args = args + rc_args
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
     r = subprocess.run(args, capture_output=True, text=True, encoding="utf-8",
                        errors="replace", env=env)
@@ -722,6 +878,10 @@ def main():
     if MARK not in seen["init"].text:
         print("!! 新镜像的 /init 里没有分发器标记 ⇒ 不部署")
         return 1
+    if a.no_deploy:
+        print("  --no-deploy：新镜像留在", OUT)
+        print("  私跑：拷到别处用 qemu 单独起一台（换 hostfwd 端口，别撞现镜像）")
+        return 0
     deploy(OUT)
     print("E2 shadow-PID1 已就位。下一步：起应用，然后读串口里的 [E2] 行。")
     print("回退：python tools/b1-build/shadow_init.py --off")
