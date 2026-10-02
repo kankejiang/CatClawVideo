@@ -54,7 +54,7 @@ CHECK = os.path.join(REPO, "JavaBridge", "qemu-src", "tools", "x86guest", "check
 MARK = "# shadow-PID1 分发器"
 WANT_IN_IMAGE = {"init", "init.claw", "init.rc", "system/etc/init/init.claw.rc",
                  "e2probe.sh", "shadow-init", "system/build.prop", "e2-vendor-build.prop",
-                 "e2-android-env.sh"}
+                 "e2-android-env.sh", "e2-cgroup.rc"}
 # 108 参照系（Waydroid x86_64 / Android 13）里逐字取回的两份 build.prop：
 #   ssh root@10.0.0.108 'mount -o ro,loop /var/lib/waydroid/images/system.img /tmp/e2pk; \
 #     mount -o ro,loop /root/x86guest/vendor-ex/vendor.img /tmp/e2pv; \
@@ -157,6 +157,59 @@ if [ -e /shadow-init ]; then
     # 而 `/data/tombstones` **压根不存在**（探测 `ls` 输出为空）⇒ 唯一能拿到一手原因的落点被漏建。
     $BB mkdir -p /data/tombstones /data/anr /data/misc/logd /data/local/tmp /data/dalvik-cache /metadata
     $BB chmod 777 /data/tombstones /data/anr 2>/dev/null
+    # 被包起来的服务大多不是 root（logd=user logd…），落不进 /tmp 就白包 —— 先把 /tmp 开成 777。
+    $BB chmod 777 /tmp 2>/dev/null
+    # /dev/kmsg 出厂是 crw------- root ⇒ 以 logd(uid 1036) 身份跑的包装层 echo 不进去
+    # （实测：root 的 [ZYGOTE]/[LMKD] 都有，被包成 user logd 的 [LOGD] 一条也没有）。
+    $BB chmod 666 /dev/kmsg 2>/dev/null
+    # 石头⑯：logd/zygote 都是 SIGABRT 且**对 stderr 一个字不写**（它们的日志通道正是同样坏掉的 logd）
+    # ⇒ 只能走 tombstone。但 tombstoned 的落点是 /data/tombstones，而 /data 在 init 的挂载命名空间里
+    # （我们从外面读是 EIO）⇒ 把它挪到 /tmp：两边同一张 tmpfs，探测不必跨命名空间。
+    $BB mkdir -p /tmp/tombstones
+    $BB chmod 777 /tmp/tombstones
+    $BB rm -rf /data/tombstones 2>/dev/null
+    $BB ln -sf /tmp/tombstones /data/tombstones 2>/dev/null
+    # 石头⑭（09:22 一手）：cpio 里 **/system/bin/logd 的 mode 是 0550**（AOSP 出厂 0755）
+    #  ⇒ init 把它 setuid 成 logd(1036) 之后连自己都执行不了（wrapper 报 126）
+    #  ⇒ 从头到尾没有任何日志，ART 的 abort 正文也就永远看不见。顺手把 /system/bin 补满执行位。
+    $BB chmod 755 /system/bin/logd 2>/dev/null
+    for _b in $($BB find /system/bin -maxdepth 1 -type f 2>/dev/null); do
+        $BB test -x $_b || $BB chmod 755 $_b 2>/dev/null
+    done
+    # 石头⑮（09:28 一手）：连 **init 自己**都在报 `open() failed for /dev/cgroup_info/cgroup.rc`
+    # （8.43s 两次），logd 随之 SIGABRT ⇒ 没有日志、也没有 ART 的 abort 正文。
+    # 这文件是 init 用 libprocessgroup 生成的**二进制表**（version u32 + 条目数 7 + 定长记录），
+    # 手写不如直接取参照系的：108 容器里 `/dev/cgroup_info/cgroup.rc` 共 400 B，原样搬来。
+    # 顺手把表里点名的 cgroup2 与 freezer/pids 也补上（缺一个控制器就是另一条 CgroupMap 报错）。
+    $BB mkdir -p /dev/cgroup_info
+    $BB cp /e2-cgroup.rc /dev/cgroup_info/cgroup.rc 2>/dev/null
+    $BB mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null
+    $BB mkdir -p /sys/fs/cgroup/unified 2>/dev/null
+    $BB chmod 755 /dev/cgroup_info 2>/dev/null
+    echo "[init] cgroup.rc=$($BB wc -c < /dev/cgroup_info/cgroup.rc 2>/dev/null)B cgroup2=$($BB grep -c 'type cgroup2' /proc/mounts)"
+    # crash_dump64 在 /apex/com.android.runtime/bin 里，而 bionic 的 debuggerd 找的是
+    # /system/bin/crash_dump64 ⇒ 又是软链/缺失那一类；不补上就没有 tombstone，正文照样拿不到。
+    for _c in crash_dump64 crash_dump32; do
+        _a=/apex/com.android.runtime/bin/$_c
+        if [ ! -x /system/bin/$_c ] && [ -f $_a ]; then
+            $BB rm -f /system/bin/$_c
+            $BB ln $_a /system/bin/$_c 2>/dev/null || $BB cp $_a /system/bin/$_c
+            $BB chmod 755 /system/bin/$_c
+        fi
+        echo "[init] $_c 可用=$($BB test -x /system/bin/$_c && echo Y || echo N)"
+    done
+    # 石头⑬（09:16 一手）：logd 自己报
+    #   `logd: open() failed for /dev/cgroup_info/cgroup.rc: No such file or directory`
+    #   `logd: libprocessgroup: CgroupMap::LoadRcFile failed`
+    # 而 init 一路在喊 "cpuset cgroup controller is not mounted!"；lmkd 直接退出码 0、ART 主线程 SIGABRT
+    # —— 三个"起来就死"很可能是**同一个根**：cgroup 没挂 ⇒ init 生成不出 /dev/cgroup_info/cgroup.rc
+    #    ⇒ 所有用 libprocessgroup 的进程（logd/lmkd/ART）都没法继续。
+    # /system/etc/cgroups.json 点名要四个 legacy 控制器目录，照它的清单挂：
+    $BB mkdir -p /dev/blkio /dev/cpuctl /dev/cpuset /dev/memcg
+    for _c in "blkio:/dev/blkio" "cpu,cpuacct:/dev/cpuctl" "cpuset:/dev/cpuset" "memory:/dev/memcg"; do
+        _o=${_c%%:*}; _p=${_c##*:}
+        $BB mount -t cgroup none $_p -o $_o 2>/dev/null             && echo "[init] cgroup $_p($_o) 已挂"             || echo "[init] cgroup $_p($_o) 挂失败 rc=$?（当前 mount 数 $($BB grep -c cgroup /proc/mounts)）"
+    done
     [ -f /modules/binder_linux.ko ] && $BB insmod /modules/binder_linux.ko devices=binder,hwbinder,vndbinder 2>&1
     # 石头⑫（09:02 一手）：64 位 zygote 起来后 **退出码=0、一个字都不印** —— hw/init.rc 里
     # 只有 1 行 export，BOOTCLASSPATH / SYSTEMSERVERCLASSPATH 全缺。108 参照系的这两个值是
@@ -268,7 +321,9 @@ export PATH
 # /data/tombstones 还报 EIO（实测 08:16/08:20）。busybox 带 nsenter applet ⇒
 # 进 PID1 的 mount ns 问出来的才是真值（判据 `init.svc.*` 必须这么读）。
 gp() { $BB nsenter -t 1 -m -- /system/bin/getprop "$@" 2>/dev/null; }
-nsh() { $BB nsenter -t 1 -m -- $BB "$@" 2>&1; }
+# 用法：nsh <绝对路径或 applet…>。⚠ 早先写成 `-- $BB "$@"`，于是
+# `nsh /system/bin/logcat …` 变成 `busybox /system/bin/logcat` ⇒ "applet not found"（实测 09:32）。
+nsh() { $BB nsenter -t 1 -m -- "$@" 2>&1; }
 line() {
     T=$($BB cut -d. -f1 /proc/uptime 2>/dev/null)
     SVC=$(gp | $BB grep -c "init.svc")
@@ -293,7 +348,7 @@ diag() {
         echo "<3>[E2] 手跑 $N → $($BB head -6 /tmp/d.$N 2>/dev/null | $BB tr '\n' '~' | $BB cut -c1-300)" > /dev/kmsg
     }
     echo "<3>[E2] getprop 的 stderr: $($BB nsenter -t 1 -m -- /system/bin/getprop 2>&1 >/dev/null | $BB head -2 | $BB tr '\n' '~' | $BB cut -c1-140)" > /dev/kmsg
-    echo "<3>[E2] linkerconfig: $(nsh ls /linkerconfig | $BB tr '\n' ' ')" > /dev/kmsg
+    echo "<3>[E2] linkerconfig: $(nsh /bin/busybox ls /linkerconfig | $BB tr '\n' ' ')" > /dev/kmsg
     for b in logd servicemanager hwservicemanager lmkd; do
         run1 $b $BB nsenter -t 1 -m -- /system/bin/$b
     done
@@ -306,10 +361,10 @@ diag() {
     # zygote 现在能过链接期、改成 signal 6（SIGABRT）——ART 的 abort 原文只落在 tombstone 里。
     # /data 挂在 init 的命名空间内（我们在 exec 之前 fork ⇒ 看到的是坏视图，报 EIO），
     # 所以 tombstone 也必须进 ns 读。
-    _tl=$(nsh ls -t /data/tombstones 2>/dev/null | $BB head -1)
+    _tl=$(nsh /bin/busybox ls -t /data/tombstones 2>/dev/null | $BB head -1)
     echo "<3>[E2] tombstones: $(nsh ls /data/tombstones | $BB tr '\n' ' ' | $BB cut -c1-160)" > /dev/kmsg
-    echo "<3>[E2] 最新 tombstone($_tl) 摘要: $(nsh head -c 300 /data/tombstones/$_tl 2>&1 | $BB tr '\n' '~')" > /dev/kmsg
-    echo "<3>[E2] /data 挂载: $(nsh grep ' /data ' /proc/mounts | $BB tr '\n' '~' | $BB cut -c1-200)" > /dev/kmsg
+    echo "<3>[E2] 最新 tombstone($_tl) 摘要: $(nsh /bin/busybox head -c 300 /data/tombstones/$_tl 2>&1 | $BB tr '\n' '~')" > /dev/kmsg
+    echo "<3>[E2] /data 挂载: $(nsh /bin/busybox grep ' /data ' /proc/mounts | $BB tr '\n' '~' | $BB cut -c1-200)" > /dev/kmsg
     # ⚠ 遗留待判（本轮没解掉）：进 init 命名空间后 `getprop` 仍输出 0 行，而
     #   `ls /dev/__properties__` = 264、init 自己 `Setting property 'ro.build.fingerprint'` 成功。
     #   三个候选，下次按这条顺序一次判掉：
@@ -320,6 +375,20 @@ diag() {
     echo "<3>[E2] nsenter 自检: $(nsh echo 在-init-ns) ｜ id: $($BB id 2>&1 | $BB cut -c1-70)" > /dev/kmsg
     echo "<3>[E2] property_info: $(nsh ls -l /dev/__properties__/property_info 2>&1 | $BB cut -c1-90) ｜ serial: $(nsh ls -l /dev/__properties__/properties_serial 2>&1 | $BB cut -c1-90)" > /dev/kmsg
     echo "<3>[E2] ns 里的 getprop stderr: $($BB nsenter -t 1 -m -- /system/bin/getprop 2>&1 >/dev/null | $BB head -2 | $BB tr '\n' '~' | $BB cut -c1-140) ｜ 行数: $($BB nsenter -t 1 -m -- /system/bin/getprop 2>/dev/null | $BB wc -l)" > /dev/kmsg
+    # logd 修好之后才有的读法：向 logd 直接拉崩溃缓冲与 zygote 相关日志（nsh = 进 init 的挂载命名空间）。
+    # tombstone 里有 `Abort message: '……'` —— 这一轮要的就是那一行。
+    _ts=$($BB ls -t /tmp/tombstones 2>/dev/null | $BB head -1)
+    echo "<3>[E2] /tmp/tombstones: $($BB ls /tmp/tombstones 2>&1 | $BB tr '
+' ' ' | $BB cut -c1-120)" > /dev/kmsg
+    echo "<3>[E2] tombstone($_ts) 摘要: $($BB grep -a -m1 'Abort message' /tmp/tombstones/$_ts 2>&1 | $BB cut -c1-300)" > /dev/kmsg
+    echo "<3>[E2] tombstone 前 6 行: $($BB head -6 /tmp/tombstones/$_ts 2>&1 | $BB tr '
+' '~' | $BB cut -c1-300)" > /dev/kmsg
+    for _w in LOGD ZYGOTE LMKD; do
+        echo "<3>[E2] 包装落点 /tmp/$_w.out: $($BB head -c 300 /tmp/$_w.out 2>&1 | $BB tr '
+' '~')" > /dev/kmsg
+    done
+    echo "<3>[E2] logcat -b crash: $(nsh /system/bin/logcat -d -b crash -t 25 2>&1 | $BB tr '\n' '~' | $BB cut -c1-300)" > /dev/kmsg
+    echo "<3>[E2] logcat zygote: $(nsh /system/bin/logcat -d -s Zygote ART SystemServerActivityManager 2>&1 | $BB tr '\n' '~' | $BB cut -c1-300)" > /dev/kmsg
     # 上一轮 `ls /data/tombstones` 报 **Input/output error** ⇒ /data 这个挂载点本身在坏，
     # 而 logd/tombstoned/zygote 全都要写 /data ⇒ 这才是"起来就 SIGABRT"的候选根因。
     # 先把 /data 到底是什么、挂在哪、能不能列，一次性问清楚。
@@ -386,7 +455,9 @@ def main():
     ap.add_argument("--no-rc-guard", action="store_true",
                     help="摘掉所有 rc 里的 reboot_on_failure（真机失败即重启的安全闸；实验里它只会把进度挡住）")
     ap.add_argument("--zygote-log", action="store_true",
-                    help="把 zygote 换成 /zygwrap.sh 包装：stderr 逐行搬进 /dev/kmsg，拿 ART abort 的一手原因")
+                    help="= --wrap zygote,zygote_secondary：把服务的 stderr 落文件再送串口，并保住真实退出码")
+    ap.add_argument("--wrap", default="",
+                    help="逗号分隔的服务名，逐个包上 /zygwrap.sh（用来拿 logd/servicemanager 的 linker 原文）")
     ap.add_argument("--claw-bg", action="store_true",
                     help="exec 真 init 之前先在后台挂上原编排 + 探测器（rc 触发器实测不生效，用它替代）")
     a = ap.parse_args()
@@ -444,7 +515,8 @@ def main():
         f.write("")
     for src_name, dst_name in (("system.build.prop", os.path.join(gen, "system.build.prop")),
                                ("vendor.build.prop", os.path.join(gen, "e2-vendor-build.prop")),
-                               ("android-env.sh", os.path.join(gen, "e2-android-env.sh"))):
+                               ("android-env.sh", os.path.join(gen, "e2-android-env.sh")),
+                               ("cgroup.rc", os.path.join(gen, "e2-cgroup.rc"))):
         p = os.path.join(BLOBS, src_name)
         if not os.path.exists(p):
             print("!! 缺少 %s（先从 108 取回，见 BLOBS 上方注释）" % p)
@@ -471,19 +543,20 @@ def main():
     BO = "reboot_on_failure reboot,boringssl-self-check-failed"
     raw = {"system/etc/init/hw/init.rc": base.get("system/etc/init/hw/init.rc") or "",
            "init.rc": base.get("init.rc") or base.get("system/etc/init/hw/init.rc") or ""}
-    if a.strip_seclabel or a.no_rc_guard or a.zygote_log:
+    WRAP = set(x.strip() for x in (a.wrap + (",zygote,zygote_secondary" if a.zygote_log else "")).split(",") if x.strip())
+    if a.strip_seclabel or a.no_rc_guard or WRAP:
         for e in C.load(BASE, want=lambda n: n.endswith(".rc"))[0]:
             if e.data and e.name.startswith(("system/etc/init/", "vendor/etc/init/")):
                 raw[e.name] = e.text
-    if a.zygote_log:
-        # 只换 `service zygote …` 那一行的**命令**，服务名与后续选项（socket/user/group/critical）全留。
+    if WRAP:
+        # 只换 `service <名> …` 那一行的**命令**，服务名与后续选项（socket/user/group/critical）全留。
         for name in list(raw):
-            if "init.zygote" not in name:
+            if "init/" not in name and "init.rc" not in name:
                 continue
             out2 = []
             for l in raw[name].splitlines():
                 w = l.split()
-                if len(w) > 2 and w[0] == "service" and w[1].startswith("zygote"):
+                if len(w) > 2 and w[0] == "service" and w[1] in WRAP:
                     # 标签必须每个服务唯一：上一版截成 6 字符 ⇒ zygote 与 zygote_secondary 共用
                     # /tmp/ZYGOTE.out，64 位那份的输出被 32 位的报错刷掉，白读一轮。
                     l = "service %s /bin/busybox sh /zygwrap.sh %s %s" % (w[1], w[1].upper(), " ".join(w[2:]))
@@ -506,7 +579,7 @@ def main():
                             if l.strip().split(" ")[0] not in drops) + "\n"
         elif BO in new:                       # 默认只摘 boringssl 那一条自杀闸
             new = "\n".join(l for l in new.splitlines() if l.strip() != BO) + "\n"
-        if new == body and not (a.zygote_log and "init.zygote" in name):
+        if new == body and not WRAP:
             continue
         if name == "system/etc/init/hw/init.rc" and "service clawboot" not in new:
             # 实测⑫（07:24）：单独放一份 /system/etc/init/init.claw.rc，init **会 parse**（无解析错），
@@ -541,7 +614,8 @@ def main():
             "+0644:system/build.prop=%s" % os.path.join(gen, "system.build.prop"),
             "+0755:zygwrap.sh=%s" % os.path.join(gen, "zygwrap.sh"),
             "+0644:e2-vendor-build.prop=%s" % os.path.join(gen, "e2-vendor-build.prop"),
-            "+0644:e2-android-env.sh=%s" % os.path.join(gen, "e2-android-env.sh")] + rc_args
+            "+0644:e2-android-env.sh=%s" % os.path.join(gen, "e2-android-env.sh"),
+            "+0644:e2-cgroup.rc=%s" % os.path.join(gen, "e2-cgroup.rc")] + rc_args
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
     r = subprocess.run(args, capture_output=True, text=True, encoding="utf-8",
                        errors="replace", env=env)

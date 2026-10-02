@@ -50,6 +50,11 @@ SEEDS = [
     f"{VEN}/lib64/hw/gralloc.minigbm_gbm_mesa.so",
     f"{VEN}/lib64/hw/android.hardware.graphics.mapper@4.0-impl.minigbm_gbm_mesa.so",
     f"{VEN}/lib64/hw/android.hardware.graphics.allocator@2.0-impl.so",
+    # ── screencap 的库依赖闭包（2026-10-02，T1 验收链实测）──
+    # /system/bin/screencap 本体由 inject_initrd.py 从 blobs 放进镜像，但它的库没人管：
+    # 实测 CANNOT LINK EXECUTABLE "screencap": library "libicu.so" not found
+    # （链路 screencap → libharfbuzz_ng → libicu）。把它当种子跑一遍闭包即可带全。
+    f"{SYS}/system/bin/screencap",
 ]
 
 for p in (SYS, VEN):
@@ -137,6 +142,17 @@ for d in SEARCH:
             if not os.path.lexists(dst):
                 os.symlink(os.path.basename(os.path.realpath(full)), dst)
                 extra += 1
+
+# ── i18n apex 的 ICU（2026-10-02，T1 screencap 链实测）──
+# screencap → libharfbuzz_ng → libicu.so，而 libicu.so 在 /system/apex/com.android.i18n/lib64/
+# —— guest 没挂 i18n apex ⇒ default namespace 找不到（实测 CANNOT LINK EXECUTABLE
+# "screencap": library "libicu.so" not found）。直接把三个 ICU 库落到 /system/lib64。
+for _n in ("libicu.so", "libicuuc.so", "libicui18n.so"):
+    _s = f"{SYS}/system/apex/com.android.i18n/lib64/{_n}"
+    if os.path.exists(_s):
+        shutil.copy2(_s, os.path.join(libdir, _n))
+        total += os.path.getsize(os.path.join(libdir, _n))
+        print("  ICU 补带:", _n)
 
 # ── VINTF manifest：HIDL 服务**必须**在 manifest 里才能注册（这是 SF 崩溃链的上游）──
 # 实测根因链：/vendor/manifest.xml 缺失 ⇒ hwservicemanager 报

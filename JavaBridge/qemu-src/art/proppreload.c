@@ -174,6 +174,8 @@ int __system_property_wdev_l(const prop_info *pi, uint32_t old_serial, const cha
 #include <errno.h>
 #include <spawn.h>
 #include <dlfcn.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <sys/types.h>
 
 #define FORK_BLOCK_MAX_LOG 8
@@ -185,8 +187,44 @@ static void fork_block_note(const char *who) {
         fprintf(stderr, "[proppreload] 拦下 %s：桥进程 fork 会打死 ART（guest 陪葬）\n", who);
 }
 
-pid_t fork(void) { fork_block_note("fork"); errno = EAGAIN; return -1; }
-pid_t vfork(void) { fork_block_note("vfork"); errno = EAGAIN; return -1; }
+/* ── fork 放行白名单（2026-10-02，T1 adb 通道实测）──
+ * adbd 被 LD_PRELOAD 挂上本垫片后，它给 adb shell/exec-out fork 子进程也吃 EAGAIN
+ * （实测：adb shell 恒报 "fork failed: Try again"）——adbd 的 shell 子进程是
+ * adb 通道的存在意义，必须放行。判定：/proc/self/cmdline 含 "adbd"（垫片无法
+ * 被 guest 内的 jar 代码欺骗——jar 跑在桥进程里，cmdline 是 artlaunch）。
+ * 环境变量 PROPPRELOAD_ALLOW_FORK 是诊断用的显式后门。 */
+static int pf_fork_allowed(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        char cl[256];
+        int fd, n;
+        cached = getenv("PROPPRELOAD_ALLOW_FORK") ? 1 : 0;
+        fd = open("/proc/self/cmdline", O_RDONLY);
+        if (fd >= 0) {
+            n = read(fd, cl, sizeof(cl) - 1);
+            close(fd);
+            if (n > 0) { cl[n] = 0; if (strstr(cl, "adbd")) cached = 1; }
+        }
+    }
+    return cached;
+}
+
+pid_t fork(void) {
+    static pid_t (*real)(void) = NULL;
+    if (pf_fork_allowed()) {
+        if (!real) real = (pid_t (*)(void)) dlsym(RTLD_NEXT, "fork");
+        if (real) return real();
+    }
+    fork_block_note("fork"); errno = EAGAIN; return -1;
+}
+pid_t vfork(void) {
+    static pid_t (*real)(void) = NULL;
+    if (pf_fork_allowed()) {
+        if (!real) real = (pid_t (*)(void)) dlsym(RTLD_NEXT, "vfork");
+        if (real) return real();
+    }
+    fork_block_note("vfork"); errno = EAGAIN; return -1;
+}
 pid_t __clone(int (*fn)(void *), void *stack, int flags, void *arg, ...) {
     (void) fn; (void) stack; (void) flags; (void) arg;
     fork_block_note("__clone"); errno = EAGAIN; return -1;

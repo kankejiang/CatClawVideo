@@ -356,7 +356,7 @@ def main():
     if os.environ.get("B1_ASTACK", "1") != "0":
         ast_sh = (
             '\n# ── B1.1：Android binder 服务栈 ──\n'
-            '# astack v5 (2026-10-02)：dri 软链 tar 化/card0/SF+adbd 由 init 拉起/verify 自检（screencap 直调+adbd 静音）\n'
+            '# astack v7 (2026-10-02)：dri 软链 tar 化/SF+adbd 拉起/verify 自检/tmpfs 扩容瘦身\n'
             'if [ -f /b1/android-stack.tar.gz ]; then\n'
             '    # ⚠ 顺序问题（实测）：本段在 init 里排在 weston 段**之前**，而 composer 服务要连 Wayland\n'
             '    #    （日志 "WAYLAND_DISPLAY: wayland-0 / Could not open Wayland display / failed to open\n'
@@ -377,6 +377,10 @@ def main():
             '    fi\n'
             '    for i in 1 2 3 4 5 6 7 8 9 10; do [ -S /run/user/1000/wayland-0 ] && break; $BB sleep 1; done\n'
             '    if [ -S /run/user/1000/wayland-0 ]; then echo "[astack] Wayland socket 已就绪（/run/user/1000/wayland-0）"; else echo "[astack] 警告：wayland-0 未就绪"; fi\n'
+            '    # rootfs 是 tmpfs、默认上限 ~1GB，而基础镜像已占 ~800MB——astack 再解 ~250MB\n'
+            '    # 的库必然 ENOSPC（实测 100% 满：libcamera_client 覆盖失败、screencap 写 0 字节）。\n'
+            '    # 先把 tmpfs 上限扩到 1500M（RAM 共 2.5G），解完包再删 tar 腾回空间。\n'
+            '    $BB mount -o remount,size=1500M / 2>/dev/null && echo "[astack] rootfs 已扩到 1500M"\n'
             '    $BB tar xzf /b1/android-stack.tar.gz -C / && echo "[astack] 解包完成"\n'
             '    # 真属性区：bionic 的 LD_PRELOAD 开关(ro.debuggable) 与 HIDL 的 ready 标记都读它；\n'
             '    # 必须在任何服务之前建好（proppreload 的 per-process 表顶不了跨进程约定）。\n'
@@ -391,6 +395,12 @@ def main():
             '    fi\n'
             '    # mesa 软件 GL（llvmpipe）：这个 SF 版本没有 CPU 渲染后端，RenderEngine 必须有 EGL。\n'
             '    [ -f /b1/mesa-gl.tar.gz ] && $BB tar xzf /b1/mesa-gl.tar.gz -C / && echo "[astack] mesa GL 已解包"\n'
+            '    # ── tmpfs 瘦身（2026-10-02，T1 验收链实测）──\n'
+            '    # rootfs（tmpfs，1GB 上限）100% 满 ⇒ astack 解包半途 ENOSPC（libcamera_client 等\n'
+            '    # 覆盖失败、screencap 写不出 PNG）。三个大 tar 解完即删，腾回 ~106MB。\n'
+            '    $BB rm -f /b1/android-stack.tar.gz /b1/mesa-gl.tar.gz /b1/weston.tar.gz\n'
+            '    $BB chmod 644 /system/lib64/*.so 2>/dev/null\n'
+            '    echo "[astack] tmpfs 瘦身: $($BB df -h / 2>/dev/null | $BB tail -1)"\n'
             '    # mesa 的 DRI 搜索路径：dri/<driver>_dri.so 必须软链到 ../libgallium_dri.so\n'
             '    # （108 的 Waydroid 容器就是 init 建的；缺了它 gbm_create_device 直接 ENOENT => mapper NO_RESOURCES）\n'
             '    $BB mkdir -p /system/lib64/dri /vendor/lib64/dri 2>/dev/null\n'
@@ -501,7 +511,12 @@ def main():
             '      GALLIUM_DRIVER=swrast MESA_LOADER_DRIVER_OVERRIDE=swrast LIBGL_ALWAYS_SOFTWARE=1 \\\n'
             '      LD_LIBRARY_PATH=/vendor/lib64/egl:/vendor/lib64:/system/lib64:/system/lib64/egl \\\n'
             '      WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/0 /system/bin/surfaceflinger >/tmp/sf-init.log 2>&1 ) &\n'
-            '    ( $BB sleep 2; LD_PRELOAD=/system/lib64/libpropfix.so:/proppreload.so \\\n'
+            '    # adbd 必须挂 proppreload（PROPFIX 提供 service.adb.tcp.port 等启动属性），\n'
+            '    # 而 proppreload 的 fork 拦截会弄死 adbd 的 shell 子进程（实测 "fork failed:\n'
+            '    # Try again"）——已在 proppreload.c 按 cmdline 白名单放行 adbd（2026-10-02）。\n'
+            '    # E2 模式曾试过 setprop 走真 init 的 rc adbd：实测 setprop rc=1、rc 服务环\n'
+            '    # 根本没起来（init.svc=0）⇒ 此路不通，两种模式统一自己拉。\n'
+            '    ( LD_PRELOAD=/system/lib64/libpropfix.so:/proppreload.so \\\n'
             '      PROPFIX="hwservicemanager.ready=true;service.adb.tcp.port=5555;service.adb.root=1;ro.adb.secure=0;ro.debuggable=1;persist.adb.tls_server.enable=1" \\\n'
             '      LD_LIBRARY_PATH=/vendor/lib64:/system/lib64 /system/bin/adbd >/tmp/adbd-init.log 2>&1 ) &\n'
                     '    echo "[astack] SF/adbd 已由 init 拉起"\n'
@@ -518,11 +533,13 @@ def main():
             '      echo "[verify] ===== 内存 ====="; $BB head -2 /proc/meminfo; $BB dmesg 2>/dev/null | $BB tail -6; \\\n'
             '      echo "[verify] ===== sf-init.log 关键行 ====="; $BB grep -aE "allocate|RenderEngine|EGL|eglCreate|dispatcher|AIDL|VINTF|surfaceflinger" /tmp/sf-init.log 2>/dev/null | $BB head -30; echo "[verify] ---- sf-init.log 尾部 ----"; $BB tail -12 /tmp/sf-init.log 2>/dev/null; \\\n'
             '      echo "[verify] ===== adbd-init.log ====="; if [ -f /tmp/adbd-init.log ]; then $BB head -15 /tmp/adbd-init.log; else echo "(不存在)"; fi ) &\n'
-            '    ( $BB sleep 35; \\\n'
-            '      echo "[verify] screencap:"; LD_LIBRARY_PATH=/system/lib64 /system/bin/screencap -p /data/local/tmp/shot.png 2>&1 | $BB head -3; \\\n'
-            '      $BB ls -la /data/local/tmp/ 2>/dev/null | $BB tail -1; \\\n'
-            '      echo "[verify] PNG 前8字节:"; $BB head -c 8 /data/local/tmp/shot.png 2>/dev/null | $BB od -An -tx1; \\\n'
-            '      echo "[verify] svccheck 一次性:"; LD_PRELOAD=/system/lib64/libpropfix.so:/proppreload.so PROPFIX="hwservicemanager.ready=true" /system/bin/svccheck 2>&1 | $BB head -10 ) &\n'
+            '    ( $BB sleep 35; _SC=$(LD_LIBRARY_PATH=/system/lib64 /system/bin/screencap -p /data/local/tmp/shot.png 2>&1); _RC=$?; \\\n'
+            '      _SZ=$($BB wc -c < /data/local/tmp/shot.png 2>/dev/null); \\\n'
+            '      _PNG=$($BB od -An -tx1 -N8 /data/local/tmp/shot.png 2>/dev/null | $BB tr -d " \\n"); \\\n'
+            '      _SV=$($BB pidof surfaceflinger 2>/dev/null); \\\n'
+            '      _DF=$($BB df -m /data 2>/dev/null | $BB tail -1); \\\n'
+            '      echo "[verify] RESULT rc=$_RC screencap=[$_SC] size=$_SZ sf_pid=$_SV png8=$_PNG df=[$_DF]"; \\\n'
+            '      echo "[verify] sf-init 关键行:"; $BB grep -aE "allocate|RenderEngine|EGL|AIDL" /tmp/sf-init.log 2>/dev/null | $BB tail -20 ) &\n'
             '    $BB sleep 3\n'
             '    echo "[astack] servicemanager pid=$($BB pidof servicemanager 2>/dev/null)"\n'
             '    echo "[astack] hwservicemanager pid=$($BB pidof hwservicemanager 2>/dev/null)"\n'
@@ -537,7 +554,7 @@ def main():
         # ── astack 段幂等更新（2026-10-02）：原守卫「标记不存在才插入」导致基础 initramfs 里
         # 固化的**旧版** astack 段永远不被更新 ⇒ dri 软链/SF/adbd 拉起/verify 等所有修改从未生效。
         # 改为版本标记：ver 不在（=旧段在）时先整段删除旧段（从标记到段尾 fi），再插新版。
-        _ver = b"# astack v5 (2026-10-02)"
+        _ver = b"# astack v7 (2026-10-02)"
         if _ver not in init:
             tag = "B1.1：Android binder 服务栈".encode("utf-8")
             start = init.find(tag)
@@ -551,7 +568,7 @@ def main():
             init = init.replace(_a_ast, ast_sh + _a_ast, 1)
             init_i = next(i for i, e in enumerate(merged) if e[0] == "init")
             merged[init_i] = merged[init_i][:6] + (init,) + merged[init_i][7:]
-            print("④f init 已插入 Android 服务栈段（astack v5，含 dri 软链/SF/adbd 拉起/verify 全量证据自检）")
+            print("④f init 已插入 Android 服务栈段（astack v7，含 dri 软链/SF/adbd 拉起/verify 自检/tmpfs 扩容瘦身）")
         anchor3 = b'LD_PRELOAD=/proppreload.so /system/bin/artlaunch'
         if b"weston --backend=headless" not in init and anchor3 in init:
             init = init.replace(anchor3, we_sh + b"\n" + anchor3, 1)
