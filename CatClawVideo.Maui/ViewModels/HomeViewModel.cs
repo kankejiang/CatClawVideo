@@ -301,19 +301,20 @@ public partial class HomeViewModel : ObservableObject
             }
             else
             {
-                // 冷启动竞态（2026-09-30 实测）：爬虫桥（QEMU guest + ART）就绪要约 12s
-                // （16:25:38.1 首屏开跑 → 16:25:49.7 桥就绪），而 jar 源的取数路径在桥没起来时
-                // 是**快速失败**而不是等待：`InvalidOperationException: ART guest 起不来`。
-                // 旧代码一个 `catch { }` 把这句吞掉并立刻回退自动探测 ⇒ 用户看到的正是
-                // 「每次重启都不回上次那个站点，而是落到 🗂我的云盘┃配置」。
-                // 现在：留痕 + 有界重试（5 次 ×4s，覆盖 ~26s 冷启），全失败才回退探测。
+                // ⚠ 必须有预算：jar 站（依赖 QEMU ART guest）在引擎不可用时会**挂住不返回**——
+                // 2026-10-02 实测挂满 4 分钟也不抛异常，于是「致命回退」压根触发不了，
+                // 冷启动遮罩只能干等（用户截图：97% 动不了）。ct 一路传到运行时
+                // （SpiderVodProvider → HomeContentAsync → ConnectAsync），所以预算掐得住。
+                var needsEngine = preferred.SpiderKind != VodSpiderKind.None;
+                var budget = needsEngine ? EngineSiteBudgetSeconds : PlainSiteBudgetSeconds;
                 for (var attempt = 1; attempt <= 5 && usedSite == null; attempt++)
                 {
                     string why;
                     var fatal = false;
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(budget));
                     try
                     {
-                        cats = await _provider.GetCategoriesAsync(preferred);
+                        cats = await _provider.GetCategoriesAsync(preferred, cts.Token);
                         if (cats.Count > 0)
                         {
                             usedSite = preferred;
@@ -322,18 +323,28 @@ public partial class HomeViewModel : ObservableObject
                         }
                         why = "分类为空";
                     }
+                    catch (OperationCanceledException)
+                    {
+                        why = $"取分类超时（预算 {budget}s）";
+                        // 爬虫站冷启实测 36~46s；超 50s 还没动静 = 这条引擎链路已经废了
+                        fatal = needsEngine;
+                    }
                     catch (Exception ex)
                     {
                         why = $"{ex.GetType().Name}: {ex.Message}";
-                        fatal = IsSpiderEngineDown(ex);
+                        fatal = needsEngine && IsSpiderEngineDown(ex);
                     }
                     DiagLog.Write($"[home] 首选 {preferred.Name} 第 {attempt} 次取分类失败：{why}");
-                    // 爬虫引擎（QEMU ART guest）整个起不来 ⇒ 间隔 4s 再试也是白等（VM 已经没了，
-                    // 不会自己长出来），5 次重试纯把首页冻住 ~8 分钟（2026-10-02 实测 22:09 那轮）。
-                    // 立刻回退自动探测：并发探测里不依赖 guest 的 MacCMS 站能先把首页顶起来。
+                    // 爬虫引擎（QEMU ART guest）整个起不来 / 挂死 ⇒ 间隔 4s 再试也是白等
+                    // （VM 已经没了，不会自己长出来），5 次重试纯把首页冻住 ~8 分钟
+                    // （2026-10-02 实测 22:09 那轮）。立刻回退自动探测：
+                    // 并发探测里不依赖 guest 的 MacCMS 站能先把首页顶起来。
                     if (fatal)
                     {
-                        DiagLog.Write("[home] 爬虫引擎不可用，跳过剩余重试，直接回退自动探测");
+                        DiagLog.Write("[home] 爬虫引擎不可用/超时，跳过剩余重试，直接回退自动探测");
+                        // 该爬虫站就地退位（清空首选）：否则下一次冷启动又会先撞它、白等一个预算。
+                        // 用户在「切换源」里随时能选回来，这里只影响「先试谁」。
+                        DemotePreferredSite(preferred);
                         break;
                     }
                     if (attempt < 5) await Task.Delay(4000);
@@ -352,6 +363,11 @@ public partial class HomeViewModel : ObservableObject
                 usedSite = w.Site;
                 cats = w.Cats;
                 _catsCache[w.Site.Key] = w.Cats;
+                // ★ 记忆胜者（2026-10-02）：此前只有「用户手动切站」才写首选，自动探测胜出**不写回**，
+                // 于是首选一旦是坏站（例：🍼┆设置┆中心，本身是订阅的配置站还要占着首选位），
+                // 每次冷启动都先撞它一次、等它超时 → 用户观感就是「改了也是白改」。
+                // 写回之后冷启动直接命中可用站，一次到位。
+                RememberPreferredSite(w.Site, "自动探测胜出");
             }
         }
 
@@ -393,46 +409,133 @@ public partial class HomeViewModel : ObservableObject
     }
 
     /// <summary>
+    /// 记住真正拿到数据的站点为首选（自动探测胜出时调用）。
+    ///
+    /// <para>只在这一种情况下改写：用户手动选的站**取数彻底失败**（不是暂时抖动）才换人，
+    /// 换的时候留痕。判据是「已经有一个能出分类的站」，所以不会把首页记到一个死源上。</para>
+    /// </summary>
+    private static void RememberPreferredSite(VodSiteInfo site, string reason)
+    {
+        try
+        {
+            var old = Preferences.Default.Get(PreferredSiteKey, string.Empty);
+            if (old == site.Key) return;
+            Preferences.Default.Set(PreferredSiteKey, site.Key);
+            DiagLog.Write($"[home] 首选站记忆更新 {old} → {site.Key}（{site.Name}，{reason}）");
+        }
+        catch
+        {
+            // 写记忆失败只影响下次的耐心，不影响本次首载
+        }
+    }
+
+    /// <summary>
+    /// 首选站取数**致命失败**（爬虫引擎起不来 / 挂死）时把它从首选位上摘掉。
+    ///
+    /// <para>不清的后果很具体：每次冷启动都先花 50s 预算去撞同一个死站，
+    /// 而这 50s 里用户什么都做不了（2026-10-02 用户原话「改了也是白改」）。
+    /// 摘掉后下次冷启动直接进探测路径。随时可在「切换源」里选回来。</para>
+    /// </summary>
+    private static void DemotePreferredSite(VodSiteInfo site)
+    {
+        try
+        {
+            if (Preferences.Default.Get(PreferredSiteKey, string.Empty) != site.Key) return;
+            Preferences.Default.Set(PreferredSiteKey, string.Empty);
+            DiagLog.Write($"[home] 首选站 {site.Key}（{site.Name}）取数致命失败，已摘掉首选位（下次冷启直接走探测）");
+        }
+        catch
+        {
+        }
+    }
+
+    /// <summary>
     /// 并发探测候选站点，返回第一个能出分类的站点。
     /// <para>并发上限 <see cref="ProbeConcurrency"/>（jar 源的桥内 load 有全局锁，放太多只会排队）；
     /// 整体超时 <see cref="ProbeTimeoutSeconds"/>：胜者产生或超时即收摊，其余探测随之取消，
     /// 不让死站把首页拖满自身超时。</para>
     /// </summary>
     private const int ProbeConcurrency = 4;
-    private const int ProbeTimeoutSeconds = 15;
+    private const int ProbeTimeoutSeconds = 45;
+
+    /// <summary>
+    /// 爬虫站（依赖 QEMU ART guest）取分类的预算秒数。冷启实测 36~46s 属正常，
+    /// 超 50s 仍无响应即判这条引擎链路不可用——因为它不会抛异常，只会**一直挂着**
+    /// （2026-10-02 实测挂满 4 分钟）。
+    /// </summary>
+    private const int EngineSiteBudgetSeconds = 50;
+
+    /// <summary>普通站（MacCMS 等直连）取分类的预算：一次网络往返，25s 足够。</summary>
+    private const int PlainSiteBudgetSeconds = 25;
+
+    /// <summary>
+    /// 探测时**单个**候选站的预算。必须是它自己掐，而不是只靠一个全局窗口 ——
+    /// 旧实现只有一个 15s 全局窗口，而单个死站能吃满自身 20s（MacCMS 超时），
+    /// 于是前 4 个死站就把窗口耗光、110 个候选里剩下 106 个连排队都没轮到
+    /// （2026-10-02 实测：探测 15s 零胜出 → 首页直接判失败）。
+    /// </summary>
+    private const int ProbeSiteTimeoutSeconds = 8;
 
     private async Task<(VodSiteInfo Site, List<VodCategory> Cats)?> ProbeSitesAsync(IEnumerable<VodSiteInfo> candidates)
     {
-        var list = candidates.ToList();
+        // 顺序即优先级：并发位只有 4 个，先把**不依赖 guest** 的站排前面（它们秒回），
+        // 别让 4 个名额全被还在等 ART guest 的 jar 站占着、白等超时
+        // （2026-10-02：guest 不可用时首页一片空白就是这个顺序问题）。
+        var list = candidates
+            .OrderBy(s => s.SpiderKind == VodSpiderKind.None ? 0 : 1)
+            .ToList();
         if (list.Count == 0) return null;
-        DiagLog.Write($"[home] 回退并发探测 {list.Count} 站（并发 {ProbeConcurrency}，超时 {ProbeTimeoutSeconds}s）");
+        DiagLog.Write($"[home] 回退并发探测 {list.Count} 站（并发 {ProbeConcurrency}，单站 {ProbeSiteTimeoutSeconds}s，窗口 {ProbeTimeoutSeconds}s）");
 
-        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(ProbeTimeoutSeconds));
+        using var overall = new CancellationTokenSource(TimeSpan.FromSeconds(ProbeTimeoutSeconds));
         using var gate = new SemaphoreSlim(ProbeConcurrency);
+        var winner = new TaskCompletionSource<(VodSiteInfo Site, List<VodCategory> Cats)>();
+        var failed = 0;
+        var attempted = 0;
 
-        async Task<(VodSiteInfo Site, List<VodCategory> Cats)?> ProbeOne(VodSiteInfo site)
+        // 候选逐个排队进 4 个并发位；谁先出分类谁赢，赢后其余自然收敛（整体窗口到点收摊）
+        var workers = list.Select(site => Task.Run(async () =>
         {
+            if (winner.Task.IsCompleted || overall.IsCancellationRequested) return;
+            var gotSlot = false;
             try
             {
-                await gate.WaitAsync(timeoutCts.Token).ConfigureAwait(false);
-                try
+                // ⚠ 必须**循环**拿位，不能「一次轮询没拿到就放弃」：110 个候选里只有 4 个能同时跑，
+                // 没拿到位的那些要一直排着，直到有位空出来或整体窗口到点
+                // （首版写成 if(!gotSlot) return ⇒ 106 个候选 1 秒内全退场，只试了最初 4 个，
+                //   2026-10-02 实测「已试 106 站全废/未完，失败 4」）。
+                while (!gotSlot && !winner.Task.IsCompleted && !overall.IsCancellationRequested)
                 {
-                    var cats = await _provider.GetCategoriesAsync(site, timeoutCts.Token).ConfigureAwait(false);
-                    return cats.Count > 0 ? (site, cats) : null;
+                    try { gotSlot = await gate.WaitAsync(TimeSpan.FromSeconds(1), overall.Token).ConfigureAwait(false); }
+                    catch (OperationCanceledException) { return; }
                 }
-                finally { gate.Release(); }
-            }
-            catch { return null; }
-        }
+                if (!gotSlot || winner.Task.IsCompleted) return;
 
-        var tasks = list.Select(ProbeOne).ToList();
-        while (tasks.Count > 0)
+                Interlocked.Increment(ref attempted);
+                using var siteCts = CancellationTokenSource.CreateLinkedTokenSource(overall.Token);
+                siteCts.CancelAfter(TimeSpan.FromSeconds(ProbeSiteTimeoutSeconds));
+                var cats = await _provider.GetCategoriesAsync(site, siteCts.Token).ConfigureAwait(false);
+                if (cats.Count > 0) winner.TrySetResult((site, cats));
+                else Interlocked.Increment(ref failed);
+            }
+            catch
+            {
+                Interlocked.Increment(ref failed);
+            }
+            finally
+            {
+                if (gotSlot) gate.Release();
+            }
+        }, overall.Token)).ToList();
+
+        _ = await Task.WhenAny(Task.WhenAll(workers), winner.Task).ConfigureAwait(false);
+        if (!winner.Task.IsCompletedSuccessfully)
         {
-            var done = await Task.WhenAny(tasks).ConfigureAwait(false);
-            tasks.Remove(done);
-            if (await done.ConfigureAwait(false) is { } win) return win;   // using 收摊时取消其余探测
+            DiagLog.Write($"[home] 探测收摊无胜出（实试 {attempted} 站，失败 {failed}，候选 {list.Count}）");
+            return null;
         }
-        return null;
+        DiagLog.Write($"[home] 探测胜出 {winner.Task.Result.Site.Name}（实试 {attempted} 站，失败 {failed}）");
+        return winner.Task.Result;
     }
 
     /// <summary>

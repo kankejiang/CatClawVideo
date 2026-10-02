@@ -108,9 +108,9 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
     /// <summary>取数已收工（IsHomeLoading 由 true 翻回 false）。配合分类仍为空 = 这轮失败了。</summary>
     private bool _coldLoadFinished;
 
-    /// <summary>冷启动遮罩最长停留（秒）。实测正常路径 36~46s（ART guest 冷启），
-    /// 超时无条件收起——宁可露出错误提示让人操作，也不能把人永远困在 97%。</summary>
-    private const int ColdStartCapSeconds = 90;
+    /// <summary>冷启动遮罩最长停留（秒）。留够「首选站预算 50s + 回退探测 45s」这条最坏路径，
+    /// 又不至于把人困住；超时无条件收起——宁可露出错误提示让人操作。</summary>
+    private const int ColdStartCapSeconds = 120;
 
     private void StartColdStartOverlay()
     {
