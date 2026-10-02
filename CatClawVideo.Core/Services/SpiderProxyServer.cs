@@ -58,6 +58,15 @@ public sealed class SpiderProxyServer : IDisposable
     {
         "js", "config", "danmu", "drive", "live", "play", "input", "quark", "ali", "UC",
         "YCyz", "musicLrc", "yinHe", "prPic", "hmys", "bili", "dnsPic", "MixDemo", "MixWeb",
+        // ★ "proxy"（2026-10-02 补）：jar 自答的**通用**取流入口。网盘 VIP 类源
+        //   （夸克 quark_vip 等）playerContent 直接回
+        //       http://127.0.0.1:<宿主代理口>/proxy?do=proxy&key=java_quark_vip_xxx
+        //   由 jar 自己的 proxy(Map) 解 key 换直链。此前词表漏了它 → 请求落到
+        //   「无 url 参数」分支回 400 missing url → 播放器只拿到 11 字节 text/plain
+        //   → Windows 报「源不受支持（视频编码或容器格式不兼容）」（实测 兰亭对决 883MB）。
+        //   依据 TVBox `RemoteServer`：`/proxy` 路径 + 带 do 参数即转 `ApiConfig.proxyLocal`
+        //   → `jarLoader.proxyInvoke(param)`，**不做 do 白名单**；这里按同样的语义补齐。
+        "proxy",
     };
 
     /// <summary>默认 UA：部分 CDN 对空 UA 直接 403。</summary>
