@@ -1260,6 +1260,22 @@ public class Server {
         if ("0".equals(System.getProperty("bridge.sf"))) return;
         Thread t = new Thread(() -> {
             try {
+                // 单实例守卫（2026-10-02）：composer HAL 是**单客户端** —— init 侧已拉起 SF 后，
+                // 桥侧再起的每一个都崩在 HwcComposer "failed to create composer client"（SIGABRT），
+                // 形成多实例假象且刷屏。桥 fork 可能被 proppreload 拦截（error=11），不能派 pidof
+                // 子进程 ⇒ 直接扫 /proc/*/cmdline（纯文件读，零 fork）。
+                for (int w = 0; w < 60; w++) {
+                    if (sfAlreadyRunning()) {
+                        System.err.println("[sf] SurfaceFlinger 已有实例 → 桥侧不再拉起（composer HAL 单客户端）");
+                        return;
+                    }
+                    if (new java.io.File("/tmp/hal_ready").exists()) break;
+                    Thread.sleep(500);
+                }
+                if (sfAlreadyRunning()) {
+                    System.err.println("[sf] SurfaceFlinger 已有实例 → 桥侧不再拉起（composer HAL 单客户端）");
+                    return;
+                }
                 setProp("hwservicemanager.ready", "true");
                 // 图形栈属性：HAL 变体与 DRM 设备（值取自 108 上跑通的 Waydroid 配置）
                 setProp("ro.hardware.hwcomposer", "waydroid");
@@ -1292,15 +1308,17 @@ public class Server {
                         + ";ro.surface_flinger.has_wide_color_display=false"
                         + ";ro.surface_flinger.has_HDR_display=false"
                         + ";ro.surface_flinger.use_color_management=false");
-                // mesa 的软件光栅化（llvmpipe）：本 guest 没有 GPU，iris 起不来，强制软件路径。
-                pb.environment().put("GALLIUM_DRIVER", "swrast");   // softpipe：不需要 LLVM（llvmpipe 需要 libLLVM22）
+                // mesa 的软件光栅化：本 guest 没有 GPU，iris 起不来，强制软件路径。
+                // kms_swrast（2026-10-02 二轮）：swrast/llvmpipe 的 gbm 分配是哑元（同指针），
+                // 随后在 dri_gbm 里对 SCANOUT|LINEAR 分配 SEGV；kms_swrast 走 DRM dumb 真分配。
+                pb.environment().put("GALLIUM_DRIVER", "kms_swrast");
                 // mesa/EGL 自己的调试输出（定位"驱动为什么没起来"）
                 pb.environment().put("MESA_DEBUG", "1");
                 pb.environment().put("LIBGL_DEBUG", "verbose");
                 pb.environment().put("EGL_LOG_LEVEL", "debug");
                 pb.environment().put("MESA_LOADER_DEBUG", "1");
                 pb.environment().put("LIBGL_ALWAYS_SOFTWARE", "1");
-                pb.environment().put("MESA_LOADER_DRIVER_OVERRIDE", "swrast");
+                pb.environment().put("MESA_LOADER_DRIVER_OVERRIDE", "llvmpipe");
                 // 诊断开关：让 libpropfix 把 SF 的每一次属性读取打到控制台
                 // （EGL 找不到实现时，靠它看 libEGL 到底问哪个键、拿到什么值）。
                 // 临时无条件开启做一次诊断；查清后改回按环境变量开关。
@@ -1320,6 +1338,10 @@ public class Server {
                 }
                 // 再重试最多 3 次：即使某个组件仍慢一拍，重试也能吃掉（SF 崩在启动早期，重启成本低）
                 for (int attempt = 1; attempt <= 3; attempt++) {
+                    if (sfAlreadyRunning()) {
+                        System.err.println("[sf] SurfaceFlinger 已有实例 → 停止重试（composer HAL 单客户端）");
+                        return;
+                    }
                     Process p = pb.start();
                     System.err.println("[sf] 已拉起 surfaceflinger（第 " + attempt + " 次）pid=" + p.hashCode());
                     // ⚠ 必须**无条件** pump：早先只在"存活"时 pump ⇒ SF 若 6s 内退出，
@@ -1336,6 +1358,29 @@ public class Server {
         }, "sf-launch");
         t.setDaemon(true);
         t.start();
+    }
+
+    /**
+     * guest 里是否已有存活的 surfaceflinger（扫 /proc 各 pid 的 cmdline，零 fork ——
+     * 桥的 fork 会被 proppreload 拦截，不能派 pidof 子进程）。
+     */
+    private static boolean sfAlreadyRunning() {
+        String[] list;
+        try { list = new java.io.File("/proc").list(); } catch (Throwable e) { return false; }
+        if (list == null) return false;
+        for (String name : list) {
+            int pid;
+            try { pid = Integer.parseInt(name); } catch (NumberFormatException e) { continue; }
+            if (pid <= 1) continue;
+            try (java.io.InputStream in = new java.io.FileInputStream("/proc/" + name + "/cmdline")) {
+                byte[] buf = new byte[128];
+                int n = in.read(buf);
+                if (n <= 0) continue;
+                String cmd = new String(buf, 0, n, java.nio.charset.StandardCharsets.UTF_8);
+                if (cmd.contains("surfaceflinger")) return true;
+            } catch (Throwable ignored) { }
+        }
+        return false;
     }
 
     /** 把子进程输出转发到控制台（排障用；每个流一个守护线程）。 */

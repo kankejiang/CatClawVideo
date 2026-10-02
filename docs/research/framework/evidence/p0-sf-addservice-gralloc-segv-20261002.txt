@@ -1,0 +1,91 @@
+P0 取证：SF 单实例收口 + addService 首次达成 + gralloc SEGV 根因链
+=====================================================================
+日期：2026-10-02 14:20-15:30 ｜ 执行窗：Maui(13:42/14:27/14:36 本窗) ｜ 全程单 VM ✔
+
+一、里程碑（相对 STATUS §十一 的进展）
+---------------------------------------------------------------------
+1. SurfaceFlinger addService 首次达成（N3 的"谁都没 addService"已破）：
+   $ adb shell "service check SurfaceFlinger"
+     Service SurfaceFlinger: found          ← sm 注册成功
+     service list：
+       0  SurfaceFlinger:    [android.ui.ISurfaceComposer]
+       1  SurfaceFlingerAIDL:[android.gui.ISurfaceComposer]   ← screencap 要的就是它
+   前提 = SF 单实例（init 侧唯一拉起，pid 306/308，RSS ~195MB 稳定存活）。
+2. allocate rc=0 首次在 claw-legacy 形态出现（sf-init.log）：
+   >> allocate(9) w=128 h=128 fmt=0x1 usage=0x300 → rc=0（多次）
+   >> allocate(9) w=128 h=128 fmt=0x1 usage=0x100 → rc=0
+
+二、双实例根因（H1，已修复 ✔）
+---------------------------------------------------------------------
+composer HAL（hwcomposer.waydroid）是**单客户端**：init 侧先起 SF 后，
+桥侧（Server.startSurfaceFlinger）再起的每一个都崩在
+   [sf] failed to create composer client
+   [sf] [alog:HwcComposer/7] failed to create composer client
+   [sf] [propfix] !! 收到信号 6（SIGABRT 经 __android_log_assert）
+3 次重试全崩 → "SF 多实例、谁都没 addService" 的假象。实测尝试 adb shell
+里再起第二个 SF 同样崩（"failed to create composer client"）。
+修复：Server.java startSurfaceFlinger 增加 /proc/*/cmdline 扫描守卫
+（桥 fork 会被 proppreload 拦截 error=11，不能派 pidof 子进程），
+已有实例则不再拉起、重试循环同样守卫。
+
+三、gralloc SEGV 根因链（H3，本轮钉死到调用链，修复待续）
+---------------------------------------------------------------------
+现象：screencap -p → 0 字节 rc=1（stderr 无内容）。
+时序：screencap 触发 SF 分配 1280x720 fmt=0x1 usage=0xb33 →
+   [sf-init.log] >> allocate(9) w=1280 h=720 fmt=0x1 usage=0xb33 → rc=5（掩码 0xb03 重试仍 5）
+同时 allocator 进程死亡：
+   [allocator.log] gbm_bo_create(1280x720 fmt=ARGB8888 flags=0x11) → SIGSEGV（信号 11）
+   回溯：dri_gbm.so(+0x1857b, gbmint_get_backend 内)
+         ← libgbm_mesa_wrapper.so(+0x513a)
+         ← libminigbm_gralloc_gbm_mesa.so gbm_mesa_bo_create+0x21f
+         ← drv_bo_create+0x106 ← cros_gralloc_driver::allocate
+         ← BnHwAllocator::_hidl_allocate（HIDL 分配请求线程）
+反汇编定位（本地同哈希库，llvm-objdump）：
+   gbm_mesa_bo_create+0x21f = `callq *0x18(%rax)` —— 经 wrapper gbm_ops
+   函数表间接调用（wrapper 由 dlsym 填表：gbm_create_device/gbm_bo_create/
+   gbm_bo_create_with_modifiers2/gbm_bo_map/... 共 12 符号）。
+关键对照实验（自编探针 gbmprobe2/3/4/5，adb 注入 /data/local/tmp 运行）：
+   a. 直连 libgbm_mesa（绕开 wrapper）：gbm_bo_create 0x1/0x11/0xb00/0x1b00
+      全部成功（不同 destroy/复用下同指针属正常堆复用）——mesa gbm 本体不崩；
+   b. gbm_device_get_format_modifier_plane_count(LINEAR) = 1 ✔
+      gbm_bo_create_with_modifiers2(LINEAR, 0x11) = 0x0 EINVAL（不崩）；
+   c. wrapper gbm_ops 表打印：ops[00..07] 全部有效、[08+] 为 0（表本身健康）；
+   d. SEGV 只在 allocator 进程内经 wrapper ops[03] 调用链复现
+      ⇒ 指向 wrapper（waydroid external/minigbm/gbm_mesa_driver/
+      gbm_mesa_wrapper.cpp）与 swrast 系 dri 后端在 modifiers 路径的组合缺陷；
+      108 同二进制不触发（iris 真驱动支持 modifiers，不走该缺陷分支）。
+排除项（都有实验证据）：
+   ✗ 二进制差异：libgallium_dri.so/dri_gbm.so/libgbm_mesa_wrapper.so/
+     libgbm_mesa.so 与 108 逐字节同哈希（libLLVM22.so 105MB 已在位）
+   ✗ 驱动选路：GALLIUM_DRIVER=llvmpipe/kms_swrast/zink 强制均不改变结局
+     （kms_swrast 强制反而 wrapper 层 EINVAL，device 都建不起来）
+   ✗ virtio_gpu_gbm.so 缺位补齐（用 libgbm_mesa 拷贝占位）：wrapper dlopen
+     成功但逻辑上仍走 dri_gbm 路径，SEGV 照旧
+   ✗ ICU/linker/GL：早前已三环全过（STATUS §十一）
+
+四、修复建议（下一轮）
+---------------------------------------------------------------------
+1. 【推荐】逆向 wrapper 的 gbm_ops 布局（gralloc 库有符号，drv_* 消费点
+   反汇编可定全部槽位偏移），自写 `dri_gbm.so` 替位：DRM dumb buffer 后端
+   （CREATE_DUMB/MAP 由 virtio-gpu 内核驱动原生支持，gbmprobe 实测 card0
+   dumb 可用）。backend ABI 极小（仅导出 gbmint_get_backend 一个符号）。
+2. 或取 waydroid 上游 gbm_mesa_wrapper.cpp 源码（公开仓库）核对 ops 填表
+   与 modifiers 分支，找崩溃语句后对 libgbm_mesa 做符号垫片。
+3. 或绕开：让 SF 的 virtual display 请求不落 LINEAR|SCANOUT（需改 SF/
+   screencap 参数，估计比 1 难）。
+
+五、验收清单状态（P0 判据）
+---------------------------------------------------------------------
+   [x] SF 单实例（本窗连续 3 次开机均为单实例存活）
+   [x] service check SurfaceFlinger = found（含 AIDL 接口）
+   [x] allocate rc=0（小 buffer；大 LINEAR|SCANOUT buffer 待 gralloc 修复）
+   [ ] screencap -p 出 PNG（89 50 4E 47）——卡 gralloc SEGV，见 §三
+   [ ] 连续 2 次开机复现（等 PNG 通后一起跑）
+
+六、工件
+---------------------------------------------------------------------
+   .zwork/p0/ra.sh|rs.sh        手动拉起 allocator/SF 的实验脚本
+   .zwork/p0/gbmprobe2/3/4/5.c  分层定位探针（NDK x86_64 编译，adb 推送运行）
+   .zwork/p0/dri_gbm.so|wrapper.so|gralloc.so   反汇编用的库提取副本
+   提交：Server.java 单实例守卫（本次）；build_bootimg_inject.py 注释与
+   virtio_gpu_gbm.so 占位注入（无害保留，供下一轮继续）。
