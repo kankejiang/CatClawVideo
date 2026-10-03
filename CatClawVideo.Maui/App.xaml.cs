@@ -125,6 +125,28 @@ public partial class App : Application
                 // 尺寸优先回放用户上次调整值，无记录时用默认 1600×800
                 ApplyStartupWindowSize(appWindow, hwnd);
 
+                // ★ 窗口永远不超过所在屏幕的工作区（14:02 用户要求「限制窗口大小不能超过屏幕」）：
+                //   拖到分辨率更小的副屏时窗口不会自动收缩，右侧超出的部分把播放器画面和控件
+                //   都带出屏幕外。屏幕变更/窗口移动后把窗口夹回该屏工作区。
+                //   全屏播放不受影响：FullScreen presenter 由 OS 管理，Resize 在其上无效。
+                void ClampWindowToDisplay()
+                {
+                    try
+                    {
+                        var area = Microsoft.UI.Windowing.DisplayArea.GetFromWindowId(appWindow.Id,
+                            Microsoft.UI.Windowing.CoordinateDisplayArea.Work);
+                        var size = appWindow.Size;   // 物理像素
+                        int maxW = area.WorkArea.Width, maxH = area.WorkArea.Height;
+                        if (size.Width > maxW || size.Height > maxH)
+                            appWindow.Resize(new Windows.Graphics.SizeInt32(
+                                Math.Min(size.Width, maxW), Math.Min(size.Height, maxH)));
+                    }
+                    catch { }
+                }
+                ClampWindowToDisplay();
+                appWindow.Changed += (_, _) => ClampWindowToDisplay();
+                Microsoft.UI.Windowing.DisplayArea.Changed += (_, _) => ClampWindowToDisplay();
+
                 // 退出时记住窗口尺寸，下次启动回放
                 nativeWindow.Closed += (_, _) => SaveWindowSize(appWindow, hwnd);
 
