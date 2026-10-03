@@ -1,4 +1,4 @@
-using Microsoft.UI.Xaml;
+﻿using Microsoft.UI.Xaml;
 using Microsoft.Maui.Hosting;
 
 namespace CatClawVideo.Maui.WinUI;
@@ -7,6 +7,17 @@ public partial class App : MauiWinUIApplication
 {
     public App()
     {
+        // WebView2 的用户数据目录必须**可写**：默认落在 exe 同级，装到 C:\Program Files 后
+        // 不可写 → CoreWebView2 初始化失败 → MAUI 的 WebView 代理在回调里空引用，
+        // stowed exception 直接把进程打死（2026-10-03 用户实测：发行版点「登入自己云盘」闪退，
+        // 而 Debug 在 D 盘可写目录下正常）。必须在任何 WebView2 创建之前设置。
+        try
+        {
+            Environment.SetEnvironmentVariable("WEBVIEW2_USER_DATA_FOLDER",
+                CatClawVideo.Core.AppPaths.LocalSub("webview2-mini"));
+        }
+        catch { /* 设不上也不该拦启动 */ }
+
         InitializeComponent();
         AppDomain.CurrentDomain.UnhandledException += OnDomainUnhandledException;
         TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;

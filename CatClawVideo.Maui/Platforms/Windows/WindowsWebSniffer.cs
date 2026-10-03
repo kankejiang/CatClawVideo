@@ -1,4 +1,4 @@
-using CatClawVideo.Core.Interfaces;
+﻿using CatClawVideo.Core.Interfaces;
 using CatClawVideo.Core.Models;
 using CatClawVideo.Core.Providers;
 using Microsoft.Web.WebView2.Core;
@@ -25,6 +25,8 @@ public class WindowsWebSniffer : IWebSniffer
             // Microsoft.Web.WebView2.Core 文档不完全一致（2 参/3 参均报 CS1501）。
             // 离屏嗅探不需要定制 user-data 目录，直接用进程默认环境即可。
             var webView = new Microsoft.UI.Xaml.Controls.WebView2();
+            // 用户数据目录由 App.xaml.cs 的 WEBVIEW2_USER_DATA_FOLDER 统一指定为可写目录
+            //（投影下 CreateAsync 无 (string,string) 重载，故不在此自建 Environment）。
             await webView.EnsureCoreWebView2Async();
 
             var core = webView.CoreWebView2;

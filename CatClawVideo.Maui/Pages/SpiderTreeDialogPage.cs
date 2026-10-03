@@ -19,6 +19,12 @@ public partial class SpiderTreeDialogPage : ContentPage, IRemoteKeyHandler
     private readonly Action<int> _onPick;
     private readonly Action? _onCancel;
     private readonly string _positive, _negative, _neutral;
+#if WINDOWS
+    // Windows 走原生 WinUI WebView2（见 Platforms/Windows/TreeWebHost.cs）：
+    // MAUI 的 WebView 在 CoreWebView2 初始化失败时会在回调里空引用崩掉整个进程，
+    // 而「默认用户数据目录落在 exe 同级、装到 Program Files 后不可写」正是初始化失败的常见原因。
+    private Platforms.Windows.TreeWebHost? _host;
+#endif
     private WebView _web = null!;
     private bool _loaded;
     private string _html = "";
@@ -35,12 +41,16 @@ public partial class SpiderTreeDialogPage : ContentPage, IRemoteKeyHandler
     /// </summary>
     private void ApplyHtml()
     {
+#if WINDOWS
+        _host?.SetHtml(_html);
+#else
         if (!_loaded) return;
         try { _web.Source = new HtmlWebViewSource { Html = _html }; }
         catch (Exception ex)
         {
             DiagLog.Write($"[tree] WebView 加载 HTML 失败：{ex.GetType().Name}: {ex.Message}");
         }
+#endif
     }
 
     public SpiderTreeDialogPage(int seq, string treeJson, Action<int> onPick, Action? onCancel = null,
@@ -52,12 +62,16 @@ public partial class SpiderTreeDialogPage : ContentPage, IRemoteKeyHandler
         BackgroundColor = Color.FromArgb("#B3000000");
 
         _html = BuildHtml(treeJson, positive, negative, neutral);
+#if WINDOWS
+        _host = new Platforms.Windows.TreeWebHost { Log = m => DiagLog.Write(m) };
+        _host.LinkClicked += HandleClsk;      // clsk:clk:<下标> / clsk:btn:<n> / clsk:cancel
+#else
         _web = new WebView();
-        // ⚠ 不当场设 Source：见 ApplyHtml 注释（构造期设源会触发 MAUI WebView2 代理的空引用崩溃）
+        // 不当场设 Source：构造期设源会触发 MAUI WebView2 代理的空引用崩溃（2026-10-03）
         _web.Loaded += (_, _) => { _loaded = true; ApplyHtml(); };
         // MAUI WebView 没有跨平台 WebMessageReceived：JS 用自定义 scheme 导航 + Navigating 拦截
-        //（clsk:clk:<节点下标> / clsk:cancel）
         _web.Navigating += OnNavigating;
+#endif
 
         // 右上角 ✕：卡片由 HTML 居中渲染，按钮浮在页面角上保证始终可见
         var closeBtn = new Border
@@ -83,21 +97,36 @@ public partial class SpiderTreeDialogPage : ContentPage, IRemoteKeyHandler
         closeTap.Tapped += async (_, _) => await CloseAsync();
         closeBtn.GestureRecognizers.Add(closeTap);
 
+#if WINDOWS
+        Content = new Grid { Children = { _host!, closeBtn } };
+#else
         Content = new Grid { Children = { _web, closeBtn } };
+#endif
     }
 
     /// <summary>jar 就地改了文本（ui-rows 带新 tree）→ 整树换新。</summary>
     public void UpdateTree(string treeJson)
     {
+#if WINDOWS
+        _host?.RunScript($"window.__setTree({treeJson}); void 0;");
+#else
         if (!_loaded) return;
         _ = _web.EvaluateJavaScriptAsync($"window.__setTree({treeJson}); void 0;");
+#endif
     }
 
     private void OnNavigating(object? sender, WebNavigatingEventArgs e)
     {
         if (!e.Url.StartsWith("clsk:", StringComparison.Ordinal)) return;
         e.Cancel = true;
-        var msg = e.Url["clsk:".Length..];
+        HandleClsk(e.Url);
+    }
+
+    /// <summary>clsk: 自定义 scheme 的统一处理（Android 经 Navigating，Windows 经 TreeWebHost.LinkClicked）。</summary>
+    private void HandleClsk(string url)
+    {
+        if (!url.StartsWith("clsk:", StringComparison.Ordinal)) return;
+        var msg = url["clsk:".Length..];
         if (msg == "cancel") { _ = CloseAsync(); return; }
         // 底部按钮：neutral=-3 / negative=-2 / positive=-1（UiBridge 的按钮语义），jar 收到后自行 dismiss
         if (msg.StartsWith("btn:", StringComparison.Ordinal) &&
