@@ -40,6 +40,12 @@ if [ -n "$PDD" ] && [ -b "$PDD" ]; then
     echo "[persist] 盘节点: $PDD; 内核 ext4 支持: $(grep -c ext4 /proc/filesystems 2>/dev/null)（0=无!）; partitions:"; grep vdc /proc/partitions 2>/dev/null
     export LD_LIBRARY_PATH=/system/lib64
     export MKE2FS_CONFIG=/system/etc/mke2fs.conf
+    # ★ 预挂载强制 fsck（2026-10-03）：QEMU 硬杀可能留下脏 dentry（EUCLEAN，
+    #   "Structure needs cleaning"，rm/stat 都救不了），只有离线 e2fsck 能自愈。
+    #   幂等：干净盘上它秒过。不跑这步，jar 的"删旧→下载新"更新流程会卡死在脏目录上。
+    #   ⚠ 用 PATH 上的独立 e2fsck（e2fsprogs），busybox 无此 applet（"applet not found"）。
+    e2fsck -y "$PDD" > /tmp/fsck.log 2>&1
+    echo "[persist] 预挂载 fsck rc=$? 尾行: $($BB tail -1 /tmp/fsck.log 2>/dev/null)"
     $BB mount -t ext4 "$PDD" /data
     echo "[persist] mount RC=$?"
     if ! $BB mount | $BB grep -q "on /data "; then
@@ -402,6 +408,15 @@ if [ -f /b1/android-stack.tar.gz ]; then
 else
     echo "[astack] 未注入 /b1/android-stack.tar.gz（跳过）"
 fi
+
+# ★ 2026-10-03：binfmt 路线的 qemu 环境前缀（必须在 artlaunch 之前 export，桥→jar→pvideo 逐级继承）。
+#   GoProxy 子进程（pvideo 等 arm64 二进制）经 binfmt_misc 落到 qemu-aarch64-static，
+#   qemu 按 PT_INTERP 找 /system/bin/linker64 —— 在 x86 guest 里那是个 **x86_64** linker
+#   → "Invalid ELF image for this architecture" → pvideo 秒退 255 → FishGuard 判篡改 → 桥自毁。
+#   QEMU_LD_PREFIX（= -L）只被 qemu-user 读，x86 的 artlaunch/ART 无视它；
+#   与上方 LD_LIBRARY_PATH 的「arm64 路径禁入 init 环境」警告不冲突。harness 行已有显式 -L（值相同）。
+export QEMU_LD_PREFIX=/thunder-arm
+
 LD_PRELOAD=/proppreload.so /system/bin/artlaunch bridge.GuestMain /gb.dex:/tvbox.apk $PORT &
 LP=$!
 while true; do
