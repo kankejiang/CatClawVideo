@@ -156,6 +156,13 @@ static void sig_trampoline(int sig, siginfo_t *info, void *ctx) {
         int n = 0;
         const char *tag = "[sig] ";
         while (*tag) buf[n++] = *tag++;
+        /* 2026-10-03 加 p=<pid>：fork 子进程继承哨兵，此前无法区分 [sig] 来自桥本体
+         * 还是 fork 子进程（Go 代理 exec 前）——pid 一锤定音。getpid 走 vDSO，异步安全 */
+        unsigned long pidv = (unsigned long) getpid();
+        buf[n++] = 'p'; buf[n++] = '=';
+        int started = 0;
+        for (int i = 7; i >= 0; i--) { char d = (char) ((pidv >> (i * 4)) & 0xf); if (d || started || i == 0) { buf[n++] = hex[(unsigned char) d]; started = 1; } }
+        buf[n++] = ' ';
         /* 固定格式 "s=<sig> c=<code> a=0x<addr> pc=0x<pc>\n"——只用 write，异步信号安全 */
         buf[n++] = 's'; buf[n++] = '=';
         int s = sig;
@@ -174,6 +181,26 @@ static void sig_trampoline(int sig, siginfo_t *info, void *ctx) {
         n += 16;
         buf[n++] = '\n';
         write(2, buf, n);
+        /* 2026-10-03：附加 /proc/self/cmdline——fork 子进程继承哨兵，pid+cmdline 才能区分
+         * 崩溃来自桥本体还是 exec 前的子进程。全是 syscall，异步信号安全。 */
+        {
+            int cfd = open("/proc/self/cmdline", 0);
+            if (cfd >= 0) {
+                char cbuf[512];
+                ssize_t cn = read(cfd, cbuf + 16, sizeof(cbuf) - 17);
+                close(cfd);
+                if (cn > 0) {
+                    ssize_t i;
+                    const char *ct = "[sig] cmdline: ";
+                    for (i = 0; ct[i]; i++) cbuf[i] = ct[i];
+                    cbuf[15] = ' ';
+                    for (i = 0; i < cn; i++)            /* NUL 参数分隔符换成空格 */
+                        if (cbuf[16 + i] == '\0') cbuf[16 + i] = ' ';
+                    cbuf[16 + cn] = '\n';
+                    write(2, cbuf, 16 + cn + 1);
+                }
+            }
+        }
         if (pc) dump_map_for(pc);
     }
     /* 依次问链上的 handler：谁返回 true（已处理）就停 —— 真 libsigchain 语义 */

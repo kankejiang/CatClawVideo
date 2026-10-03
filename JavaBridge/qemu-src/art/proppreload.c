@@ -325,7 +325,13 @@ pid_t fork(void) {
 pid_t vfork(void) {
     static pid_t (*real)(void) = NULL;
     if (pf_fork_allowed()) {
-        if (!real) real = (pid_t (*)(void)) dlsym(RTLD_NEXT, "vfork");
+        /* 2026-10-03：ALLOW_FORK 下改走**真 fork**，绝不真 vfork——
+         * vfork 子进程与父进程共享地址空间/栈，子进程 exec 完成前的任何动作
+         * （bionic 的 fd 整理、proppreload 插桩残余）都写在共享页上；实测 Go 代理
+         * 子进程一崩（139），父 ART 随后 jit-cache SIGSEGV 陪葬（桥读循环退出）。
+         * fork 的子进程 COW 隔离，子进程怎么死都伤不到父进程；桥内 exec 频率低
+         * （Go 代理自更新、adbd），页表拷贝开销可忽略。 */
+        if (!real) real = (pid_t (*)(void)) dlsym(RTLD_NEXT, "fork");
         if (real) return real();
     }
     fork_block_note("vfork"); errno = EAGAIN; return -1;
