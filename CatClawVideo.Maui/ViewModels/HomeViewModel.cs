@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using CatClawVideo.Core.Interfaces;
 using CatClawVideo.Core.Models;
 using CatClawVideo.Core.Services;
@@ -34,6 +34,9 @@ public partial class HomeViewModel : ObservableObject
 
     /// <summary>用户首选站点 Key（Preferences 持久记忆，跨启动生效）</summary>
     private const string PreferredSiteKey = "home_preferred_site";
+
+    /// <summary>上次成功出首页数据的站点：下次启动优先探测它（命中即亚秒出首页）。</summary>
+    private const string LastGoodSiteKey = "home_last_good_site";
 
     /// <summary>本会话内切换失败过的站点（弹窗置灰标注；重试成功会移除）</summary>
     public HashSet<string> FailedSites { get; } = new();
@@ -291,6 +294,11 @@ public partial class HomeViewModel : ObservableObject
 
         var cats = new List<VodCategory>();
         VodSiteInfo? usedSite = null;
+
+        // ★ 冷启动关键路径（2026-10-03）：回退探测**立即并行开跑**，不等首选站试完。
+        //   首选若是 jar 站，冷启动时桥还没就绪、只会挂到预算耗尽；串行的话首屏要多等一个
+        //   预算（实测 3~15s），而探测本可以立刻在别的站上拿到数据。谁先成功用谁。
+        var probeTask = ProbeSitesAsync(sites);
         if (preferred != null)
         {
             // 会话缓存命中直接用（回启 App/切回旧站点免一次 0.5~1.3s 的分类请求）
@@ -306,7 +314,9 @@ public partial class HomeViewModel : ObservableObject
                 // 冷启动遮罩只能干等（用户截图：97% 动不了）。ct 一路传到运行时
                 // （SpiderVodProvider → HomeContentAsync → ConnectAsync），所以预算掐得住。
                 var needsEngine = preferred.SpiderKind != VodSpiderKind.None;
-                var budget = needsEngine ? EngineSiteBudgetSeconds : PlainSiteBudgetSeconds;
+                // 2026-10-03：冷启动时 ART 桥 ~28s 才就绪，jar 站此时只会挂住 —— 实测首选若是 jar 站，
+                // 旧预算（50s）会把遮罩顶到 97% 干等。冷启动只给 3s，拿不到立刻交给回退探测。
+                var budget = needsEngine ? PreferredEngineStartupBudgetSeconds : PlainSiteBudgetSeconds;
                 for (var attempt = 1; attempt <= 5 && usedSite == null; attempt++)
                 {
                     string why;
@@ -357,12 +367,14 @@ public partial class HomeViewModel : ObservableObject
         // 改为并发探测（带并发上限与整体超时），第一个出分类的站点即胜出。
         if (usedSite == null)
         {
-            var win = await ProbeSitesAsync(sites.Where(s => s.Key != preferred?.Key));
+            // 探测已在上面并行启动（排序把「最近成功的站」放最前），这里只取结果
+            var win = await probeTask;
             if (win is { } w)
             {
                 usedSite = w.Site;
                 cats = w.Cats;
                 _catsCache[w.Site.Key] = w.Cats;
+                Preferences.Default.Set(LastGoodSiteKey, w.Site.Key);
                 // ★ 记忆胜者（2026-10-02）：此前只有「用户手动切站」才写首选，自动探测胜出**不写回**，
                 // 于是首选一旦是坏站（例：🍼┆设置┆中心，本身是订阅的配置站还要占着首选位），
                 // 每次冷启动都先撞它一次、等它超时 → 用户观感就是「改了也是白改」。
@@ -451,19 +463,28 @@ public partial class HomeViewModel : ObservableObject
 
     /// <summary>
     /// 并发探测候选站点，返回第一个能出分类的站点。
-    /// <para>并发上限 <see cref="ProbeConcurrency"/>（jar 源的桥内 load 有全局锁，放太多只会排队）；
+    /// <para>并发上限 <see cref="ProbeConcurrency"/>。候选里**纯 HTTP 站占绝大多数**（MacCMS 站），
+    /// 2026-10-03 由 4 提到 16：实测并发 4 时前 4 个死站要各等满 8s 才轮到下一批，首个成功站
+    /// 等到 36s；16 位并发下几批之内就能撞上可用站。jar 站的桥内 load 有全局锁，放多也只排队，
+    /// 但探测顺序已把非 jar 站排前面，故不受影响；
     /// 整体超时 <see cref="ProbeTimeoutSeconds"/>：胜者产生或超时即收摊，其余探测随之取消，
     /// 不让死站把首页拖满自身超时。</para>
     /// </summary>
-    private const int ProbeConcurrency = 4;
+    private const int ProbeConcurrency = 8;   // 2026-10-03：4→8（温和提一点）；试过 16 无收益，且突发并发易被站方限流
     private const int ProbeTimeoutSeconds = 45;
 
     /// <summary>
-    /// 爬虫站（依赖 QEMU ART guest）取分类的预算秒数。冷启实测 36~46s 属正常，
-    /// 超 50s 仍无响应即判这条引擎链路不可用——因为它不会抛异常，只会**一直挂着**
-    /// （2026-10-02 实测挂满 4 分钟）。
+    /// 爬虫站（依赖 QEMU ART guest）取分类的预算秒数。这类站不会抛异常，只会**一直挂着**
+    /// （2026-10-02 实测挂满 4 分钟），必须有预算掐住。
+    /// 2026-10-03 由 50 收到 15：冷启动时 ART 桥 ~28s 才就绪，等满 50s 只会把遮罩顶在 97% 干等。
     /// </summary>
-    private const int EngineSiteBudgetSeconds = 50;
+    private const int EngineSiteBudgetSeconds = 15;
+
+    /// <summary>
+    /// 冷启动时给「依赖 guest 的首选站」的预算：桥还没就绪，久等无益 ——
+    /// 3s 拿不到就立刻交给回退探测（那里按上次成功的站 + 非 jar 站优先排队）。
+    /// </summary>
+    private const int PreferredEngineStartupBudgetSeconds = 3;
 
     /// <summary>普通站（MacCMS 等直连）取分类的预算：一次网络往返，25s 足够。</summary>
     private const int PlainSiteBudgetSeconds = 25;
@@ -474,15 +495,19 @@ public partial class HomeViewModel : ObservableObject
     /// 于是前 4 个死站就把窗口耗光、110 个候选里剩下 106 个连排队都没轮到
     /// （2026-10-02 实测：探测 15s 零胜出 → 首页直接判失败）。
     /// </summary>
-    private const int ProbeSiteTimeoutSeconds = 8;
+    private const int ProbeSiteTimeoutSeconds = 8;   // 2026-10-03：试过降到 5，结果误杀大量慢站（整轮零胜出）——保持 8
 
     private async Task<(VodSiteInfo Site, List<VodCategory> Cats)?> ProbeSitesAsync(IEnumerable<VodSiteInfo> candidates)
     {
         // 顺序即优先级：并发位只有 4 个，先把**不依赖 guest** 的站排前面（它们秒回），
         // 别让 4 个名额全被还在等 ART guest 的 jar 站占着、白等超时
         // （2026-10-02：guest 不可用时首页一片空白就是这个顺序问题）。
+        // 上次成功出首页的站排最前（多数情况下它还在订阅里且还活着 → 第一批就命中）；
+        // 其余仍按「不依赖 guest 优先」排队
+        var lastGood = Preferences.Default.Get(LastGoodSiteKey, string.Empty);
         var list = candidates
-            .OrderBy(s => s.SpiderKind == VodSpiderKind.None ? 0 : 1)
+            .OrderBy(s => s.Key == lastGood ? 0 : 1)
+            .ThenBy(s => s.SpiderKind == VodSpiderKind.None ? 0 : 1)
             .ToList();
         if (list.Count == 0) return null;
         DiagLog.Write($"[home] 回退并发探测 {list.Count} 站（并发 {ProbeConcurrency}，单站 {ProbeSiteTimeoutSeconds}s，窗口 {ProbeTimeoutSeconds}s）");
