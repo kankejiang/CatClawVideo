@@ -1275,11 +1275,14 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
         // 切后台 + 开了「后台继续播放」→ 什么都不敢动，让声音继续（对位 TVBox MusicPlaybackService）。
         // 导航离开（回主页/返回）仍然照旧停：那时 IsInBackground 是 false。
         var keepPlaying = Services.BgPlayPrefs.ShouldKeepPlaying();
+        DiagLog.Write($"[drag→] 退出开始 keepPlaying={keepPlaying} fullscreen={_isFullscreen}");
         if (!keepPlaying)
         {
-            if (_isFullscreen) SetFullscreen(false);
-            EpisodesOverlay.IsVisible = false;   // 离开页面：浮层复位（页面实例可能被复用）
+            if (_isFullscreen) { DiagLog.Write("[drag→] SetFullscreen(false) 前"); SetFullscreen(false); DiagLog.Write("[drag→] SetFullscreen(false) 后"); }
+            DiagLog.Write("[drag→] Player.Pause() 前");
             Player.Pause();
+            DiagLog.Write("[drag→] Player.Pause() 后");
+            EpisodesOverlay.IsVisible = false;   // 离开页面：浮层复位（页面实例可能被复用）
             _playing = false;
             UpdatePlayIcon();
             _speedTimer?.Stop();
@@ -1288,7 +1291,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
 
         // 播放历史落库（观看页会话收尾）。后台继续放时**不能**收尾：
         // 那会把「此刻位置」写进历史，用户回来看到的是切后台前的进度而不是实际看到的进度。
-        try { if (!keepPlaying) _playback.EndSession(Player.Position.TotalSeconds, Player.Duration.TotalSeconds); }
+        try { DiagLog.Write("[drag→] EndSession 前"); if (!keepPlaying) _playback.EndSession(Player.Position.TotalSeconds, Player.Duration.TotalSeconds); DiagLog.Write("[drag→] EndSession 后"); }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[Watch] 历史记录失败: {ex.Message}"); }
 
         // 退出播放页 = 本次播放结束：通知磁力引擎收尾。

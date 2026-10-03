@@ -130,7 +130,7 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
             _mediaPlayer.MediaEnded -= OnMediaEnded;
             if (_mediaPlayer.PlaybackSession != null)
                 _mediaPlayer.PlaybackSession.PlaybackStateChanged -= OnPlaybackStateChanged;
-            _mediaPlayer.Dispose();
+            DiagLog.Write("[player→] MediaPlayer.Dispose 前"); _mediaPlayer.Dispose(); DiagLog.Write("[player→] MediaPlayer.Dispose 后");
             _mediaPlayer = null;
         }
         ReleaseDisplayRequest();
