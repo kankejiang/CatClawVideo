@@ -133,6 +133,10 @@ public partial class App : Application
                 {
                     try
                     {
+                        // ⚠ 全屏 presenter 直接跳过：全屏窗口=整个屏幕（含任务栏区域），
+                        //   必然「大于」工作区 → 钳制会与 OS 全屏管理互相拉扯 → 窗口闪烁（14:28 实测）。
+                        if (_appWindow?.Presenter.Kind == Microsoft.UI.Windowing.AppWindowPresenterKind.FullScreen)
+                            return;
                         var area = Microsoft.UI.Windowing.DisplayArea.GetFromWindowId(appWindow.Id,
                             Microsoft.UI.Windowing.DisplayAreaFallback.Nearest);
                         var size = appWindow.Size;   // 物理像素
