@@ -72,6 +72,9 @@ public unsafe sealed class MpvVideoBackend : IVideoPlayerImplementation, IDispos
         // 渲染上下文：等 RenderControl 就绪（GL 上下文已 current）后再建
         _renderControl.Render += OnRenderFrame;
 
+        // mpv 内部日志桥：GL 初始化/FBO/DV tone-map 的报错都在这里出来（msg-level=v）
+        MpvLib.SetPropertyString(_mpv, "msg-level", "all=v");
+
         _pumpStop = false;
         _eventPump = new Thread(EventPump) { IsBackground = true, Name = "mpv-events" };
         _eventPump.Start();
@@ -107,20 +110,32 @@ public unsafe sealed class MpvVideoBackend : IVideoPlayerImplementation, IDispos
             H = fb.BufferHeight,
             InternalFormat = 0,
         };
-        var flipY = 1;   // GL 原点在左下，mpv 默认按 GL 惯例输出；DX 交换链要翻转（参考项目同款）
-        int flip = flipY;
-        var skip = 0;
+        var flip = 0;   // GL FBO 渲染：mpv 按 GL 惯例（左下原点）输出，不翻转（参考实现 flipY=0；=1 会画面倒置）
 
-        MpvLib.MpvRenderParam* pars = stackalloc MpvLib.MpvRenderParam[4];
+        // ⚠ 参数只给 [Fbo, FlipY, 终止符]——绝不能传 BlockForTargetTime 且 Data=null：
+        //   该 param 的数据类型是 int*，mpv 内部直接解引用 ⇒ null ⇒ AV（12:43/12:52 两次闪退根因）。
+        MpvLib.MpvRenderParam* pars = stackalloc MpvLib.MpvRenderParam[3];
         {
             pars[0] = new(MpvLib.RenderParamOpenGLFbo, &fbo);
             pars[1] = new(MpvLib.RenderParamFlipY, &flip);
-            pars[2] = new(MpvLib.RenderParamBlockForTargetTime, null);
-            pars[3] = default; // 终止符 MPV_RENDER_PARAM_INVALID
-            MpvLib.mpv_render_context_render(_renderCtx, pars);
+            pars[2] = default; // 终止符 MPV_RENDER_PARAM_INVALID
+            var rc = MpvLib.mpv_render_context_render(_renderCtx, pars);
+            if (!_firstFrameLogged)
+            {
+                _firstFrameLogged = true;
+                BtLog($"[mpv] 首帧渲染调用完成 rc={rc} fbo={fb.GLFrameBufferHandle} {fb.BufferWidth}x{fb.BufferHeight}");
+            }
+            else if (rc < 0 && _lastRenderRc >= 0)
+            {
+                BtLog($"[mpv] 渲染开始报错 rc={rc}（此前正常）");
+            }
+            _lastRenderRc = rc;
         }
         MpvLib.mpv_render_context_report_swap(_renderCtx);
     }
+
+    private bool _firstFrameLogged;
+    private int _lastRenderRc;
 
     /// <summary>在 GL 上下文当前线程上创建 render context（RenderControl.Ready 已 MakeCurrent）。</summary>
     private void EnsureRenderContext()
@@ -167,6 +182,14 @@ public unsafe sealed class MpvVideoBackend : IVideoPlayerImplementation, IDispos
             {
                 case MpvLib.EventShutdown:
                     return;
+                case MpvLib.EventLogMessage:
+                    // [prefix] level: text —— mpv 内部日志（GL 初始化错误、fallback、AV 前的最后遗言）
+                    var log = System.Runtime.InteropServices.Marshal.PtrToStructure<MpvLib.MpvEventLogMessage>((IntPtr)e.Data);
+                    var prefix = MpvLib.FromUtf8(log.Prefix);
+                    var level = MpvLib.FromUtf8(log.Level);
+                    var text = MpvLib.FromUtf8(log.Text).TrimEnd();
+                    BtLog($"[mpv:{prefix}/{level}] {text}");
+                    break;
                 case MpvLib.EventFileLoaded:
                     // 媒体就绪：View 层据此触发 MediaOpened（含 ShouldAutoPlay 的自动 Play）。
                     // 事件泵在后台线程，View/WinUI 访问必须回 UI 线程。
@@ -344,19 +367,32 @@ public unsafe sealed class MpvVideoBackend : IVideoPlayerImplementation, IDispos
 
     public void Dispose()
     {
+        BtLog($"[mpv] Dispose 开始（renderCtx={_renderCtx != IntPtr.Zero} mpv={_mpv != IntPtr.Zero}）");
         _pumpStop = true;
         _renderControl.Render -= OnRenderFrame;
         if (_renderCtx != IntPtr.Zero)
         {
-            MpvLib.mpv_render_context_free(_renderCtx);
+            // 文档要求：render_context_free 必须在创建它的线程、GL 上下文 current 时调用
+            //（本类生命周期全部在 UI 线程，共享 GL 上下文也常驻 current 于 UI 线程）
+            try
+            {
+                MpvLib.mpv_render_context_free(_renderCtx);
+                BtLog("[mpv] render context 已释放");
+            }
+            catch (Exception ex)
+            {
+                BtLog($"[mpv] render context 释放异常: {ex.GetType().Name}");
+            }
             _renderCtx = IntPtr.Zero;
         }
         if (_mpv != IntPtr.Zero)
         {
             MpvLib.mpv_wakeup(_mpv);
-            _eventPump?.Join(1000);
+            if (_eventPump is { } pump && !pump.Join(TimeSpan.FromSeconds(3)))
+                BtLog("[mpv] 警告：事件泵 3s 未退出，仍继续销毁");
             MpvLib.mpv_terminate_destroy(_mpv);
             _mpv = IntPtr.Zero;
+            BtLog("[mpv] 实例已销毁");
         }
     }
 }

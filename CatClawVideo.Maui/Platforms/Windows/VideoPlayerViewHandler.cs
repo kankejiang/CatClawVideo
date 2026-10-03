@@ -203,6 +203,7 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
         if (_mpvRender is null)
         {
             _mpvRender = new Mpv.MpvRenderControl();
+            _mpvRender.RenderFailed += OnMpvRenderFailed;   // GL/interop 确定性失败 → 回落 MPE
             PlatformView.Children.Add(_mpvRender);
         }
         _mpvRender.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
@@ -236,6 +237,30 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
         try { if (_mpvBackend != null) ((IVideoPlayerImplementation)_mpvBackend).Stop(); } catch { }
         if (_mpvRender != null) _mpvRender.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
         if (_mpe != null) _mpe.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+    }
+
+    /// <summary>mpv 渲染链路确定性失败（驱动不支持 interop 等）→ 回落 MPE 原路径重开当前源。</summary>
+    private void OnMpvRenderFailed(string reason)
+    {
+        Maui.Services.BtFileLog.Write($"[player] {reason}，回落 MPE 原路径");
+        var url = _mediaUrl;
+        var headers = _mediaHeaders;
+        _delegate = null;
+        _mpvRender = null;   // 丢弃坏面板（DisconnectHandler 的 Release 由集合移除兜底）
+        try { _mpvBackend?.Dispose(); } catch { }
+        _mpvBackend = null;
+        _mpvInitialized = false;
+        if (PlatformView != null)
+        {
+            // WinUI 的 UIElementCollection 没有 RemoveAll（C# 层也没有该扩展）——手动遍历移除
+            var stale = PlatformView.Children.OfType<Mpv.MpvRenderControl>().ToList();
+            foreach (var c in stale)
+                PlatformView.Children.Remove(c);
+        }
+        _mpe!.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+        VirtualView?.RaiseMediaFailed($"播放失败: {reason}");
+        if (!string.IsNullOrEmpty(url))
+            SetSourceMpe(VirtualView, url, headers);
     }
 
     /// <summary>传统路径（原 SetSource 本体）：MF 硬解 / FFmpegInteropX。</summary>

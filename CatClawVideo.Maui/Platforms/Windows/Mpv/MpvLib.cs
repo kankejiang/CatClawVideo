@@ -53,6 +53,16 @@ internal static unsafe class MpvLib
         public int Error;
     }
 
+    /// <summary>mpv_event_log_message（client.h：prefix/level/text 均 NUL 结尾，text 自带换行）。</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MpvEventLogMessage
+    {
+        public byte* Prefix;
+        public byte* Level;
+        public byte* Text;
+        public int LogLevel;
+    }
+
     // mpv_format
     public const int MpvFormatNone = 0;
     public const int MpvFormatString = 1;
@@ -142,19 +152,25 @@ internal static unsafe class MpvLib
 
     public static string FromUtf8(byte* p) => p == null ? "" : Marshal.PtrToStringUTF8((IntPtr)p) ?? "";
 
-    /// <summary>mpv_command 的字符串数组封装（args 以 null 结尾）。</summary>
+    /// <summary>mpv_command 的字符串数组封装（args 以 null 结尾）。
+    /// ⚠ fixed 必须包住 mpv_command 调用本身：若在循环内 fixed 后出作用域，
+    /// 托管数组可能被 GC 移动，bufs 里就是悬空指针（GC 压缩时必炸）。</summary>
     public static int Command(IntPtr ctx, params string[] args)
     {
-        var bufs = new byte*[args.Length + 1];
         var encoded = new byte[args.Length][];
+        var bufs = new byte*[args.Length + 1];
         for (var i = 0; i < args.Length; i++)
-        {
             encoded[i] = ToUtf8Z(args[i]);
-            fixed (byte* p = encoded[i])
-                bufs[i] = p;
-        }
         fixed (byte** argv = bufs)
-            return mpv_command(ctx, argv);
+        {
+            for (var i = 0; i < args.Length; i++)
+            {
+                fixed (byte* p = encoded[i])
+                    bufs[i] = p;
+            }
+            var rc = mpv_command(ctx, argv);
+            return rc;
+        }
     }
 
     public static int SetPropertyString(IntPtr ctx, string name, string value)

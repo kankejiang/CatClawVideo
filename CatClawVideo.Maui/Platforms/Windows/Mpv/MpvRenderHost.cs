@@ -195,6 +195,13 @@ public unsafe sealed class MpvFrameBuffer : MpvFrameBufferBase
         DxInteropColorHandle = Wgl.DXRegisterObjectNV(Context.GlDeviceHandle, (IntPtr)colorbuffer,
             (uint)GLColorRenderBufferHandle, (uint)RenderbufferTarget.Renderbuffer,
             WGL_NV_DX_interop.AccessReadWrite);
+        if (DxInteropColorHandle == IntPtr.Zero)
+        {
+            // WGL_NV_DX_interop 注册失败（驱动不支持/设备不匹配）——继续渲染必 AV，
+            // 明确抛出让上层回落 FFmpeg 路径，绝不把坏 FBO 递给 mpv。
+            colorbuffer->Release();
+            throw new InvalidOperationException("WGL_NV_DX_interop 注册失败（GL↔D3D11 互操作不可用）");
+        }
         GL.FramebufferRenderbuffer(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0,
             RenderbufferTarget.Renderbuffer, (uint)GLColorRenderBufferHandle);
 
@@ -212,6 +219,10 @@ public unsafe sealed class MpvFrameBuffer : MpvFrameBufferBase
 
         GL.BindFramebuffer(FramebufferTarget.Framebuffer, GLFrameBufferHandle);
         GL.Viewport(0, 0, BufferWidth, BufferHeight);
+
+        var status = GL.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+        if (status != FramebufferErrorCode.FramebufferComplete)
+            throw new InvalidOperationException($"FBO 不完整: {status}（{BufferWidth}x{BufferHeight}）");
     }
 
     public void End()
@@ -298,17 +309,34 @@ public unsafe class MpvRenderControl : ContentControl
 
     public int GetBufferHandle() => FrameBuffer?.GLFrameBufferHandle ?? 0;
 
+    /// <summary>渲染链路失败后的降级通知（Handler 收到后回落 FFmpeg/MF 路径）。</summary>
+    public event Action<string>? RenderFailed;
+
+    private bool _renderBroken;
+
     private void Draw()
     {
-        if (FrameBuffer is null) return;
-        FrameBuffer.Begin();
-        Render?.Invoke(_stopwatch.Elapsed);
-        _stopwatch.Restart();
-        FrameBuffer.End();
+        if (FrameBuffer is null || _renderBroken) return;
+        try
+        {
+            FrameBuffer.Begin();
+            Render?.Invoke(_stopwatch.Elapsed);
+            _stopwatch.Restart();
+            FrameBuffer.End();
+        }
+        catch (Exception ex)
+        {
+            // GL/interop 层的失败是确定性的（驱动不支持等）——停渲染循环并上报，
+            // 绝不让异常飞进 WinUI 渲染回调把进程带崩。
+            _renderBroken = true;
+            try { Release(); } catch { }
+            RenderFailed?.Invoke($"mpv 渲染链路失败: {ex.Message}");
+        }
     }
 
     private void OnRendering(object sender, object e)
     {
+        if (_renderBroken) { CompositionTarget.Rendering -= OnRendering; return; }
         var args = (RenderingEventArgs)e;
         if (_lastRenderTime != args.RenderingTime)
         {
