@@ -32,7 +32,7 @@ public static class PosterLayoutHelper
     /// <param name="width">海报墙当前宽</param>
     /// <param name="height">海报墙当前高</param>
     /// <param name="cap">卡片高度上限（移动端默认 182：卡片略小给片名留出两行空间）。桌面端调用方传 252/260。</param>
-    public static void Apply(CollectionView? grid, double width, double height, double cap = 182)
+    public static void Apply(CollectionView? grid, double width, double height, double cap = 182, string? tag = null)
     {
         try
         {
@@ -80,6 +80,13 @@ public static class PosterLayoutHelper
 
             if (layout.Span != columns)
                 layout.Span = columns;
+
+            // 布局诊断：首次/二次进入海报墙尺寸不一致（13:16 用户报告，历史+收藏同款）——看真实输入序列
+            try
+            {
+                Services.BtFileLog.Write($"[poster:{tag ?? "Apply"}] W={width:F0} H={height:F0} cap={cap} -> span={columns} card={cardW:F0}x{cardH:F0}");
+            }
+            catch { }
         }
         catch (Exception ex)
         {

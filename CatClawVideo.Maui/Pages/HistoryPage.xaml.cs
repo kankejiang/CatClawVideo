@@ -22,7 +22,17 @@ public partial class HistoryPage : ContentView, ITabView, IRemoteKeyHandler
     public HistoryPage(VideoDatabase db, CoverImageService covers)
     {
         InitializeComponent();
-        Wall.SizeChanged += (_, _) => PosterLayoutHelper.Apply(Wall, Wall.Width, Wall.Height);
+        // 与首页完全同款：布局只由 SizeChanged 驱动（宽度就绪才算），Windows 卡高 252。
+        // ⚠ 不能在 OnTabShown 里抢跑 Apply：抢跑值会被数据填充触发的 SizeChanged 用不同 cap
+        //   覆盖（260 vs 182 打架 → 首次进入小图标，13:21 用户报告）；首页正常正是因为没有抢跑。
+        Wall.SizeChanged += (_, _) =>
+        {
+#if WINDOWS
+            PosterLayoutHelper.Apply(Wall, Wall.Width, Wall.Height, cap: 252);
+#else
+            PosterLayoutHelper.Apply(Wall, Wall.Width, Wall.Height);
+#endif
+        };
         _db = db;
         _covers = covers;
         _focus = new PosterWallFocus(Wall);
@@ -33,11 +43,7 @@ public partial class HistoryPage : ContentView, ITabView, IRemoteKeyHandler
         // 本页接管方向键（Push 幂等；若本页之上还压着二级页，那些页会先拿到按键）
         RemoteKeyRouter.Push(this);
 
-#if WINDOWS
-        PosterLayoutHelper.Apply(Wall, Wall.Width, Wall.Height, cap: 260);   // 固定尺寸 173×260
-#else
-        PosterLayoutHelper.Apply(Wall, Wall.Width, Wall.Height);
-#endif
+        // 布局不再抢跑：完全交给构造器里的 SizeChanged（与首页同款，cap 统一 252）
         try
         {
             var items = await _db.GetRecentHistoryAsync(50);

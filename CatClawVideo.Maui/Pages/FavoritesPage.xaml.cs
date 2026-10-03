@@ -21,7 +21,15 @@ public partial class FavoritesPage : ContentView, ITabView, IRemoteKeyHandler
     public FavoritesPage(FavoritesViewModel vm, CoverImageService covers, VideoDatabase db)
     {
         InitializeComponent();
-        Wall.SizeChanged += (_, _) => PosterLayoutHelper.Apply(Wall, Wall.Width, Wall.Height);
+        // 与首页完全同款：布局只由 SizeChanged 驱动，Windows 卡高 252（不再被 OnTabShown 抢跑覆盖）
+        Wall.SizeChanged += (_, _) =>
+        {
+#if WINDOWS
+            PosterLayoutHelper.Apply(Wall, Wall.Width, Wall.Height, cap: 252);
+#else
+            PosterLayoutHelper.Apply(Wall, Wall.Width, Wall.Height);
+#endif
+        };
         _vm = vm;
         _covers = covers;
         _db = db;
@@ -34,11 +42,6 @@ public partial class FavoritesPage : ContentView, ITabView, IRemoteKeyHandler
         // 本页接管方向键（Push 幂等；若本页之上还压着二级页，那些页会先拿到按键）
         RemoteKeyRouter.Push(this);
 
-#if WINDOWS
-        PosterLayoutHelper.Apply(Wall, Wall.Width, Wall.Height, cap: 260);   // 固定尺寸 173×260
-#else
-        PosterLayoutHelper.Apply(Wall, Wall.Width, Wall.Height);
-#endif
         await ReloadWallAsync();
     }
 
