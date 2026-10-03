@@ -137,9 +137,19 @@ public partial class App : Application
                             Microsoft.UI.Windowing.DisplayAreaFallback.Nearest);
                         var size = appWindow.Size;   // 物理像素
                         int maxW = area.WorkArea.Width, maxH = area.WorkArea.Height;
+                        // DPI 缩放（125% 等）下逻辑最小宽 900 会换算出比小屏还宽的物理值，
+                        // 把窗口顶在最小值上永远缩不进屏 —— 最小值必须先让路。
+                        double scale = nativeWindow.Content?.XamlRoot?.RasterizationScale ?? 1.0;
+                        if (scale <= 0) scale = 1.0;
+                        if (window.MinimumWidth * scale > maxW) window.MinimumWidth = maxW / scale;
+                        if (window.MinimumHeight * scale > maxH) window.MinimumHeight = maxH / scale;
                         if (size.Width > maxW || size.Height > maxH)
+                        {
                             appWindow.Resize(new Windows.Graphics.SizeInt32(
                                 Math.Min(size.Width, maxW), Math.Min(size.Height, maxH)));
+                            CatClawVideo.Maui.Services.BtFileLog.Write(
+                                $"[window] 钳制到所在屏：{size.Width}x{size.Height} -> ≤{maxW}x{maxH} (dpi {scale:F2})");
+                        }
                     }
                     catch { }
                 }
