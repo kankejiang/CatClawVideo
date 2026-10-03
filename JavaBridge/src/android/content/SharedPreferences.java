@@ -11,6 +11,8 @@ public interface SharedPreferences {
     float getFloat(String key, float defValue);
     boolean getBoolean(String key, boolean defValue);
     boolean contains(String key);
+    /** NiuLai 等站点读整表用（2026-10-02 实测缺失 → NoSuchMethodError → 一批站点全挂、首载失败）。 */
+    Map<String, ?> getAll();
     Editor edit();
     void registerOnSharedPreferenceChangeListener(OnSharedPreferenceChangeListener l);
     void unregisterOnSharedPreferenceChangeListener(OnSharedPreferenceChangeListener l);

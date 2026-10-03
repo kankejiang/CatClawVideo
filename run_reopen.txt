@@ -1,0 +1,1 @@
+/usr/bin/bash: line 1: ./bin/Debug/net11.0/magnet-check.exe: No such file or directory

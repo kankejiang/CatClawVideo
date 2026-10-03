@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    N4-1：宿主投屏客户端库（协议 + 连接管理 + 计量），供 CatClawVideo.Maui 的远程画面页使用。
+
+    来源纪律：Protocol.cs / AndroidKeycodes.cs 是从 T2 的 tools/stream-probe/** **逐字复制**
+    过来的（不是改动原文件 —— 那是 T2 的领地），复制清单与原因写在
+    docs/tasks/N4-1-抽件通知.md。协议 CATCLAW/1 本身不得改动（定义见 docs/tasks/README.md 第二节）。
+
+    TFM 用裸 net11.0：不能带 Windows 专属依赖（System.Drawing / WinForms / CsWinRT），
+    帧解码与显示留在各平台头里（Windows 头用 WinUI 的 BitmapDecoder）。
+  -->
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>CatClawVideo.Streaming</RootNamespace>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Harness/ 是独立的控制台台架工程，不能被本库一起编译进去 -->
+    <Compile Remove="Harness/**" />
+  </ItemGroup>
+
+</Project>

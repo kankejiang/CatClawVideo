@@ -241,6 +241,8 @@ public unsafe sealed class MpvFrameBuffer : MpvFrameBufferBase
         BufferHeight = Convert.ToInt32(height * scaleY);
         ((IDXGISwapChain1*)SwapChainHandle)->ResizeBuffers(2, (uint)BufferWidth, (uint)BufferHeight, Format.FormatUnknown, 0);
         ((IDXGISwapChain2*)SwapChainHandle)->SetMatrixTransform(new Matrix3X2F { DXGI11 = 1.0f / (float)scaleX, DXGI22 = 1.0f / (float)scaleY });
+        CatClawVideo.Maui.Services.BtFileLog.Write(
+            $"[mpv-render] SwapChain resize -> {BufferWidth}x{BufferHeight}（逻辑 {width}x{height} × {scaleX:F2}），matrix=1/{scaleX:F2}");
     }
 
     public override void Dispose()
@@ -378,8 +380,12 @@ public unsafe class MpvRenderControl : ContentControl
             UpdateFrameBufferSize();
     }
 
-    private void UpdateFrameBufferSize() =>
+    private void UpdateFrameBufferSize()
+    {
+        CatClawVideo.Maui.Services.BtFileLog.Write(
+            $"[mpv-render] UpdateSize 面板逻辑={ActualWidth:F0}x{ActualHeight:F0} scale={ScaleX:F2}x{ScaleY:F2}");
         FrameBuffer?.UpdateSize((int)ActualWidth, (int)ActualHeight, ScaleX, ScaleY);
+    }
 
     private bool TryLoadFrameBuffer()
     {
@@ -388,6 +394,8 @@ public unsafe class MpvRenderControl : ContentControl
 
         FrameBuffer = new MpvFrameBuffer(Context, (int)ActualWidth, (int)ActualHeight, ScaleX, ScaleY);
         _swapChainPanel.As<IMpvSwapChainPanelNative>().SetSwapChain(FrameBuffer.SwapChainHandle);
+        CatClawVideo.Maui.Services.BtFileLog.Write(
+            $"[mpv-render] SetSwapChain 面板逻辑={ActualWidth:F0}x{ActualHeight:F0} scale={ScaleX:F2}x{ScaleY:F2} fbo={FrameBuffer.BufferWidth}x{FrameBuffer.BufferHeight}");
         return true;
     }
 

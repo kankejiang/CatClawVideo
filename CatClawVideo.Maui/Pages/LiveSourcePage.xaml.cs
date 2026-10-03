@@ -16,7 +16,9 @@ public partial class LiveSourcePage : ContentPage
 
     public LiveSourcePage(LiveSourceService source)
     {
+        Services.BtFileLog.Write($"[livesource] 构造开始 source={(source is null ? "NULL" : "ok")}");
         InitializeComponent();
+        Services.BtFileLog.Write("[livesource] InitializeComponent 完成");
 #if ANDROID
         // Edge-to-Edge：推入式页面必须自己补顶部安全区，否则顶栏压状态栏（同 SourceConfigPage）
         SafeAreaHelper.ApplyPageTopInset(this);
@@ -27,7 +29,13 @@ public partial class LiveSourcePage : ContentPage
     protected override void OnAppearing()
     {
         base.OnAppearing();
-        Refresh();
+        Services.BtFileLog.Write("[livesource] OnAppearing");
+        try { Refresh(); }
+        catch (Exception ex)
+        {
+            // 布局诊断：Refresh 的 NRE 精确堆栈（WinUI 投影层会把堆栈吞掉，这里手动留档）
+            Services.BtFileLog.Write($"[livesource] Refresh 失败: {ex}");
+        }
     }
 
     /// <summary>回填当前源 / EPG / UA / 历史 / 超时</summary>

@@ -156,6 +156,11 @@ public final class UiBridge {
         if (text != null && String.valueOf(text).startsWith("CheckValidity")) {
             new Exception("[toast-src] " + text).printStackTrace();
         }
+        // 2026-10-02 网盘登录态排障：扫码确认后的「授权成功」toast 是保存链路的时间锚点 ——
+        // 打全栈看确认处理器接下来往哪走（spUtils 保存/加密调用应在其下游）。
+        if (text != null && String.valueOf(text).contains("授权成功")) {
+            new Exception("[toast-src] 登录确认点: " + text).printStackTrace();
+        }
         try { emit(new JSONObject().put("ev", "ui-toast").put("text", text == null ? "" : text.toString())); } catch (Throwable ignored) { }
     }
 

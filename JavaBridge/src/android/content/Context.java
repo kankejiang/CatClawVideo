@@ -82,7 +82,20 @@ public class Context {
     public String getPackageName() { return "com.catclaw.video"; }
     public ApplicationInfo getApplicationInfo() { return new ApplicationInfo(); }
 
-    public SharedPreferences getSharedPreferences(String name, int mode) { return new MemPrefs(name); }
+    // 2026-10-02 网盘登录态排障：壳在扫码确认后从不写 spUtils（已知问题，见 docs/调试报告-夸克登录态-20261001.md）。
+    // 给本入口加调用栈留痕 —— 若保存链路到达桩，这里能直接看到壳的调用方；全程无输出则说明断在更上游。
+    public SharedPreferences getSharedPreferences(String name, int mode) {
+        try {
+            StringBuilder sb = new StringBuilder("[prefs] getSharedPreferences(").append(name).append(") ← ");
+            for (StackTraceElement f : new Throwable().getStackTrace()) {
+                if (f.getClassName().startsWith("android.") || f.getClassName().startsWith("java.")) continue;
+                sb.append(f.getClassName()).append('.').append(f.getMethodName()).append(':').append(f.getLineNumber()).append(' ');
+                if (sb.length() > 400) break;
+            }
+            System.err.println(sb);
+        } catch (Throwable ignored) { }
+        return new MemPrefs(name);
+    }
     public SharedPreferences getSharedPreferences(File file, int mode) { return new MemPrefs(file == null ? null : file.getName()); }
     public boolean deleteSharedPreferences(String name) { PrefsStore.drop(name); return true; }
 
@@ -161,6 +174,7 @@ public class Context {
         @Override public float getFloat(String key, float defValue) { Object v = store().get(key); return v instanceof Float ? (Float) v : defValue; }
         @Override public boolean getBoolean(String key, boolean defValue) { Object v = store().get(key); return v instanceof Boolean ? (Boolean) v : defValue; }
         @Override public boolean contains(String key) { return store().containsKey(key); }
+        @Override public java.util.Map<String, ?> getAll() { return new java.util.LinkedHashMap<>(store()); }
         @Override public SharedPreferences.Editor edit() {
             System.err.println("[prefs] edit(" + name + ")");
             return new MemEditor(name);

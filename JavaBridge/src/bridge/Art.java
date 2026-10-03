@@ -816,21 +816,38 @@ public final class Art {
         try {
             Method get = clz.getMethod("get");
             init = get.invoke(null);
-        } catch (Throwable ignored) { }
-        if (init != null && setContextField(clz, init, ctx) && bindDexLoader(clz, init, loader, ctx)) {
-            System.err.println("[art] Init 单例已按 protected jar 序列注入");
-        } else {
-            try {
-                Method m = findMethod(clz, "init", 1);
-                if (m != null) m.invoke(null, ctx);
-                System.err.println("[art] Init.init(Context) 完成");
-            } catch (Throwable t) {
-                System.err.println("[art] Init.init(Context) 失败: " + t);
+        } catch (Throwable t) {
+            // 2026-10-02：主路径从未成功过（68 次全回退）——受保护序列的 Context/DexClassLoader
+            // 绑定因此全被跳过，壳的登录保存链很可能死在这。打日志看 get() 到底为什么失败。
+            Throwable r = t;
+            while (r.getCause() != null) r = r.getCause();
+            System.err.println("[art] Init.get() 失败: " + t.getClass().getName()
+                    + " / root=" + r.getClass().getName() + ": " + r.getMessage());
+        }
+        if (init != null) {
+            // 对齐真机 ProtectedInitJar.init：bindContext 与 bindDexLoader **两步独立**执行，
+            // context 绑不上不代表 loader 绑不上（2026-10-02 实测 FishConfig 卡在 setContextField
+            // 静默失败，短路导致 DexNative.getLoader 从未被调用 → 壳的登录保存链死）
+            boolean ctxOk = setContextField(clz, init, ctx);
+            boolean loaderOk = bindDexLoader(clz, init, loader, ctx);
+            if (ctxOk && loaderOk) {
+                System.err.println("[art] Init 单例已按 protected jar 序列注入");
+            } else {
+                System.err.println("[art] Init 序列注入不完整: ctx=" + ctxOk + " loader=" + loaderOk
+                        + " —— 回退 Init.init(Context)");
+                try {
+                    Method m = findMethod(clz, "init", 1);
+                    if (m != null) m.invoke(null, ctx);
+                    System.err.println("[art] Init.init(Context) 完成");
+                } catch (Throwable t) {
+                    System.err.println("[art] Init.init(Context) 失败: " + t);
+                }
             }
         }
     }
 
     private static boolean setContextField(Class<?> clz, Object target, Object ctx) {
+        StringBuilder cand = new StringBuilder();
         try {
             Field c = clz.getDeclaredField("c");         // TVBox 里试的第一个名字
             c.setAccessible(true);
@@ -845,13 +862,19 @@ public final class Art {
                     // isAssignableFrom 会误判 false
                     String tn = fd.getType().getName();
                     if (!tn.equals("android.content.Context") && !tn.equals("android.app.Application")
-                            && !tn.equals("android.content.ContextWrapper")) continue;
+                            && !tn.equals("android.content.ContextWrapper")) {
+                        cand.append(tn).append('.').append(fd.getName()).append(' ');
+                        continue;
+                    }
                     fd.setAccessible(true);
                     fd.set(target, ctx);
                     return true;
                 } catch (Throwable ignored) { }
             }
         }
+        // 诊断：列出全部候选字段类型，失败一眼可见（2026-10-02 网盘登录态排障）
+        System.err.println("[art] setContextField 未命中: Init 类非静态字段 = "
+                + (cand.length() == 0 ? "(无)" : cand.toString()));
         return false;
     }
 

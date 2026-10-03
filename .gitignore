@@ -481,3 +481,18 @@ JavaBridge/sources.txt
 /CatClawVideo.Maui/QemuGuest/x86guest/bootimg_artifacts.cpio.gz
 /CatClawVideo.Maui/QemuGuest/x86guest/thunder_assets.cpio.gz
 /CatClawVideo.Maui/QemuGuest/x86guest/art_initrd_x64_bootimg.gz
+
+# 构建/部署产物与镜像分片（2026-10-03 补规则）：单体或合计体积远超 GitHub·Gitee 单文件上限，一律不入库
+#   · build/            —— 部署/测试输出目录（实测 750MB / 1103 个文件）
+#   · *.gz.a1 / *.gz.a2 —— initrd 分片（每个 412MB）
+#   · *.bak_cpu         —— 本机编译备份
+#   · /dump/            —— adb/UI dump 排查残留
+/CatClawVideo.Maui/build/
+/CatClawVideo.Core/build/
+/CatClawVideo.Data/build/
+/CatClawVideo.Stream/build/
+/CatClawVideo.Maui/QemuGuest/x86guest/*.gz.a1
+/CatClawVideo.Maui/QemuGuest/x86guest/*.gz.a2
+/CatClawVideo.Maui/QemuGuest/x86guest/*.bak_cpu
+/JavaBridge/qemu-src/art/*.bak_cpu
+/dump/

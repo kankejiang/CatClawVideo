@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:ctrl="clr-namespace:CatClawVideo.Maui.Controls"
+             x:Class="CatClawVideo.Maui.Pages.RemotePage"
+             Title="远程投屏"
+             Shell.NavBarIsVisible="False"
+             BackgroundColor="#0B0C10">
+
+    <Grid RowDefinitions="Auto,*,Auto">
+
+        <!-- 状态栏：全部是实测值（fps=显示帧率，延迟=收流→交给合成器，丢帧=被更新帧覆盖的帧数） -->
+        <Frame Grid.Row="0" BackgroundColor="#14161C" BorderColor="#262A36" CornerRadius="0"
+               Padding="14,8" HasShadow="False">
+            <HorizontalStackLayout Spacing="14" VerticalOptions="Center">
+                <Label x:Name="LblState" Text="未连接" FontSize="13"
+                       TextColor="#7FB7FF" VerticalOptions="Center" />
+                <Label x:Name="LblFps" Text="fps —" FontSize="13" TextColor="#E6E9F2"
+                       VerticalOptions="Center" />
+                <Label x:Name="LblLatency" Text="延迟 —" FontSize="13" TextColor="#E6E9F2"
+                       VerticalOptions="Center" />
+                <Label x:Name="LblDrops" Text="丢帧 0" FontSize="13" TextColor="#E6E9F2"
+                       VerticalOptions="Center" />
+                <Label x:Name="LblBitrate" Text="码率 —" FontSize="13" TextColor="#9AA3B5"
+                       VerticalOptions="Center" />
+                <Label x:Name="LblRemote" Text="" FontSize="13" TextColor="#9AA3B5"
+                       VerticalOptions="Center" />
+                <Label x:Name="LblScale" Text="" FontSize="13" TextColor="#6C7488"
+                       VerticalOptions="Center" />
+            </HorizontalStackLayout>
+        </Frame>
+
+        <!-- 中间：未连接=连接表单；已连接=画面 -->
+        <ScrollView x:Name="ConnectPanel" Grid.Row="1">
+            <VerticalStackLayout Spacing="12" Padding="28,32" MaximumWidthRequest="520"
+                                 HorizontalOptions="Center">
+                <Label Text="连接安卓投屏" FontSize="22" TextColor="#E6E9F2" />
+                <Label Text="服务端 = 108 上跑 Waydroid 的那台机器（CATCLAW/1 协议）。地址与端口会记住最近一次成功的连接。"
+                       FontSize="13" TextColor="#9AA3B5" />
+
+                <Label Text="地址" FontSize="13" TextColor="#C7CEDE" />
+                <Entry x:Name="EntryHost" Placeholder="10.0.0.108" TextColor="#E6E9F2"
+                       PlaceholderColor="#5B637A" BackgroundColor="#14161C" />
+
+                <Label Text="端口" FontSize="13" TextColor="#C7CEDE" />
+                <Entry x:Name="EntryPort" Placeholder="27383" Keyboard="Numeric"
+                       TextColor="#E6E9F2" PlaceholderColor="#5B637A" BackgroundColor="#14161C" />
+
+                <Label Text="编码" FontSize="13" TextColor="#C7CEDE" />
+                <Picker x:Name="PickCodec" Title="编码" TextColor="#E6E9F2">
+                    <Picker.Items>
+                        <x:String>自动（优先 h264，不可解则回落 jpeg）</x:String>
+                        <x:String>仅 jpeg（兜底）</x:String>
+                        <x:String>仅 h264</x:String>
+                    </Picker.Items>
+                </Picker>
+
+                <Label x:Name="LblProbe" Text="" FontSize="13" TextColor="#FFC94D" />
+
+                <HorizontalStackLayout Spacing="10">
+                    <Button x:Name="BtnConnect" Text="一键连接" Clicked="OnConnectClicked"
+                            BackgroundColor="#2F6BE0" TextColor="White" />
+                    <Button x:Name="BtnStartServer" Text="帮我拉起服务端" Clicked="OnStartServerClicked"
+                            BackgroundColor="#1D2230" TextColor="#C7CEDE" />
+                </HorizontalStackLayout>
+
+                <Label x:Name="LblHint" Text="" FontSize="13" TextColor="#FF8A8A" />
+                <Label Text="操作：左键点/拖=触摸，滚轮=滚动，右键=安卓返回，中键=HOME，方向键/回车/字母数字=按键；Esc 退出本页。"
+                       FontSize="12" TextColor="#6C7488" />
+            </VerticalStackLayout>
+        </ScrollView>
+
+        <ctrl:RemoteView x:Name="Video" Grid.Row="1" IsVisible="False" />
+
+        <!-- 底部：连接中/已连接时的控制条 -->
+        <Frame x:Name="ToolBar" Grid.Row="2" BackgroundColor="#14161C" BorderColor="#262A36"
+               CornerRadius="0" Padding="14,8" HasShadow="False" IsVisible="False">
+            <HorizontalStackLayout Spacing="10" HorizontalOptions="Center">
+                <Button x:Name="BtnHome" Text="HOME" Clicked="OnHomeClicked"
+                        BackgroundColor="#1D2230" TextColor="#C7CEDE" />
+                <Button x:Name="BtnBack" Text="返回" Clicked="OnBackClicked"
+                        BackgroundColor="#1D2230" TextColor="#C7CEDE" />
+                <Button x:Name="BtnReconnect" Text="重连" Clicked="OnReconnectClicked"
+                        BackgroundColor="#1D2230" TextColor="#C7CEDE" />
+                <Button x:Name="BtnDisconnect" Text="断开并退出" Clicked="OnDisconnectClicked"
+                        BackgroundColor="#2F6BE0" TextColor="White" />
+            </HorizontalStackLayout>
+        </Frame>
+    </Grid>
+</ContentPage>

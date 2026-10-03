@@ -410,17 +410,6 @@ class ScreenrecordSource(BaseSource):
             stderr=open("/tmp/catclaw-cfr.err", "ab"), bufsize=0)
 
     def _on_au(self, au):
-        # 记录「SPS/PPS+IDR」帧（x264 每 g 帧出一次）：新客户端接入时先发它，
-        # 解码器立即有可解起点，不用等下一个 IDR（g=30 → 最多 1s）。
-        codes = _find_start_codes(au)
-        has_param = has_idr = False
-        for i, (s, e) in enumerate(codes):
-            end = codes[i + 1][0] if i + 1 < len(codes) else len(au)
-            t = au[e] & 0x1F
-            has_param = has_param or t in (7, 8)
-            has_idr = has_idr or t == 5
-        if has_param and has_idr:
-            self.head_au = au
         self.publish(au)
 
 
@@ -540,7 +529,24 @@ class ScreencapSource(BaseSource):
             time.sleep(1.0)
 
     def _on_au(self, au):
+        # 记录「SPS/PPS+IDR」帧：x264 只在首个 IDR 前发参数集（不 repeat），
+        # head_au 一旦定住就不变 —— 新客户端接入时先发它，解码器立即有可解起点。
+        codes = _find_start_codes(au)
+        has_param = has_idr = False
+        for i, (s, e) in enumerate(codes):
+            end = codes[i + 1][0] if i + 1 < len(codes) else len(au)
+            t = au[e] & 0x1F
+            has_param = has_param or t in (7, 8)
+            has_idr = has_idr or t == 5
+        if has_param and has_idr:
+            if self.head_au is None:
+                ConsoleLog("[src] head_au（SPS/PPS+IDR）已就绪")
+            self.head_au = au
         self.publish(au)
+
+
+def ConsoleLog(msg):
+    print(msg, flush=True)
 
 
 def adb_shell_bin(device, args, timeout=20):

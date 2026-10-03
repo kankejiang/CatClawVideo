@@ -786,7 +786,12 @@ public partial class SettingsPage : ContentView, ITabView, IRemoteKeyHandler
 
     private static async Task GoAsync(string route)
     {
-        try { await Shell.Current.GoToAsync(route); } catch { }
+        try { await Shell.Current.GoToAsync(route); }
+        catch (Exception ex)
+        {
+            Services.BtFileLog.Write($"[settings] 导航 {route} 失败: {ex}");
+            throw;   // 保留崩溃信号，别静默吞掉（点不开连原因都查不到）
+        }
     }
 
     // ═══════════════════════ 焦点 ═══════════════════════

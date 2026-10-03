@@ -30,6 +30,9 @@ public partial class AppShell : Shell
         // 直播源配置页（直播间空白态「配置直播源」/ 设置面板进入）
         Routing.RegisterRoute("livesource", typeof(Pages.LiveSourcePage));
 
+        // 远程投屏页（首页「投屏」进入；CATCLAW/1 客户端 + 键鼠注入，N4）
+        Routing.RegisterRoute("remote", typeof(Pages.RemotePage));
+
         // 网络媒体页（本地媒体 tab「网络媒体」进入；WebDAV 连接管理 + 远程目录浏览）
         Routing.RegisterRoute("networkmedia", typeof(Pages.NetworkMediaPage));
 

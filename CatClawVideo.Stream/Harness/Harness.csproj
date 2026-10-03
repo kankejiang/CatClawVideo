@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    N4 台架：用**同一个库**（CatClawVideo.Stream）跑真实 T3 服务端，出 fps/带宽/间隔/内存曲线。
+    验收里的"30 分钟 fps/内存曲线"与"断线拔插 5 次自动恢复"由它产出；
+    它不改别人的服务端，只连（默认 27383 = 自己起的 jpeg 实例）。
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>CatClawVideo.Streaming.Harness</RootNamespace>
+    <AssemblyName>stream-harness</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CatClawVideo.Stream.csproj" />
+  </ItemGroup>
+
+</Project>

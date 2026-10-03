@@ -31,6 +31,9 @@ public static class MauiProgram
 #if WINDOWS
                 handlers.AddHandler(typeof(Controls.VideoPlayerView),
                     typeof(Platforms.Windows.VideoPlayerViewHandler));
+                // 远程投屏画面（CATCLAW/1 客户端）：只有 Windows 头做了帧解码/上屏
+                handlers.AddHandler(typeof(Controls.RemoteView),
+                    typeof(Platforms.Windows.RemoteViewHandler));
 #endif
             });
 
@@ -356,18 +359,6 @@ public static class MauiProgram
             return Task.FromResult<(int Status, string Mime, Stream Body, IReadOnlyDictionary<string, string>? Headers)?>(null);
         };
 
-        // 流式中继（2026-10-02）：网盘取流 do=proxy&key=… 是 883MB~2.35GB 的连续流，
-        // 走上面的 byte[] 回调等于整部片子进宿主内存（必 OOM，且要等下完才起播）。
-        // jar 隧道这条实现了流式（ResponseHeadersRead），这里只把请求交给它；
-        // 返回 null（无流式实现 / 桥不可用）时服务端自动落回 byte[] 老路，行为不变。
-        spiderProxy.JsProxyStreamHandler = (query, ct) =>
-        {
-            if (jarRuntime is CatClawVideo.Core.Providers.JavaSpiderRuntime streaming)
-                return streaming.ProxyStreamAsync(query, ct);
-            return Task.FromResult<(int Status, string Mime, Stream Body)?>(null);
-        };
-
-
         // 「源看不到」类问题的第一现场：订阅解析完/站点集合一变就记一行
         // （可播 = type1 MacCMS + 运行时就绪的 spider 源；jar 桥可用性单独打印）
         CatClawVideo.Core.Models.SiteRegistry.Changed += () =>
@@ -501,6 +492,7 @@ public static class MauiProgram
         services.AddTransient<Pages.DiagnosticLogPage>();
         services.AddTransient<Pages.LivePage>();
         services.AddTransient<Pages.LiveSourcePage>();
+        services.AddTransient<Pages.RemotePage>();
 
 #if DEBUG
         builder.Logging.AddDebug();

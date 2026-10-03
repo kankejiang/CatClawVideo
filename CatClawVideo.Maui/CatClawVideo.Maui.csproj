@@ -74,6 +74,8 @@
 	<ItemGroup>
 		<ProjectReference Include="..\CatClawVideo.Core\CatClawVideo.Core.csproj" />
 		<ProjectReference Include="..\CatClawVideo.Data\CatClawVideo.Data.csproj" />
+		<!-- N4：投屏客户端库（CATCLAW/1 协议 + 连接管理 + 计量），协议代码抽自 T2 的 stream-probe -->
+		<ProjectReference Include="..\CatClawVideo.Stream\CatClawVideo.Stream.csproj" />
 		<!-- 猫爪家族共享库（与 CatClawMusic 共用）：DownloadStatusConverter 等 MAUI 层共享代码 -->
 		<ProjectReference Include="..\..\CatClaw.Shared\src\CatClaw.Shared.Maui\CatClaw.Shared.Maui.csproj" />
 	</ItemGroup>
