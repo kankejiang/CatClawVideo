@@ -287,7 +287,32 @@ public unsafe class MpvRenderControl : ContentControl
         VerticalContentAlignment = Microsoft.UI.Xaml.VerticalAlignment.Stretch;
         SizeChanged += OnSizeChanged;
         Loaded += (_, _) => Initialize();
-        Unloaded += (_, _) => Release();
+        // ⚠ Unloaded 只停画，不销毁 GL——退出播放时 Unloaded 先于 Handler 的 DisconnectHandler，
+        //   若在这里销毁 GL 上下文，随后的 mpv_render_context_free 就在死 GL 上清理 → AV（13:02 闪退）。
+        //   完整释放在 DisconnectHandler 里按「backend.Dispose（free render ctx）→ DisposeAll（销毁 GL）」排序。
+        Unloaded += (_, _) => StopPainting();
+    }
+
+    private bool _paintingStopped;
+
+    /// <summary>只退出渲染循环（FrameBuffer/Context 保留）。</summary>
+    public void StopPainting()
+    {
+        _paintingStopped = true;
+        CompositionTarget.Rendering -= OnRendering;
+    }
+
+    /// <summary>完整销毁（DisconnectHandler 专用，且必须在 mpv_render_context_free 之后调用）。</summary>
+    public void DisposeAll()
+    {
+        StopPainting();
+        Render = null;
+        RenderFailed = null;
+        try { FrameBuffer?.Dispose(); } catch { }
+        FrameBuffer = null;
+        try { Context?.Dispose(); } catch { }
+        Context = null;
+        _initialized = false;
     }
 
     public void Initialize()
@@ -327,16 +352,16 @@ public unsafe class MpvRenderControl : ContentControl
         catch (Exception ex)
         {
             // GL/interop 层的失败是确定性的（驱动不支持等）——停渲染循环并上报，
-            // 绝不让异常飞进 WinUI 渲染回调把进程带崩。
+            // 绝不让异常飞进 WinUI 渲染回调把进程带崩。（GL 资源交给 Handler 的 DisposeAll 统一释放）
             _renderBroken = true;
-            try { Release(); } catch { }
+            StopPainting();
             RenderFailed?.Invoke($"mpv 渲染链路失败: {ex.Message}");
         }
     }
 
     private void OnRendering(object sender, object e)
     {
-        if (_renderBroken) { CompositionTarget.Rendering -= OnRendering; return; }
+        if (_renderBroken || _paintingStopped) { CompositionTarget.Rendering -= OnRendering; return; }
         var args = (RenderingEventArgs)e;
         if (_lastRenderTime != args.RenderingTime)
         {
@@ -366,13 +391,4 @@ public unsafe class MpvRenderControl : ContentControl
         return true;
     }
 
-    public void Release()
-    {
-        CompositionTarget.Rendering -= OnRendering;
-        FrameBuffer?.Dispose();
-        FrameBuffer = null;
-        Context?.Dispose();
-        Context = null;
-        _initialized = false;
-    }
 }

@@ -108,7 +108,9 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
         {
             if (_mpvRender != null)
             {
-                _mpvRender.Release();
+                // ⚠ 顺序铁律：mpv_render_context_free 需要 GL 上下文存活（backend.Dispose 在上面
+                //   已先做），这里才销毁 GL 资源——反过来就是退出播放闪退（13:02 实测）。
+                _mpvRender.DisposeAll();
                 platformView.Children.Remove(_mpvRender);
             }
         }
