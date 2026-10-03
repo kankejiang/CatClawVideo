@@ -6,6 +6,8 @@
 
 		<OutputType>Exe</OutputType>
 		<RootNamespace>CatClawVideo.Maui</RootNamespace>
+		<!-- mpv 后端（Windows DV/HDR）的 P/Invoke 与 GL↔D3D11 互操作需要指针算术 -->
+		<AllowUnsafeBlocks Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">true</AllowUnsafeBlocks>
 		<UseMaui>true</UseMaui>
 		<SingleProject>true</SingleProject>
 		<ImplicitUsings>enable</ImplicitUsings>
@@ -118,6 +120,17 @@
 	     FFmpeg 解码音频（视频仍 D3D11 硬解），失败时回落原生 MF。 -->
 	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">
 		<PackageReference Include="FFmpegInteropX" Version="2.1.0.81200" />
+		<!-- libmpv 后端（DV/HDR tone-map）：OpenTK（隐藏窗口 GL 上下文 + WGL 绑定，自带 GLFW redist）
+		     + Silk.NET（D3D11/DXGI 绑定，GL↔DX 互操作）。渲染桥移植自 Richasy/mpv-winui（MIT）。 -->
+		<PackageReference Include="OpenTK" Version="4.8.2" />
+		<PackageReference Include="Silk.NET.Direct3D11" Version="2.21.0" />
+		<PackageReference Include="Silk.NET.OpenGL" Version="2.21.0" />
+	</ItemGroup>
+
+	<!-- libmpv 本体（DV 解码+渲染引擎）。含于仓库：克隆即可编译运行，无需运行期下载。
+	     ⚠ 必须用 Content：MAUI 工程 None 项会被 WinAppSDK 打包管线吞掉不复制（实测）。 -->
+	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">
+		<Content Include="Platforms\Windows\libs\mpv-2.dll" CopyToOutputDirectory="PreserveNewest" Link="mpv-2.dll" />
 	</ItemGroup>
 
 	<!-- FFmpegInteropX 包把 FFmpegInteropX.winmd 作为 Reference 传入（供 C++ 消费），

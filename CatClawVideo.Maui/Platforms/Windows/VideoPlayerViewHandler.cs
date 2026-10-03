@@ -12,11 +12,21 @@ namespace CatClawVideo.Maui.Platforms.Windows;
 /// <summary>
 /// Windows 播放器 Handler：WinUI MediaPlayerElement + MediaPlayer（支持 HLS/mp4）。
 /// 请求头暂忽略（直链场景无防盗链需求；TVBox 源阶段如需再换 HttpClient 流方案）。
+/// <para>2026-10-03：PlatformView 换成 Grid 容器（MPE + 可选的 libmpv 渲染面板共存）。
+/// 杜比视界片源（mp4 dvcc/dvv 配置盒）走 libmpv 后端（<see cref="Mpv.MpvVideoBackend"/>，
+/// RPU tone-map 正确出 SDR）；其余路径原样 FFmpegInteropX/MF，行为不变。</para>
 /// </summary>
-public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.Xaml.Controls.MediaPlayerElement>,
+public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.Xaml.Controls.Grid>,
     IVideoPlayerImplementation
 {
     private MediaPlayer? _mediaPlayer;
+    private Microsoft.UI.Xaml.Controls.MediaPlayerElement? _mpe;
+    private Mpv.MpvRenderControl? _mpvRender;
+    private Mpv.MpvVideoBackend? _mpvBackend;
+    /// <summary>非 null 时接口方法全部转发给它（当前 = mpv 后端）。</summary>
+    private IVideoPlayerImplementation? _delegate;
+    private bool _mpvInitialized;   // mpv 实例只初始化一次（Initialize 失败会回落 MPE）
+    private int _detectionGen;   // DV 探测代数：丢弃过期探测结果
     private global::Windows.System.Display.DisplayRequest? _displayRequest;
     private FFmpegInteropX.FFmpegMediaSource? _interop;
     private int _sourceGen;   // 源切换代数：丢弃慢创建的过期 FFmpeg 源
@@ -45,19 +55,26 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
     {
     }
 
-    protected override Microsoft.UI.Xaml.Controls.MediaPlayerElement CreatePlatformView()
+    protected override Microsoft.UI.Xaml.Controls.Grid CreatePlatformView()
     {
-        var element = new Microsoft.UI.Xaml.Controls.MediaPlayerElement
+        var grid = new Microsoft.UI.Xaml.Controls.Grid
+        {
+            Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Black),
+            HorizontalAlignment = Microsoft.UI.Xaml.HorizontalAlignment.Stretch,
+            VerticalAlignment = Microsoft.UI.Xaml.VerticalAlignment.Stretch,
+        };
+        _mpe = new Microsoft.UI.Xaml.Controls.MediaPlayerElement
         {
             AutoPlay = false,
             AreTransportControlsEnabled = false,
             HorizontalAlignment = Microsoft.UI.Xaml.HorizontalAlignment.Stretch,
             VerticalAlignment = Microsoft.UI.Xaml.VerticalAlignment.Stretch,
         };
-        return element;
+        grid.Children.Add(_mpe);
+        return grid;
     }
 
-    protected override void ConnectHandler(Microsoft.UI.Xaml.Controls.MediaPlayerElement platformView)
+    protected override void ConnectHandler(Microsoft.UI.Xaml.Controls.Grid platformView)
     {
         base.ConnectHandler(platformView);
 
@@ -67,7 +84,7 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
         _mediaPlayer.MediaEnded += OnMediaEnded;
         _mediaPlayer.PlaybackSession.PlaybackStateChanged += OnPlaybackStateChanged;
 
-        platformView.SetMediaPlayer(_mediaPlayer);
+        _mpe!.SetMediaPlayer(_mediaPlayer);
 
         VirtualView.Implementation = this;
 
@@ -81,9 +98,22 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
             impl.SetSource(VirtualView.Source, VirtualView.Headers);
     }
 
-    protected override void DisconnectHandler(Microsoft.UI.Xaml.Controls.MediaPlayerElement platformView)
+    protected override void DisconnectHandler(Microsoft.UI.Xaml.Controls.Grid platformView)
     {
         VirtualView.Implementation = null;
+        _delegate = null;
+        try { _mpvBackend?.Dispose(); } catch { }
+        _mpvBackend = null;
+        try
+        {
+            if (_mpvRender != null)
+            {
+                _mpvRender.Release();
+                platformView.Children.Remove(_mpvRender);
+            }
+        }
+        catch { }
+        _mpvRender = null;
         CloseInterop();
 
         if (_mediaPlayer != null)
@@ -111,12 +141,114 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
         _mediaHeaders = headers;
         _subtitlePathAdded = null;   // 新源上没有我们那条轨
 
+        // 委托模式（mpv 后端接管中）：直接转发，不拆链
+        if (_delegate is { } d)
+        {
+            d.SetSource(url, headers);
+            return;
+        }
+
+        try
+        {
+            if (string.IsNullOrEmpty(url))
+            {
+                _mpe!.Source = null;
+                return;
+            }
+            // 杜比视界探测：命中走 libmpv（RPU tone-map）。探测与起播串行（本地流 <300ms），
+            // 换取「DV 源不闪一次错误颜色」；探测失败/超时按非 DV 走原路径，绝不挡播放。
+            var gen = ++_detectionGen;
+            _ = SetSourceWithDetectionAsync(view, url, headers, gen);
+        }
+        catch (Exception ex)
+        {
+            view.RaiseMediaFailed($"加载失败: {ex.Message}");
+        }
+    }
+
+    /// <summary>DV 探测 → 分流到 libmpv 或传统 MPE 路径。</summary>
+    private async System.Threading.Tasks.Task SetSourceWithDetectionAsync(
+        VideoPlayerView view, string url, IReadOnlyDictionary<string, string>? headers, int gen)
+    {
+        try
+        {
+            var useMpv = Mpv.DolbyVisionDetector.QuickMatch(url)
+                || await Mpv.DolbyVisionDetector.ProbeAsync(url).ConfigureAwait(true);
+            if (gen != _detectionGen) return;   // 期间已换源
+
+            if (useMpv)
+            {
+                ActivateMpv(url, headers);
+                return;
+            }
+            SetSourceMpe(view, url, headers);
+        }
+        catch (Exception ex)
+        {
+            if (gen == _detectionGen)
+                view.RaiseMediaFailed($"加载失败: {ex.Message}");
+        }
+    }
+
+    /// <summary>激活 libmpv 后端：建渲染面板 + mpv 实例，接口调用此后全部转发。</summary>
+    private void ActivateMpv(string url, IReadOnlyDictionary<string, string>? headers)
+    {
+        var view = VirtualView;
+        if (view is null || PlatformView is null) return;
+
+        CloseInterop();   // 关 FFmpeg 源（若探测前已建）
+        _mpe!.Source = null;
+        _mpe.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+
+        if (_mpvRender is null)
+        {
+            _mpvRender = new Mpv.MpvRenderControl();
+            PlatformView.Children.Add(_mpvRender);
+        }
+        _mpvRender.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+
+        _mpvBackend ??= new Mpv.MpvVideoBackend(view, _mpvRender);
+        if (!_mpvInitialized)
+        {
+            try
+            {
+                _mpvBackend.Initialize();
+                _mpvInitialized = true;   // 首次成功才算激活
+                Maui.Services.BtFileLog.Write("[player] libmpv 后端激活（DV/HDR tone-map 路径）");
+            }
+            catch (Exception ex)
+            {
+                Maui.Services.BtFileLog.Write($"[player] libmpv 初始化失败，回落 MPE: {ex.Message}");
+                _mpvRender.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+                _mpe.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+                SetSourceMpe(view, url, headers);
+                return;
+            }
+        }
+        _delegate = _mpvBackend;
+        ((IVideoPlayerImplementation)_mpvBackend).SetSource(url, headers);
+    }
+
+    /// <summary>回到 MPE 路径（mpv 不可用回落；当前源非 DV）。</summary>
+    private void DeactivateMpv()
+    {
+        _delegate = null;
+        try { if (_mpvBackend != null) ((IVideoPlayerImplementation)_mpvBackend).Stop(); } catch { }
+        if (_mpvRender != null) _mpvRender.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+        if (_mpe != null) _mpe.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+    }
+
+    /// <summary>传统路径（原 SetSource 本体）：MF 硬解 / FFmpegInteropX。</summary>
+    private void SetSourceMpe(VideoPlayerView view, string? url, IReadOnlyDictionary<string, string>? headers)
+    {
+        if (view == null || _mediaPlayer == null || _mpe == null) return;
+
         try
         {
             CloseInterop();
             if (string.IsNullOrEmpty(url))
             {
-                PlatformView.Source = null;
+                _mpe.Source = null;
                 return;
             }
 
@@ -125,7 +257,7 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
             // 硬解友好流在这条路上反而顺。
             if (_decoderMode == VideoDecoderMode.Hardware)
             {
-                PlatformView.Source = global::Windows.Media.Core.MediaSource.CreateFromUri(new Uri(url));
+                _mpe!.Source = global::Windows.Media.Core.MediaSource.CreateFromUri(new Uri(url));
                 ReapplySpeed();
                 Maui.Services.BtFileLog.Write("[player] 解码模式=强制硬解 → 走系统 MF（不建 FFmpeg 源）");
                 return;
@@ -199,7 +331,7 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
             _interop = interop;
             // 用官方推荐的 MediaPlaybackItem 路径（GetMediaStreamSource + CreateFromMediaStreamSource
             // 在部分版本组合下会 E_INVALIDARG）。MediaPlaybackItem 本身就是合法的播放器源。
-            PlatformView.Source = interop.CreateMediaPlaybackItem();
+            _mpe!.Source = interop.CreateMediaPlaybackItem();
             ReapplySpeed();      // 挂上新源会重置速率 → 立即补回
             Maui.Services.BtFileLog.Write("[player] FFmpeg MSS 就绪，已挂到播放器");
         }
@@ -209,7 +341,7 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
             Maui.Services.BtFileLog.Write($"[player] FFmpeg 源创建失败，回落原生 MF：{ex.GetType().Name}: {ex.Message}");
             try
             {
-                PlatformView.Source = global::Windows.Media.Core.MediaSource.CreateFromUri(new Uri(url));
+                _mpe!.Source = global::Windows.Media.Core.MediaSource.CreateFromUri(new Uri(url));
                 ReapplySpeed();
             }
             catch (Exception ex2) { view.RaiseMediaFailed($"加载失败: {ex2.Message}"); return; }
@@ -234,7 +366,7 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
         _subtitlePathAdded = null;   // 新源上没有我们那条轨了
         var old = _interop;
         _interop = null;
-        try { PlatformView.Source = null; } catch { }
+        try { _mpe!.Source = null; } catch { }
         try { old?.Dispose(); } catch { }
     }
 
@@ -260,6 +392,7 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
     /// </summary>
     void IVideoPlayerImplementation.SetExternalSubtitle(string? path, string? mime, double offsetSeconds)
     {
+        if (_delegate is { } d) { d.SetExternalSubtitle(path, mime, offsetSeconds); return; }
         var want = string.IsNullOrEmpty(path) ? null : path;
 
         if (want is null)
@@ -298,7 +431,7 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
             await _interop.AddExternalSubtitleAsync(stream, SubtitleLabel);
             TrySetDelay(offsetSeconds);
 
-            PlatformView.Source = _interop.CreateMediaPlaybackItem();
+            _mpe!.Source = _interop.CreateMediaPlaybackItem();
             if (session is not null) session.Position = resume;
             ReapplySpeed();
             Maui.Services.BtFileLog.Write($"[player] 外挂字幕已挂载（偏移 {offsetSeconds:0.##}s）");
@@ -321,6 +454,7 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
 
     void IVideoPlayerImplementation.SetDecoderMode(VideoDecoderMode mode)
     {
+        if (_delegate is { } d) { d.SetDecoderMode(mode); return; }
         if (_decoderMode == mode) return;
         _decoderMode = mode;
         ReopenCurrentSource();
@@ -341,10 +475,16 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
 
     IReadOnlyList<VideoTrackInfo> IVideoPlayerImplementation.GetTracks(VideoTrackKind kind)
     {
+        if (_delegate is { } d) return d.GetTracks(kind);
+        return GetTracksMpe(kind);
+    }
+
+    private IReadOnlyList<VideoTrackInfo> GetTracksMpe(VideoTrackKind kind)
+    {
         var list = new List<VideoTrackInfo>();
         try
         {
-            if (PlatformView.Source is not global::Windows.Media.Playback.MediaPlaybackItem item) return list;
+            if (_mpe!.Source is not global::Windows.Media.Playback.MediaPlaybackItem item) return list;
             // 三类集合的索引器都是 IReadOnlyList<T> 的显式实现，转成接口才有 [i]；
             // 但 SelectedIndex / GetPresentationMode 在集合本身上，所以每个分支都要 owner+views 两个变量。
 
@@ -422,9 +562,10 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
 
     void IVideoPlayerImplementation.SelectTrack(VideoTrackKind kind, string? id)
     {
+        if (_delegate is { } d) { d.SelectTrack(kind, id); return; }
         try
         {
-            if (PlatformView.Source is not global::Windows.Media.Playback.MediaPlaybackItem item) return;
+            if (_mpe!.Source is not global::Windows.Media.Playback.MediaPlaybackItem item) return;
 
             if (kind == VideoTrackKind.Subtitle)
             {
@@ -454,12 +595,13 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
         }
     }
 
-    void IVideoPlayerImplementation.Play() => _mediaPlayer?.Play();
+    void IVideoPlayerImplementation.Play() { if (_delegate is { } d) { d.Play(); return; } _mediaPlayer?.Play(); }
 
-    void IVideoPlayerImplementation.Pause() => _mediaPlayer?.Pause();
+    void IVideoPlayerImplementation.Pause() { if (_delegate is { } d) { d.Pause(); return; } _mediaPlayer?.Pause(); }
 
     void IVideoPlayerImplementation.Stop()
     {
+        if (_delegate is { } d) { d.Stop(); return; }
         if (_mediaPlayer?.PlaybackSession == null) return;
         _mediaPlayer.Pause();
         _mediaPlayer.PlaybackSession.Position = TimeSpan.Zero;
@@ -467,6 +609,7 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
 
     void IVideoPlayerImplementation.Seek(TimeSpan position)
     {
+        if (_delegate is { } d) { d.Seek(position); return; }
         Maui.Services.BtFileLog.Write($"[player] Seek 请求：{position.TotalSeconds:F1}s（session={_mediaPlayer?.PlaybackSession != null}）");
         if (_mediaPlayer?.PlaybackSession != null)
             _mediaPlayer.PlaybackSession.Position = position;
@@ -478,6 +621,7 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
     /// MF 可能不接受倍速并静默保持 1.0，不校验的话用户只会看到「点了没反应」而查不到原因。</para></summary>
     void IVideoPlayerImplementation.SetSpeed(double speed)
     {
+        if (_delegate is { } d) { d.SetSpeed(speed); return; }
         var session = _mediaPlayer?.PlaybackSession;
         if (session == null) return;
         try
@@ -500,13 +644,15 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
 
     void IVideoPlayerImplementation.SetVolume(double volume)
     {
+        if (_delegate is { } d) { d.SetVolume(volume); return; }
         if (_mediaPlayer != null) _mediaPlayer.Volume = volume;
     }
 
     void IVideoPlayerImplementation.SetAspect(VideoAspect aspect)
     {
-        if (PlatformView == null) return;
-        PlatformView.Stretch = aspect switch
+        if (_delegate is { } d) { d.SetAspect(aspect); return; }
+        if (_mpe == null) return;
+        _mpe.Stretch = aspect switch
         {
             VideoAspect.Fill => Microsoft.UI.Xaml.Media.Stretch.Fill,
             VideoAspect.AspectFill => Microsoft.UI.Xaml.Media.Stretch.UniformToFill,
@@ -532,10 +678,10 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
     }
 
     TimeSpan IVideoPlayerImplementation.GetPosition() =>
-        _mediaPlayer?.PlaybackSession?.Position ?? TimeSpan.Zero;
+        _delegate is { } d ? d.GetPosition() : _mediaPlayer?.PlaybackSession?.Position ?? TimeSpan.Zero;
 
     TimeSpan IVideoPlayerImplementation.GetDuration() =>
-        _mediaPlayer?.PlaybackSession?.NaturalDuration ?? TimeSpan.Zero;
+        _delegate is { } d ? d.GetDuration() : _mediaPlayer?.PlaybackSession?.NaturalDuration ?? TimeSpan.Zero;
 
     /// <summary>
     /// 已缓冲位置：取 <c>GetBufferedRanges()</c> 中**包含当前播放位置**的那一段的右端。
@@ -544,6 +690,7 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
     /// </summary>
     TimeSpan IVideoPlayerImplementation.GetBufferedPosition()
     {
+        if (_delegate is { } d) return d.GetBufferedPosition();
         var session = _mediaPlayer?.PlaybackSession;
         if (session == null) return TimeSpan.Zero;
 
@@ -590,6 +737,7 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
     {
         get
         {
+            if (_delegate is { } d) return d.IsBufferedPositionReliable;
             var session = _mediaPlayer?.PlaybackSession;
             if (session == null) return false;
             try
@@ -617,6 +765,7 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
     {
         get
         {
+            if (_delegate is { } d) return d.IsWaitingForData;
             try
             {
                 var proxy = CatClawVideo.Core.Services.QemuGuest.QemuStreamProxy.Current;
