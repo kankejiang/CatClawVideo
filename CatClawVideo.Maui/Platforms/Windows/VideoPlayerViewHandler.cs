@@ -105,6 +105,7 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
 
     protected override void DisconnectHandler(Microsoft.UI.Xaml.Controls.Grid platformView)
     {
+        DiagLog.Write("[player→] DisconnectHandler 开始");
         VirtualView.Implementation = null;
         _delegate = null;
         try { _mpvBackend?.Dispose(); } catch { }
