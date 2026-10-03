@@ -397,7 +397,11 @@ public partial class HomeViewModel : ObservableObject
                 // 于是首选一旦是坏站（例：🍼┆设置┆中心，本身是订阅的配置站还要占着首选位），
                 // 每次冷启动都先撞它一次、等它超时 → 用户观感就是「改了也是白改」。
                 // 写回之后冷启动直接命中可用站，一次到位。
-                RememberPreferredSite(w.Site, "自动探测胜出");
+                // 2026-10-03：**不再**把探测胜出者写回首选项。
+                // 原来每次胜出都改写，于是：胜出者多半是依赖 ART 桥的站 → 下次冷启动它在 0.44s
+                // 被试探、桥还没起必然超时 → 又去探测、又是「谁先答应用谁」→ 胜出者随机漂移，
+                // 用户观感就是「每次启动站点都不一样」。现在只记进 LastGoodSite（供排序），
+                // 首选项只由用户手动切换写入。
             }
         }
 
@@ -519,16 +523,21 @@ public partial class HomeViewModel : ObservableObject
 
     private async Task<(VodSiteInfo Site, List<VodCategory> Cats)?> ProbeSitesAsync(IEnumerable<VodSiteInfo> candidates)
     {
-        // 顺序即优先级：并发位只有 4 个，先把**不依赖 guest** 的站排前面（它们秒回），
-        // 别让 4 个名额全被还在等 ART guest 的 jar 站占着、白等超时
-        // （2026-10-02：guest 不可用时首页一片空白就是这个顺序问题）。
-        // 上次成功出首页的站排最前（多数情况下它还在订阅里且还活着 → 第一批就命中）；
-        // 其余仍按「不依赖 guest 优先」排队
-        var lastGood = Preferences.Default.Get(LastGoodSiteKey, string.Empty);
-        var list = candidates
-            .OrderBy(s => s.Key == lastGood ? 0 : 1)
-            .ThenBy(s => s.SpiderKind == VodSpiderKind.None ? 0 : 1)
-            .ToList();
+        // 排序（2026-10-03 重排，治「每次启动站点都变」）：
+        //   0 = 上次成功过且**不依赖 guest**：秒回且稳定 → 让它稳居第一梯队（这样胜出者不再漂）
+        //   1 = 其他不依赖 guest 的站：同样秒回
+        //   2 = 上次成功过但依赖 guest：桥 ~28s 才就绪，冷启动必然先超时
+        //   3 = 其余依赖 guest 的站
+        // 旧版把「上次成功」一律排最前 → jar 站霸占并发位、每次超时，胜出者随机漂移。
+        var lastGood = (Preferences.Default.Get(LastGoodSiteKey, string.Empty) ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries);
+        int Rank(VodSiteInfo s)
+        {
+            var needsGuest = s.SpiderKind != VodSpiderKind.None;
+            var wasGood = Array.IndexOf(lastGood, s.Key) >= 0;
+            return needsGuest ? (wasGood ? 2 : 3) : (wasGood ? 0 : 1);
+        }
+        var list = candidates.OrderBy(Rank).ToList();
         if (list.Count == 0) return null;
         DiagLog.Write($"[home] 回退并发探测 {list.Count} 站（并发 {ProbeConcurrency}，单站 {ProbeSiteTimeoutSeconds}s，窗口 {ProbeTimeoutSeconds}s）");
 
