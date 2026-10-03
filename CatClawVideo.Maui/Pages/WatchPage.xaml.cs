@@ -245,9 +245,11 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
         // 网速徽章：鼠标移入播放画面显示（BT 播放时），0.8s 刷新
         // 指针手势挂在 ControlsOverlay 上：该层本身**常驻不隐藏**（隐藏的是它的子元素），
         // 否则控制层一旦隐藏，其自身手势失效，控件就再也唤不出来。
+        // ⚠ 2026-10-03 用户要求：**鼠标移入/移动不再唤出控件条**（"太激进了"）。
+        //   控件条的显隐改为「单击画面 → 唤出，再次单击 → 收起」（见 OnSurfaceTapped）。
+        //   指针手势保留给网速/倍速徽章与长按加速，不再碰显隐。
         var pointer = new PointerGestureRecognizer();
         pointer.PointerEntered += OnPlayerPointerEntered;
-        pointer.PointerMoved += OnPlayerPointerMoved;
         pointer.PointerExited += OnPlayerPointerExited;
         // 按住画面 = 临时 3× 快进，松手回原倍速（对位 TVBox VodController 的长按提速）
         pointer.PointerPressed += OnScreenPressed;
@@ -287,15 +289,12 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
 
     private void OnPlayerPointerEntered(object? sender, PointerEventArgs e)
     {
-        // 鼠标进入播放框：控制层常亮（取消倒计时，等鼠标离开再重新计时）
-        ShowControls();
-
+        // 鼠标进入播放框：**不再唤出控件条**（2026-10-03 用户要求，见构造函数里的说明）。
         // 内置 BT 已移除 → 网速徽章暂无数据源（磁力改走迅雷引擎；引擎本身有 speed 上报，后续接上即可）
         _btInfoHex = null;
         SpeedBadge.IsVisible = false;
     }
 
-    /// <summary>鼠标在播放框内移动：保持控制层可见（离开播放框才开始 3s 倒计时）</summary>
     /// <summary>顶栏避开状态栏：Edge-to-Edge 下页面从 y=0 起绘。取状态栏高度再上收 12dp——
     /// 完整 inset 会显得过低（用户实测反馈），留一点与状态栏的呼吸感更自然。
     /// 原地全屏隐藏 TopBarGrid 时边距随之消失，不留缝。</summary>
@@ -458,14 +457,13 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
         RestartControlsHideTimer();
     }
 
-    private void OnPlayerPointerMoved(object? sender, PointerEventArgs e) => ShowControls();
-
     private void OnPlayerPointerExited(object? sender, PointerEventArgs e)
     {
         SpeedBadge.IsVisible = false;
         _speedTimer?.Stop();
 
-        // 鼠标移出播放框：3s 后隐藏控制层（暂停/拖动中不隐藏）
+        // 鼠标移出播放框：3s 后隐藏控制层（暂停/拖动中不隐藏）—— 自动隐藏保留，
+        // 2026-10-03 改的只是"鼠标移入不再弹出"，不是"不自动隐藏"。
         RestartControlsHideTimer();
     }
 
@@ -1107,15 +1105,58 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
     /// <summary>上次已应用的播放器高度（避免同值重复赋值触发无谓的布局往返）。</summary>
     private double _appliedPlayerHeight = -1;
 
+    /// <summary>上次已钉死的内容宽度（-1 = 尚未设置）。</summary>
+    private double _appliedContentWidth = -1;
+
     /// <summary>播放器下方信息区占用的垂直空间估算（顶栏 + 信息区 + 各段间距）。</summary>
     private const double ReservedVerticalSpace = 300;
 
+    /// <summary>
+    /// 把页面内容的宽度**钉死**到视口宽度（ContentStack = ScrollView 的内容）。
+    ///
+    /// <para><b>为什么必须显式钉</b>：全屏时 <c>ContentScroll.Orientation = Neither</c>（禁用滚动），
+    /// 内容按**无界宽度**测量，而视频平台视图（WinUI <c>MediaPlayerElement</c>）会把自己上一次的
+    /// 实际宽度当作期望宽度报回来。于是窗口从宽屏搬到窄屏（例如 2560 超宽屏 → 1920 屏）后，
+    /// 内容会一直沿用旧宽度：整个播放区（视频 + 控件条）都比窗口宽，右侧整块被窗口裁掉 ——
+    /// 表现为「21:9 视频被裁掉右边」且「控件条的按钮 / 时长 / 全屏键全部消失」，
+    /// 而进度条却一直拖到画面右缘（2026-10-03 实测：面板右缘越过 1920 无收边）。
+    /// 钉死宽度后，无论测量约束多宽，内容都不会超过视口。</para>
+    /// </summary>
+    private void PinContentWidth()
+    {
+        var w = Width;
+        if (w <= 100) return;                        // 尺寸还没量准：保持原值
+        if (Math.Abs(w - _appliedContentWidth) < 0.5) return;
+        _appliedContentWidth = w;
+
+        // 内容根：修复整页（顶栏、播放区、信息区、控件条）一起出屏
+        ContentStack.WidthRequest = w;
+
+        // 全屏是单列布局，播放区就是整页宽 —— 再显式钉一次，保证视频/控件条一定在窗口内；
+        // 退出全屏交还给「星列 + 选集栏」的列定义（-1 = 不限制）。
+        if (_isFullscreen) PlayerHost.WidthRequest = w;
+        else if (PlayerHost.WidthRequest != -1) PlayerHost.WidthRequest = -1;
+
+        Services.BtFileLog.Write(
+            $"[player-layout] 内容宽度钉死 {w:F0}（视口 {ContentScroll.Width:F0}，全屏 {_isFullscreen}）");
+    }
+
     private void ApplyPlayerHeight()
     {
+        // ⚠ 必须在高度守卫**之前**执行：宽度与高度是两条独立的失效路径
+        //   （高度没变不代表宽度没变），守卫提前 return 会把宽度修复一起漏掉。
+        PinContentWidth();
+
         double target;
         if (_isFullscreen)
         {
-            target = Math.Max(200, Height);
+            // ⚠ 必须扣掉播放器在页面里的上边距（WinUI 下 MainArea 有 14 的顶距、ContentStack
+            //   padding 全屏时为 0）：全屏时内容高度 = 整页高度，而播放器并不从 y=0 起算 ——
+            //   直接把整页高度给它，会让播放区底部约 14px 落到窗口外，控件条的 20px 下边距
+            //   被压成贴边、看着就是「底部控件被裁」（2026-10-03 实测：面板下缘 y≈1073、
+            //   窗口内容下缘 ≈1077）。
+            var topOffset = ContentStack.Padding.Top + MainArea.Margin.Top;
+            target = Math.Max(200, Height - topOffset);
         }
         else
         {
@@ -1144,7 +1185,9 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
         if (Math.Abs(target - _appliedPlayerHeight) < 0.5) return;
         _appliedPlayerHeight = target;
         PlayerHost.HeightRequest = target;
-        Services.BtFileLog.Write($"[player-layout] H={Height:F0} W={Width:F0} fullscreen={_isFullscreen} -> PlayerHost={target:F0}");
+        Services.BtFileLog.Write(
+            $"[player-layout] H={Height:F0} W={Width:F0} fullscreen={_isFullscreen} -> PlayerHost={target:F0}" +
+            $"，内容宽={ContentStack.Width:F0}，播放区宽={PlayerHost.Width:F0}");
 
         // 播放器高度变了 → 选集栏必须跟着等高，否则窗口放大后选集框还是旧高度、明显不齐。
         // 延后一拍：此刻新高度尚未完成布局，Border 的 Height 还是旧值。
@@ -2533,7 +2576,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
 
     private void OnSurfaceTapped(object? sender, TappedEventArgs e)
     {
-        // 单击 = 唤出控制层（延迟 300ms 执行，给双击留判定窗口）；
+        // 单击 = 控制条显隐切换（延迟 300ms 执行，给双击留判定窗口）；
         // 双击 = 取消单击动作，切换播放/暂停（2026-09-11 用户要求：
         // 原先单击即切播放，翻控制层时总误触暂停）。
         var now = DateTime.Now;
@@ -2557,8 +2600,9 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
             MainThread.BeginInvokeOnMainThread(() =>
             {
                 if (cts.IsCancellationRequested) return;
-                ShowControls();
-                RestartControlsHideTimer();
+                // 单击 = 显隐**切换**（2026-10-03 用户要求）：可见则收起，隐藏则唤出。
+                // 唤出后的自动隐藏（播放中 3s）保持不变；只是不再由鼠标移动触发唤出。
+                ToggleControls();
             });
         });
     }
@@ -2827,7 +2871,24 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
     }
 
 #if WINDOWS
-    /// <summary>Esc 退出全屏：挂到原生窗口 Content 根元素（与 MainPage 键盘导航同通道）</summary>
+    /// <summary>Esc 处理委托与加速键：挂上/卸下必须是同一个实例，故存字段。</summary>
+    private Microsoft.UI.Xaml.Input.KeyEventHandler? _escKeyHandler;
+    private Microsoft.UI.Xaml.Input.KeyboardAccelerator? _escAccelerator;
+
+    /// <summary>
+    /// Esc 退出全屏。挂在原生窗口 Content 根元素上，并且**双通道**：
+    ///
+    /// <list type="bullet">
+    /// <item><description><c>KeyDown</c> / <c>PreviewKeyDown</c>：原先的 <c>+=</c> 只在「有焦点元素」
+    /// 时事件才会沿焦点链冒泡到根元素 —— 播放页点过画面后焦点可能落在播放器上、甚至根本没有焦点，
+    /// Esc 就收不到（2026-10-03 用户实测「全屏按 Esc 退不出去」）。改用
+    /// <c>AddHandler(…, handledEventsToo: true)</c>，并把 <c>PreviewKeyDown</c>（自根元素隧道而下）
+    /// 一起挂上，焦点在前或者在别处都能命中；</description></item>
+    /// <item><description><c>KeyboardAccelerator</c>：框架级加速键，不依赖焦点链，作为兜底。</description></item>
+    /// </list>
+    ///
+    /// <para>两条通道同时命中是安全的：第一次已把 <c>_isFullscreen</c> 置 false，第二次自然空操作。</para>
+    /// </summary>
     private void HookEscKey(bool attach)
     {
         try
@@ -2836,11 +2897,37 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
                 ?? (Application.Current?.Windows.FirstOrDefault()?.Handler?.PlatformView as Microsoft.UI.Xaml.Window);
             if (native?.Content is Microsoft.UI.Xaml.UIElement root)
             {
-                root.KeyDown -= OnPlatformKeyDown;
-                if (attach) root.KeyDown += OnPlatformKeyDown;
+                _escKeyHandler ??= OnPlatformKeyDown;
+                root.RemoveHandler(Microsoft.UI.Xaml.UIElement.KeyDownEvent, _escKeyHandler);
+                root.RemoveHandler(Microsoft.UI.Xaml.UIElement.PreviewKeyDownEvent, _escKeyHandler);
+                if (_escAccelerator is not null)
+                {
+                    root.KeyboardAccelerators.Remove(_escAccelerator);
+                    _escAccelerator = null;
+                }
+
+                if (!attach) return;
+
+                root.AddHandler(Microsoft.UI.Xaml.UIElement.KeyDownEvent, _escKeyHandler, true);
+                root.AddHandler(Microsoft.UI.Xaml.UIElement.PreviewKeyDownEvent, _escKeyHandler, true);
+
+                _escAccelerator = new Microsoft.UI.Xaml.Input.KeyboardAccelerator
+                {
+                    Key = Windows.System.VirtualKey.Escape,
+                };
+                _escAccelerator.Invoked += OnEscAcceleratorInvoked;
+                root.KeyboardAccelerators.Add(_escAccelerator);
             }
         }
         catch { }
+    }
+
+    private void OnEscAcceleratorInvoked(Microsoft.UI.Xaml.Input.KeyboardAccelerator sender,
+        Microsoft.UI.Xaml.Input.KeyboardAcceleratorInvokedEventArgs args)
+    {
+        if (!_isFullscreen) return;
+        args.Handled = true;
+        MainThread.BeginInvokeOnMainThread(() => SetFullscreen(false));
     }
 
     private void OnPlatformKeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
@@ -2946,11 +3033,32 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
 
     // ════════════════ 控制层自动隐藏 ════════════════
 
-    /// <summary>显示控制层并取消倒计时（鼠标仍在播放框内时保持常亮）</summary>
+    /// <summary>显示控制层并取消倒计时（页面自身动作调用：起播/换集/拖动/进出全屏等）</summary>
     private void ShowControls()
     {
         _controlsHideTimer?.Stop();
         SetControlsVisible(true);
+    }
+
+    /// <summary>
+    /// 单击画面时的显隐切换：可见 → 立刻收起；隐藏 → 唤出。
+    ///
+    /// <para>唤出后**仍然照旧自动隐藏**（播放中 3s，见 <see cref="CanAutoHideControls"/>）——
+    /// 2026-10-03 改的只是唤出方式（鼠标移入/移动不再弹出），不是把自动隐藏去掉。</para>
+    /// </summary>
+    private void ToggleControls()
+    {
+        if (_locked) return;
+        if (ControlBar.IsVisible)
+        {
+            _controlsHideTimer?.Stop();   // 手动收起：作废倒计时
+            SetControlsVisible(false);
+        }
+        else
+        {
+            ShowControls();
+            RestartControlsHideTimer();
+        }
     }
 
     /// <summary>从当前时刻起重新计时 3s（鼠标移出播放框 / 手指离开 / 拖动结束时调用）</summary>
@@ -2960,7 +3068,9 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
         if (CanAutoHideControls()) _controlsHideTimer?.Start();
     }
 
-    /// <summary>仅"播放中且非拖动"才自动隐藏——暂停/拖动时常驻，否则进度条与时长都看不见</summary>
+    /// <summary>仅"播放中且非拖动"才自动隐藏——暂停/拖动时常驻，否则进度条与时长都看不见。
+    /// <para>2026-10-03 调整的只是**唤出方式**（鼠标移入不再弹出，改为单击切换），自动隐藏保持原样：
+    /// 单击唤出后仍按「播放中 3s」收起，再次单击也能立刻收起。</para></summary>
     private bool CanAutoHideControls() => _playing && !_seeking;
 
     private void HideControlsIfIdle()

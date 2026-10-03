@@ -36,10 +36,63 @@ public partial class App : Application
             if (_appWindow.Presenter.Kind == want) return;   // 已是目标状态：不重复设置
 
             _appWindow.SetPresenter(want);
+
+            // ⚠ presenter 一切换，WinUI 按新 presenter 重建窗口边框，「内容延伸进标题栏」
+            //   与折叠掉的 MAUI 标题栏宿主会被还原 —— 直观表现就是「退出全屏后窗口上方
+            //   露出系统标题栏、沉浸状态丢失」。这里立刻补一次，并在 150ms 后再补一次
+            //   （等框架自己那轮布局/激活跑完，否则会被它覆盖回去）。
+            ReapplyImmersiveFrame();
+            var dq = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
+            var t = dq?.CreateTimer();
+            if (t is not null)
+            {
+                t.Interval = TimeSpan.FromMilliseconds(150);
+                t.IsRepeating = false;
+                t.Tick += (_, _) => { t.Stop(); ReapplyImmersiveFrame(); };
+                t.Start();
+            }
         }
         catch (Exception ex)
         {
             System.Diagnostics.Debug.WriteLine($"[App] SetWindowFullscreen({fullscreen}) failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 重新施加「沉浸式」窗口外观：内容延伸进标题栏（<c>ExtendsContentIntoTitleBar</c>）
+    /// + 折叠 MAUI 内部 32px 标题栏宿主（反射 workaround dotnet/maui#36040）+ 重设拖拽区。
+    ///
+    /// <para><b>为什么需要反复施加</b>：这些设置在 presenter 切换（FullScreen ↔ Overlapped）、
+    /// 由系统侧改变窗口状态（Win+↓ / 贴边 / 任务栏还原）之后都可能被系统或框架还原，
+    /// 一旦还原，窗口顶部就会出现系统标题栏、内容被顶下去（沉浸状态丢失）。</para>
+    /// </summary>
+    public static void ReapplyImmersiveFrame()
+    {
+        try
+        {
+            if (_appWindow?.TitleBar is { } titleBar)
+            {
+                titleBar.ExtendsContentIntoTitleBar = true;
+
+                // ★ 关键：**必须把标题栏底色设成透明**。
+                //   只设 ExtendsContentIntoTitleBar 时客户区仍是满高（所以量客户区高度看不出来），
+                //   但系统会按主题给顶部那 32px 涂一块不透明默认底色 —— 深色主题实测 #202020，
+                //   表现为「窗口上方露出一条系统标题栏色的带子、沉浸状态没了」（用户 2026-10-03 实拍：
+                //   顶部 0..30 行从应用背景 (18,16,43) 变成 (0,13,22) / (32,32,32)）。
+                //   底色透明后，顶部透出的就是应用自己的内容/背景，恢复沉浸观感。
+                titleBar.BackgroundColor = global::Windows.UI.Color.FromArgb(0x00, 0x00, 0x00, 0x00);
+                titleBar.InactiveBackgroundColor = global::Windows.UI.Color.FromArgb(0x00, 0x00, 0x00, 0x00);
+            }
+
+            var mauiWindow = Application.Current?.Windows.FirstOrDefault();
+            if (mauiWindow is not null)
+                InvokeMauiSetTitleBarVisibility(mauiWindow);
+
+            (Application.Current as App)?.SyncTitleBarDrag();
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[App] ReapplyImmersiveFrame failed: {ex.Message}");
         }
     }
 #endif
@@ -129,17 +182,34 @@ public partial class App : Application
                 //   拖到分辨率更小的副屏时窗口不会自动收缩，右侧超出的部分把播放器画面和控件
                 //   都带出屏幕外。屏幕变更/窗口移动后把窗口夹回该屏工作区。
                 //   全屏播放不受影响：FullScreen presenter 由 OS 管理，Resize 在其上无效。
+                // ⚠ 重入锁：Resize 会**同步**再触发一次 Changed。没有它，「Changed → 判超屏
+                //   → Resize → Changed」就是一个紧循环 —— 实测单秒刷出 257 条钳制日志，
+                //   窗口肉眼可见地持续抖动（GPU 覆盖层也跟着闪）。
+                bool clamping = false;
+
                 void ClampWindowToDisplay()
                 {
+                    if (clamping) return;
                     try
                     {
                         // ⚠ 全屏 presenter 直接跳过：全屏窗口=整个屏幕（含任务栏区域），
                         //   必然「大于」工作区 → 钳制会与 OS 全屏管理互相拉扯 → 窗口闪烁（14:28 实测）。
                         if (_appWindow?.Presenter.Kind == Microsoft.UI.Windowing.AppWindowPresenterKind.FullScreen)
                             return;
+
+                        // ⚠ 最大化同样必须跳过（2026-10-03 抖动根因）：最大化窗口的**外框**
+                        //   = 工作区 + 每边 8px 的不可见缩放边框 —— 1920×1080 屏实测 1936×1096、
+                        //   2560×1080 屏实测 2576×1096，拿它跟工作区比**永远**判为「超屏」；
+                        //   而对最大化窗口 Resize 是空操作、却仍会触发 Changed → 死循环。
+                        //   日志实证：近 60MB 里 10473 条钳制，其中 1936×1096 占 9929 条、
+                        //   2576×1096 占 330 条，单秒峰值 257 条。最大化本身就意味着不出屏。
+                        if (appWindow.Presenter is Microsoft.UI.Windowing.OverlappedPresenter op
+                            && op.State == Microsoft.UI.Windowing.OverlappedPresenterState.Maximized)
+                            return;
+
                         var area = Microsoft.UI.Windowing.DisplayArea.GetFromWindowId(appWindow.Id,
                             Microsoft.UI.Windowing.DisplayAreaFallback.Nearest);
-                        var size = appWindow.Size;   // 物理像素
+                        var size = appWindow.Size;   // 物理像素（含不可见边框）
                         int maxW = area.WorkArea.Width, maxH = area.WorkArea.Height;
                         // DPI 缩放（125% 等）下逻辑最小宽 900 会换算出比小屏还宽的物理值，
                         // 把窗口顶在最小值上永远缩不进屏 —— 最小值必须先让路。
@@ -147,10 +217,19 @@ public partial class App : Application
                         if (scale <= 0) scale = 1.0;
                         if (window.MinimumWidth * scale > maxW) window.MinimumWidth = maxW / scale;
                         if (window.MinimumHeight * scale > maxH) window.MinimumHeight = maxH / scale;
-                        if (size.Width > maxW || size.Height > maxH)
+
+                        // 恢复态窗口的外框也含那 8px/边 的不可见边框，所以要留出余量再判超屏：
+                        // 否则「外框 1934 宽、可见内容只有 1918 宽」的窗口会被无意义地反复缩小
+                        // （实测 151 条）。真正的超屏（如 2216 宽）仍会被夹回来。
+                        if (size.Width > maxW + WindowFrameAllowance || size.Height > maxH + WindowFrameAllowance)
                         {
-                            appWindow.Resize(new Windows.Graphics.SizeInt32(
-                                Math.Min(size.Width, maxW), Math.Min(size.Height, maxH)));
+                            clamping = true;
+                            try
+                            {
+                                appWindow.Resize(new Windows.Graphics.SizeInt32(
+                                    Math.Min(size.Width, maxW), Math.Min(size.Height, maxH)));
+                            }
+                            finally { clamping = false; }
                             CatClawVideo.Maui.Services.BtFileLog.Write(
                                 $"[window] 钳制到所在屏：{size.Width}x{size.Height} -> ≤{maxW}x{maxH} (dpi {scale:F2})");
                         }
@@ -158,8 +237,15 @@ public partial class App : Application
                     catch { }
                 }
                 ClampWindowToDisplay();
-                // 位置/尺寸变化（含拖到别的屏）都会触发：换屏后按新屏工作区收缩
-                appWindow.Changed += (_, _) => ClampWindowToDisplay();
+                // 只在「尺寸 / 呈现方式」真变化时响应：激活、Z 序、可见性变化一样会走 Changed，
+                // 无差别响应等于把每个无关事件都变成一次全屏判定（抖动放大器）。
+                appWindow.Changed += (_, e) =>
+                {
+                    // 系统侧改 presenter（Win+↓、贴边、任务栏还原）不会走 SetWindowFullscreen，
+                    // 这里兜底补回沉浸式外观，否则用户会看到「退出全屏后露出系统标题栏」。
+                    if (e.DidPresenterChange) ReapplyImmersiveFrame();
+                    if (e.DidSizeChange || e.DidPresenterChange) ClampWindowToDisplay();
+                };
 
                 // 兜底：Changed 在**任务视图打开期间 / 显示器热插拔 / DPI 切换**等场景不触发，
                 // 窗口就会停在超屏状态（右侧与底部出屏，底部播放控件被裁，14:42 实测）。
@@ -222,8 +308,9 @@ public partial class App : Application
                         {
                             try
                             {
-                                InvokeMauiSetTitleBarVisibility(window);
-                                SyncTitleBarDrag();
+                                // 启动即施加完整沉浸外观（内容延伸进标题栏 + 标题栏底色透明 +
+                                // 折叠 MAUI 32px 标题栏宿主 + 拖拽区），少一样就会出现顶部色带。
+                                ReapplyImmersiveFrame();
                                 UpdateWindowsTheme(MauiProgram.Services.GetService<IThemeService>()?.IsEffectivelyDark()
                                     ?? RequestedTheme == Microsoft.Maui.ApplicationModel.AppTheme.Dark);
                             }
@@ -292,6 +379,9 @@ public partial class App : Application
             if (_appWindow?.TitleBar is { } titleBar)
             {
                 var transparent = global::Windows.UI.Color.FromArgb(0x00, 0x00, 0x00, 0x00);
+                // 主题切换会重刷标题栏配色：底色也必须一起刷成透明，否则顶部又会浮出色带
+                titleBar.BackgroundColor = transparent;
+                titleBar.InactiveBackgroundColor = transparent;
                 titleBar.ButtonBackgroundColor = transparent;
                 titleBar.ButtonInactiveBackgroundColor = transparent;
                 if (isDark)
@@ -431,6 +521,10 @@ public partial class App : Application
     private const string PrefWinH = "window_height";
     private const double DefaultWinW = 1600;
     private const double DefaultWinH = 800;
+
+    /// <summary>窗口外框相对可见内容的不可见缩放边框余量（每边 8px，Windows 实测）：
+    /// 判「窗口是否超出屏幕」时留出它，避免把正常窗口误判为超屏而反复 Resize。</summary>
+    private const int WindowFrameAllowance = 16;
 
     /// <summary>回放窗口逻辑尺寸：优先上次用户调整值，无记录 / 值非法时用默认 1600×800。</summary>
     private static (double Width, double Height) LoadSavedWindowSize()
