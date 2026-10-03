@@ -2119,8 +2119,34 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
         ShowBufferingIndeterminate(true);
         try
         {
-            var play = await _provider.ResolvePlayUrlAsync(_site, episode);
+            CatClawVideo.Core.Models.PlayRequest play;
+            try
+            {
+                play = await _provider.ResolvePlayUrlAsync(_site, episode);
+            }
+            catch (InvalidOperationException bridgeEx) when (bridgeEx.Message.Contains("桥崩溃"))
+            {
+                // 2026-10-03 用户实测场景：第一次点某集时 ART guest 里的桥 SIGSEGV 崩了、引擎随即重置；
+                // 此时**立刻重试就能成功**（用户点第 2 集即正常播放）。这里自动等新桥起来再试一次，
+                // 省掉「再手动点一次」这个动作。第二次仍失败则照常抛出，交给外层 catch 显示提示。
+                DiagLog.Write("[播放] 桥刚被引擎重置 → 等 16s 让新桥起来，自动重试一次");
+                await Task.Delay(TimeSpan.FromSeconds(16));
+                if (generation != _playGeneration) return;   // 已被后续点击取代
+                play = await _provider.ResolvePlayUrlAsync(_site, episode);
+            }
             if (generation != _playGeneration) return; // 已被后续点击取代，丢弃过期解析
+
+            // 解析结果不是可播地址、又没有站点说明 → 多半是刚走过的桥故障留下的坏结果
+            // （用户实测：第 1 次点某集崩过之后，再点会拿到网盘复合 id「413589ce…++25ff8074…」）。
+            // 这里重试一次解析；仍不可播就交给下面的闸门按原有文案提示。
+            if (!play.IsHtmlPage && string.IsNullOrEmpty(play.Message)
+                && !CatClawVideo.Core.Services.PlayAddress.IsPlayable(play.Url))
+            {
+                DiagLog.Write($"[播放] 解析结果不可播（{CatClawVideo.Core.Services.PlayAddress.Brief(play.Url)}）→ 重试一次");
+                await Task.Delay(TimeSpan.FromSeconds(3));
+                if (generation != _playGeneration) return;
+                play = await _provider.ResolvePlayUrlAsync(_site, episode);
+            }
             _resolvedPlay = play;
 
             // ── Guard 系「云盘配置」卡片：返回的是宿主本地 proxy 的 HTML 配置页（非视频流）──
