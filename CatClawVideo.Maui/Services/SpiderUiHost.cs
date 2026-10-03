@@ -1,4 +1,4 @@
-using System.Text.Json.Nodes;
+﻿using System.Text.Json.Nodes;
 
 namespace CatClawVideo.Maui.Services;
 
@@ -404,12 +404,32 @@ public static class SpiderUiHost
     }
 
     /// <summary>
+    /// toast 去重表：相同文案在 <see cref="ToastDedupeSeconds"/> 秒内只弹一次。
+    /// 2026-10-03：guest 里的网盘爬虫失败会几秒内重试（实测「Go代理 1 进程仍在退出」连发 3 次），
+    /// 每次都弹一条，用户观感就是「老弹窗」。日志照记，只压弹窗。
+    /// </summary>
+    private static readonly Dictionary<string, DateTime> _toastSeen = new(StringComparer.Ordinal);
+    private const int ToastDedupeSeconds = 60;
+
+    /// <summary>
     /// 非模态小提示：叠在当前页根 Grid 底部，淡入停留后自动消失。
     /// <para>根布局不是 Grid（没有可叠加的容器）时退回系统弹窗 —— 早先 toast 只写日志，
     /// 用户点「清除 Cookie」后什么反馈都看不到。</para>
     /// </summary>
     private static async Task ShowToastAsync(string text)
     {
+        // 同一条文案短时间内只弹一次（guest 侧重试会连发；日志里仍逐条留痕）
+        lock (_toastSeen)
+        {
+            var now = DateTime.UtcNow;
+            if (_toastSeen.TryGetValue(text, out var last) && (now - last).TotalSeconds < ToastDedupeSeconds)
+            {
+                DiagLog.Write($"[spider-ui] toast 去重（{ToastDedupeSeconds}s 内重复）：{text}");
+                return;
+            }
+            if (_toastSeen.Count > 64) _toastSeen.Clear();   // 文案种类有限，兜底防涨
+            _toastSeen[text] = now;
+        }
         // 先取 Shell 当前页：Shell 应用里 Window.Page 是 Shell 本身，拿不到可叠加的根布局
         var page = Shell.Current?.CurrentPage ?? Application.Current?.Windows?.FirstOrDefault()?.Page;
         if (page is not ContentPage cp || cp.Content is not Grid root)
