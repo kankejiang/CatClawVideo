@@ -293,8 +293,10 @@ public unsafe sealed class MpvVideoBackend : IVideoPlayerImplementation, IDispos
         switch (aspect)
         {
             case VideoAspect.Original:
-                // 原始比例：1:1 像素不缩放（窗口小于视频则裁边，大于则居中留边）
-                MpvLib.SetPropertyString(_mpv, "video-unscaled", "yes");
+                // 「原始比例」= 保持源画幅且**绝不超出可视区**：
+                // downscale-only = 视频大于窗口时自动缩到完整可见，小于窗口时保持 1:1 不放大。
+                // ⚠ 绝不能用 unscaled=yes（1:1 直出）：4K 源在 1080p 窗口会直接超出屏幕（14:24 教训）。
+                MpvLib.SetPropertyString(_mpv, "video-unscaled", "downscale-only");
                 MpvLib.SetPropertyString(_mpv, "video-aspect-override", "no");
                 MpvLib.SetPropertyString(_mpv, "panscan", "0");
                 break;
