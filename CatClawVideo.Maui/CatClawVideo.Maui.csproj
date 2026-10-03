@@ -134,11 +134,15 @@
 		<PackageReference Include="Microsoft.Windows.AI.MachineLearning" Version="2.1.74" ExcludeAssets="all" />
 	</ItemGroup>
 
-	<!-- libmpv 本体（DV 解码+渲染引擎）。含于仓库：克隆即可编译运行，无需运行期下载。
-	     ⚠ 必须用 Content：MAUI 工程 None 项会被 WinAppSDK 打包管线吞掉不复制（实测）。 -->
+	<!-- libmpv 本体（115.4MB）：2026-10-03 起**不再随包** —— 用户判定「装了也不能播」（日志显示
+	     13:15 那次确实初始化成功并渲染了首帧 rc=0，但实际观感不值这 115MB），安装包因此 -115MB。
+	     要恢复：取消下面 Content 的注释即可（代码侧已有 mpv-2.dll 存在性守卫，缺件自动走
+	     FFmpegInteropX/MF，不会选中起不来的后端）。 -->
+	<!--
 	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">
 		<Content Include="Platforms\Windows\libs\mpv-2.dll" CopyToOutputDirectory="PreserveNewest" Link="mpv-2.dll" />
 	</ItemGroup>
+	-->
 
 	<!-- FFmpegInteropX 包把 FFmpegInteropX.winmd 作为 Reference 传入（供 C++ 消费），
 	     会触发 cswinrt 现场生成投影 → 需要本机安装的 Windows SDK（注册表），构建机没有。

@@ -1,4 +1,4 @@
-using CatClaw.Qemu;
+﻿using CatClaw.Qemu;
 
 namespace CatClawVideo.Maui.Services;
 
@@ -72,34 +72,6 @@ public static class StartupEnvCheck
         catch (Exception ex)
         {
             items.Add(new EnvCheckItem("虚拟机套件", EnvCheckLevel.Info, $"探测失败：{ex.GetType().Name}"));
-        }
-
-        // ② 播放器后端：mpv（杜比视界 RPU tone-map 走它，缺失时回落 MF 会发灰泛紫）
-        try
-        {
-            items.Add(File.Exists(Path.Combine(baseDir, "mpv-2.dll"))
-                ? new EnvCheckItem("播放器后端", EnvCheckLevel.Ok, "libmpv · 杜比视界")
-                : new EnvCheckItem("播放器后端", EnvCheckLevel.Warn, "缺少 mpv-2.dll",
-                    "杜比视界片源会回落 MF（发灰泛紫）；可从 Release 取件补齐",
-                    [new EnvAction("fetch-assets", "自动取件"), new EnvAction("open-release-mpv", "下载播放器")]));
-        }
-        catch { }
-
-        // ③ 数据目录可写（QEMU 控制台日志、guest 数据盘、块设备镜像、流缓存都落这里）
-        try
-        {
-            var dir = CatClawVideo.Core.AppPaths.LocalRoot;
-            Directory.CreateDirectory(dir);
-            var probe = Path.Combine(dir, $".envcheck-{Guid.NewGuid():N}.tmp");
-            File.WriteAllText(probe, "ok");
-            File.Delete(probe);
-            items.Add(new EnvCheckItem("数据目录", EnvCheckLevel.Ok, "可写"));
-        }
-        catch (Exception ex)
-        {
-            items.Add(new EnvCheckItem("数据目录", EnvCheckLevel.Fail, $"不可写：{ex.GetType().Name}",
-                "检查杀软/权限拦截；数据目录不可写会导致 QEMU 日志、guest 数据盘与流缓存全部失效",
-                [new EnvAction("open-datadir", "打开数据目录")]));
         }
 
         // ④ 磁盘剩余空间

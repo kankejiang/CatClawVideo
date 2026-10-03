@@ -1,4 +1,4 @@
-using CatClawVideo.Maui.Controls;
+﻿using CatClawVideo.Maui.Controls;
 using TrackLang = CatClawVideo.Maui.Services.TrackLang;
 using Microsoft.Maui.Handlers;
 using MediaPlayer = global::Windows.Media.Playback.MediaPlayer;
@@ -26,6 +26,10 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
     /// <summary>非 null 时接口方法全部转发给它（当前 = mpv 后端）。</summary>
     private IVideoPlayerImplementation? _delegate;
     private bool _mpvInitialized;   // mpv 实例只初始化一次（Initialize 失败会回落 MPE）
+
+    /// <summary>libmpv 后端是否可用：输出目录里有 mpv-2.dll 才启用（不再随包，见 Initialize 注释）。</summary>
+    private static bool MpvBackendAvailable() =>
+        System.IO.File.Exists(System.IO.Path.Combine(AppContext.BaseDirectory, "mpv-2.dll"));
     private int _detectionGen;   // DV 探测代数：丢弃过期探测结果
     private global::Windows.System.Display.DisplayRequest? _displayRequest;
     private FFmpegInteropX.FFmpegMediaSource? _interop;
@@ -175,8 +179,12 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
     {
         try
         {
-            var useMpv = Mpv.DolbyVisionDetector.QuickMatch(url)
-                || await Mpv.DolbyVisionDetector.ProbeAsync(url).ConfigureAwait(true);
+            // 2026-10-03：libmpv **不再随包**（用户判定「装了也不能播」，115.4MB 死重）。
+            //   仅当输出目录里真有 mpv-2.dll 时才启用该后端；缺件一律走 FFmpegInteropX/MF
+            //   （原默认路径），避免 DV 片源选中一个起不来的后端。
+            var useMpv = MpvBackendAvailable()
+                && (Mpv.DolbyVisionDetector.QuickMatch(url)
+                    || await Mpv.DolbyVisionDetector.ProbeAsync(url).ConfigureAwait(true));
             if (gen != _detectionGen) return;   // 期间已换源
 
             if (useMpv)
