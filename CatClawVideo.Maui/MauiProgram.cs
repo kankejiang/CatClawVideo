@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using CatClawVideo.Maui.Services;
 using CatClawVideo.Maui.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
@@ -16,6 +16,11 @@ public static class MauiProgram
         var builder = MauiApp.CreateBuilder();
         builder
             .UseMauiApp<App>()
+#if WINDOWS
+            // 树渲染控件（jar View 树 → 原生 WebView2）：用正规 Handler 让框架管尺寸/可见性。
+            .ConfigureMauiHandlers(h => h.AddHandler<Platforms.Windows.TreeWebView2,
+                Platforms.Windows.TreeWebView2Handler>())
+#endif
             .ConfigureFonts(fonts =>
             {
                 fonts.AddFont("OpenSans-Regular.ttf", "OpenSansRegular");

@@ -23,7 +23,7 @@ public partial class SpiderTreeDialogPage : ContentPage, IRemoteKeyHandler
     // Windows 走原生 WinUI WebView2（见 Platforms/Windows/TreeWebHost.cs）：
     // MAUI 的 WebView 在 CoreWebView2 初始化失败时会在回调里空引用崩掉整个进程，
     // 而「默认用户数据目录落在 exe 同级、装到 Program Files 后不可写」正是初始化失败的常见原因。
-    private Platforms.Windows.TreeWebHost? _host;
+    private Platforms.Windows.TreeWebView2? _host;
 #endif
     private WebView _web = null!;
     private bool _loaded;
@@ -42,7 +42,7 @@ public partial class SpiderTreeDialogPage : ContentPage, IRemoteKeyHandler
     private void ApplyHtml()
     {
 #if WINDOWS
-        _host?.SetHtml(_html);
+        if (_host is not null) _host.Html = _html;
 #else
         if (!_loaded) return;
         try { _web.Source = new HtmlWebViewSource { Html = _html }; }
@@ -63,11 +63,11 @@ public partial class SpiderTreeDialogPage : ContentPage, IRemoteKeyHandler
 
         _html = BuildHtml(treeJson, positive, negative, neutral);
 #if WINDOWS
-        _host = new Platforms.Windows.TreeWebHost { Log = m => DiagLog.Write(m) };
+        _host = new Platforms.Windows.TreeWebView2 { Log = m => DiagLog.Write(m) };
         _host.LinkClicked += HandleClsk;      // clsk:clk:<下标> / clsk:btn:<n> / clsk:cancel
         // ⚠ 必须把 HTML 交给宿主：WebView2 尚未就绪时它会先存下，就绪后自动注入（原 MAUI 路径
         //   靠 Loaded 事件触发 ApplyHtml，换宿主时漏了这一步 → 页面只有黑底没内容）。
-        _host.SetHtml(_html);
+        _host.Html = _html;
 #else
         _web = new WebView();
         // 不当场设 Source：构造期设源会触发 MAUI WebView2 代理的空引用崩溃（2026-10-03）
