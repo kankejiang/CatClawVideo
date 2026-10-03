@@ -319,7 +319,8 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
         "· 「任务管理器显示虚拟化已启用」「Hyper-V 全开」都不代表 WHPX 可用——WHPX 要的是\n" +
         "  WinHvPlatform.dll，它由「虚拟机监控程序平台」这个功能提供。\n" +
         "· 与 VMware/VirtualBox 老版本、部分反作弊驱动的虚拟化占用冲突时，也可能一直起不来。\n" +
-        "· 实在开不了不影响使用：引擎回落软件模拟（慢 10~20 倍），磁力与爬虫功能仍然可用。";
+        "· 不开 WHPX 时**不使用该运行时**（刻意不做软件模拟——慢一个数量级，体验太差）：\n" +
+        "  磁力自动回落内置 BT（照样能下载/播放），但 jar 爬虫与 Guard 解密的网盘源不可用。";
 
     /// <summary>提权启用「虚拟机监控程序平台」（WHPX 的宿主前置功能），重启后生效。</summary>
     private async Task EnableWhpxAsync()

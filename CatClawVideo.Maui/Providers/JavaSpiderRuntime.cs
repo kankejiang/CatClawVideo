@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Net.Sockets;
 using System.Diagnostics;
 using System.Security.Cryptography;
@@ -123,7 +123,7 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         _workDir = workDir ?? AppPaths.Sub("javabridge");
         _convertedDir = Path.Combine(_workDir, "converted");
         // ── ART guest（x86 mini，2026-09-29 起是**唯一**运行时）──
-        // Android 13 x86_64 ART 跑在 QEMU（WHPX 硬件虚拟化优先，无虚拟化自动回落 x86-TCG）。
+        // Android 13 x86_64 ART 跑在 QEMU（仅 WHPX 硬件虚拟化；无 WHPX 则运行时不可用，不做软件模拟）。
         // aarch64 ART guest 整线退役（随包剔除），CATCLAW_NO_ART=1 = 整体禁用 jar 爬虫链路（排障）。
         ArtRuntimeDir = Path.Combine(AppContext.BaseDirectory, "QemuGuest");
         // 可用性 = x86 三件套齐全（引擎 + x86guest 内核/initrd）
@@ -131,7 +131,10 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
             File.Exists(Path.Combine(ArtRuntimeDir, "qemu-system-x86_64.exe"))
             && File.Exists(Path.Combine(ArtRuntimeDir, @"x86guest\vmlinuz-6.1.0-50-amd64"))
             && File.Exists(Path.Combine(ArtRuntimeDir, @"x86guest\art_initrd_x64.gz"));
+        // 无 WHPX 直接判不可用（2026-10-03 用户拍板：不做软件模拟）——
+        // 这样 jar 源在站点库里直接不算可用，而不是显示了再失败。
         ArtGuestMode = X86AssetsPresent()
+                       && CatClaw.Qemu.WhpxProbe.IsAvailable()
                        && Environment.GetEnvironmentVariable("CATCLAW_NO_ART") != "1";
         _guestArchOverride = CatClaw.Qemu.GuestArch.X86_64;
         _guestKernelFile = @"x86guest\vmlinuz-6.1.0-50-amd64";
@@ -140,7 +143,7 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         _x86Why = X86AssetsPresent()
             ? (CatClaw.Qemu.WhpxProbe.IsAvailable()
                 ? "WHPX 硬件虚拟化"
-                : "TCG 软件模拟（开启「虚拟机监控程序平台」功能可提速）")
+                : "未启用 WHPX → 运行时不可用（不做软件模拟）")
             : "x86 运行时缺失";
         // 启动就把桥链路状态写进日志：链路差异只会以"某个站点不对"的形式浮现，
         // 不写明模式的话排障第一步会变成猜。

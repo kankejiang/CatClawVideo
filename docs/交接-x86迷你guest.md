@@ -1,4 +1,4 @@
-# 工作交接文档：x86 Mini Guest（Android 13 转译运行时）
+﻿# 工作交接文档：x86 Mini Guest（Android 13 转译运行时）
 
 > 更新日期：2026-09-27（深夜）
 > 状态：阶段 1 完成（可用）；阶段 2 转译攻坚：壳解密+真实 dex 加载已通，
@@ -619,6 +619,8 @@ Reference: android.graphics.drawable.Drawable but expected Reference: android.gr
   禁用验证；选项字符串实证存在于 libart，值语义不认 softfail）；
 - 桥 classpath 双 loader 冲突——gb.dex/tvbox.apk 里均无 ProxyOrigin 定义（strings 实证）；
 - 本机此前「3.9s 桥就绪」实为 x86-TCG（HypervisorPlatform 未开、QEMU 静默回落）——
+  ⚠️ 2026-10-03 起**已取消软件模拟兜底**：x86 运行时只认 WHPX，不可用直接判引擎不可用
+  （见 QemuHostRuntime.StartLocked；排障可用 CATCLAW_QEMU_ACCEL=tcg 强制）。以下为历史记录——
   WHPX 真跑通以本节数据为准。
 
 **定性**：`Reference: X but expected X` 同名打印 = 两个 RegType 描述符相同但不兼容

@@ -265,7 +265,7 @@
 	<!-- QEMU guest 运行时（Windows 专用）：随应用分发到 QemuGuest/。
 	     宿主编排从 AppContext.BaseDirectory\QemuGuest 加载（见 Core/Services/QemuGuest）。
 	     2026-09-29 定稿：**x86 mini 唯一**（Android 13 x86_64 ART，WHPX 硬件虚拟化优先，
-	     无虚拟化时 QEMU 回落 x86-TCG）；aarch64 ART guest 整线退役、随包剔除——
+	     无 WHPX 时运行时判不可用、刻意不做软件模拟）；aarch64 ART guest 整线退役、随包剔除——
 	     迅雷引擎本体是 aarch64 的，其独立 VM 运行时（pkg_kernel/pkg_initrd.gz）随之剔除，
 	     磁力自动回落内置 BT（既有兜底路径）。
 	     目录缺失时构建不报错，引擎判未就绪、磁力自动回落内置 BT。 -->
@@ -300,7 +300,7 @@
 		<!-- x86 mini guest（唯一运行时）：qemu-system-x86_64.exe（24.3MB）+
 		     QemuGuest\x86guest\（vmlinuz-6.1.0-50-amd64 + art_initrd_x64.gz，约 286MB）
 		     + share\（SeaBIOS 等 BIOS blob，x86 q35 机器必需）+ 全部共享依赖 DLL。
-		     加速器：WHPX 可用即硬件虚拟化（WhpxProbe 探测），否则 x86-TCG。
+		     加速器：**仅 WHPX**（WhpxProbe 探测）；不可用时运行时判不可用（2026-10-03 起不做软件模拟，见 QemuHostRuntime.StartLocked）。
 		     ⚠ 已知卡点：Guard 网盘源 playerContent 撞 ART 13 verifier 硬拒
 		     （docs/交接-x86迷你guest.md §6.11），修复 = boot 镜像 + 预置 oat x86 化。
 		     ⚠ x86guest\ 的 initrd 不入库（>100MB，.gitignore）：构建机缺件时 publish
