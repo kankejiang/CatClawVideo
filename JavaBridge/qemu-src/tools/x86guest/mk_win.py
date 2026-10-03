@@ -58,6 +58,9 @@ def add_components():
         (os.path.join(ART, "artlaunch.x64"), "artlaunch"),
         (os.path.join(ART, "artlaunch.x64"), "system/bin/artlaunch"),
         (os.path.join(ART, "proppreload_x64.so"), "proppreload.so"),
+        # 2026-10-03 Go 代理链：qemu-user 解释器（ndk runner 跑 Go 静默 139）+ binfmt 自测件
+        (os.path.join(ART, "qemu-aarch64-static"), "bin/qemu-aarch64-static"),
+        (os.path.join(ART, "binfmt_test_arm64"), "binfmt_test_arm64"),
         (os.path.join(ART, "fakelogd.x64"), "fakelogd"),
         (os.path.join(ART, "gb.dex"), "gb.dex"),
         (r"D:\Code\sourceCode-ccc25f6\app\build\outputs\apk\java64\debug\TVBox_debug-java64.apk", "tvbox.apk"),

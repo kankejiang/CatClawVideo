@@ -61,7 +61,7 @@ if [ -n "$PDD" ] && [ -b "$PDD" ]; then
         e2fsck -f -p "$PDD" >/dev/null 2>&1
         echo "[persist] resize2fs: $(resize2fs "$PDD" 2>&1 | $BB tail -2 | $BB tr '
 ' ' ')"
-                $BB mkdir -p /data/catclaw /data/local/tmp /data/dalvik-cache/x86_64 /data/media
+                $BB mkdir -p /data/catclaw /data/local/tmp /data/dalvik-cache/x86_64 /data/media /data/files/fishdanmu /data/cache/pvc /data/files/moyu_go
     else
         echo "[persist] 警告：/data 持久盘未挂成（退回内存态）"
     fi
@@ -82,7 +82,7 @@ if [ -n "$PDD" ] && [ -b "$PDD" ]; then
     fi
     if $BB mount 2>/dev/null | $BB grep -q "on /data "; then
         echo "[persist] /data -> 持久盘 $PDD（跨重启存活）"
-        $BB mkdir -p /data/catclaw /data/local/tmp /data/dalvik-cache/x86_64 /data/media
+        $BB mkdir -p /data/catclaw /data/local/tmp /data/dalvik-cache/x86_64 /data/media /data/files/fishdanmu /data/cache/pvc /data/files/moyu_go
     else
         echo "[persist] 警告：/data 持久盘未挂成（退回内存态）"
     fi
@@ -123,7 +123,12 @@ export CATCLAW_BCP="/system/javalib/core-oj.jar:/system/javalib/core-libart.jar:
 # PreInitializeNativeBridge 会 exec arm64 wrapper，不注册则 ENOEXEC/x86 linker 报架构错。
 mkdir -p /binfmt_misc
 mount -t binfmt_misc none /binfmt_misc 2>/dev/null
-echo ':arm64_exe:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7::/system/bin/ndk_translation_program_runner_binfmt_misc_arm64:P' > /binfmt_misc/register 2>/dev/null && echo "[init] binfmt arm64 已注册" || echo "[init] binfmt 注册跳过"
+# 2026-10-03 定因：busybox echo 不解释 \x 转义 → 注册的是字面文本 magic 永不命中；
+# 且 binfmt_misc 注册按 C 字符串解析，magic 内嵌 \000 会被截断 → 截断前缀命中所有
+# 64 位 ELF → 解释器递归 → 全机 exec ELOOP。方案：单字节 magic offset 18
+# （e_machine=0xB7=AArch64），无 NUL 毒免疫、ET_EXEC/ET_DYN 通吃；解释器用
+# qemu-user（ndk runner 跑 Go 二进制 1s 内静默 139）。flags 字段不能省（尾冒号）。
+printf ':arm64:M:18:\267::/bin/qemu-aarch64-static:' > /binfmt_misc/register 2>/dev/null && echo "[init] binfmt arm64 已注册" || echo "[init] binfmt arm64 注册失败"
 export CATCLAW_SIGLOG=1
 printf '#!/bin/busybox sh\necho "NC-ARGS: $@" > /dev/ttyS0\nexec /bin/busybox nc "$@"\n' > /bin/nc && chmod +x /bin/nc
 
@@ -211,6 +216,10 @@ if [ -f /b1/android-stack.tar.gz ]; then
     # 先把 tmpfs 上限扩到 1500M（RAM 共 2.5G），解完包再删 tar 腾回空间。
     $BB mount -o remount,size=1500M / 2>/dev/null && echo "[astack] rootfs 已扩到 1500M"
     $BB tar xzf /b1/android-stack.tar.gz -C / && echo "[astack] 解包完成"
+    # binfmt 端到端自测：静态 arm64 → binfmt_misc → qemu-user 转译（2026-10-03）
+    $BB ls /binfmt_misc/
+    ST=$(/binfmt_test_arm64 2>&1)
+    echo "[init] binfmt 自测: $ST"
     # 真属性区：bionic 的 LD_PRELOAD 开关(ro.debuggable) 与 HIDL 的 ready 标记都读它；
     # 必须在任何服务之前建好（proppreload 的 per-process 表顶不了跨进程约定）。
     [ -x /system/bin/propinit ] && /system/bin/propinit 2>&1 | $BB head -8
