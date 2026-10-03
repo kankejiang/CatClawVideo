@@ -313,6 +313,13 @@ public partial class SettingsPage : ContentView, ITabView, IRemoteKeyHandler
         sub.ShowArrow = true;
         sub.Activated += async (_, _) => await GoAsync("sourceconfig");
 
+        // 直播源设置（TVBox「配置直播源」同款能力）：地址 / 本地文件 / 历史 + EPG·UA·超时。
+        // 订阅自带的直播源自动导入，但可在这里手动配置覆盖（手填 > 源内 > 默认）。
+        var live = AddRow("📺", "直播源设置", "配置直播源地址 / 本地文件，含 EPG · UA · 超时", ref rows);
+        live.ValueText = "进入";
+        live.ShowArrow = true;
+        live.Activated += async (_, _) => await GoAsync("livesource");
+
         // 主页推荐内容（对位 TVBox HawkConfig.HOME_REC 三选一）：首页「主页」tab 显示哪一行
         var recRow = AddRow("🏠", "主页推荐内容", "首页「主页」tab 显示哪一行（TVBox 首页同款设置）", ref rows,
             Services.HomeRecPrefs.Label(Services.HomeRecPrefs.Load()));
