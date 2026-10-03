@@ -124,6 +124,19 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
         _mpvRender = null;
         CloseInterop();
 
+        // ★ 顺序铁律（2026-10-03 WinDbg 实测根因，勿调换）：
+        //   必须**先让 MediaPlayerElement 离开可视树**，再 Dispose MediaPlayer。
+        //   原实现是先 Dispose 播放器、再由 base.DisconnectHandler 摘元素 —— 元素在被摘掉
+        //   之前仍会向 UI 线程投递原生延迟回调，回调访问已销毁的播放器 → HRESULT 失败
+        //   （E_FAIL 80004005 / E_ABORT 80004004，两次抓到不同码）→ WinUI fail-fast
+        //   （CoreMessagingXP!Microsoft::UI::Dispatching::DispatcherQueue::DeferInvokeCallback
+        //   → combase!RoFailFastWithErrorContextInternal2，异常码 0xc000027b）。
+        //   表现：退出播放页后 1~2 秒进程直接消失，托管层（try/catch、全局钩子、日志）
+        //   完全看不到 —— 因为它发生在我们代码之外的 WinUI 分发器里。
+        try { if (_mpe is not null) _mpe.Source = null; } catch { }
+        try { if (_mpe is not null) platformView.Children.Remove(_mpe); } catch { }
+        DiagLog.Write("[player→] 元素已离开可视树");
+
         if (_mediaPlayer != null)
         {
             _mediaPlayer.MediaOpened -= OnMediaOpened;
