@@ -648,7 +648,6 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
         try { await Shell.Current.GoToAsync("live"); } catch { }
     }
 
-
     private async void OnSwitchSiteTapped(object? sender, TappedEventArgs e)
     {
         var sites = _vm.PlayableSites;
