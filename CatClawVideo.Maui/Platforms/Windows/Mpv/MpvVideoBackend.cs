@@ -27,6 +27,17 @@ public unsafe sealed class MpvVideoBackend : IVideoPlayerImplementation, IDispos
     private double _pendingSpeed = 1.0;
     private double _pendingVolume = -1;
     private IReadOnlyDictionary<string, string>? _headers;
+    /// <summary>当前源是否杜比视界（决定 hwdec 软解/硬解，initialize 前定案）。</summary>
+    private bool _dvSource;
+
+    /// <summary>必须在 Initialize() 之前调用：DV 源强制软解（hwdec=no），RPU 才能到达 mpv 做 tone-map。</summary>
+    public void SetDolbyVision(bool dv)
+    {
+        _dvSource = dv;
+        if (_mpv != IntPtr.Zero)
+            MpvLib.SetPropertyString(_mpv, "hwdec", dv ? "no" : "auto-copy");
+        BtLog($"[mpv] DV 源={dv} → hwdec={(dv ? "no（软解，保 RPU）" : "auto-copy")}");
+    }
 
     public MpvVideoBackend(VideoPlayerView view, MpvRenderControl renderControl)
     {
@@ -42,9 +53,11 @@ public unsafe sealed class MpvVideoBackend : IVideoPlayerImplementation, IDispos
 
         // 关键选项：全部在 initialize 之前设置
         MpvLib.SetPropertyString(_mpv, "vo", "libmpv");
-        // 硬解走 copy 模式（解码帧拷回内存再进 GL，规避 GL-DX interop 硬解的驱动差异）；
-        // 4K HEVC 10bit 的拷贝带宽在 RTX 4060 上无压力，稳定优先。
-        MpvLib.SetPropertyString(_mpv, "hwdec", "auto-copy");
+        // 默认硬解 copy 模式（解码帧拷回内存再进 GL，规避 GL-DX interop 硬解的驱动差异）。
+        // ⚠ DV 源必须软解：d3d11va 等 hwaccel 的 HEVC 输出 GPU surface，**不携带 RPU**，
+        //   mpv 拿不到 DV 元数据 → P5 的 IPT 色彩被当普通 YCbCr 解读 → 发绿发紫（12:56 实测）。
+        //   是否 DV 由 Handler 探测后经 SetDolbyVision 下发（initialize 前必须定案）。
+        MpvLib.SetPropertyString(_mpv, "hwdec", _dvSource ? "no" : "auto-copy");
         MpvLib.SetPropertyString(_mpv, "keep-open", "no");
         MpvLib.SetPropertyString(_mpv, "idle", "yes");
         MpvLib.SetPropertyString(_mpv, "force-window", "no");
@@ -72,8 +85,10 @@ public unsafe sealed class MpvVideoBackend : IVideoPlayerImplementation, IDispos
         // 渲染上下文：等 RenderControl 就绪（GL 上下文已 current）后再建
         _renderControl.Render += OnRenderFrame;
 
-        // mpv 内部日志桥：GL 初始化/FBO/DV tone-map 的报错都在这里出来（msg-level=v）
+        // mpv 内部日志桥：GL 初始化/FBO/DV tone-map 的报错都在这里出来（V 级）
         MpvLib.SetPropertyString(_mpv, "msg-level", "all=v");
+        // ⚠ libmpv 里 LOG_MESSAGE 事件必须显式 request（msg-level 属性只管终端，不进事件队列）
+        MpvLib.mpv_request_log_level(_mpv, MpvLib.LogLevelV);
 
         _pumpStop = false;
         _eventPump = new Thread(EventPump) { IsBackground = true, Name = "mpv-events" };

@@ -178,7 +178,7 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
 
             if (useMpv)
             {
-                ActivateMpv(url, headers);
+                ActivateMpv(url, headers, isDolbyVision: true);
                 return;
             }
             SetSourceMpe(view, url, headers);
@@ -190,8 +190,10 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
         }
     }
 
-    /// <summary>激活 libmpv 后端：建渲染面板 + mpv 实例，接口调用此后全部转发。</summary>
-    private void ActivateMpv(string url, IReadOnlyDictionary<string, string>? headers)
+    /// <summary>激活 libmpv 后端：建渲染面板 + mpv 实例，接口调用此后全部转发。
+    /// isDolbyVision：DV 源强制软解（hwdec=no）——硬解 GPU surface 不携带 RPU，mpv 拿不到
+    /// DV 元数据就会把 P5 的 IPT 色彩当 YCbCr 解读（发绿发紫，12:56 实测）。</summary>
+    private void ActivateMpv(string url, IReadOnlyDictionary<string, string>? headers, bool isDolbyVision)
     {
         var view = VirtualView;
         if (view is null || PlatformView is null) return;
@@ -209,6 +211,7 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
         _mpvRender.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
 
         _mpvBackend ??= new Mpv.MpvVideoBackend(view, _mpvRender);
+        _mpvBackend.SetDolbyVision(isDolbyVision);   // Initialize 前定案（hwdec 在创建期生效）
         if (!_mpvInitialized)
         {
             try
