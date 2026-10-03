@@ -9,6 +9,13 @@
 本期 **+227MB** 是 x86 mini guest 的 Android 13 根镜像随包（旧 aarch64 合并 initrd 仅 164MB），
 **−32MB** 来自 libmpv 退出安装包（见第五节）；净增约 223MB。
 
+> **修订（首发包之后重新出包）**：首发包存在「打开网盘源『云盘配置』→ 点『登入自己云盘』必闪退」——
+> 树渲染页在 WebView **构造期**就设 `HtmlWebViewSource`，MAUI 的 WebView2 代理在 `CoreWebView2` 尚未
+> 初始化完成时回调 `LoadHtml` → 空引用（WinUI stowed exception `0xc000027b`，事件日志落在
+> `Microsoft.UI.Xaml.dll`，应用自查日志 %TEMP%\catclawvideo_startup.log 有完整栈）。
+> **现已修复**：① 构造期只建 WebView，HTML 缓存到控件 Loaded（Handler 就绪）后再设源；
+> ② WinUI 异常钩子对这条已知栈标记已处理，宁可对话框空白也不让应用消失。本包为修复后的构建。
+
 ---
 
 ## 一、遥控投屏与推流（N1–N4）
