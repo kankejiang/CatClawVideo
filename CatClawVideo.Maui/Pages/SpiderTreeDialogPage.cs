@@ -65,6 +65,9 @@ public partial class SpiderTreeDialogPage : ContentPage, IRemoteKeyHandler
 #if WINDOWS
         _host = new Platforms.Windows.TreeWebHost { Log = m => DiagLog.Write(m) };
         _host.LinkClicked += HandleClsk;      // clsk:clk:<下标> / clsk:btn:<n> / clsk:cancel
+        // ⚠ 必须把 HTML 交给宿主：WebView2 尚未就绪时它会先存下，就绪后自动注入（原 MAUI 路径
+        //   靠 Loaded 事件触发 ApplyHtml，换宿主时漏了这一步 → 页面只有黑底没内容）。
+        _host.SetHtml(_html);
 #else
         _web = new WebView();
         // 不当场设 Source：构造期设源会触发 MAUI WebView2 代理的空引用崩溃（2026-10-03）

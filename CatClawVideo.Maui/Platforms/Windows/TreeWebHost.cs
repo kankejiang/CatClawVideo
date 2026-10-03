@@ -108,7 +108,10 @@ public sealed class TreeWebHost : ContentView
         try
         {
             if (_ready && _html.Length > 0 && _wv?.CoreWebView2 is { } core)
+            {
                 core.NavigateToString(_html);
+                Log?.Invoke($"[tree] 已注入 HTML（{_html.Length} 字符）");
+            }
         }
         catch (Exception ex)
         {
