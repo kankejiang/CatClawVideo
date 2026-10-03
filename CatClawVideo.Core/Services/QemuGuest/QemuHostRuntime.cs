@@ -128,6 +128,18 @@ public sealed class QemuHostRuntime : IDisposable
     /// </summary>
     public SparseBlockStore? SwapStore { get; private set; }
 
+    /// <summary>
+    /// 持久化数据盘（可选）—— guest 的 <c>/data</c> 整个落在宿主本地文件上（ext4，guest 首启
+    /// 自行 mke2fs），模拟器标准形态（AVD userdata 同款）：壳的 SharedPreferences / Cookie /
+    /// dalvik-cache 全部跨 VM 重启存活，宿主侧的 prefs 回灌/同步管道就此退役。
+    ///
+    /// <para><b>cache=writeback（不是 unsafe）</b>：这块盘装的是登录态等必须落盘的数据，
+    /// 吞吐无关紧要、持久性第一；guest 侧 ext4 日志 + QEMU 正常退出语义兜底。</para>
+    ///
+    /// <para>为 null 时不挂盘，<c>/data</c> 维持 initramfs 内存态（旧行为）。</para>
+    /// </summary>
+    public SparseBlockStore? PersistStore { get; private set; }
+
     /// <summary>无 swap 时的 guest RAM（MB）—— 必须容得下 <see cref="DataDirMb"/> 的内存盘。</summary>
     public int GuestMemoryMb { get; set; } = 5120;
 
@@ -145,6 +157,14 @@ public sealed class QemuHostRuntime : IDisposable
     /// slirp 拨的是 guest eth0 地址，连接被直接 RST = WinError 10054）。
     /// </summary>
     public (int Host, int Guest)? ProxyTunnel { get; set; }
+
+    /// <summary>
+    /// GoProxy（pvideo）流隧道：宿主端口 → guest <c>25266</c>。guest 内 init 起的
+    /// <c>tcpfwd</c> 把 25266 桥接到 pvideo 的 <c>127.0.0.1:5266</c>（pvideo 只绑回环，
+    /// slirp 直连会被 RST）。playerContent 返回的 <c>127.0.0.1:5266</c> 播放/弹幕地址
+    /// 由 JavaSpiderRuntime 改写成宿主端口后走本隧道。
+    /// </summary>
+    public (int Host, int Guest)? GoProxyTunnel { get; set; }
 
     /// <summary>启用 swap 时的 guest RAM（MB）—— 冷页能换出，取值可小得多。</summary>
     public int GuestMemoryMbWithSwap { get; set; } = 2560;
@@ -167,6 +187,7 @@ public sealed class QemuHostRuntime : IDisposable
         string initrdName = "pkg_initrd.gz", string consoleLogTag = "", int monitorPort = 0,
         string? blockImagePath = null, long blockImageBytes = 0,
         string? swapImagePath = null, long swapImageBytes = 0,
+        string? persistImagePath = null, long persistImageBytes = 0,
         int ctrlPort = 0, int guardPort = 0, string? magnetOverride = null,
         int thunderPort = 0, int adbPort = 0)
     {
@@ -213,6 +234,22 @@ public sealed class QemuHostRuntime : IDisposable
             catch (Exception ex)
             {
                 _log?.Invoke($"[qemu] 交换区不可用（退化为纯内存 tmpfs）：{ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
+        // 持久化数据盘（可选）：/data 整体落盘（模拟器 userdata 同款）。失败退回内存态。
+        if (!string.IsNullOrEmpty(persistImagePath) && persistImageBytes > 0)
+        {
+            try
+            {
+                var ps = new SparseBlockStore(persistImagePath!, persistImageBytes);
+                ps.EnsureCreated();
+                PersistStore = ps;
+                _log?.Invoke($"[qemu] 持久数据盘就绪：{persistImagePath}（{persistImageBytes / 1024 / 1024}MB，稀疏={ps.IsSparse}）");
+            }
+            catch (Exception ex)
+            {
+                _log?.Invoke($"[qemu] 持久数据盘不可用（/data 退回内存态）：{ex.GetType().Name}: {ex.Message}");
             }
         }
     }
@@ -301,6 +338,10 @@ public sealed class QemuHostRuntime : IDisposable
             if (GuardPort > 0) netdev += $",hostfwd=tcp:127.0.0.1:{GuardPort}-:{GuardPort}";
             // 爬虫自带 /proxy 服务的隧道（ART guest）
             if (ProxyTunnel is { } pt) netdev += $",hostfwd=tcp:127.0.0.1:{pt.Host}-:{pt.Guest}";
+            // GoProxy（pvideo，guest 5266）流隧道：pvideo 只绑 127.0.0.1，slirp 从 eth0 进来
+            // 直接 RST（2026-09-26 实测）；guest 内 tcpfwd 把 25266 桥接到 127.0.0.1:5266，
+            // 这条 hostfwd 把宿主 GoProxyTunnel 透到 guest 25266（init 起的 tcpfwd，见 init）。
+            if (GoProxyTunnel is { } gp) netdev += $",hostfwd=tcp:127.0.0.1:{gp.Host}-:{gp.Guest}";
             // ── B1.0：guest 里的 adbd（5555）── guest 内由桥（Java）拉起（见 Server.startAdbd），
             // 这里只做端口映射，宿主即可 `adb connect 127.0.0.1:<AdbPort>` 进去排障。
             if (AdbPort > 0)
@@ -392,6 +433,16 @@ public sealed class QemuHostRuntime : IDisposable
                 args.Add("virtio-blk-pci,drive=swap0");
             }
 
+            // ── 持久化数据盘（可选）—— /data 落宿主本地 ext4 ──
+            // cache=writeback：登录态等持久数据优先保真（对比数据面/交换区的 unsafe）。
+            if (PersistStore is not null)
+            {
+                args.Add("-drive");
+                args.Add($"file={PersistStore.ImagePath},if=none,id=persist0,format=raw,cache=writeback");
+                args.Add("-device");
+                args.Add("virtio-blk-pci,drive=persist0");
+            }
+
             // ★ 块设备名**由宿主认定后经 cmdline 告诉 guest**，不能让 guest 猜：
             //   vda/vdb 取决于挂载顺序，而数据面孔是**可选的** —— 若它缺席，vda 就变成了交换区，
             //   harness 会把引擎字节按文件偏移写进交换区（后果严重）。
@@ -401,6 +452,7 @@ public sealed class QemuHostRuntime : IDisposable
             var append = $"{consoleTty} rdinit=/init loglevel=4 tdata={tdataMb}m";
             if (BlockStore is not null) append += $" blkdev=/dev/vd{(char)('a' + vdIndex++)}";
             if (SwapStore is not null) append += $" swapdev=/dev/vd{(char)('a' + vdIndex++)}";
+            if (PersistStore is not null) append += $" datadev=/dev/vd{(char)('a' + vdIndex++)}";
             // Guard VM 的口令与启动磁力经 cmdline 覆盖（/init 的 getarg；缺省与旧行为一致）
             if (CtrlPort > 0) append += $" ctrl={CtrlPort}";
             if (GuardPort > 0) append += $" guardport={GuardPort}";

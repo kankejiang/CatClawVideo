@@ -417,6 +417,19 @@ fi
 #   与上方 LD_LIBRARY_PATH 的「arm64 路径禁入 init 环境」警告不冲突。harness 行已有显式 -L（值相同）。
 export QEMU_LD_PREFIX=/thunder-arm
 
+# ★ GoProxy 流隧道（2026-10-03）：pvideo 只绑 127.0.0.1:5266，slirp hostfwd 从 eth0
+#   进来会被直接 RST（2026-09-26 实测教训），busybox nc -l 单发又只服一个连接
+#   （播放器视频+弹幕并发会卡死 backlog）。tcpfwd（fork per connection，静态自包含）
+#   把 0.0.0.0:25266 桥接到 127.0.0.1:5266；宿主经 hostfwd → 25266 → tcpfwd → pvideo。
+#   pvideo 未起时连接失败、起来即通，无需时序配合。
+(
+  while true; do
+    /bin/tcpfwd 25266 127.0.0.1 5266 >>/tmp/tcpfwd.log 2>&1
+    echo "[tcpfwd] 退出（code=$?），1s 后重启" >> /tmp/tcpfwd.log
+    $BB sleep 1
+  done
+) &
+
 LD_PRELOAD=/proppreload.so /system/bin/artlaunch bridge.GuestMain /gb.dex:/tvbox.apk $PORT &
 LP=$!
 while true; do

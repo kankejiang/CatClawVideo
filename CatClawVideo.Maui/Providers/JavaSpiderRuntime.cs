@@ -578,6 +578,15 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
             _ = DiagnoseGuestPortsAsync(ct);
             return raw.Replace("127.0.0.1:6678", "127.0.0.1:" + art2.ProxyTunnelPort);
         }
+        // GoProxy（pvideo）流地址（2026-10-03）：playerContent 返回 127.0.0.1:5266/fishplay/…
+        // 与同端口的 fishdanmu 弹幕地址 —— pvideo 在 guest 里只绑回环，宿主播放器直接连必死
+        // （「源不受支持」）。全部换成宿主 GoProxy 隧道端口（hostfwd → guest 25266 → tcpfwd → 5266）。
+        if (ArtGuestMode && raw.Contains("127.0.0.1:5266") && _art is { GoProxyTunnelPort: > 0 } art3)
+        {
+            Log($"{site.Name}: GoProxy 流地址改写 5266 → {art3.GoProxyTunnelPort}（url+danmaku）");
+            _ = DiagnoseGuestPortsAsync(ct);
+            return raw.Replace("127.0.0.1:5266", "127.0.0.1:" + art3.GoProxyTunnelPort);
+        }
         return raw;
     }
 
@@ -764,8 +773,14 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
 
             await HandshakeAsync(ct).ConfigureAwait(false);
             // guest 的 /data 是 tmpfs（VM 冷启即清）：把上次会话持久化的偏好（网盘 Cookie 等）
-            // 回灌进 guest，必须发生在任何 spider 代码运行之前（PrefsStore 按名惰性读盘）
-            await RestoreGuestPrefsAsync(ct).ConfigureAwait(false);
+            // 回灌进 guest，必须发生在任何 spider 代码运行之前（PrefsStore 按名惰性读盘）。
+            // ⚠ 持久数据盘（datadev）启用时**必须跳过**：/data 已跨重启存活，盘上的状态比
+            // 宿主 guest-prefs 更新（prefs-sync 只在 flush 时上行），回灌会用宿主旧值盖新值
+            // ——实测「扫码成功的新 Cookie 被回灌的旧 spUtils 覆盖」（2026-10-02）。
+            if (_art?.PersistentDataDisk == true)
+                Log("持久数据盘已挂载 /data —— 跳过偏好回灌（盘上即最新状态）");
+            else
+                await RestoreGuestPrefsAsync(ct).ConfigureAwait(false);
         }
         finally { _bridgeGate.Release(); }
     }
@@ -897,6 +912,9 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
                         var sp = line.IndexOf(' ');
                         var op = sp < 0 ? line : line[..sp];
                         var data = sp < 0 ? "" : line[(sp + 1)..].Trim();
+                        // 2026-10-02 网盘登录态排障：壳的扫码确认链会来这里做凭据加密——
+                        // 每条请求留痕（op + 体积 + 结果形态），判定「保存中断是否发生在本服务」。
+                        Log($"[guardsvc] {op} data={data.Length}B");
                         string result;
                         try
                         {
@@ -910,11 +928,11 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
                             if (resp["ok"]?.GetValue<bool>() == true && !string.IsNullOrEmpty(resStr))
                                 result = "OK " + resStr;
                             else
-                                result = "ERR decrypt failed";
+                                result = "ERR decrypt failed | resp=" + resp.ToJsonString()[..Math.Min(240, resp.ToJsonString().Length)];
                         }
                         catch (Exception ex)
                         {
-                            result = "ERR " + ex.Message;
+                            result = "ERR " + ex.GetType().Name + ": " + ex.Message;
                         }
                         var outBytes = Encoding.UTF8.GetBytes(result + "\r\n");
                         await stream.WriteAsync(outBytes).ConfigureAwait(false);
@@ -1289,53 +1307,6 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     /// （实测单集 883MB ~ 2.35GB），老路把整段读进 <c>byte[]</c> 会 OOM 且要等下完才起播。
     /// 这里用 <c>ResponseHeadersRead</c> 只等头，body 作为流交回给宿主边收边写。
     ///
-    /// <para>返回的 <see cref="Stream"/> 与底层连接同生命周期：调用方写完即弃（不 dispose 也可，
-    /// 连接随响应对象回收）。</para>
-    /// </summary>
-    public async Task<(int Status, string Mime, Stream Body)?> ProxyStreamAsync(
-        IReadOnlyDictionary<string, string> query, CancellationToken ct = default)
-    {
-        var key = query.GetValueOrDefault("siteKey");
-        var site = string.IsNullOrEmpty(key) ? null : SiteRegistry.Find(key);
-        site ??= _lastSite;
-        if (site is null)
-        {
-            Log("proxy 流：siteKey 缺失且无最近站点");
-            return null;
-        }
-        try
-        {
-            await EnsureBridgeAsync(ct).ConfigureAwait(false);
-            var jarPath = await EnsureConvertedJarAsync(site, ct).ConfigureAwait(false);
-            await EnsureSiteLoadedAsync(site, jarPath, ct).ConfigureAwait(false);
-            if (_art?.ProxyBase is not { } tunnel)
-            {
-                Log("proxy 流：隧道不可用（ART guest 未连接）");
-                return null;
-            }
-
-            var q = new Dictionary<string, string>(query) { ["site"] = site.Key };
-            var url = tunnel + "/proxy?" + string.Join("&",
-                q.Select(kv => Uri.EscapeDataString(kv.Key) + "=" + Uri.EscapeDataString(kv.Value ?? "")));
-            var resp = await TunnelHttp.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct)
-                .ConfigureAwait(false);
-            var body = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-            Log($"proxy 流：{site.Key} do={query.GetValueOrDefault("do")} → {(int)resp.StatusCode}（不缓冲）");
-            return ((int)resp.StatusCode,
-                resp.Content.Headers.ContentType?.MediaType ?? "application/octet-stream", body);
-        }
-        catch (Exception ex)
-        {
-            Log($"proxy 流异常：{ex.GetType().Name}: {ex.Message}");
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// 流式版 <see cref="ProxyAsync"/>：网盘取流（<c>do=proxy&amp;key=…</c>）是**连续大流**
-    /// （实测单集 883MB ~ 2.35GB），老路把整段读进 <c>byte[]</c> 会 OOM 且要等下完才起播。
-    /// 这里用 <c>ResponseHeadersRead</c> 只等头，body 作为流交回给宿主边收边写。
-    ///
     /// <para><b>Range（2026-10-03）</b>：壳从 **query 参数 <c>range</c>** 读区间（实测验证：
     /// 带 <c>&amp;range=bytes=1e8-</c> 与不带返回的数据不同；不带则永远从 0 开始流，
     /// FFmpeg 拿不到尾部索引 → 黑屏）。播放器的 <c>Range</c> 头由 <paramref name="requestHeaders"/>
@@ -1410,7 +1381,7 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
             q.Select(kv => Uri.EscapeDataString(kv.Key) + "=" + Uri.EscapeDataString(kv.Value ?? "")));
         using var resp = await TunnelHttp.GetAsync(url, ct).ConfigureAwait(false);
         var body = await resp.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
-        Log($"proxy 隧道：{siteKey} do={query.GetValueOrDefault("do")} → {(int)resp.StatusCode} {body.Length}B");
+Log($"proxy 隧道：{siteKey} do={query.GetValueOrDefault("do")} → {(int)resp.StatusCode} {body.Length}B");
         return ((int)resp.StatusCode,
             resp.Content.Headers.ContentType?.MediaType ?? "text/plain", body);
     }

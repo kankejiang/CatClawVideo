@@ -70,6 +70,10 @@ public sealed class QemuArtGuest : IDisposable
     /// <summary>把爬虫写的 guest 地址换成宿主隧道地址；没开隧道时原样返回。</summary>
     public string? ProxyBase => ProxyTunnelPort > 0 ? $"http://127.0.0.1:{ProxyTunnelPort}" : null;
 
+    /// <summary>GoProxy（pvideo）流隧道的宿主端口（0 = 没开成）。guest 侧固定 25266（init 的
+    /// tcpfwd 桥到 127.0.0.1:5266）。playerContent 的 5266 地址由 JavaSpiderRuntime 改写到这。</summary>
+    public int GoProxyTunnelPort { get; private set; }
+
     // ── 迅雷引擎合并（2026-09-27，docs 交接 §6.9）────────────────────────────────
     /// <summary>合并模式：本 VM 用「ART+迅雷」合并 initrd（<see cref="MergedInitrdName"/>），
     /// 桥与迅雷 harness 同 guest 跑。启用后额外：挂数据面（store-art.img→/dev/vda）与
@@ -90,6 +94,16 @@ public sealed class QemuArtGuest : IDisposable
 
     /// <summary>交换区容量（合并模式；0 = 不挂）。</summary>
     public long SwapDeviceCapacityBytes { get; set; } = 6L * 1024 * 1024 * 1024;
+
+    /// <summary>
+    /// 持久数据盘容量（/data 落宿主 ext4；稀疏文件按需占空间）。
+    /// 2026-10-03 由 4GB 提到 16GB：盘上除登录态外还要放 dalvik-cache 与各壳的 config.db，
+    /// 且不排除日后复用它做播放缓存；稀疏文件按写入量增长，调大本身不占额外磁盘。
+    /// </summary>
+    public long PersistDeviceCapacityBytes { get; set; } = 16L * 1024 * 1024 * 1024;
+
+    /// <summary>持久数据盘是否在用（宿主已挂 persist 镜像）——JavaSpiderRuntime 据此跳过 prefs 回灌。</summary>
+    public bool PersistentDataDisk => _vm?.PersistStore is not null;
 
     /// <summary>合并模式使用的 initrd 文件名。</summary>
     public string MergedInitrdName { get; set; } = "art_initrd_merged.gz";
@@ -233,10 +247,13 @@ public sealed class QemuArtGuest : IDisposable
             // 想关掉就设环境变量 CATCLAW_ART_ADB=0。
             var adbPort = Environment.GetEnvironmentVariable("CATCLAW_ART_ADB") == "0"
                 ? 0 : PickFreePort(tunnel + 1);
+            // GoProxy（pvideo 5266）流隧道：guest 侧固定 25266（init 的 tcpfwd），宿主端口动态挑
+            var gofwd = PickFreePort((adbPort > 0 ? adbPort : tunnel) + 1);
             if (bridge == 0 || media == 0) { Log("找不到可用端口"); return false; }
             BridgePort = bridge;
             ProxyTunnelPort = tunnel;
             AdbTunnelPort = adbPort;
+            GoProxyTunnelPort = gofwd;
             _dns ??= new ArtDnsServer(_log);      // guest 里所有 Java 域名解析都问到这（见 ArtDnsServer 注释）
             // 合并模式：数据面/交换区镜像（与 QemuThunderEngine 同目录约定，文件名带 -art 区分）
             string? blkPath = null, swapPath = null;
@@ -254,10 +271,19 @@ public sealed class QemuArtGuest : IDisposable
                     blkPath = null; swapPath = null;
                 }
             }
+            // 持久化数据盘（2026-10-02）：/data 整体落宿主本地 ext4——模拟器 userdata 同款，
+            // 壳的 SharedPreferences/Cookie 跨重启存活。CATCLAW_ART_DATA=0 关闭（退内存态）。
+            string? persistPath = null;
+            if (Environment.GetEnvironmentVariable("CATCLAW_ART_DATA") != "0")
+            {
+                try { persistPath = AppPaths.LocalOf("art-guest-data.img"); }
+                catch (Exception ex) { Log("持久数据盘路径无效（/data 退内存态）：" + ex.Message); }
+            }
             _vm = new QemuHostRuntime(_runtimeDir, media, _log, initrdFile, consoleLogTag: "-art",
                     monitorPort: 0, ctrlPort: _dns.Port, guardPort: bridge, magnetOverride: "none",
                     blockImagePath: blkPath, blockImageBytes: blkPath is null ? 0 : BlockDeviceCapacityBytes,
                     swapImagePath: swapPath, swapImageBytes: swapPath is null ? 0 : SwapDeviceCapacityBytes,
+                    persistImagePath: persistPath, persistImageBytes: persistPath is null ? 0 : PersistDeviceCapacityBytes,
                     thunderPort: ThunderMerged ? ThunderPort : 0, adbPort: adbPort)
             {
                 Arch = GuestArch,
@@ -287,6 +313,7 @@ public sealed class QemuArtGuest : IDisposable
                     ? "virtio-net-pci,netdev=n0"
                     : "virtio-net-device,netdev=n0",
                 ProxyTunnel = tunnel > 0 ? (tunnel, GuestProxyPort) : null,
+                GoProxyTunnel = gofwd > 0 ? (gofwd, 25266) : null,
             };
             // 合并模式：给迅雷引擎建租约（媒体口 / 数据盘 / swap 全租用；VM 生命周期仍归本类）。
             // Died 转发：QemuThunderEngine 借它感知「桥侧把 VM 收走了」（桥重置会连带杀迅雷会话）。
