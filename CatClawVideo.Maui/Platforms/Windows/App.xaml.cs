@@ -31,8 +31,22 @@ public partial class App : MauiWinUIApplication
         // 避免被正常业务异常淹没。
         AppDomain.CurrentDomain.FirstChanceException += (_, e) =>
         {
-            if (e.Exception is System.Runtime.InteropServices.COMException)
-                LogCrash("FirstChance.COMException", e.Exception);
+            if (e.Exception is System.Runtime.InteropServices.COMException ce)
+            {
+                LogCrash("FirstChance.COMException", ce);
+                // FirstChance 触发时异常自身的 StackTrace 还没赋值（只剩 throw 点一帧，实测），
+                // 用 Environment.StackTrace 记录**当前**调用栈 —— 此刻尚未 unwound，最接近抛出点，
+                // 这是我们唯一能拿到"到底是哪一行调用了会返回失败 HRESULT 的 WinRT API"的机会。
+                try
+                {
+                    var log = Path.Combine(Path.GetTempPath(), "catclawvideo_startup.log");
+                    var frames = (Environment.StackTrace ?? string.Empty).Split('\n');
+                    File.AppendAllText(log,
+                        $"[{DateTime.Now:HH:mm:ss.fff}] FIRSTCHANCE 0x{ce.HResult:X8} {ce.Message}\n"
+                        + string.Join("\n", frames.Take(26)) + "\n\n");
+                }
+                catch { /* 记日志失败不影响主流程 */ }
+            }
         };
     }
 
