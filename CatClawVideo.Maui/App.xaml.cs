@@ -161,6 +161,18 @@ public partial class App : Application
                 // 位置/尺寸变化（含拖到别的屏）都会触发：换屏后按新屏工作区收缩
                 appWindow.Changed += (_, _) => ClampWindowToDisplay();
 
+                // 兜底：Changed 在**任务视图打开期间 / 显示器热插拔 / DPI 切换**等场景不触发，
+                // 窗口就会停在超屏状态（右侧与底部出屏，底部播放控件被裁，14:42 实测）。
+                // 每秒复查一次（ClampWindowToDisplay 幂等 + 全屏时直接 return，无副作用）。
+                var dq = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
+                var clampTimer = dq?.CreateTimer();
+                if (clampTimer != null)
+                {
+                    clampTimer.Interval = TimeSpan.FromSeconds(1);
+                    clampTimer.Tick += (_, _) => ClampWindowToDisplay();
+                    clampTimer.Start();
+                }
+
                 // 退出时记住窗口尺寸，下次启动回放
                 nativeWindow.Closed += (_, _) => SaveWindowSize(appWindow, hwnd);
 
