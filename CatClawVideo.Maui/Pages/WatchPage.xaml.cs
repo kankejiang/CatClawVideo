@@ -1143,6 +1143,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
         if (Math.Abs(target - _appliedPlayerHeight) < 0.5) return;
         _appliedPlayerHeight = target;
         PlayerHost.HeightRequest = target;
+        Services.BtFileLog.Write($"[player-layout] H={Height:F0} W={Width:F0} fullscreen={_isFullscreen} -> PlayerHost={target:F0}");
 
         // 播放器高度变了 → 选集栏必须跟着等高，否则窗口放大后选集框还是旧高度、明显不齐。
         // 延后一拍：此刻新高度尚未完成布局，Border 的 Height 还是旧值。
@@ -1164,9 +1165,27 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
         return cleaned;
     }
 
+    private bool _nativeSizeHooked;
+
+#if WINDOWS
+    private void OnNativeWindowSizeChanged(object? sender, Microsoft.UI.Xaml.WindowSizeChangedEventArgs e)
+    {
+        // 窗口被外部改变（跨屏钳制/用户拉伸）：MAUI 的 OnSizeAllocated 偶发不跟（实测控制条
+        // 被裁在窗口外一半），这里强制立即重算播放器高度。
+        Dispatcher.Dispatch(ApplyPlayerHeight);
+    }
+#endif
+
     protected override void OnAppearing()
     {
         base.OnAppearing();
+#if WINDOWS
+        if (!_nativeSizeHooked && App.CurrentNativeWindow is Microsoft.UI.Xaml.Window win)
+        {
+            _nativeSizeHooked = true;
+            win.SizeChanged += OnNativeWindowSizeChanged;
+        }
+#endif
 
         // 接管方向键（本页是整窗推送页，键盘栈顶只它一个消费者）
         RemoteKeyRouter.Push(this);
