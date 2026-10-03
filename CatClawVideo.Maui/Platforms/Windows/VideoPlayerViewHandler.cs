@@ -1,4 +1,4 @@
-﻿using CatClawVideo.Maui.Controls;
+using CatClawVideo.Maui.Controls;
 using TrackLang = CatClawVideo.Maui.Services.TrackLang;
 using Microsoft.Maui.Handlers;
 using MediaPlayer = global::Windows.Media.Playback.MediaPlayer;
@@ -21,6 +21,18 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
 {
     private MediaPlayer? _mediaPlayer;
     private Microsoft.UI.Xaml.Controls.MediaPlayerElement? _mpe;
+
+    /// <summary>
+    /// 上一轮播放器（**故意不随页面销毁**）。
+    ///
+    /// <para>2026-10-03 取证：退出播放页后进程会以 stowed exception(0xc000027b) 死掉，原生栈为
+    /// <c>CoreMessagingXP!DispatcherQueue::DeferInvokeCallback → combase!RoFailFastWithErrorContextInternal2</c>
+    /// —— "未观察到的异步失败"。失败码是 E_ABORT(80004004)/E_FAIL(80004005)，正是"操作被中止"语义：
+    /// 我们在页面销毁时 <c>MediaPlayer.Dispose()</c>，把它**自己正在飞的异步操作**掐断了，
+    /// 失败随后落在 WinUI 的延迟回调里 → fail-fast（托管层完全看不到）。
+    /// 故：页面退出**只停流+净源+解绑事件**，播放器留到下一次建播放器时再释放（那时旧元素早已不在树上）。</para>
+    /// </summary>
+    private static Microsoft.Media.Playback.MediaPlayer? _retiredPlayer;
     private Mpv.MpvRenderControl? _mpvRender;
     private Mpv.MpvVideoBackend? _mpvBackend;
     /// <summary>非 null 时接口方法全部转发给它（当前 = mpv 后端）。</summary>
@@ -83,6 +95,15 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
     {
         base.ConnectHandler(platformView);
 
+        // 释放上一轮留下的播放器：此刻它对应的 MediaPlayerElement 早已不在可视树上，
+        // 不会再有延迟回调访问它 → 在"元素已消失"的安全时机释放（见 _retiredPlayer 注释）。
+        if (_retiredPlayer is { } old)
+        {
+            _retiredPlayer = null;
+            try { old.Dispose(); DiagLog.Write("[player→] 已释放上一轮播放器"); }
+            catch (Exception ex) { DiagLog.Write($"[player→] 释放上一轮播放器失败：{ex.GetType().Name}"); }
+        }
+
         _mediaPlayer = new MediaPlayer();
         _mediaPlayer.MediaOpened += OnMediaOpened;
         _mediaPlayer.MediaFailed += OnMediaFailed;
@@ -144,7 +165,13 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
             _mediaPlayer.MediaEnded -= OnMediaEnded;
             if (_mediaPlayer.PlaybackSession != null)
                 _mediaPlayer.PlaybackSession.PlaybackStateChanged -= OnPlaybackStateChanged;
-            DiagLog.Write("[player→] MediaPlayer.Dispose 前"); _mediaPlayer.Dispose(); DiagLog.Write("[player→] MediaPlayer.Dispose 后");
+            // ★ 不再在这里 Dispose（见 _retiredPlayer 注释）：Dispose 会中止播放器正在飞的
+            //   异步操作，失败落进 WinUI 延迟回调 → fail-fast 打死进程。
+            //   只做「停 + 净源 + 解绑事件」，对象留给下一次 ConnectHandler 释放。
+            try { _mediaPlayer.Pause(); } catch { }
+            try { _mediaPlayer.Source = null; } catch { }
+            DiagLog.Write("[player→] 已停流并净源（不 Dispose，留给下次建播放器时释放）");
+            _retiredPlayer = _mediaPlayer;
             _mediaPlayer = null;
         }
         ReleaseDisplayRequest();
