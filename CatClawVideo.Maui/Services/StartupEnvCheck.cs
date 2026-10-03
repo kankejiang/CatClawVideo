@@ -49,6 +49,7 @@ public static class StartupEnvCheck
                     ("whpx", QemuEnvLevel.Warn or QemuEnvLevel.Fail) =>
                     [
                         new EnvAction("enable-whpx", "一键启用虚拟化"),
+                        new EnvAction("howto-whpx", "详细步骤"),
                         new EnvAction("open-optional-features", "手动打开 Windows 功能"),
                     ],
                     ("qemu" or "guest", QemuEnvLevel.Fail) =>

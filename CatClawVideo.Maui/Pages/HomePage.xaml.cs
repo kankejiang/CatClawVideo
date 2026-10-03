@@ -282,6 +282,7 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
         switch (id)
         {
             case "enable-whpx": _ = EnableWhpxAsync(); break;
+            case "howto-whpx": _ = AlertAsync(WhpxHowTo); break;
             case "open-optional-features": OpenOptionalFeatures(); break;
             case "fetch-assets": _ = FetchAssetsAsync(); break;
             case "open-release-vm":
@@ -297,25 +298,57 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
     private static Task AlertAsync(string message) =>
         Shell.Current?.DisplayAlertAsync("启动自检", message, "好") ?? Task.CompletedTask;
 
+    /// <summary>
+    /// WHPX 未启用的完整处置步骤（点「详细步骤」弹出）。
+    /// 三种根因的解法不同，所以先说怎么判断，再给逐条操作与排障要点。
+    /// </summary>
+    private const string WhpxHowTo =
+        "按顺序来（多数机器到第 ④ 步就好了）：\n\n" +
+        "① 确认 CPU 虚拟化在 BIOS/UEFI 里是开的（Intel VT-x / AMD-V / SVM Mode）。\n" +
+        "   这里被关掉的话，后面怎么弄都没用。\n\n" +
+        "② 开启可选功能（需要「虚拟机监控程序平台」，建议把「虚拟机平台」一起开）：\n" +
+        "   · 一键：点本卡片上的「一键启用虚拟化」——会弹 UAC，自动执行下面两条命令。\n" +
+        "   · 手动：Win+R 输入 optionalfeatures，勾选「虚拟机监控程序平台」「虚拟机平台」。\n" +
+        "   · 管理员命令行：\n" +
+        "     dism /online /enable-feature /featurename:HypervisorPlatform /all /norestart\n" +
+        "     dism /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart\n\n" +
+        "③ 确认 hypervisor 启动类型没被关过（管理员命令行；一键按钮也会做这一步）：\n" +
+        "   bcdedit /set hypervisorlaunchtype auto\n\n" +
+        "④ 重启电脑（功能开关不重启不生效），回来重开本应用看「硬件加速」是否变绿。\n\n" +
+        "排障：\n" +
+        "· 「任务管理器显示虚拟化已启用」「Hyper-V 全开」都不代表 WHPX 可用——WHPX 要的是\n" +
+        "  WinHvPlatform.dll，它由「虚拟机监控程序平台」这个功能提供。\n" +
+        "· 与 VMware/VirtualBox 老版本、部分反作弊驱动的虚拟化占用冲突时，也可能一直起不来。\n" +
+        "· 实在开不了不影响使用：引擎回落软件模拟（慢 10~20 倍），磁力与爬虫功能仍然可用。";
+
     /// <summary>提权启用「虚拟机监控程序平台」（WHPX 的宿主前置功能），重启后生效。</summary>
     private async Task EnableWhpxAsync()
     {
 #if WINDOWS
         try
         {
-            var psi = new System.Diagnostics.ProcessStartInfo("dism.exe",
-                "/Online /Enable-Feature /FeatureName:HypervisorPlatform /All /NoRestart")
+            // 一条提权命令做三件事（用 & 串联，某步失败不影响其余，退出码取最后一条）：
+            //   ① 开「虚拟机监控程序平台」  —— WHPX 的宿主前置（WinHvPlatform.dll 由它提供）
+            //   ② 开「虚拟机平台」          —— 建议一起开（WSL2/沙箱等同样依赖）
+            //   ③ hypervisorlaunchtype=auto —— 曾被 bcdedit 关过的机器，光开功能起不来
+            var chain = "/c dism /Online /Enable-Feature /FeatureName:HypervisorPlatform /All /NoRestart"
+                      + " & dism /Online /Enable-Feature /FeatureName:VirtualMachinePlatform /All /NoRestart"
+                      + " & bcdedit /set hypervisorlaunchtype auto";
+            var psi = new System.Diagnostics.ProcessStartInfo("cmd.exe", chain)
             { UseShellExecute = true, Verb = "runas" };
             var p = System.Diagnostics.Process.Start(psi);
             if (p is null)
             {
-                await AlertAsync("未能启动 dism.exe，请点「手动打开 Windows 功能」自行勾选。");
+                await AlertAsync("未能启动提权命令，请点「详细步骤」按命令行自行操作。");
                 return;
             }
             await p.WaitForExitAsync();
             await AlertAsync(p.ExitCode == 0
-                ? "已启用「虚拟机监控程序平台」。重启电脑后生效（重启前引擎仍走软件模拟）。"
-                : "启用失败（DISM 退出码 " + p.ExitCode + "）。可点「手动打开 Windows 功能」手工勾选「虚拟机监控程序平台」。");
+                ? "已执行启用操作（虚拟机监控程序平台 + 虚拟机平台 + hypervisorlaunchtype=auto）。\n\n" +
+                  "请重启电脑后生效——重启前引擎仍走软件模拟。重启后回来看本卡片「硬件加速」是否变绿；" +
+                  "若仍不绿，点「详细步骤」按 BIOS(VT-x/AMD-V) 那几条排查。"
+                : "启用命令返回 " + p.ExitCode + "（可能被 UAC/组策略拦下）。\n\n" +
+                  "请点「详细步骤」按命令行逐条操作，或点「手动打开 Windows 功能」自行勾选。");
         }
         catch (System.ComponentModel.Win32Exception)
         {
