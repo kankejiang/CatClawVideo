@@ -284,6 +284,24 @@ public partial class HomeViewModel : ObservableObject
             return;
         }
 
+        // ★ 首屏快照（2026-10-03，落盘在数据目录 home-snapshot.json）：先上屏，后台再刷新。
+        //   没它的话每次冷启动都要现找活站拉分类 —— 实测 110 站只有 ~8 个能出分类，首屏 35~38s。
+        //   下面的完整流程照跑，拉到新数据会整体替换（含站点切换）。
+        var snap = Services.HomeSnapshotStore.Load();
+        if (snap is { Categories.Count: > 0 })
+        {
+            foreach (var c in snap.Categories) Categories.Add(new VodCategory { Id = c.Id, Name = c.Name });
+            SelectedCategoryId = snap.CategoryId is { Length: > 0 } cid ? cid : snap.Categories[0].Id;
+            _currentCategory = Categories.FirstOrDefault(c => c.Id == SelectedCategoryId);
+            foreach (var it in snap.Items)
+                Items.Add(new VodItem { Id = it.Id, SourceKey = it.SourceKey, Title = it.Title, Cover = it.Cover });
+            if (sites.FirstOrDefault(s => s.Key == snap.SiteKey) is { } snapSite) CurrentSite = snapSite;
+            CoverResolver.Attach(_covers, Items.ToList());      // 封面走本地缓存，秒出
+            HomeStatus = "已显示上次内容（" + snap.SiteName + "）· 正在刷新…";
+            DiagLog.Write($"[home-cache] 首屏命中快照：{snap.Categories.Count} 分类 / {snap.Items.Count} 部" +
+                          $"（{snap.SiteName}，存于 {snap.SavedUtc:MM-dd HH:mm}）");
+        }
+
         // 用户首选站点优先（数据源弹窗选择后记忆）；拉取失败回退自动探测
         var preferredKey = Preferences.Default.Get(PreferredSiteKey, string.Empty);
         var preferred = sites.FirstOrDefault(s => s.Key == preferredKey);
@@ -392,6 +410,8 @@ public partial class HomeViewModel : ObservableObject
         }
 
         CurrentSite = usedSite;
+        SaveHomeSnapshot(cats, null);      // 分类一到就落盘（默认视图若走虚拟「主页」分类，
+                                           // 之前挂在条目那步的落盘根本走不到）
         OnPropertyChanged(nameof(Site));
         OnPropertyChanged(nameof(SiteDisplayName));
         Categories.Clear();
@@ -623,6 +643,25 @@ public partial class HomeViewModel : ObservableObject
         await EnterDefaultViewAsync();
     }
 
+    /// <summary>
+    /// 首屏快照落盘：站点 + 分类（+ 可选的第一页条目）。分类就绪时先存一次，条目就绪后再存一次；
+    /// 条目为空时不覆盖盘上已有条目（站点与分类一致时保留），避免把首屏海报清空。
+    /// </summary>
+    private void SaveHomeSnapshot(IEnumerable<VodCategory> cats, IReadOnlyList<VodItem>? items)
+    {
+        if (CurrentSite is not { } cs) return;
+        var list = cats.ToList();
+        if (list.Count == 0) return;
+        Services.HomeSnapshotStore.Save(new Services.HomeSnapshot
+        {
+            SiteKey = cs.Key,
+            SiteName = cs.Name,
+            CategoryId = SelectedCategoryId,
+            Categories = list.Select(c => new Services.SnapCategory(c.Id, c.Name)).ToList(),
+            Items = (items ?? []).Take(120).Select(i => new Services.SnapItem(i.Id, i.SourceKey, i.Title, i.Cover)).ToList(),
+        });
+    }
+
     /// <summary>切换分类并拉取第一页影片（仅当前站点）；分页状态复位。虚拟「主页」分类 → 豆瓣推荐行流。</summary>
     [RelayCommand]
     public async Task SelectCategoryAsync(VodCategory? category)
@@ -694,6 +733,9 @@ public partial class HomeViewModel : ObservableObject
             ? $"{CurrentSite?.Name ?? "当前源"} · {category.Name} · 暂无影片"
             : $"{CurrentSite!.Name} · {category.Name} · 已加载 {Items.Count} 部";
         IsHomeLoading = false;
+
+        // 条目就绪后再落一次（含第一页，首屏海报因此能秒出）
+        if (Items.Count > 0) SaveHomeSnapshot(Categories, Items);
 
         // 首屏填充保底：第一页条目太少（内容不满一屏）时滚动条不出现，
         // RemainingItemsThresholdReached 永远不触发 → 无限滚动死锁（2026-09-26 发行版实测：
