@@ -344,7 +344,8 @@ public class SpiderVodProvider : IVodSourceProvider, IActionVodSourceProvider
             // 对用户的处置完全不同（报告 §一 就是被一句「资源不存在」糊过去的）。
             var why = engine switch
             {
-                CatClawVideo.Core.Services.QemuGuest.QemuGuestEngine q => q.LastFailureReason,
+                // 套件引擎经适配器挂链：失败原因在 Inner（CatClaw.Qemu.QemuGuestEngine）上
+                CatClawVideo.Core.Providers.QemuMagnetEngine q => q.Inner.LastFailureReason,
                 ChainedMagnetEngine c => c.LastFailureReason,
                 _ => null,
             };

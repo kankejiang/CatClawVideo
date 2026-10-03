@@ -124,6 +124,29 @@ dotnet build CatClawVideo.Maui/CatClawVideo.Maui.csproj -f net11.0-windows10.0.2
 
 > 说明：Windows Release 通过手写 `App.generated.cs` 与 XamlCompilerWrapper / MakePriWrapper 绕过 .NET 11 + WinAppSDK 的编译器问题（详见 csproj 注释）；Android Release 已关闭 AOT / R2R / 裁剪，以兼容爬虫运行时的动态代码加载。
 
+## 多仓库结构与大件分发
+
+| 仓库 | 职责 |
+|---|---|
+| [CatClaw.Shared](https://github.com/kankejiang/CatClaw.Shared) | 猫爪家族共用基础库（与猫爪音乐共用） |
+| **CatClawVideo**（本仓库） | 主程序：.NET MAUI 应用、播放器、片源聚合 |
+| [CatClaw.Qemu](https://github.com/kankejiang/CatClaw.Qemu) | 虚拟机套件：QEMU/ART guest 运行时 + 宿主引擎 + Java 桥与构建工具链 |
+
+**大文件不入 git**（超过 GitHub/Gitee 单文件上限），改由 Release 附件分发；构建时缺件会自动取件（本地缓存 + SHA256 校验）。
+
+| 附件 | 来源 | 去向 |
+|---|---|---|
+| `qemu-guest-win64.zip`（444.9MB） | CatClaw.Qemu 的 `vm-assets-v1` | `CatClawVideo.Maui/QemuGuest/` |
+| `guest-build-inputs.tar.gz`（28.4MB） | CatClaw.Qemu 的 `vm-assets-v1` | guest 重建用（可选） |
+| `mpv-2.dll`（115.4MB） | 本仓库的 `assets-v1` | `CatClawVideo.Maui/Platforms/Windows/libs/` |
+
+需要同级目录克隆 [CatClaw.Shared](https://github.com/kankejiang/CatClaw.Shared) 与 [CatClaw.Qemu](https://github.com/kankejiang/CatClaw.Qemu)（供 ProjectReference 与取件脚本使用）。
+
+```powershell
+pwsh tools/fetch-assets.ps1                 # 手工取件
+dotnet build ... -p:SkipAssetFetch=true     # 明确跳过自动取件
+```
+
 ## Thanks
 
 - [猫爪音乐 CatClawMusic](https://github.com/kankejiang/CatClawMusic) 同作者的跨平台音乐播放器，UI 与工程实践一路互相喂招

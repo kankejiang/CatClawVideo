@@ -64,7 +64,8 @@ public sealed class ChainedMagnetEngine : IPreferredMagnetEngine, IPlaybackSessi
             {
                 var hit = await e.TryOpenAsync(magnet, preferName, ct).ConfigureAwait(false);
                 if (hit is not null) return hit;
-                LastFailureReason = (e as Services.QemuGuest.QemuGuestEngine)?.LastFailureReason
+                // QEMU 迅雷引擎现在来自独立套件仓库，链上挂的是适配器 → 从 Inner 取引擎自己的失败原因
+                LastFailureReason = (e as CatClawVideo.Core.Providers.QemuMagnetEngine)?.Inner.LastFailureReason
                     ?? LastFailureReason ?? $"{e.Name}：未打开（无原因上报）";
             }
             catch (Exception ex)

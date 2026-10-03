@@ -1,0 +1,14 @@
+{
+  "generated": "2026-10-03",
+  "tag": "assets-v1",
+  "repo": "kankejiang/CatClawVideo",
+  "assets": [
+    {
+      "name": "mpv-2.dll",
+      "size": 121026048,
+      "sha256": "f7709675e3c4d4174f5b7f64ec15cb7f80f17b5c5be059d916fdc1c27cf87a52",
+      "tag": "assets-v1",
+      "dest": "CatClawVideo.Maui/Platforms/Windows/libs"
+    }
+  ]
+}

@@ -1,3 +1,0 @@
-D:\Code\CatClawVideo\JavaBridge\guest-src\bridge\FakeActivity.java
-D:\Code\CatClawVideo\JavaBridge\guest-src\bridge\FakeWindow.java
-D:\Code\CatClawVideo\JavaBridge\guest-src\bridge\GuestPackageManager.java

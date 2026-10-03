@@ -27,8 +27,8 @@ public static class SettingsBackup
             v => { M3u8Purifier.Enabled = v == "1"; Preferences.Default.Set("m3u8_purify", v == "1"); }),
 
         new("stream_cache_gb",
-            () => Core.Services.QemuGuest.StreamCachePrefs.CapGb + "",
-            v => { if (long.TryParse(v, out var gb)) Core.Services.QemuGuest.StreamCachePrefs.SetGb(gb); }),
+            () => CatClaw.Qemu.StreamCachePrefs.CapGb + "",
+            v => { if (long.TryParse(v, out var gb)) CatClaw.Qemu.StreamCachePrefs.SetGb(gb); }),
 
         new(HistoryKey,
             () => HistoryCap.Load() + "",

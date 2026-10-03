@@ -23,7 +23,7 @@ public static class SpiderUiHost
         _rt = rt;
         rt.UiEvent = ev => MainThread.BeginInvokeOnMainThread(() => _ = HandleAsync(ev));
         // Guard VM（QEMU）的 UI 事件走同一条渲染管线（src=qemu 已标注，用户操作路由回 guest）
-        Core.Services.QemuGuest.GuardRuntime.UiEvent += ev =>
+        CatClaw.Qemu.GuardRuntime.UiEvent += ev =>
             MainThread.BeginInvokeOnMainThread(() => _ = HandleAsync(ev));
     }
 
@@ -94,7 +94,7 @@ public static class SpiderUiHost
     {
         if (QemuSeqs.Contains(seq))
         {
-            Core.Services.QemuGuest.GuardRuntime.Engine?.SendUiResult(seq, which);
+            CatClaw.Qemu.GuardRuntime.Engine?.SendUiResult(seq, which);
             QemuSeqs.Remove(seq);
             return Task.CompletedTask;
         }

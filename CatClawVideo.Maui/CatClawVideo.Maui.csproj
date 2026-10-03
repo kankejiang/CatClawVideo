@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
 		<TargetFrameworks>net11.0-android</TargetFrameworks>
@@ -291,6 +291,12 @@
 		<Content Remove="QemuGuest\x86guest\art_initrd_x64_pristine.gz" />
 		<Content Remove="QemuGuest\x86guest\bootimg_artifacts.cpio.gz" />
 		<Content Remove="QemuGuest\x86guest\thunder_assets.cpio.gz" />
+		<!-- 本机镜像分片与备份（每个 412MB，当初为绕开 GitHub 单文件限制切出来的）：
+		     此前**没被排除**，publish 时会白拷 1.2GB 进输出目录（2026-10-03 打包脚本实测发现）。
+		     运行时只读 x86guest\art_initrd_x64.gz，这三个纯垃圾。 -->
+		<Content Remove="QemuGuest\x86guest\art_initrd_x64.gz.a1" />
+		<Content Remove="QemuGuest\x86guest\art_initrd_x64.gz.a2" />
+		<Content Remove="QemuGuest\x86guest\art_initrd_x64.gz.bak_cpu" />
 		<!-- x86 mini guest（唯一运行时）：qemu-system-x86_64.exe（24.3MB）+
 		     QemuGuest\x86guest\（vmlinuz-6.1.0-50-amd64 + art_initrd_x64.gz，约 286MB）
 		     + share\（SeaBIOS 等 BIOS blob，x86 q35 机器必需）+ 全部共享依赖 DLL。
@@ -325,5 +331,15 @@
 		     离线解壳器（模拟 ARM64 的 unidbg + unpacker.jar，33MB）不再随包。
 		     2026-09-29 退役 vendor/dex2jar 与 jre\：宿主 JRE 桥整条链路撤除（-80MB）。 -->
 	</ItemGroup>
+
+	<!-- 大件缺件时自动取件（fresh clone / CI）：QemuGuest 运行时与 mpv-2.dll 均不入库，走 Release 附件。
+	     只在**缺件**时触发；不需要/离线可加 -p:SkipAssetFetch=true 跳过。
+	     取件脚本 tools/fetch-assets.ps1：本地缓存（%LOCALAPPDATA%\CatClawQemuAssets）+ SHA256 校验。 -->
+	<Target Name="FetchLargeAssets" BeforeTargets="BeforeBuild"
+	        Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows' AND '$(SkipAssetFetch)' != 'true' AND (!Exists('$(MSBuildThisFileDirectory)QemuGuest\x86guest\art_initrd_x64.gz') OR !Exists('$(MSBuildThisFileDirectory)Platforms\Windows\libs\mpv-2.dll'))">
+		<Message Importance="high" Text="[assets] 缺大件（QemuGuest 运行时 / mpv-2.dll，均走 Release 附件）→ 调用 tools/fetch-assets.ps1 取件…" />
+		<Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)..\tools\fetch-assets.ps1&quot; -Dest &quot;$(MSBuildThisFileDirectory)..&quot;"
+		      ContinueOnError="true" />
+	</Target>
 
 </Project>

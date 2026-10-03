@@ -60,10 +60,10 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     /// 桥的行协议走 TCP，<see cref="_stdin"/>/<see cref="_stdout"/> 架在 socket 流上，
     /// 请求/响应/事件分发都吃这一套。
     /// </summary>
-    private CatClawVideo.Core.Services.QemuGuest.QemuArtGuest? _art;
+    private CatClaw.Qemu.QemuArtGuest? _art;
 
     /// <summary>ART guest 的 jar 供给服务（guest 读不到宿主的盘，只能经 slirp 用 http 取）。</summary>
-    private CatClawVideo.Core.Services.QemuGuest.ArtJarServer? _jarServer;
+    private CatClaw.Qemu.ArtJarServer? _jarServer;
     private int _id;
 
     private readonly ConcurrentDictionary<string, bool> _loadedSites = new();
@@ -95,7 +95,7 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     //    Debian 6.1 内核 + WHPX 硬件加速），联调进行中（JavaBridge/qemu-src/tools/x86guest/）。
     //    ⚠ 默认关：aarch64 现网行为零变化；开关打开且 x86 运行时（QemuGuest\x86guest\
     //    下的内核/initrd + qemu-system-x86_64.exe）齐全时才生效，否则回落 aarch64。
-    private CatClawVideo.Core.Services.QemuGuest.GuestArch? _guestArchOverride;
+    private CatClaw.Qemu.GuestArch? _guestArchOverride;
     private string? _guestKernelFile;
     private string? _guestInitrdFile;
     private string? _guestQemuExe;
@@ -122,12 +122,12 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
             && File.Exists(Path.Combine(ArtRuntimeDir, @"x86guest\art_initrd_x64.gz"));
         ArtGuestMode = X86AssetsPresent()
                        && Environment.GetEnvironmentVariable("CATCLAW_NO_ART") != "1";
-        _guestArchOverride = CatClawVideo.Core.Services.QemuGuest.GuestArch.X86_64;
+        _guestArchOverride = CatClaw.Qemu.GuestArch.X86_64;
         _guestKernelFile = @"x86guest\vmlinuz-6.1.0-50-amd64";
         _guestInitrdFile = @"x86guest\art_initrd_x64.gz";
         _guestQemuExe = "qemu-system-x86_64.exe";
         _x86Why = X86AssetsPresent()
-            ? (CatClawVideo.Core.Services.QemuGuest.WhpxProbe.IsAvailable()
+            ? (CatClaw.Qemu.WhpxProbe.IsAvailable()
                 ? "WHPX 硬件虚拟化"
                 : "TCG 软件模拟（开启「虚拟机监控程序平台」功能可提速）")
             : "x86 运行时缺失";
@@ -456,12 +456,12 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         try
         {
             if (IsBridgeReady) return;   // 排队期间别的调用已把桥拉起来
-            _art ??= new CatClawVideo.Core.Services.QemuGuest.QemuArtGuest(ArtRuntimeDir, _log)
+            _art ??= new CatClaw.Qemu.QemuArtGuest(ArtRuntimeDir, _log)
             {
                 // x86_64 唯一架构（2026-09-29 aarch64 线退役）
-                GuestArch = CatClawVideo.Core.Services.QemuGuest.GuestArch.X86_64,
+                GuestArch = CatClaw.Qemu.GuestArch.X86_64,
                 KernelFileName = _guestKernelFile ?? "pkg_kernel",
-                GuestInitrdName = _guestInitrdFile ?? CatClawVideo.Core.Services.QemuGuest.QemuArtGuest.InitrdName,
+                GuestInitrdName = _guestInitrdFile ?? CatClaw.Qemu.QemuArtGuest.InitrdName,
                 GuestQemuExeName = _guestQemuExe ?? "qemu-system-x86_64.exe",
             };
             var link = await _art.ConnectAsync(ct).ConfigureAwait(false);
@@ -852,7 +852,7 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         // guest 读不到宿主的盘：换成宿主 jar 服务的 URL，桥里 Art.materialize() 取回归档。
         // 纯 .class jar（无 classes.dex，如 fty.jar 一族）guest 的 ART 吃不了：先 d8 转 dex 再供。
         var serve = IsPureClassJar(jarPath) ? await EnsureDexJarAsync(jarPath, ct) : jarPath;
-        _jarServer ??= new CatClawVideo.Core.Services.QemuGuest.ArtJarServer(_log);
+        _jarServer ??= new CatClaw.Qemu.ArtJarServer(_log);
         var url = _jarServer.UrlFor(Path.GetFileName(serve).Replace("raw-", "").Replace(".jar", ""), serve);
         req["jars"] = new JsonArray(url);
         req["rawJar"] = url;

@@ -228,7 +228,7 @@ public class DownloadManager : IDisposable
 
     private readonly HttpClient _http;
     /// <summary>迅雷磁力引擎（仅 Windows 注入；磁力下载=引擎独占下载+经媒体口导出本机）</summary>
-    private readonly CatClawVideo.Core.Services.QemuGuest.QemuGuestEngine? _thunder;
+    private readonly CatClaw.Qemu.QemuGuestEngine? _thunder;
     /// <summary>排队任务等待"并发槽位空出"的通知信号</summary>
     private readonly SemaphoreSlim _slotWake = new(0);
 
@@ -270,7 +270,7 @@ public class DownloadManager : IDisposable
     /// <summary>单个任务进度/状态变化时触发</summary>
     public event Action<DownloadTaskItem>? TaskUpdated;
 
-    public DownloadManager(CatClawVideo.Core.Services.QemuGuest.QemuGuestEngine? thunderEngine = null)
+    public DownloadManager(CatClaw.Qemu.QemuGuestEngine? thunderEngine = null)
     {
         _thunder = thunderEngine;
         _http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };

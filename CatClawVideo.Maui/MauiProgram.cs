@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using CatClawVideo.Maui.Services;
 using CatClawVideo.Maui.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
@@ -38,6 +38,11 @@ public static class MauiProgram
             });
 
         var services = builder.Services;
+
+        // 虚拟机套件（独立仓库 CatClaw.Qemu）的路径注入：套件不认识本应用的 AppPaths，
+        // 这里把 Debug/Release 隔离后的两个根目录交给它（QEMU 控制台日志、guest 数据盘、
+        // 块设备镜像、流缓存都落这两处）。
+        CatClaw.Qemu.QemuPaths.Configure(CatClawVideo.Core.AppPaths.DataRoot, CatClawVideo.Core.AppPaths.LocalRoot);
 
         // ═══════════════════════════════════════════════════
         // Database（单连接单例，初始化放后台不阻塞首帧）
@@ -92,7 +97,7 @@ public static class MauiProgram
             cacheDir: CatClawVideo.Core.AppPaths.LocalSub("drpy2"),
             log: m => System.Diagnostics.Debug.WriteLine(m));
         // 磁力下载引擎（Windows 下方赋值；Android 恒 null → 磁力下载任务提示不支持）
-        CatClawVideo.Core.Services.QemuGuest.QemuGuestEngine? magnetDownloadEngine = null;
+        CatClaw.Qemu.QemuGuestEngine? magnetDownloadEngine = null;
 
 #if !ANDROID
 
@@ -103,21 +108,24 @@ public static class MauiProgram
         //  ② 迅雷网盘 API（兜底）：云添加 → 迅雷服务器下载 → 取直链；需登录，未登录判未就绪。
         // 为什么不是直接用迅雷下载 SDK：那套安卓 SDK 在 PC 上跑不起来（引导域名被沉 127.0.0.2），
         // 所以 ① 用 QEMU 承载原生跑；② 走官方网盘 API。
-        var qemuThunder = new CatClawVideo.Core.Services.QemuGuest.QemuGuestEngine(
+        var qemuThunder = new CatClaw.Qemu.QemuGuestEngine(
             Path.Combine(AppContext.BaseDirectory, "QemuGuest"), BtFileLog.Write);
         // 磁力点播磁盘缓存：播放数据 4MB 分块落盘 + LRU 超限清理，已看区间重进/换集直接磁盘秒供。
         // 上限由设置页控制（默认 20GB，档位 5/10/20/30/50），持久化在 Preferences；
         // 启动时灌进 Core 的 StreamCachePrefs，引擎在超限清理时实时读取（改完即时生效，无需重启）。
-        var cacheGbPref = Preferences.Default.Get("stream_cache_gb", (int)CatClawVideo.Core.Services.QemuGuest.StreamCachePrefs.DefaultGb);
-        CatClawVideo.Core.Services.QemuGuest.StreamCachePrefs.CapGb = cacheGbPref;
+        var cacheGbPref = Preferences.Default.Get("stream_cache_gb", (int)CatClaw.Qemu.StreamCachePrefs.DefaultGb);
+        CatClaw.Qemu.StreamCachePrefs.CapGb = cacheGbPref;
         qemuThunder.StreamCacheRoot = CatClawVideo.Core.AppPaths.Sub("btcache");
         // 数据面块设备：guest 把引擎吐出的字节按偏移写进宿主镜像，供数时直读同一文件
         //（实测 2454~2926 MB/s，绕开 SLIRP 的 40MB/s 与 harness 转发的 18.9MB/s）。
         // 稀疏镜像，写多少占多少；环境异常时引擎会自动退化为纯 HTTP 通道。
         qemuThunder.BlockDeviceRoot = CatClawVideo.Core.AppPaths.Sub("btcache/hub");
-        BtFileLog.Write($"[缓存] 上限 {CatClawVideo.Core.Services.QemuGuest.StreamCachePrefs.CapGb}GB（设置页可调）");
+        BtFileLog.Write($"[缓存] 上限 {CatClaw.Qemu.StreamCachePrefs.CapGb}GB（设置页可调）");
+        // 套件引擎不认识应用接口 → 经 QemuMagnetEngine 适配成 IPreferredMagnetEngine 后再挂链
+        //（后续 ThunderPanEngine 兜底，全部失败回落内置 BT）。
         CatClawVideo.Core.Interfaces.MagnetEngines.Thunder = new CatClawVideo.Core.Providers.ChainedMagnetEngine(
-            qemuThunder, new CatClawVideo.Core.Providers.ThunderPanEngine());
+            new CatClawVideo.Core.Providers.QemuMagnetEngine(qemuThunder),
+            new CatClawVideo.Core.Providers.ThunderPanEngine());
         // 磁力下载也走同一个迅雷引擎（下载管理页的磁力任务：引擎独占下载 → 媒体口导出本机）
         magnetDownloadEngine = qemuThunder;
 
@@ -140,9 +148,9 @@ public static class MauiProgram
         // ftyguard so）跑在独立 QEMU 实例里，桥进程经 hostfwd 直连；so 弹的对话框/二维码经
         // 控制口上行由 SpiderUiHost 渲染（jar 框架全权负责登录 UX，宿主只做 UI 接入）。
         // 不预热（首个 Guard 站点加载时懒启动），运行时缺失则 Guard 解密通道不可用（ARM 调用明确报错）。
-        var qemuGuard = new CatClawVideo.Core.Services.QemuGuest.QemuGuardEngine(
+        var qemuGuard = new CatClaw.Qemu.QemuGuardEngine(
             Path.Combine(AppContext.BaseDirectory, "QemuGuest"), BtFileLog.Write);
-        CatClawVideo.Core.Services.QemuGuest.GuardRuntime.Attach(qemuGuard);
+        CatClaw.Qemu.GuardRuntime.Attach(qemuGuard);
 #endif
 
         // TVBox 系爬虫（ProxyOrigin 等）会把播放地址拼成 http://127.0.0.1:<port>/proxy?...
@@ -255,12 +263,12 @@ public static class MauiProgram
             if (thunderGate)
             {
                 desktopJar.ThunderMerge = new CatClawVideo.Core.Providers.JavaSpiderRuntime.ThunderMergeConfig(
-                    CatClawVideo.Core.Services.QemuGuest.QemuGuestEngine.CtrlPort,
+                    CatClaw.Qemu.QemuGuestEngine.CtrlPort,
                     qemuThunder.BlockDeviceRoot);
                 qemuThunder.ExternalVmProbe = () => desktopJar.CanProvideThunderVm;
                 qemuThunder.ExternalVmProvider = ct => desktopJar.EnsureThunderVmAsync(ct);
                 BtFileLog.Write("[qemu] 迅雷引擎合并已启用（外部 VM 模式：与爬虫桥共用 ART VM，控制口 "
-                    + CatClawVideo.Core.Services.QemuGuest.QemuGuestEngine.CtrlPort + "）");
+                    + CatClaw.Qemu.QemuGuestEngine.CtrlPort + "）");
             }
         }
 

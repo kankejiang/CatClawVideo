@@ -20,6 +20,9 @@
     <!-- 猫爪家族共享库（与 CatClawMusic 共用）：JsRuntimeServiceBase 等纯 C# 共享实现。
          接口（IJsRuntimeService 等）仍保留在本项目内。 -->
     <ProjectReference Include="..\..\CatClaw.Shared\src\CatClaw.Shared.Core\CatClaw.Shared.Core.csproj" />
+    <!-- 虚拟机套件（独立仓库 CatClaw.Qemu）：QEMU/ART/迅雷引擎宿主侧实现。
+         路径注入见 MauiProgram 启动时的 QemuPaths.Configure(...)。 -->
+    <ProjectReference Include="..\..\CatClaw.Qemu\src\CatClaw.Qemu\CatClaw.Qemu.csproj" />
   </ItemGroup>
 
   <ItemGroup>
