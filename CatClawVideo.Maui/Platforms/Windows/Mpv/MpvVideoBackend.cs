@@ -85,10 +85,17 @@ public unsafe sealed class MpvVideoBackend : IVideoPlayerImplementation, IDispos
         // 渲染上下文：等 RenderControl 就绪（GL 上下文已 current）后再建
         _renderControl.Render += OnRenderFrame;
 
-        // mpv 内部日志桥：GL 初始化/FBO/DV tone-map 的报错都在这里出来（V 级）
-        MpvLib.SetPropertyString(_mpv, "msg-level", "all=v");
-        // ⚠ libmpv 里 LOG_MESSAGE 事件必须显式 request（msg-level 属性只管终端，不进事件队列）
-        MpvLib.mpv_request_log_level(_mpv, MpvLib.LogLevelV);
+        // mpv 内部日志桥：这套 mpv-2.dll 构建没导出 mpv_request_log_level（入口点缺失，
+        // 13:12 实测把整个 Initialize 炸了）——改用 log-file 写文件（独立于事件机制）。
+        try
+        {
+            var mpvLog = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "CatClawVideo.debug", "logs", "mpv.log");
+            MpvLib.SetPropertyString(_mpv, "log-file", mpvLog);
+            MpvLib.SetPropertyString(_mpv, "log-append", "yes");
+        }
+        catch { /* 日志文件失败不致命 */ }
 
         _pumpStop = false;
         _eventPump = new Thread(EventPump) { IsBackground = true, Name = "mpv-events" };

@@ -39,7 +39,8 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
         _ffmpegLogInit = true;
         try
         {
-            FFmpegInteropX.FFmpegInteropLogging.SetLogLevel(FFmpegInteropX.LogLevel.Debug);
+            // ⚠ Debug 级会逐 NAL 刷日志（DV 流几分钟 170MB，13:09 实测 bt.log 失控）——常态 Warning
+            FFmpegInteropX.FFmpegInteropLogging.SetLogLevel(FFmpegInteropX.LogLevel.Warning);
             FFmpegInteropX.FFmpegInteropLogging.SetLogProvider(new FfmpegLogBridge());
         }
         catch { }

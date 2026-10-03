@@ -28,12 +28,6 @@ internal static unsafe class MpvLib
     [DllImport(Dll)] public static extern IntPtr mpv_wait_event(IntPtr ctx, double timeout);
     [DllImport(Dll)] public static extern void mpv_wakeup(IntPtr ctx);
 
-    /// <summary>订阅日志事件（LOG_MESSAGE）。msg-level 属性只管终端，libmpv 必须用这个。</summary>
-    [DllImport(Dll)] public static extern int mpv_request_log_level(IntPtr ctx, int level);
-
-    // mpv_log_level（client.h 1428-1435）
-    public const int LogLevelInfo = 40;
-    public const int LogLevelV = 50;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct MpvEvent
