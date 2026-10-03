@@ -284,30 +284,8 @@ public partial class HomeViewModel : ObservableObject
             return;
         }
 
-        // ★ 首屏快照（2026-10-03，落盘在数据目录 home-snapshot.json）：先上屏，后台再刷新。
-        //   没它的话每次冷启动都要现找活站拉分类 —— 实测 110 站只有 ~8 个能出分类，首屏 35~38s。
-        //   下面的完整流程照跑，拉到新数据会整体替换（含站点切换）。
-        var snap = Services.HomeSnapshotStore.Load();
-        if (snap is { Categories.Count: > 0 })
-        {
-            foreach (var c in snap.Categories) Categories.Add(new VodCategory { Id = c.Id, Name = c.Name });
-            SelectedCategoryId = snap.CategoryId is { Length: > 0 } cid ? cid : snap.Categories[0].Id;
-            _currentCategory = Categories.FirstOrDefault(c => c.Id == SelectedCategoryId);
-            foreach (var it in snap.Items)
-                Items.Add(new VodItem { Id = it.Id, SourceKey = it.SourceKey, Title = it.Title, Cover = it.Cover });
-            if (sites.FirstOrDefault(s => s.Key == snap.SiteKey) is { } snapSite) CurrentSite = snapSite;
-            CoverResolver.Attach(_covers, Items.ToList());      // 封面走本地缓存，秒出
-            HomeStatus = "已显示上次内容（" + snap.SiteName + "）· 正在刷新…";
-            DiagLog.Write($"[home-cache] 首屏命中快照：{snap.Categories.Count} 分类 / {snap.Items.Count} 部" +
-                          $"（{snap.SiteName}，存于 {snap.SavedUtc:MM-dd HH:mm}）");
-        }
-
         // 用户首选站点优先（数据源弹窗选择后记忆）；拉取失败回退自动探测
-        // 首选站：用户手动选的优先；没选过就用**快照里那个站**（刚上屏的也是它）——
-        // 否则后台刷新会去探测别的站、把刚显示的站点又换掉（用户观感「站点老是变」）。
         var preferredKey = Preferences.Default.Get(PreferredSiteKey, string.Empty);
-        if (string.IsNullOrEmpty(preferredKey) && snap is { SiteKey.Length: > 0 })
-            preferredKey = snap.SiteKey;
         var preferred = sites.FirstOrDefault(s => s.Key == preferredKey);
         // 留痕（2026-09-30）：这里以前是 `catch { }` —— 首选站点失败的原因整条被吞，
         // 于是「每次重启都不回上次的站点」根本查不动。冷启动时爬虫桥（QEMU guest）
@@ -317,10 +295,9 @@ public partial class HomeViewModel : ObservableObject
         var cats = new List<VodCategory>();
         VodSiteInfo? usedSite = null;
 
-        // ★ 冷启动关键路径（2026-10-03）：回退探测**立即并行开跑**，不等首选站试完。
-        //   首选若是 jar 站，冷启动时桥还没就绪、只会挂到预算耗尽；串行的话首屏要多等一个
-        //   预算（实测 3~15s），而探测本可以立刻在别的站上拿到数据。谁先成功用谁。
-        var probeTask = ProbeSitesAsync(sites);
+        // 2026-10-03 回退：探测改回**首选站试完再开始**（曾短暂并行）。
+        //   并行会让「谁先答应用谁」→ 每次启动落到的站都不同；用户明确要求
+        //   「宁可启动慢点，也要回到上次那个站」，所以让首选（= 上次用的站）先跑完。
         if (preferred != null)
         {
             // 会话缓存命中直接用（回启 App/切回旧站点免一次 0.5~1.3s 的分类请求）
@@ -338,7 +315,7 @@ public partial class HomeViewModel : ObservableObject
                 var needsEngine = preferred.SpiderKind != VodSpiderKind.None;
                 // 2026-10-03：冷启动时 ART 桥 ~28s 才就绪，jar 站此时只会挂住 —— 实测首选若是 jar 站，
                 // 旧预算（50s）会把遮罩顶到 97% 干等。冷启动只给 3s，拿不到立刻交给回退探测。
-                var budget = needsEngine ? PreferredEngineStartupBudgetSeconds : PlainSiteBudgetSeconds;
+                var budget = needsEngine ? EngineSiteBudgetSeconds : PlainSiteBudgetSeconds;
                 for (var attempt = 1; attempt <= 5 && usedSite == null; attempt++)
                 {
                     string why;
@@ -389,14 +366,17 @@ public partial class HomeViewModel : ObservableObject
         // 改为并发探测（带并发上限与整体超时），第一个出分类的站点即胜出。
         if (usedSite == null)
         {
-            // 探测已在上面并行启动（排序把「最近成功的站」放最前），这里只取结果
-            var win = await probeTask;
+            var win = await ProbeSitesAsync(sites);
             if (win is { } w)
             {
                 usedSite = w.Site;
                 cats = w.Cats;
                 _catsCache[w.Site.Key] = w.Cats;
                 Preferences.Default.Set(LastGoodSiteKey, w.Site.Key);
+                // 2026-10-03 回退：胜出者写回首选项（用户要的就是「下次回到这个站」）。
+                //   之前我把它删了 → 没人再记站 → 每次启动都换。漂移的正解是「探测优先探上次的站」
+                //   （见 ProbeSitesAsync 排序），而不是把记忆删掉。
+                RememberPreferredSite(w.Site, "自动探测胜出");
                 // ★ 记忆胜者（2026-10-02）：此前只有「用户手动切站」才写首选，自动探测胜出**不写回**，
                 // 于是首选一旦是坏站（例：🍼┆设置┆中心，本身是订阅的配置站还要占着首选位），
                 // 每次冷启动都先撞它一次、等它超时 → 用户观感就是「改了也是白改」。
@@ -418,8 +398,6 @@ public partial class HomeViewModel : ObservableObject
         }
 
         CurrentSite = usedSite;
-        SaveHomeSnapshot(cats, null);      // 分类一到就落盘（默认视图若走虚拟「主页」分类，
-                                           // 之前挂在条目那步的落盘根本走不到）
         OnPropertyChanged(nameof(Site));
         OnPropertyChanged(nameof(SiteDisplayName));
         Categories.Clear();
@@ -498,7 +476,7 @@ public partial class HomeViewModel : ObservableObject
     /// 整体超时 <see cref="ProbeTimeoutSeconds"/>：胜者产生或超时即收摊，其余探测随之取消，
     /// 不让死站把首页拖满自身超时。</para>
     /// </summary>
-    private const int ProbeConcurrency = 8;   // 2026-10-03：4→8（温和提一点）；试过 16 无收益，且突发并发易被站方限流
+    private const int ProbeConcurrency = 4;   // 2026-10-03：试过 8/16，收益不明且突发并发易被站方限流——回 4
     private const int ProbeTimeoutSeconds = 45;
 
     /// <summary>
@@ -506,13 +484,8 @@ public partial class HomeViewModel : ObservableObject
     /// （2026-10-02 实测挂满 4 分钟），必须有预算掐住。
     /// 2026-10-03 由 50 收到 15：冷启动时 ART 桥 ~28s 才就绪，等满 50s 只会把遮罩顶在 97% 干等。
     /// </summary>
-    private const int EngineSiteBudgetSeconds = 15;
+    private const int EngineSiteBudgetSeconds = 50;
 
-    /// <summary>
-    /// 冷启动时给「依赖 guest 的首选站」的预算：桥还没就绪，久等无益 ——
-    /// 3s 拿不到就立刻交给回退探测（那里按上次成功的站 + 非 jar 站优先排队）。
-    /// </summary>
-    private const int PreferredEngineStartupBudgetSeconds = 3;
 
     /// <summary>普通站（MacCMS 等直连）取分类的预算：一次网络往返，25s 足够。</summary>
     private const int PlainSiteBudgetSeconds = 25;
@@ -533,15 +506,15 @@ public partial class HomeViewModel : ObservableObject
         //   2 = 上次成功过但依赖 guest：桥 ~28s 才就绪，冷启动必然先超时
         //   3 = 其余依赖 guest 的站
         // 旧版把「上次成功」一律排最前 → jar 站霸占并发位、每次超时，胜出者随机漂移。
+        // 顺序即优先级：**上次用过的站排最前** —— 不分它依不依赖 guest。
+        //   用户要的是「回到上次那个站」；之前我按「非 guest 优先」排，把常用的网盘/jar 站
+        //   排到后面，等于每次都换站。其余仍按「不依赖 guest 优先」（它们秒回）。
         var lastGood = (Preferences.Default.Get(LastGoodSiteKey, string.Empty) ?? string.Empty)
             .Split(',', StringSplitOptions.RemoveEmptyEntries);
-        int Rank(VodSiteInfo s)
-        {
-            var needsGuest = s.SpiderKind != VodSpiderKind.None;
-            var wasGood = Array.IndexOf(lastGood, s.Key) >= 0;
-            return needsGuest ? (wasGood ? 2 : 3) : (wasGood ? 0 : 1);
-        }
-        var list = candidates.OrderBy(Rank).ToList();
+        var list = candidates
+            .OrderBy(s => Array.IndexOf(lastGood, s.Key) >= 0 ? 0 : 1)
+            .ThenBy(s => s.SpiderKind == VodSpiderKind.None ? 0 : 1)
+            .ToList();
         if (list.Count == 0) return null;
         DiagLog.Write($"[home] 回退并发探测 {list.Count} 站（并发 {ProbeConcurrency}，单站 {ProbeSiteTimeoutSeconds}s，窗口 {ProbeTimeoutSeconds}s）");
 
@@ -656,25 +629,6 @@ public partial class HomeViewModel : ObservableObject
         await EnterDefaultViewAsync();
     }
 
-    /// <summary>
-    /// 首屏快照落盘：站点 + 分类（+ 可选的第一页条目）。分类就绪时先存一次，条目就绪后再存一次；
-    /// 条目为空时不覆盖盘上已有条目（站点与分类一致时保留），避免把首屏海报清空。
-    /// </summary>
-    private void SaveHomeSnapshot(IEnumerable<VodCategory> cats, IReadOnlyList<VodItem>? items)
-    {
-        if (CurrentSite is not { } cs) return;
-        var list = cats.ToList();
-        if (list.Count == 0) return;
-        Services.HomeSnapshotStore.Save(new Services.HomeSnapshot
-        {
-            SiteKey = cs.Key,
-            SiteName = cs.Name,
-            CategoryId = SelectedCategoryId,
-            Categories = list.Select(c => new Services.SnapCategory(c.Id, c.Name)).ToList(),
-            Items = (items ?? []).Take(120).Select(i => new Services.SnapItem(i.Id, i.SourceKey, i.Title, i.Cover)).ToList(),
-        });
-    }
-
     /// <summary>切换分类并拉取第一页影片（仅当前站点）；分页状态复位。虚拟「主页」分类 → 豆瓣推荐行流。</summary>
     [RelayCommand]
     public async Task SelectCategoryAsync(VodCategory? category)
@@ -746,9 +700,6 @@ public partial class HomeViewModel : ObservableObject
             ? $"{CurrentSite?.Name ?? "当前源"} · {category.Name} · 暂无影片"
             : $"{CurrentSite!.Name} · {category.Name} · 已加载 {Items.Count} 部";
         IsHomeLoading = false;
-
-        // 条目就绪后再落一次（含第一页，首屏海报因此能秒出）
-        if (Items.Count > 0) SaveHomeSnapshot(Categories, Items);
 
         // 首屏填充保底：第一页条目太少（内容不满一屏）时滚动条不出现，
         // RemainingItemsThresholdReached 永远不触发 → 无限滚动死锁（2026-09-26 发行版实测：
