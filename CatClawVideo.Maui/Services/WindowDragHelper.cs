@@ -1,4 +1,4 @@
-#if WINDOWS
+﻿#if WINDOWS
 using System.Runtime.InteropServices;
 
 namespace CatClawVideo.Maui.Services;
@@ -213,8 +213,24 @@ public static class WindowDragHelper
     private static int _startWinX, _startWinY;
     private static Microsoft.UI.Xaml.FrameworkElement? _dragElement;
 
+    /// <summary>
+    /// 手动拖拽兜底开关。**2026-10-03 关闭**：
+    ///
+    /// <para>停用原因：本段会给元素挂 PointerPressed/Moved/Released/DoubleTapped，并在切换页面时
+    /// 对**上一个页面的元素**做 -= ；页面销毁后其 WinUI 元素已失效，对失效元素做指针事件簿记
+    /// （以及 <c>CapturePointer</c>）会抛**原生** stowed exception（0xc000027b / E_ABORT，
+    /// 崩溃模块 CoreMessagingXP.dll = WinUI 输入组件）—— try/catch 与全局钩子都抓不到，
+    /// 进程直接消失。实测：离开播放页后约 1s 必崩（[drag] 日志之后，见 bt.log/home-debug.log）。</para>
+    ///
+    /// <para>本段按设计只是「拖拽矩形算错/系统差异时仍能拖动」的兜底：正常情况由系统接管拖拽区，
+    /// 这里的指针事件根本不会触发（见上方注释）。风险远大于收益，故关闭。
+    /// 要恢复：把开关改回 true（并接受上述崩溃风险）。</para>
+    /// </summary>
+    private const bool PointerFallbackEnabled = false;
+
     private static void AttachPointerFallback(Microsoft.UI.Xaml.FrameworkElement? el)
     {
+        if (!PointerFallbackEnabled) return;
         if (ReferenceEquals(_dragElement, el)) return;
 
         if (_dragElement is not null)

@@ -1,4 +1,4 @@
-using CatClawVideo.Maui.Services;
+﻿using CatClawVideo.Maui.Services;
 
 namespace CatClawVideo.Maui;
 
@@ -436,7 +436,10 @@ public partial class App : Application
             //    「整条顶栏的横向补集」声明（AttachStrip）。必须在这里处理 —— 页面在
             //    OnAppearing 里自己设会被下面 ② 的清零覆盖掉。
             if (current is Services.IWindowDragArea selfManaged && selfManaged.ApplyWindowDragArea())
+            {
+                DiagLog.Write($"[drag] sync → 页面自管 {current?.GetType().Name}");
                 return;
+            }
 
             var el = current switch
             {
@@ -446,6 +449,9 @@ public partial class App : Application
 
             // 有拖拽元素的页面 → 声明矩形；没有的页面 → 清空。
             // 清空是必须的：否则上一页留下的拖拽区会在这个页面上把顶栏当标题栏、误吞点击。
+            DiagLog.Write(el is null
+                ? $"[drag] sync → 清空（页面 {current?.GetType().Name} 无拖拽元素）"
+                : $"[drag] sync → 挂 {current?.GetType().Name} 顶栏空白段");
             if (el is null) Services.WindowDragHelper.Detach();
             else Services.WindowDragHelper.Attach(el);
         }
