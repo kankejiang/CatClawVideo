@@ -183,6 +183,10 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
                 ActivateMpv(url, headers, isDolbyVision: true);
                 return;
             }
+            // ⚠ 非 DV 源必须先解除 mpv 接管：_delegate 不清的话接口调用仍转发给 mpv，
+            //   而 SetSourceMpe 又开了 FFmpeg/MF —— 双播放器同页面同时解码（13:01 实测）。
+            if (_delegate is not null)
+                DeactivateMpv();
             SetSourceMpe(view, url, headers);
         }
         catch (Exception ex)
