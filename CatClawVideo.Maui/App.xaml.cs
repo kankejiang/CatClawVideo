@@ -134,7 +134,7 @@ public partial class App : Application
                     try
                     {
                         var area = Microsoft.UI.Windowing.DisplayArea.GetFromWindowId(appWindow.Id,
-                            Microsoft.UI.Windowing.CoordinateDisplayArea.Work);
+                            Microsoft.UI.Windowing.DisplayAreaFallback.Nearest);
                         var size = appWindow.Size;   // 物理像素
                         int maxW = area.WorkArea.Width, maxH = area.WorkArea.Height;
                         if (size.Width > maxW || size.Height > maxH)
@@ -144,8 +144,8 @@ public partial class App : Application
                     catch { }
                 }
                 ClampWindowToDisplay();
+                // 位置/尺寸变化（含拖到别的屏）都会触发：换屏后按新屏工作区收缩
                 appWindow.Changed += (_, _) => ClampWindowToDisplay();
-                Microsoft.UI.Windowing.DisplayArea.Changed += (_, _) => ClampWindowToDisplay();
 
                 // 退出时记住窗口尺寸，下次启动回放
                 nativeWindow.Closed += (_, _) => SaveWindowSize(appWindow, hwnd);
