@@ -32,7 +32,7 @@ public class VideoPlayerViewHandler : ViewHandler<VideoPlayerView, Microsoft.UI.
     /// 失败随后落在 WinUI 的延迟回调里 → fail-fast（托管层完全看不到）。
     /// 故：页面退出**只停流+净源+解绑事件**，播放器留到下一次建播放器时再释放（那时旧元素早已不在树上）。</para>
     /// </summary>
-    private static Microsoft.Media.Playback.MediaPlayer? _retiredPlayer;
+    private static MediaPlayer? _retiredPlayer;   // 类型别名见文件头 using MediaPlayer = Windows.Media.Playback.MediaPlayer
     private Mpv.MpvRenderControl? _mpvRender;
     private Mpv.MpvVideoBackend? _mpvBackend;
     /// <summary>非 null 时接口方法全部转发给它（当前 = mpv 后端）。</summary>
