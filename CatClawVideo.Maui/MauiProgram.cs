@@ -362,8 +362,13 @@ public static class MauiProgram
         // 第二参传原始请求头：壳的 Range 约定走 query（见 ProxyStreamAsync 注释）。
         spiderProxy.JsProxyStreamHandler = (query, requestHeaders, ct) =>
         {
+#if !ANDROID
+            // ⚠ 这个 is 模式只能在桌面上用：Android 的 jarRuntime 静态类型是 DexSpiderRuntime
+            //   （与 JavaSpiderRuntime 无继承关系，Roslyn 直接 CS8121 拒绝），而流式实现
+            //   ProxyStreamAsync 只挂在 JavaSpiderRuntime 上。Android 保持原有 byte[] 回落路径。
             if (jarRuntime is CatClawVideo.Core.Providers.JavaSpiderRuntime streaming)
                 return streaming.ProxyStreamAsync(query, requestHeaders, ct);
+#endif
             return Task.FromResult<(int Status, string Mime, Stream Body, IReadOnlyDictionary<string, string>? Headers)?>(null);
         };
 
