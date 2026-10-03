@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.ComponentModel;
 using Microsoft.Maui.Controls.Shapes;
 using CatClawVideo.Core.Interfaces;
@@ -1260,14 +1260,17 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
 
 #if WINDOWS
         HookEscKey(attach: false);
-        // 离开本页：先解绑本页拖拽元素，再延迟按当前页面重设
-        //（返回主页后要交回主页顶栏的空白段；延迟是为了等导航真正完成）
+        // 离开本页：解绑拖拽元素即可。
+        //
+        // ⚠ 不要再在这里延迟重算标题栏拖拽区（2026-10-03 移除）：导航过程中调用
+        //   AppWindow.TitleBar.SetDragRectangles 会在 WinUI 输入组件里抛**原生** stowed
+        //   exception（0xc000027b / E_ABORT，崩溃模块 CoreMessagingXP.dll），进程直接消失，
+        //   且 try/catch 与全局异常钩子都抓不到（日志里没有任何托管异常）。
+        //   实测：退出播放页 ≈19:52:18.7 + 350ms → 19:52:19 崩溃，时间严丝合缝。
+        //   返回主页后 MainPage 自己会 SyncTitleBarDrag（SizeChanged + 自己的 timer），
+        //   由目标页面负责即可，本页不需要抢跑。
         Services.WindowDragHelper.Detach();
-        Dispatcher.StartTimer(TimeSpan.FromMilliseconds(350), () =>
-        {
-            ((App)Application.Current!).SyncTitleBarDrag();
-            return false;
-        });
+        DiagLog.Write("[drag] 离开播放页：解绑拖拽区（不再延迟重算，交给目标页面）");
 #endif
         // 切后台 + 开了「后台继续播放」→ 什么都不敢动，让声音继续（对位 TVBox MusicPlaybackService）。
         // 导航离开（回主页/返回）仍然照旧停：那时 IsInBackground 是 false。
