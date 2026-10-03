@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="UTF-8" ?>
+﻿<?xml version="1.0" encoding="UTF-8" ?>
 <ContentView xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
              x:Class="CatClawVideo.Maui.Pages.HomePage"
@@ -230,7 +230,10 @@
              真实进度（恢复订阅 → 引擎冷启动 → 首页数据），首页数据就绪后淡出进主界面。
              覆盖三行（RowSpan=3）+ 不透明背景，避免底下空海报墙透出。
              2026-10-03 重设计：品牌 → 进度 → 启动自检卡片；进度条移到底部通栏。 -->
-        <Grid Grid.Row="0" Grid.RowSpan="3" x:Name="ColdStartOverlay" IsVisible="True"
+        <!-- ★ IsVisible 不再硬编码 True：Android 端没有 QEMU/ART 引擎冷启动，
+     显示这个遮罩全是假的进度与文案（用户反馈：安卓端也弹启动画面）。
+     可见性改由 HomePage.xaml.cs 按平台设置（Windows 才显示，见 StartColdStartOverlay）。 -->
+        <Grid Grid.Row="0" Grid.RowSpan="3" x:Name="ColdStartOverlay" IsVisible="False"
               BackgroundColor="{DynamicResource WindowBackgroundColor}">
             <VerticalStackLayout VerticalOptions="Center" Spacing="20" Padding="0,0,0,36"
                                  HorizontalOptions="Center">

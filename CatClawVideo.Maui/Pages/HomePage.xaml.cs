@@ -114,6 +114,12 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
 
     private void StartColdStartOverlay()
     {
+        // ★ 仅 Windows 显示（2026-10-03，用户反馈「安卓端也弹启动画面」）：
+        //   这个遮罩描述的是 Windows 独有的 QEMU/ART 引擎冷启动（解 391MB initrd + ART boot），
+        //   在 Android 上既没有这段冷启动，百分比与「引擎/ART/QEMU」文案也全是假的。
+        //   Android 端用进程内 DexSpiderRuntime，直接进主界面即可（数据加载已有骨架/转圈）。
+        if (!OperatingSystem.IsWindows()) return;
+
         _coldStartTimer = Dispatcher.CreateTimer();
         _coldStartTimer.Interval = TimeSpan.FromMilliseconds(400);
         _coldStartTimer.Tick += (_, _) => UpdateColdStartOverlay();

@@ -200,7 +200,8 @@
                                Opacity="0.4" HorizontalOptions="Center" />
                         <Label Text="下载架还空着喵…" FontSize="15" FontFamily="OpenSansSemibold"
                                TextColor="{DynamicResource TextPrimaryColor}" HorizontalTextAlignment="Center" />
-                        <Label Text="磁力用播放页边下边播（迅雷引擎）；此页只接 HTTP/HTTPS 直链"
+                        <Label x:Name="MagnetHintLabel"
+                               Text="磁力用播放页边下边播（迅雷引擎）；此页只接 HTTP/HTTPS 直链"
                                FontSize="11"
                                TextColor="{DynamicResource TextHintColor}"
                                HorizontalTextAlignment="Center" />

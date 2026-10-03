@@ -29,6 +29,12 @@ public partial class DownloadDetailPage : ContentPage
         _manager = manager;
 #if WINDOWS
         Padding = new Thickness(0, 48, 0, 0);
+#else
+        // 2026-10-03：Android 端迅雷是原生库（jniLibs/libxl_thunder_sdk.so），引擎与宿主同进程，
+        // 不存在「QEMU 内的独立下载器」，文案按平台切换（Windows 侧保留原描述）。
+        MagnetHintLabel.Text =
+            "磁力任务由迅雷引擎解析与下载；HTTP 任务为直连下载。"
+            + "逐条 peer 明细（地址/客户端/单连接速率）由引擎侧统计，此页展示任务级进度与速率。";
 #endif
     }
 
@@ -114,7 +120,13 @@ public partial class DownloadDetailPage : ContentPage
                 ? "磁力任务由迅雷引擎解析与下载，宿主不持有 tracker 列表"
                 : "HTTP 直链任务无 tracker";
             ConnSummary.Text = task.IsMagnet
+#if ANDROID
+                // Android 端迅雷是原生库（jniLibs/libxl_thunder_sdk.so），引擎与宿主同进程，
+                // 不存在 QEMU 内嵌引擎那套「明细在引擎侧」的割裂。
+                ? "磁力下载由迅雷引擎承载：连接/种子明细由引擎侧统计，此处仅展示任务级进度"
+#else
                 ? "磁力下载由迅雷引擎（QEMU 内）承载：连接/种子明细在引擎侧，宿主仅上报任务级进度"
+#endif
                 : "HTTP 直链任务无连接明细";
             FileSelectionSummary.Text = "";
             TrackerListHost.Children.Clear();

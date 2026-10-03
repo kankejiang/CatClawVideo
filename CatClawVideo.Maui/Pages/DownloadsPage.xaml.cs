@@ -25,6 +25,11 @@ public partial class DownloadsPage : ContentView, ITabView
         _vm = vm;
         _manager = manager;
         BindingContext = vm;
+#if ANDROID
+        // 2026-10-03：Android 端没有 QEMU 内嵌迅雷引擎（迅雷是原生库，引擎与宿主同进程），
+        // 文案里提「QEMU 内」会误导用户。
+        MagnetHintLabel.Text = "磁力用播放页边下边播（迅雷引擎）；此页只接 HTTP/HTTPS 直链";
+#endif
     }
 
     /// <summary>切到本 tab 时刷新统计（任务数 / 下载目录）；列表本身由 DownloadManager 事件驱动</summary>
