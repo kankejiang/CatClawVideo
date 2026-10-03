@@ -341,8 +341,13 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
             GuestInitrdName = _guestInitrdFile ?? @"x86guest\art_initrd_x64.gz",
             GuestQemuExeName = _guestQemuExe ?? "qemu-system-x86_64.exe",
         };
-        // 迅雷合并配置（ThunderMerged/ThunderPort/BlockDeviceRoot）由 EnsureThunderVmAsync
-        // 在磁力播放前按需注入（x86 initrd 已含迅雷段，注入器 build_bootimg_inject.py 打入）
+        // ★ 出生即带合并配置（2026-10-03 修）：此前只有 EnsureThunderVmAsync（磁力预热时，~3s）
+        //   才注入合并配置，而桥自己 ~0.5s 就把 VM 用**纯桥配置**拉起来了 → 3s 后必然触发一次
+        //   「重启为合并配置」：白丢一次 28s 的 ART 冷启动，还顺带清掉网盘登录态（guest tmpfs）。
+        //   实测日志里这个重启每分钟来一次（17:56/17:59/18:01/18:03/18:04/18:05），期间 jar 源与
+        //   网盘源全程不可用 —— 用户观感就是「看不了片子」。
+        //   （注释早就写着「CreateArtGuest 与 EnsureThunderVmAsync 共用」，但这里一直没调。）
+        ApplyThunderMerge(art);
         return art;
     }
 
