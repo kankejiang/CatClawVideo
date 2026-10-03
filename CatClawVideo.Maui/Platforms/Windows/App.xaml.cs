@@ -22,6 +22,18 @@ public partial class App : MauiWinUIApplication
         AppDomain.CurrentDomain.UnhandledException += OnDomainUnhandledException;
         TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
         UnhandledException += OnApplicationUnhandledException;
+
+        // 崩溃取证（2026-10-03）：WinUI 的 stowed exception（0xc000027b）只保留错误信息，
+        // 原始异常的调用栈已经弹出 —— WinDbg 的 !pe / !clrstack 在崩溃点都看不到它
+        //（实测「no current managed exception on this thread」）。
+        // 而 FirstChanceException 在**抛出瞬间**就能拿到异常与完整调用栈，
+        // 只记 COMException（E_FAIL 80004005 / E_ABORT 80004004 正是这一类），
+        // 避免被正常业务异常淹没。
+        AppDomain.CurrentDomain.FirstChanceException += (_, e) =>
+        {
+            if (e.Exception is System.Runtime.InteropServices.COMException)
+                LogCrash("FirstChance.COMException", e.Exception);
+        };
     }
 
     protected override MauiApp CreateMauiApp() => MauiProgram.CreateMauiApp();
