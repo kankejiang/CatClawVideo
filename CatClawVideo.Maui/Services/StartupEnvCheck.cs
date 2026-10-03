@@ -98,18 +98,13 @@ public static class StartupEnvCheck
         }
         catch { }
 
-        // ⑥ 系统 Java（可选路径：纯 .class jar 源的 d8 预转换用；有 ART guest 时通常不需要）
-        try
-        {
-            var javaExe = FindInPath("java.exe");
-            items.Add(javaExe is not null
-                ? new EnvCheckItem("系统 Java", EnvCheckLevel.Ok, "已安装（d8 预转换可用）")
-                : new EnvCheckItem("系统 Java", EnvCheckLevel.Info, "未检测到（纯 .class jar 源的 d8 预转换不可用）",
-                    "装 JDK/JRE 并加入 PATH 即可；ART guest 直接跑 dex 的源不受影响"));
-        }
-        catch { }
-
-        // ⑦ 系统与运行时（信息项：报障时先看这一行）
+        // ⑥ 系统与运行时（信息项：报障时先看这一行）
+        //
+        // ⚠ 这里**不检测**系统 Java：随包 JRE 已于 2026-09-29 全退役（宿主不再常驻 Java 进程），
+        // 而残留的 FindJavaExe() 只服务「纯 .class jar 源的 d8 预转换」这一条边缘路径 ——
+        // 它除 java.exe 外还要 Android SDK build-tools 的 d8.jar（同样不随包），
+        // 只报 java 缺失会让用户去装 JDK 却依然不可用（误导）。该路径缺件时由
+        // JavaSpiderRuntime.EnsureDexJarAsync 明确报错并给出替代方案（换含 classes.dex 的源）。
         try
         {
             items.Add(new EnvCheckItem("系统", EnvCheckLevel.Info,
@@ -130,21 +125,4 @@ public static class StartupEnvCheck
             : path;
     }
 
-    /// <summary>在 PATH 里找可执行文件（不启动进程，纯文件探测）。</summary>
-    private static string? FindInPath(string fileName)
-    {
-        var path = Environment.GetEnvironmentVariable("PATH");
-        if (string.IsNullOrEmpty(path)) return null;
-        foreach (var dir in path.Split(Path.PathSeparator))
-        {
-            if (string.IsNullOrWhiteSpace(dir)) continue;
-            try
-            {
-                var full = Path.Combine(dir.Trim(), fileName);
-                if (File.Exists(full)) return full;
-            }
-            catch { }
-        }
-        return null;
-    }
 }

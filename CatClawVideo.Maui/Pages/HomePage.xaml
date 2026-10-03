@@ -251,7 +251,7 @@
                        TextColor="{DynamicResource TextSecondaryColor}" />
 
                 <!-- 环境检测（Windows 启动时一次性探测，逻辑见 Services/StartupEnvCheck）：
-                     WHPX 加速 / QEMU 引擎 / ART 镜像 / 播放器后端 / 数据目录 / 磁盘 / 内存 / Java。
+                     WHPX 加速 / QEMU 引擎 / ART 镜像 / 播放器后端 / 数据目录 / 磁盘 / 内存 / 系统。
                      全部通过只显示一行汇总；有问题逐条给出处置建议 —— 让用户第一眼看到根因，
                      而不是去翻 home-debug.log（版本 2026-10-03 加）。 -->
                 <VerticalStackLayout x:Name="EnvCheckPanel" IsVisible="False" Spacing="6"
