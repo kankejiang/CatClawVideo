@@ -1,4 +1,4 @@
-using CatClawVideo.Maui.Services;
+﻿using CatClawVideo.Maui.Services;
 
 namespace CatClawVideo.Maui.Pages;
 
@@ -21,6 +21,27 @@ public partial class SpiderTreeDialogPage : ContentPage, IRemoteKeyHandler
     private readonly string _positive, _negative, _neutral;
     private WebView _web = null!;
     private bool _loaded;
+    private string _html = "";
+
+    /// <summary>
+    /// 把 HTML 喂给 WebView —— **必须等控件挂树（Loaded / Handler 就绪）之后**。
+    ///
+    /// <para>2026-10-03 闪退根因（用户：点「登入自己云盘」直接闪退）：构造期写
+    /// <c>new WebView { Source = HtmlWebViewSource }</c> 时控件还没 Handler，MAUI 的 WebView2
+    /// 代理会在 CoreWebView2 尚未 <c>OnCoreWebView2Initialized</c> 就回调 <c>LoadHtml</c>
+    /// → NullReferenceException → WinUI stowed exception（0xc000027b）→ 进程直接崩。
+    /// 事件日志实证：Microsoft.UI.Xaml.dll 0xc000027b；%TEMP%\catclawvideo_startup.log 里
+    /// 栈为 WebView2Proxy.OnCoreWebView2Initialized ← MauiWebView.LoadHtml。</para>
+    /// </summary>
+    private void ApplyHtml()
+    {
+        if (!_loaded) return;
+        try { _web.Source = new HtmlWebViewSource { Html = _html }; }
+        catch (Exception ex)
+        {
+            DiagLog.Write($"[tree] WebView 加载 HTML 失败：{ex.GetType().Name}: {ex.Message}");
+        }
+    }
 
     public SpiderTreeDialogPage(int seq, string treeJson, Action<int> onPick, Action? onCancel = null,
         string positive = "", string negative = "", string neutral = "")
@@ -30,10 +51,10 @@ public partial class SpiderTreeDialogPage : ContentPage, IRemoteKeyHandler
         _positive = positive; _negative = negative; _neutral = neutral;
         BackgroundColor = Color.FromArgb("#B3000000");
 
-        _web = new WebView
-        {
-            Source = new HtmlWebViewSource { Html = BuildHtml(treeJson, positive, negative, neutral) },
-        };
+        _html = BuildHtml(treeJson, positive, negative, neutral);
+        _web = new WebView();
+        // ⚠ 不当场设 Source：见 ApplyHtml 注释（构造期设源会触发 MAUI WebView2 代理的空引用崩溃）
+        _web.Loaded += (_, _) => { _loaded = true; ApplyHtml(); };
         // MAUI WebView 没有跨平台 WebMessageReceived：JS 用自定义 scheme 导航 + Navigating 拦截
         //（clsk:clk:<节点下标> / clsk:cancel）
         _web.Navigating += OnNavigating;
