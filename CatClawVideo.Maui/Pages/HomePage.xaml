@@ -225,40 +225,62 @@
             </CollectionView.ItemTemplate>
         </CollectionView>
 
-        <!-- 冷启动遮罩：ART guest（QEMU TCG）冷启动实测 41~46 秒 + 订阅恢复期间，海报墙全空
-             只有一行小字，体感如同卡死。这里用全屏遮罩分阶段显示真实进度（恢复订阅 → 引擎
-             冷启动 → 加载首页数据），首页数据就绪后由代码后台淡出进入主界面。
-             覆盖三行（RowSpan=3）+ 不透明背景，避免底下空海报墙透出。 -->
+        <!-- 冷启动遮罩：引擎冷启动实测 41~46 秒（解包内核与根镜像 + Android 13 运行时启动）
+             + 订阅恢复期间，海报墙全空、只有一行小字，体感如同卡死。这里用全屏遮罩分阶段显示
+             真实进度（恢复订阅 → 引擎冷启动 → 首页数据），首页数据就绪后淡出进主界面。
+             覆盖三行（RowSpan=3）+ 不透明背景，避免底下空海报墙透出。
+             2026-10-03 重设计：品牌 → 进度 → 启动自检卡片；进度条移到底部通栏。 -->
         <Grid Grid.Row="0" Grid.RowSpan="3" x:Name="ColdStartOverlay" IsVisible="True"
               BackgroundColor="{DynamicResource WindowBackgroundColor}">
-            <VerticalStackLayout VerticalOptions="Center" Spacing="14" Padding="0,0,0,70">
-                <Label Text="🐾 猫爪影视" FontSize="30" FontAttributes="Bold"
-                       HorizontalOptions="Center"
-                       TextColor="{DynamicResource TextPrimaryColor}" />
-                <ActivityIndicator IsRunning="True" WidthRequest="30" HeightRequest="30"
-                                   HorizontalOptions="Center"
-                                   Color="{DynamicResource PrimaryColor}" />
-                <!-- 百分比数字 + 进度条：分段锚定实测阶段（内核解包快 / ART boot 慢），
-                     数字随 tick 跳动给「在动」的实感；数据上屏瞬间 100%。 -->
-                <Label x:Name="ColdStartPct" Text="0%" FontSize="24" FontAttributes="Bold"
-                       HorizontalOptions="Center"
-                       TextColor="{DynamicResource TextPrimaryColor}" />
-                <!-- 进度条已移到底部通栏（见本 Grid 最后一个子元素）：百分比数字留在中央，
-                     进度条贴窗口底边、宽度跟随窗口，40 秒等待里它是最主要的「在动」信号。 -->
-                <Label x:Name="ColdStartStatus" FontSize="13.5" MaxLines="2" WidthRequest="460"
-                       HorizontalOptions="Center" HorizontalTextAlignment="Center"
-                       TextColor="{DynamicResource TextSecondaryColor}" />
+            <VerticalStackLayout VerticalOptions="Center" Spacing="20" Padding="0,0,0,36"
+                                 HorizontalOptions="Center">
 
-                <!-- 环境检测（Windows 启动时一次性探测，逻辑见 Services/StartupEnvCheck）：
-                     WHPX 加速 / QEMU 引擎 / ART 镜像 / 播放器后端 / 数据目录 / 磁盘 / 内存 / 系统。
-                     全部通过只显示一行汇总；有问题逐条给出处置建议 —— 让用户第一眼看到根因，
-                     而不是去翻 home-debug.log（版本 2026-10-03 加）。 -->
-                <VerticalStackLayout x:Name="EnvCheckPanel" IsVisible="False" Spacing="6"
-                                     HorizontalOptions="Center" WidthRequest="460" Margin="0,4,0,0">
-                    <Label x:Name="EnvCheckSummary" FontSize="12" HorizontalOptions="Center"
-                           TextColor="{DynamicResource TextSecondaryColor}" />
-                    <VerticalStackLayout x:Name="EnvCheckList" Spacing="4" />
+                <VerticalStackLayout Spacing="8">
+                    <Image Source="ic_brand.png" WidthRequest="72" HeightRequest="72"
+                           HorizontalOptions="Center" />
+                    <Label Text="猫爪影视" FontSize="27" FontAttributes="Bold"
+                           HorizontalOptions="Center"
+                           TextColor="{DynamicResource TextPrimaryColor}" />
                 </VerticalStackLayout>
+
+                <!-- 进度区：转圈与百分比同行（原来「转圈 + 数字 + 进度条」三个信号分三行，
+                     视觉噪声大），阶段文案在下面；真实进度条贴窗口底部通栏（见本 Grid 末尾）。 -->
+                <VerticalStackLayout Spacing="6">
+                    <HorizontalStackLayout HorizontalOptions="Center" Spacing="10">
+                        <ActivityIndicator IsRunning="True" WidthRequest="18" HeightRequest="18"
+                                           VerticalOptions="Center"
+                                           Color="{DynamicResource PrimaryColor}" />
+                        <Label x:Name="ColdStartPct" Text="0%" FontSize="25" FontAttributes="Bold"
+                               VerticalOptions="Center"
+                               TextColor="{DynamicResource TextPrimaryColor}" />
+                    </HorizontalStackLayout>
+                    <Label x:Name="ColdStartStatus" FontSize="13" MaxLines="2" WidthRequest="480"
+                           HorizontalOptions="Center" HorizontalTextAlignment="Center"
+                           TextColor="{DynamicResource TextSecondaryColor}" />
+                </VerticalStackLayout>
+
+                <!-- 启动自检卡片（Windows 一次性探测，逻辑见 Services/StartupEnvCheck）：
+                     单行「圆点 + 名称 + 值」，异常项追加一行处置建议；全部通过时只显示绿色药丸。
+                     目的是让用户第一眼看到根因，而不是去翻 home-debug.log。 -->
+                <Border x:Name="EnvCheckPanel" IsVisible="False" WidthRequest="520"
+                        BackgroundColor="{DynamicResource InputBackgroundColor}"
+                        Stroke="{DynamicResource InputBorderColor}" StrokeThickness="1"
+                        StrokeShape="RoundRectangle 14" Padding="18,13">
+                    <VerticalStackLayout Spacing="9">
+                        <Grid ColumnDefinitions="*,Auto">
+                            <Label Text="启动自检" FontSize="13" FontAttributes="Bold"
+                                   VerticalOptions="Center"
+                                   TextColor="{DynamicResource TextPrimaryColor}" />
+                            <Border x:Name="EnvCheckBadge" Grid.Column="1" StrokeThickness="0"
+                                    StrokeShape="RoundRectangle 9" Padding="9,2"
+                                    VerticalOptions="Center">
+                                <Label x:Name="EnvCheckSummary" FontSize="11.5" />
+                            </Border>
+                        </Grid>
+                        <BoxView HeightRequest="1" Color="{DynamicResource DividerColor}" />
+                        <VerticalStackLayout x:Name="EnvCheckList" Spacing="7" />
+                    </VerticalStackLayout>
+                </Border>
 
                 <Label Text="冷启动仅发生在每次开机后的首次访问，之后秒开" FontSize="11" Opacity="0.6"
                        HorizontalOptions="Center" HorizontalTextAlignment="Center"

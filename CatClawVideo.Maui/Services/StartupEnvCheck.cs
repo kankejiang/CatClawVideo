@@ -52,9 +52,9 @@ public static class StartupEnvCheck
         try
         {
             items.Add(File.Exists(Path.Combine(baseDir, "mpv-2.dll"))
-                ? new EnvCheckItem("播放器后端", EnvCheckLevel.Ok, "libmpv 就绪（杜比视界 tone-map 可用）")
-                : new EnvCheckItem("播放器后端", EnvCheckLevel.Warn, "缺少 mpv-2.dll（杜比视界片源回落 MF，会发灰泛紫）",
-                    "运行 tools/fetch-assets.ps1 取件（本仓库 Release assets-v1）"));
+                ? new EnvCheckItem("播放器后端", EnvCheckLevel.Ok, "libmpv · 杜比视界")
+                : new EnvCheckItem("播放器后端", EnvCheckLevel.Warn, "缺少 mpv-2.dll",
+                    "杜比视界片源会回落 MF（发灰泛紫）；运行 tools/fetch-assets.ps1 取件（本仓库 Release assets-v1）"));
         }
         catch { }
 
@@ -66,7 +66,7 @@ public static class StartupEnvCheck
             var probe = Path.Combine(dir, $".envcheck-{Guid.NewGuid():N}.tmp");
             File.WriteAllText(probe, "ok");
             File.Delete(probe);
-            items.Add(new EnvCheckItem("数据目录", EnvCheckLevel.Ok, "可写（" + Shorten(dir) + "）"));
+            items.Add(new EnvCheckItem("数据目录", EnvCheckLevel.Ok, "可写"));
         }
         catch (Exception ex)
         {
@@ -80,9 +80,9 @@ public static class StartupEnvCheck
             var root = Path.GetPathRoot(CatClawVideo.Core.AppPaths.LocalRoot);
             var free = root is null ? 0 : new DriveInfo(root).AvailableFreeSpace;
             items.Add(free >= DiskWarnBytes
-                ? new EnvCheckItem("磁盘剩余", EnvCheckLevel.Ok, $"{free / 1024.0 / 1024 / 1024:0.#} GB 可用")
-                : new EnvCheckItem("磁盘剩余", EnvCheckLevel.Warn, $"{free / 1024.0 / 1024 / 1024:0.#} GB 可用（建议 ≥ 5 GB）",
-                    "流缓存默认上限 10GB（设置页可调小）；空间不足会让块设备/缓存写入失败"));
+                ? new EnvCheckItem("磁盘空间", EnvCheckLevel.Ok, $"{free / 1024.0 / 1024 / 1024:0.#} GB 可用")
+                : new EnvCheckItem("磁盘空间", EnvCheckLevel.Warn, $"{free / 1024.0 / 1024 / 1024:0.#} GB 可用",
+                    "建议 ≥ 5 GB：流缓存默认上限 10GB（设置页可调小），空间不足会让块设备/缓存写入失败"));
         }
         catch { }
 
@@ -93,8 +93,8 @@ public static class StartupEnvCheck
             var gb = total / 1024.0 / 1024 / 1024;
             items.Add(total >= (long)MemoryWarnBytes
                 ? new EnvCheckItem("内存", EnvCheckLevel.Ok, $"{gb:0.#} GB")
-                : new EnvCheckItem("内存", EnvCheckLevel.Warn, $"{gb:0.#} GB（建议 ≥ 4 GB）",
-                    "QEMU guest 默认 2~3GB，余量不足时宿主会频繁换页、播放卡顿"));
+                : new EnvCheckItem("内存", EnvCheckLevel.Warn, $"{gb:0.#} GB",
+                    "建议 ≥ 4 GB：guest 默认占 2~3GB，余量不足时宿主频繁换页、播放卡顿"));
         }
         catch { }
 
@@ -107,22 +107,14 @@ public static class StartupEnvCheck
         // JavaSpiderRuntime.EnsureDexJarAsync 明确报错并给出替代方案（换含 classes.dex 的源）。
         try
         {
+            var osVer = Environment.OSVersion.Version;   // 比 OSDescription 短，右栏放得下
             items.Add(new EnvCheckItem("系统", EnvCheckLevel.Info,
-                $"{System.Runtime.InteropServices.RuntimeInformation.OSDescription.Trim()} · " +
-                $"{System.Runtime.InteropServices.RuntimeInformation.OSArchitecture} · .NET {Environment.Version}"));
+                $"Windows {osVer.Major}.{osVer.Minor}.{osVer.Build} · " +
+                $"{System.Runtime.InteropServices.RuntimeInformation.OSArchitecture} · .NET {Environment.Version.Major}"));
         }
         catch { }
 #endif
         return items;
-    }
-
-    /// <summary>把路径里过长的用户目录前缀缩写，避免检测行过长。</summary>
-    private static string Shorten(string path)
-    {
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        return !string.IsNullOrEmpty(home) && path.StartsWith(home, StringComparison.OrdinalIgnoreCase)
-            ? "%USERPROFILE%" + path[home.Length..]
-            : path;
     }
 
 }

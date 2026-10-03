@@ -1,4 +1,4 @@
-﻿using CatClawVideo.Core.Interfaces;
+using CatClawVideo.Core.Interfaces;
 using CatClawVideo.Core.Models;
 using CatClawVideo.Maui.Services;
 using CatClawVideo.Maui.ViewModels;
@@ -151,9 +151,18 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
         {
             EnvCheckList.Clear();
             var bad = items.Count(i => i.Level is Services.EnvCheckLevel.Warn or Services.EnvCheckLevel.Fail);
-            EnvCheckSummary.Text = bad == 0
-                ? $"环境检测：{items.Count} 项全部通过"
-                : $"环境检测：{items.Count - bad} 项通过 · {bad} 项需注意";
+            var failed = items.Count(i => i.Level is Services.EnvCheckLevel.Fail);
+
+            // 汇总做成状态药丸（绿=全通过 / 琥珀=有告警 / 红=有失败），比一行灰字更醒目
+            var (badgeText, tint) = bad == 0
+                ? ($"{items.Count} 项全部通过", Color.FromArgb("#34C759"))
+                : failed > 0
+                    ? ($"{bad} 项异常", Color.FromArgb("#FF453A"))
+                    : ($"{bad} 项需注意", Color.FromArgb("#FF9F0A"));
+            EnvCheckSummary.Text = badgeText;
+            EnvCheckSummary.TextColor = tint;
+            EnvCheckBadge.BackgroundColor = tint.WithAlpha(0.16f);
+
             foreach (var it in items) EnvCheckList.Add(BuildEnvRow(it));
             EnvCheckPanel.IsVisible = true;
         }
@@ -163,50 +172,69 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
         }
     }
 
-    /// <summary>一条检测行：状态圆点 + 标题 + 详情（非通过项追加一行处置建议）。</summary>
+    /// <summary>
+    /// 一条检测行：圆点 + 名称（左栏）+ 值（右栏对齐）。异常项的值用状态色，
+    /// 并在下方追加一行处置建议（缩进 + 同色）。
+    /// </summary>
     private static View BuildEnvRow(Services.EnvCheckItem it)
     {
-        var dotColor = it.Level switch
+        var levelColor = it.Level switch
         {
             Services.EnvCheckLevel.Ok => Color.FromArgb("#34C759"),
             Services.EnvCheckLevel.Warn => Color.FromArgb("#FF9F0A"),
             Services.EnvCheckLevel.Fail => Color.FromArgb("#FF453A"),
             _ => Color.FromArgb("#8E8E93"),
         };
+        var isProblem = it.Level is Services.EnvCheckLevel.Warn or Services.EnvCheckLevel.Fail;
 
-        var grid = new Grid
+        var row = new Grid
         {
             ColumnDefinitions =
             {
                 new ColumnDefinition(GridLength.Auto),
+                new ColumnDefinition(GridLength.Auto),
                 new ColumnDefinition(GridLength.Star),
             },
-            ColumnSpacing = 8,
+            ColumnSpacing = 9,
         };
-        grid.Add(new Microsoft.Maui.Controls.Shapes.Ellipse
+        row.Add(new Microsoft.Maui.Controls.Shapes.Ellipse
         {
             WidthRequest = 7,
             HeightRequest = 7,
-            Fill = new SolidColorBrush(dotColor),
-            VerticalOptions = LayoutOptions.Start,
-            Margin = new Thickness(0, 5, 0, 0),
+            Fill = new SolidColorBrush(levelColor),
+            VerticalOptions = LayoutOptions.Center,
         }, 0, 0);
 
-        var text = new VerticalStackLayout { Spacing = 1 };
-        var title = new Label { Text = it.Title, FontSize = 12 };
-        title.SetDynamicResource(Label.TextColorProperty, "TextPrimaryColor");
-        text.Add(title);
-        var detail = new Label { Text = it.Detail, FontSize = 11.5, LineBreakMode = LineBreakMode.WordWrap };
-        detail.SetDynamicResource(Label.TextColorProperty, "TextSecondaryColor");
-        text.Add(detail);
-        if (it.Hint is { Length: > 0 } hint && it.Level is Services.EnvCheckLevel.Warn or Services.EnvCheckLevel.Fail)
+        var name = new Label { Text = it.Title, FontSize = 12.5, VerticalOptions = LayoutOptions.Center };
+        name.SetDynamicResource(Label.TextColorProperty, "TextPrimaryColor");
+        row.Add(name, 1, 0);
+
+        var value = new Label
         {
-            var hintLabel = new Label { Text = "→ " + hint, FontSize = 11, LineBreakMode = LineBreakMode.WordWrap };
-            hintLabel.SetDynamicResource(Label.TextColorProperty, "TextHintColor");
-            text.Add(hintLabel);
+            Text = it.Detail,
+            FontSize = 12.5,
+            HorizontalTextAlignment = TextAlignment.End,
+            LineBreakMode = LineBreakMode.WordWrap,
+            VerticalOptions = LayoutOptions.Center,
+        };
+        if (isProblem) value.TextColor = levelColor;
+        else value.SetDynamicResource(Label.TextColorProperty, "TextSecondaryColor");
+        row.Add(value, 2, 0);
+
+        var stack = new VerticalStackLayout { Spacing = 3 };
+        stack.Add(row);
+        if (isProblem && it.Hint is { Length: > 0 } hint)
+        {
+            stack.Add(new Label
+            {
+                Text = "→ " + hint,
+                FontSize = 11,
+                LineBreakMode = LineBreakMode.WordWrap,
+                Margin = new Thickness(16, 0, 0, 0),
+                TextColor = levelColor,
+            });
         }
-        grid.Add(text, 1, 0);
-        return grid;
+        return stack;
     }
 
     private void UpdateColdStartOverlay()
@@ -293,8 +321,8 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
 #else
                 ? elapsed switch
                 {
-                    < 8 => "正在启动视频引擎（内核加载）…",
-                    < 45 => "正在启动视频引擎（ART 运行时，约 40 秒）…",
+                    < 8 => "正在启动视频引擎（解包内核与根镜像）…",
+                    < 45 => "正在启动视频引擎（Android 13 运行时，约 40 秒）…",
                     _ => "正在加载首页数据…",
                 }
 #endif
