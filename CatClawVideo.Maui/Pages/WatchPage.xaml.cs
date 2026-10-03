@@ -972,6 +972,7 @@ public partial class WatchPage : ContentPage, IQueryAttributable, IRemoteKeyHand
     {
         var table = new (VideoAspect Aspect, string Name)[]
         {
+            (VideoAspect.Original, "原始比例（1:1 像素）"),
             (VideoAspect.AspectFit, "等比适配（保留黑边）"),
             (VideoAspect.AspectFill, "等比填满（裁掉边缘）"),
             (VideoAspect.Fill, "拉伸填满（会变形）"),

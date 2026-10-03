@@ -292,15 +292,24 @@ public unsafe sealed class MpvVideoBackend : IVideoPlayerImplementation, IDispos
         if (_mpv == IntPtr.Zero) return;
         switch (aspect)
         {
+            case VideoAspect.Original:
+                // 原始比例：1:1 像素不缩放（窗口小于视频则裁边，大于则居中留边）
+                MpvLib.SetPropertyString(_mpv, "video-unscaled", "yes");
+                MpvLib.SetPropertyString(_mpv, "video-aspect-override", "no");
+                MpvLib.SetPropertyString(_mpv, "panscan", "0");
+                break;
             case VideoAspect.AspectFit:
+                MpvLib.SetPropertyString(_mpv, "video-unscaled", "no");
                 MpvLib.SetPropertyString(_mpv, "video-aspect-override", "no");
                 MpvLib.SetPropertyString(_mpv, "panscan", "0");
                 break;
             case VideoAspect.AspectFill:
+                MpvLib.SetPropertyString(_mpv, "video-unscaled", "no");
                 MpvLib.SetPropertyString(_mpv, "video-aspect-override", "no");
                 MpvLib.SetPropertyString(_mpv, "panscan", "1");
                 break;
             case VideoAspect.Fill:
+                MpvLib.SetPropertyString(_mpv, "video-unscaled", "no");
                 MpvLib.SetPropertyString(_mpv, "video-aspect-override", "display");
                 MpvLib.SetPropertyString(_mpv, "panscan", "0");
                 break;

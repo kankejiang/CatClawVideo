@@ -9,6 +9,8 @@ public enum VideoAspect
     AspectFill,
     /// <summary>拉伸填满（变形）</summary>
     Fill,
+    /// <summary>原始比例（1:1 像素，不缩放；窗口小于视频则裁边，大于则居中留边。仅 libmpv 路径支持）</summary>
+    Original,
 }
 
 /// <summary>播放器状态</summary>
