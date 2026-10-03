@@ -1,0 +1,150 @@
+using CatClaw.Qemu;
+
+namespace CatClawVideo.Maui.Services;
+
+/// <summary>环境检测项的严重级别（与套件的 <see cref="QemuEnvLevel"/> 对齐，另加纯信息档）。</summary>
+public enum EnvCheckLevel { Ok, Warn, Fail, Info }
+
+/// <summary>一条环境检测结果。<paramref name="Hint"/> 是给用户的处置建议（仅非通过项才展示）。</summary>
+public sealed record EnvCheckItem(string Title, EnvCheckLevel Level, string Detail, string? Hint = null);
+
+/// <summary>
+/// 启动环境检测（Windows）：把「虚拟机套件探测」与「宿主侧条件」合成一份清单，
+/// 由首页冷启动画面在引擎预热期间直接展示 —— 排查「磁力不能播 / 杜比视界发灰 /
+/// 引擎慢得离谱」这类问题，用户第一眼就能看到根因与处置办法，不用去翻日志。
+///
+/// <para>全部为本地探测（文件/磁盘/内存/PATH），无网络、无外部进程，毫秒级；
+/// 任何一项抛异常都只影响该项（降级成 Info），不会阻断启动。</para>
+/// </summary>
+public static class StartupEnvCheck
+{
+    /// <summary>磁盘剩余空间的告警阈值（流缓存默认上限 10GB，块设备按需增长）。</summary>
+    private const long DiskWarnBytes = 5L * 1024 * 1024 * 1024;
+
+    /// <summary>物理内存告警阈值（QEMU 默认 2~3GB + 宿主自身）。</summary>
+    private const ulong MemoryWarnBytes = 4UL * 1024 * 1024 * 1024;
+
+    /// <summary>执行全部检测。非 Windows 平台返回空表（调用方据此隐藏面板）。</summary>
+    public static IReadOnlyList<EnvCheckItem> Run()
+    {
+        var items = new List<EnvCheckItem>();
+#if WINDOWS
+        var baseDir = AppContext.BaseDirectory;
+
+        // ① 虚拟机套件：WHPX / QEMU 引擎 / ART 镜像（探测逻辑在套件仓库，这里只映射级别）
+        try
+        {
+            foreach (var q in QemuEnvCheck.Probe(Path.Combine(baseDir, "QemuGuest")))
+                items.Add(new EnvCheckItem(q.Title, q.Level switch
+                {
+                    QemuEnvLevel.Ok => EnvCheckLevel.Ok,
+                    QemuEnvLevel.Warn => EnvCheckLevel.Warn,
+                    QemuEnvLevel.Fail => EnvCheckLevel.Fail,
+                    _ => EnvCheckLevel.Info,
+                }, q.Detail, q.Hint));
+        }
+        catch (Exception ex)
+        {
+            items.Add(new EnvCheckItem("虚拟机套件", EnvCheckLevel.Info, $"探测失败：{ex.GetType().Name}"));
+        }
+
+        // ② 播放器后端：mpv（杜比视界 RPU tone-map 走它，缺失时回落 MF 会发灰泛紫）
+        try
+        {
+            items.Add(File.Exists(Path.Combine(baseDir, "mpv-2.dll"))
+                ? new EnvCheckItem("播放器后端", EnvCheckLevel.Ok, "libmpv 就绪（杜比视界 tone-map 可用）")
+                : new EnvCheckItem("播放器后端", EnvCheckLevel.Warn, "缺少 mpv-2.dll（杜比视界片源回落 MF，会发灰泛紫）",
+                    "运行 tools/fetch-assets.ps1 取件（本仓库 Release assets-v1）"));
+        }
+        catch { }
+
+        // ③ 数据目录可写（QEMU 控制台日志、guest 数据盘、块设备镜像、流缓存都落这里）
+        try
+        {
+            var dir = CatClawVideo.Core.AppPaths.LocalRoot;
+            Directory.CreateDirectory(dir);
+            var probe = Path.Combine(dir, $".envcheck-{Guid.NewGuid():N}.tmp");
+            File.WriteAllText(probe, "ok");
+            File.Delete(probe);
+            items.Add(new EnvCheckItem("数据目录", EnvCheckLevel.Ok, "可写（" + Shorten(dir) + "）"));
+        }
+        catch (Exception ex)
+        {
+            items.Add(new EnvCheckItem("数据目录", EnvCheckLevel.Fail, $"不可写：{ex.GetType().Name}",
+                "检查杀软/权限拦截；数据目录不可写会导致 QEMU 日志、guest 数据盘与流缓存全部失效"));
+        }
+
+        // ④ 磁盘剩余空间
+        try
+        {
+            var root = Path.GetPathRoot(CatClawVideo.Core.AppPaths.LocalRoot);
+            var free = root is null ? 0 : new DriveInfo(root).AvailableFreeSpace;
+            items.Add(free >= DiskWarnBytes
+                ? new EnvCheckItem("磁盘剩余", EnvCheckLevel.Ok, $"{free / 1024.0 / 1024 / 1024:0.#} GB 可用")
+                : new EnvCheckItem("磁盘剩余", EnvCheckLevel.Warn, $"{free / 1024.0 / 1024 / 1024:0.#} GB 可用（建议 ≥ 5 GB）",
+                    "流缓存默认上限 10GB（设置页可调小）；空间不足会让块设备/缓存写入失败"));
+        }
+        catch { }
+
+        // ⑤ 物理内存
+        try
+        {
+            var total = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
+            var gb = total / 1024.0 / 1024 / 1024;
+            items.Add(total >= (long)MemoryWarnBytes
+                ? new EnvCheckItem("内存", EnvCheckLevel.Ok, $"{gb:0.#} GB")
+                : new EnvCheckItem("内存", EnvCheckLevel.Warn, $"{gb:0.#} GB（建议 ≥ 4 GB）",
+                    "QEMU guest 默认 2~3GB，余量不足时宿主会频繁换页、播放卡顿"));
+        }
+        catch { }
+
+        // ⑥ 系统 Java（可选路径：纯 .class jar 源的 d8 预转换用；有 ART guest 时通常不需要）
+        try
+        {
+            var javaExe = FindInPath("java.exe");
+            items.Add(javaExe is not null
+                ? new EnvCheckItem("系统 Java", EnvCheckLevel.Ok, "已安装（d8 预转换可用）")
+                : new EnvCheckItem("系统 Java", EnvCheckLevel.Info, "未检测到（纯 .class jar 源的 d8 预转换不可用）",
+                    "装 JDK/JRE 并加入 PATH 即可；ART guest 直接跑 dex 的源不受影响"));
+        }
+        catch { }
+
+        // ⑦ 系统与运行时（信息项：报障时先看这一行）
+        try
+        {
+            items.Add(new EnvCheckItem("系统", EnvCheckLevel.Info,
+                $"{System.Runtime.InteropServices.RuntimeInformation.OSDescription.Trim()} · " +
+                $"{System.Runtime.InteropServices.RuntimeInformation.OSArchitecture} · .NET {Environment.Version}"));
+        }
+        catch { }
+#endif
+        return items;
+    }
+
+    /// <summary>把路径里过长的用户目录前缀缩写，避免检测行过长。</summary>
+    private static string Shorten(string path)
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return !string.IsNullOrEmpty(home) && path.StartsWith(home, StringComparison.OrdinalIgnoreCase)
+            ? "%USERPROFILE%" + path[home.Length..]
+            : path;
+    }
+
+    /// <summary>在 PATH 里找可执行文件（不启动进程，纯文件探测）。</summary>
+    private static string? FindInPath(string fileName)
+    {
+        var path = Environment.GetEnvironmentVariable("PATH");
+        if (string.IsNullOrEmpty(path)) return null;
+        foreach (var dir in path.Split(Path.PathSeparator))
+        {
+            if (string.IsNullOrWhiteSpace(dir)) continue;
+            try
+            {
+                var full = Path.Combine(dir.Trim(), fileName);
+                if (File.Exists(full)) return full;
+            }
+            catch { }
+        }
+        return null;
+    }
+}

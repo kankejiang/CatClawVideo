@@ -1,4 +1,4 @@
-using CatClawVideo.Core.Interfaces;
+﻿using CatClawVideo.Core.Interfaces;
 using CatClawVideo.Core.Models;
 using CatClawVideo.Maui.Services;
 using CatClawVideo.Maui.ViewModels;
@@ -119,6 +119,94 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
         _coldStartTimer.Tick += (_, _) => UpdateColdStartOverlay();
         _coldStartTimer.Start();
         UpdateColdStartOverlay();
+
+        // 环境检测：与引擎预热并行跑（本地探测，毫秒级），结果贴在遮罩上
+        _ = RunEnvCheckAsync();
+    }
+
+    // ═══════════ 启动环境检测（Windows）═══════════
+    //
+    // 引擎预热这 40 秒里用户只能干等，正好用来把「为什么磁力不能播 / 杜比视界发灰 /
+    // 引擎慢得离谱」的根因摆出来：WHPX 是否可用、QemuGuest 载荷是否到位、mpv 是否在、
+    // 数据目录能不能写、磁盘/内存够不够。全部本地探测，不联网、不启子进程。
+
+    /// <summary>后台跑一遍环境检测，就绪后在遮罩里逐条渲染（非 Windows 返回空表 → 面板不显示）。</summary>
+    private async Task RunEnvCheckAsync()
+    {
+        try
+        {
+            var items = await Task.Run(Services.StartupEnvCheck.Run).ConfigureAwait(true);
+            if (items.Count == 0) return;
+            RenderEnvChecks(items);
+        }
+        catch (Exception ex)
+        {
+            DiagLog.Write($"[envcheck] 环境检测失败：{ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private void RenderEnvChecks(IReadOnlyList<Services.EnvCheckItem> items)
+    {
+        try
+        {
+            EnvCheckList.Clear();
+            var bad = items.Count(i => i.Level is Services.EnvCheckLevel.Warn or Services.EnvCheckLevel.Fail);
+            EnvCheckSummary.Text = bad == 0
+                ? $"环境检测：{items.Count} 项全部通过"
+                : $"环境检测：{items.Count - bad} 项通过 · {bad} 项需注意";
+            foreach (var it in items) EnvCheckList.Add(BuildEnvRow(it));
+            EnvCheckPanel.IsVisible = true;
+        }
+        catch (Exception ex)
+        {
+            DiagLog.Write($"[envcheck] 渲染失败：{ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>一条检测行：状态圆点 + 标题 + 详情（非通过项追加一行处置建议）。</summary>
+    private static View BuildEnvRow(Services.EnvCheckItem it)
+    {
+        var dotColor = it.Level switch
+        {
+            Services.EnvCheckLevel.Ok => Color.FromArgb("#34C759"),
+            Services.EnvCheckLevel.Warn => Color.FromArgb("#FF9F0A"),
+            Services.EnvCheckLevel.Fail => Color.FromArgb("#FF453A"),
+            _ => Color.FromArgb("#8E8E93"),
+        };
+
+        var grid = new Grid
+        {
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(GridLength.Auto),
+                new ColumnDefinition(GridLength.Star),
+            },
+            ColumnSpacing = 8,
+        };
+        grid.Add(new Microsoft.Maui.Controls.Shapes.Ellipse
+        {
+            WidthRequest = 7,
+            HeightRequest = 7,
+            Fill = new SolidColorBrush(dotColor),
+            VerticalOptions = LayoutOptions.Start,
+            Margin = new Thickness(0, 5, 0, 0),
+        }, 0, 0);
+
+        var text = new VerticalStackLayout { Spacing = 1 };
+        var title = new Label { Text = it.Title, FontSize = 12 };
+        title.SetDynamicResource(Label.TextColorProperty, "TextPrimaryColor");
+        text.Add(title);
+        var detail = new Label { Text = it.Detail, FontSize = 11.5, LineBreakMode = LineBreakMode.WordWrap };
+        detail.SetDynamicResource(Label.TextColorProperty, "TextSecondaryColor");
+        text.Add(detail);
+        if (it.Hint is { Length: > 0 } hint && it.Level is Services.EnvCheckLevel.Warn or Services.EnvCheckLevel.Fail)
+        {
+            var hintLabel = new Label { Text = "→ " + hint, FontSize = 11, LineBreakMode = LineBreakMode.WordWrap };
+            hintLabel.SetDynamicResource(Label.TextColorProperty, "TextHintColor");
+            text.Add(hintLabel);
+        }
+        grid.Add(text, 1, 0);
+        return grid;
     }
 
     private void UpdateColdStartOverlay()
