@@ -81,6 +81,11 @@ public unsafe sealed class MpvVideoBackend : IVideoPlayerImplementation, IDispos
 
         // 属性观察（事件泵据此推 View 层状态；位置由 View 层定时器轮询 GetPosition，不走事件）
         Observe("track-list", MpvLib.MpvFormatString);
+        // 视频真实像素尺寸：夸克转码的 mp4 容器（tkhd）声明比例经常是错的（16:9），
+        // mpv 会打「Using container aspect ratio」并按坏声明拉伸 → 21:9 铺满无黑边。
+        // 就绪后强制 video-aspect-override=编码像素比，恢复标准 letterbox。
+        Observe("video-params/dw", MpvLib.MpvFormatInt64);
+        Observe("video-params/dh", MpvLib.MpvFormatInt64);
 
         // 渲染上下文：等 RenderControl 就绪（GL 上下文已 current）后再建
         _renderControl.Render += OnRenderFrame;
@@ -216,6 +221,10 @@ public unsafe sealed class MpvVideoBackend : IVideoPlayerImplementation, IDispos
                     // 媒体就绪：View 层据此触发 MediaOpened（含 ShouldAutoPlay 的自动 Play）。
                     // 事件泵在后台线程，View/WinUI 访问必须回 UI 线程。
                     DispatchOnUi(() => _view.RaiseMediaOpened());
+                    FixAspectOverride();
+                    break;
+                case MpvLib.EventPropertyChange:
+                    FixAspectOverride();
                     break;
                 case MpvLib.EventEndFile:
                     var endFile = System.Runtime.InteropServices.Marshal.PtrToStructure<MpvLib.MpvEventEndFile>((IntPtr)e.Data);
@@ -227,6 +236,32 @@ public unsafe sealed class MpvVideoBackend : IVideoPlayerImplementation, IDispos
                     break;
             }
         }
+    }
+
+    /// <summary>当前比例档（AspectFit/Original 需要「按编码像素比例 letterbox」）。</summary>
+    private VideoAspect _aspectMode = VideoAspect.AspectFit;
+
+    /// <summary>
+    /// 强制 video-aspect-override = 编码像素比例（dw/dh）。
+    /// 夸克转码容器声明的比例常是错的（mpv: "Using container aspect ratio" → 21:9 被拉成 16:9
+    /// 铺满无黑边）；读 video-params 的真实像素尺寸覆写，恢复标准上下黑边。幂等：值同不写。
+    /// </summary>
+    private void FixAspectOverride()
+    {
+        if (_mpv == IntPtr.Zero) return;
+        if (_aspectMode is not (VideoAspect.AspectFit or VideoAspect.Original)) return;
+        try
+        {
+            var dw = MpvLib.GetPropertyDouble(_mpv, "video-params/dw");
+            var dh = MpvLib.GetPropertyDouble(_mpv, "video-params/dh");
+            if (dw <= 0 || dh <= 0) return;
+            var want = $"{(long)dw}/{(long)dh}";
+            var cur = MpvLib.GetPropertyString(_mpv, "video-aspect-override");
+            if (cur == want) return;
+            MpvLib.SetPropertyString(_mpv, "video-aspect-override", want);
+            BtLog($"[mpv] 强制按编码像素比例 letterbox: {want}（忽略容器声明 {cur ?? "无"}）");
+        }
+        catch { }
     }
 
     private void DispatchOnUi(Action action)
@@ -290,6 +325,12 @@ public unsafe sealed class MpvVideoBackend : IVideoPlayerImplementation, IDispos
     void IVideoPlayerImplementation.SetAspect(VideoAspect aspect)
     {
         if (_mpv == IntPtr.Zero) return;
+        _aspectMode = aspect;
+        if (aspect is not (VideoAspect.AspectFit or VideoAspect.Original))
+        {
+            // Fill/AspectFill 档：清掉像素比覆写（这两档本来就要覆盖/裁切）
+            try { MpvLib.SetPropertyString(_mpv, "video-aspect-override", "no"); } catch { }
+        }
         switch (aspect)
         {
             case VideoAspect.Original:
