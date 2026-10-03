@@ -279,6 +279,11 @@
                         </Grid>
                         <BoxView HeightRequest="1" Color="{DynamicResource DividerColor}" />
                         <VerticalStackLayout x:Name="EnvCheckList" Spacing="7" />
+
+                        <!-- 一键处置：仅在存在可执行的异常项时出现
+                             （一键启用虚拟化 / 自动取件 / 打开下载页 / 打开数据目录）。 -->
+                        <HorizontalStackLayout x:Name="EnvCheckActions" IsVisible="False"
+                                               Spacing="8" HorizontalOptions="End" Margin="0,2,0,0" />
                     </VerticalStackLayout>
                 </Border>
 

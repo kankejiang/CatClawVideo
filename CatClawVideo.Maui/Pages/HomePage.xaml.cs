@@ -131,7 +131,10 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
     // 数据目录能不能写、磁盘/内存够不够。全部本地探测，不联网、不启子进程。
 
     /// <summary>后台跑一遍环境检测，就绪后在遮罩里逐条渲染（非 Windows 返回空表 → 面板不显示）。</summary>
-    private async Task RunEnvCheckAsync()
+    private async Task RunEnvCheckAsync() => await RefreshEnvChecksAsync();
+
+    /// <summary>重新探测并刷新卡片（一键处置执行完后调用）。</summary>
+    private async Task RefreshEnvChecksAsync()
     {
         try
         {
@@ -164,6 +167,7 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
             EnvCheckBadge.BackgroundColor = tint.WithAlpha(0.16f);
 
             foreach (var it in items) EnvCheckList.Add(BuildEnvRow(it));
+            RenderEnvActions(items);
             EnvCheckPanel.IsVisible = true;
         }
         catch (Exception ex)
@@ -235,6 +239,166 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
             });
         }
         return stack;
+    }
+
+
+    // ═══════════ 一键处置 ═══════════
+    //
+    // 检测到的问题当场给按钮，而不是只让用户读文字：虚拟化平台没开 → 提权 DISM 直接开；
+    // 载荷/mpv 缺失 → 跑取件脚本或打开下载页；数据目录不可写 → 直接打开目录。
+    // 执行完自动重跑检测刷新卡片。
+
+    private void RenderEnvActions(IReadOnlyList<Services.EnvCheckItem> items)
+    {
+        EnvCheckActions.Clear();
+        var actions = items.Where(i => i.Actions is { Count: > 0 })
+            .SelectMany(i => i.Actions!)
+            .GroupBy(a => a.Id)
+            .Select(g => g.First())
+            .ToList();
+        foreach (var a in actions)
+        {
+            var btn = new Button
+            {
+                Text = a.Text,
+                FontSize = 12,
+                HeightRequest = 30,
+                Padding = new Thickness(14, 0),
+                CornerRadius = 9,
+                BorderWidth = 1,
+                BackgroundColor = Color.FromArgb("#9B7ED8").WithAlpha(0.14f),
+                CommandParameter = a.Id,
+            };
+            btn.SetDynamicResource(Button.TextColorProperty, "PrimaryColor");
+            btn.SetDynamicResource(Button.BorderColorProperty, "PrimaryColor");
+            btn.Clicked += (s, _) => OnEnvActionClicked((s as Button)?.CommandParameter as string);
+            EnvCheckActions.Add(btn);
+        }
+        EnvCheckActions.IsVisible = actions.Count > 0;
+    }
+
+    private void OnEnvActionClicked(string? id)
+    {
+        switch (id)
+        {
+            case "enable-whpx": _ = EnableWhpxAsync(); break;
+            case "open-optional-features": OpenOptionalFeatures(); break;
+            case "fetch-assets": _ = FetchAssetsAsync(); break;
+            case "open-release-vm":
+                _ = Launcher.OpenAsync("https://github.com/kankejiang/CatClaw.Qemu/releases/tag/vm-assets-v1");
+                break;
+            case "open-release-mpv":
+                _ = Launcher.OpenAsync("https://github.com/kankejiang/CatClawVideo/releases/tag/assets-v1");
+                break;
+            case "open-datadir": OpenDataDir(); break;
+        }
+    }
+
+    private static Task AlertAsync(string message) =>
+        Shell.Current?.DisplayAlertAsync("启动自检", message, "好") ?? Task.CompletedTask;
+
+    /// <summary>提权启用「虚拟机监控程序平台」（WHPX 的宿主前置功能），重启后生效。</summary>
+    private async Task EnableWhpxAsync()
+    {
+#if WINDOWS
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("dism.exe",
+                "/Online /Enable-Feature /FeatureName:HypervisorPlatform /All /NoRestart")
+            { UseShellExecute = true, Verb = "runas" };
+            var p = System.Diagnostics.Process.Start(psi);
+            if (p is null)
+            {
+                await AlertAsync("未能启动 dism.exe，请点「手动打开 Windows 功能」自行勾选。");
+                return;
+            }
+            await p.WaitForExitAsync();
+            await AlertAsync(p.ExitCode == 0
+                ? "已启用「虚拟机监控程序平台」。重启电脑后生效（重启前引擎仍走软件模拟）。"
+                : "启用失败（DISM 退出码 " + p.ExitCode + "）。可点「手动打开 Windows 功能」手工勾选「虚拟机监控程序平台」。");
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            // 用户取消了 UAC 授权：静默返回，不打扰
+        }
+        catch (Exception ex)
+        {
+            await AlertAsync("启用异常：" + ex.Message);
+        }
+#endif
+        await RefreshEnvChecksAsync();
+    }
+
+    /// <summary>打开「启用或关闭 Windows 功能」对话框（DISM 失败或想手工操作时的兜底）。</summary>
+    private void OpenOptionalFeatures()
+    {
+#if WINDOWS
+        try
+        {
+            System.Diagnostics.Process.Start(
+                new System.Diagnostics.ProcessStartInfo("optionalfeatures.exe") { UseShellExecute = true });
+        }
+        catch (Exception ex) { DiagLog.Write("[envcheck] 打开 Windows 功能失败：" + ex.Message); }
+#endif
+    }
+
+    /// <summary>
+    /// 取件：优先跑仓库里的 tools/fetch-assets.ps1（源码运行场景），找不到脚本就打开下载页（安装版场景）。
+    /// </summary>
+    private async Task FetchAssetsAsync()
+    {
+#if WINDOWS
+        var script = FindFetchAssetsScript();
+        if (script is not null)
+        {
+            try
+            {
+                var root = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(script)!, ".."));
+                var q = (char)34;   // 双引号：避免在源码里写转义引号
+                var args = "-NoProfile -ExecutionPolicy Bypass -File " + q + script + q + " -Dest " + q + root + q;
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("powershell.exe", args)
+                {
+                    UseShellExecute = true,
+                    WorkingDirectory = root,
+                });
+                await AlertAsync("已在新窗口开始取件（本地缓存 + SHA256 校验）。下载完成后重启本应用。");
+                return;
+            }
+            catch (Exception ex)
+            {
+                DiagLog.Write("[envcheck] 取件脚本启动失败：" + ex.Message);
+            }
+        }
+#endif
+        await Launcher.OpenAsync("https://github.com/kankejiang/CatClaw.Qemu/releases/tag/vm-assets-v1");
+    }
+
+    /// <summary>从输出目录逐级向上找 tools/fetch-assets.ps1（源码运行时才有）。</summary>
+    private static string? FindFetchAssetsScript()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        for (var i = 0; i < 6 && dir is not null; i++, dir = dir.Parent)
+        {
+            var p = Path.Combine(dir.FullName, "tools", "fetch-assets.ps1");
+            if (File.Exists(p)) return p;
+        }
+        return null;
+    }
+
+    /// <summary>打开数据目录（排障用：看日志/镜像/缓存，或手动清理腾空间）。</summary>
+    private void OpenDataDir()
+    {
+        var dir = CatClawVideo.Core.AppPaths.LocalRoot;
+        try
+        {
+#if WINDOWS
+            System.Diagnostics.Process.Start(
+                new System.Diagnostics.ProcessStartInfo("explorer.exe", dir) { UseShellExecute = true });
+#else
+            _ = Launcher.OpenAsync(new Uri(dir));
+#endif
+        }
+        catch (Exception ex) { DiagLog.Write("[envcheck] 打开数据目录失败：" + ex.Message); }
     }
 
     private void UpdateColdStartOverlay()

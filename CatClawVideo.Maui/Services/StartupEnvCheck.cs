@@ -5,8 +5,15 @@ namespace CatClawVideo.Maui.Services;
 /// <summary>环境检测项的严重级别（与套件的 <see cref="QemuEnvLevel"/> 对齐，另加纯信息档）。</summary>
 public enum EnvCheckLevel { Ok, Warn, Fail, Info }
 
-/// <summary>一条环境检测结果。<paramref name="Hint"/> 是给用户的处置建议（仅非通过项才展示）。</summary>
-public sealed record EnvCheckItem(string Title, EnvCheckLevel Level, string Detail, string? Hint = null);
+/// <summary>
+/// 一个可点的处置动作。只声明语义 id 与按钮文案，具体怎么执行由宿主 UI 决定
+/// （这样检测服务不依赖 MAUI，也能在无 UI 场景下复用）。
+/// </summary>
+public sealed record EnvAction(string Id, string Text);
+
+/// <summary>一条环境检测结果。<paramref name="Hint"/> 是文字建议，<paramref name="Actions"/> 是可点的一键处置。</summary>
+public sealed record EnvCheckItem(string Title, EnvCheckLevel Level, string Detail, string? Hint = null,
+    IReadOnlyList<EnvAction>? Actions = null);
 
 /// <summary>
 /// 启动环境检测（Windows）：把「虚拟机套件探测」与「宿主侧条件」合成一份清单，
@@ -35,13 +42,31 @@ public static class StartupEnvCheck
         try
         {
             foreach (var q in QemuEnvCheck.Probe(Path.Combine(baseDir, "QemuGuest")))
+            {
+                // 按「探测项 + 级别」挂一键处置：虚拟化平台可提权直接开，载荷缺失可自动取件
+                IReadOnlyList<EnvAction>? actions = (q.Id, q.Level) switch
+                {
+                    ("whpx", QemuEnvLevel.Warn or QemuEnvLevel.Fail) =>
+                    [
+                        new EnvAction("enable-whpx", "一键启用虚拟化"),
+                        new EnvAction("open-optional-features", "手动打开 Windows 功能"),
+                    ],
+                    ("qemu" or "guest", QemuEnvLevel.Fail) =>
+                    [
+                        new EnvAction("fetch-assets", "自动取件"),
+                        new EnvAction("open-release-vm", "下载运行时"),
+                    ],
+                    _ => null,
+                };
+
                 items.Add(new EnvCheckItem(q.Title, q.Level switch
                 {
                     QemuEnvLevel.Ok => EnvCheckLevel.Ok,
                     QemuEnvLevel.Warn => EnvCheckLevel.Warn,
                     QemuEnvLevel.Fail => EnvCheckLevel.Fail,
                     _ => EnvCheckLevel.Info,
-                }, q.Detail, q.Hint));
+                }, q.Detail, q.Hint, actions));
+            }
         }
         catch (Exception ex)
         {
@@ -54,7 +79,8 @@ public static class StartupEnvCheck
             items.Add(File.Exists(Path.Combine(baseDir, "mpv-2.dll"))
                 ? new EnvCheckItem("播放器后端", EnvCheckLevel.Ok, "libmpv · 杜比视界")
                 : new EnvCheckItem("播放器后端", EnvCheckLevel.Warn, "缺少 mpv-2.dll",
-                    "杜比视界片源会回落 MF（发灰泛紫）；运行 tools/fetch-assets.ps1 取件（本仓库 Release assets-v1）"));
+                    "杜比视界片源会回落 MF（发灰泛紫）；可从 Release 取件补齐",
+                    [new EnvAction("fetch-assets", "自动取件"), new EnvAction("open-release-mpv", "下载播放器")]));
         }
         catch { }
 
@@ -71,7 +97,8 @@ public static class StartupEnvCheck
         catch (Exception ex)
         {
             items.Add(new EnvCheckItem("数据目录", EnvCheckLevel.Fail, $"不可写：{ex.GetType().Name}",
-                "检查杀软/权限拦截；数据目录不可写会导致 QEMU 日志、guest 数据盘与流缓存全部失效"));
+                "检查杀软/权限拦截；数据目录不可写会导致 QEMU 日志、guest 数据盘与流缓存全部失效",
+                [new EnvAction("open-datadir", "打开数据目录")]));
         }
 
         // ④ 磁盘剩余空间
