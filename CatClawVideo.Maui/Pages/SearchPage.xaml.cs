@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using CatClawVideo.Core.Interfaces;
 using CatClawVideo.Core.Models;
 using CatClawVideo.Core.Services;
@@ -1276,6 +1276,7 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
             // 边搜边出：每个站返回即增量上屏，不等全场（死站/慢站用 12s 超时熔断，不拖整体）
             var gate = new object();
             var doneCount = 0;
+            var failCount = 0;   // 失败站点计数（用于限流日志）
 
             // ── 并发上限 ──
             //
@@ -1289,7 +1290,11 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
             //
             // ⚠ 不用 using：本方法的 await 结束后仍有站点任务在排队，提前 Dispose 会让
             //   它们抛 ObjectDisposedException（被 catch 吞掉，表现为「结果莫名少了几个」）。
-            var searchGate = new SemaphoreSlim(6);
+            // 2026-10-03：并发 6 → 3。Windows 端走 QEMU ART 桥，搜索会一次性给几十个 jar 源做
+            // 「下载 jar → DexClassLoader → 反射实例化 → init」；并发 6 时把 guest 里的桥压崩过
+            // （用户实测：手机端同源 112 个结果、Windows 端 0 个）。降到 3 换取稳定性，
+            // 代价是慢源更晚出结果 —— 边搜边出的增量上屏逻辑不受影响。
+            var searchGate = new SemaphoreSlim(3);
 
             // ⚠ 必须用**本次搜索**的令牌（_searchCts）：用户退出页面 / 重新搜索时应当立即停止
             //   后续站点的请求。原实现连令牌都没传，退出后几十个 JNI 调用仍在后台跑。
@@ -1326,7 +1331,13 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
                         CoverResolver.Attach(_covers, added);   // 增量补封面
                     });
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    // 2026-10-03：原来是 catch { } —— 所有站点失败被静默吞掉，用户在 Windows 上
+                    // 只看到「未找到」，日志里连一条线索都没有。这里把原因写出来（前 8 条，避免刷屏）。
+                    if (Interlocked.Increment(ref failCount) <= 8)
+                        DiagLog.Write($"[搜索] {site.Name} 失败：{ex.GetType().Name}: {ex.Message}");
+                }
                 finally
                 {
                     // 只有真正拿到过名额才释放（排队前就取消的话释放会超发）
