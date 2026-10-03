@@ -30,7 +30,9 @@ public sealed class HomeSnapshot
 /// </summary>
 public static class HomeSnapshotStore
 {
-    private static string FilePath => CatClawVideo.Core.AppPaths.LocalSub("home-snapshot.json");
+    // ⚠ 必须用 LocalOf（文件级）：LocalSub(x) 把 x 当**子目录**、会创建目录并返回目录路径，
+    //   此前误用它 → File.Move 往目录上覆盖 → UnauthorizedAccessException（实测日志「写入失败」）。
+    private static string FilePath => CatClawVideo.Core.AppPaths.LocalOf("home-snapshot.json");
 
     private static readonly JsonSerializerOptions Opt = new()
     {

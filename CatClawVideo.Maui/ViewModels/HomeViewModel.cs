@@ -303,7 +303,11 @@ public partial class HomeViewModel : ObservableObject
         }
 
         // 用户首选站点优先（数据源弹窗选择后记忆）；拉取失败回退自动探测
+        // 首选站：用户手动选的优先；没选过就用**快照里那个站**（刚上屏的也是它）——
+        // 否则后台刷新会去探测别的站、把刚显示的站点又换掉（用户观感「站点老是变」）。
         var preferredKey = Preferences.Default.Get(PreferredSiteKey, string.Empty);
+        if (string.IsNullOrEmpty(preferredKey) && snap is { SiteKey.Length: > 0 })
+            preferredKey = snap.SiteKey;
         var preferred = sites.FirstOrDefault(s => s.Key == preferredKey);
         // 留痕（2026-09-30）：这里以前是 `catch { }` —— 首选站点失败的原因整条被吞，
         // 于是「每次重启都不回上次的站点」根本查不动。冷启动时爬虫桥（QEMU guest）
