@@ -71,3 +71,34 @@
 - 首页首次取数可能 **~34 秒**：110 个源站里实测只有约 8 个活着，死站各吃满 8s 超时。第二次启动因记住站点会明显更快。
 - 安装包 536.8MB 主要来自 Android 13 根镜像（391MB，已 gzip），次为 QEMU 引擎与依赖（135MB，PE 导入表证实是加载期硬依赖）。
 - 需要 WHPX（Windows 功能「虚拟机监控程序平台」）；未启用时启动自检会红字提示并可一键开启。
+
+## 八、本轮修复（发布包重新构建）
+
+**① 退出播放页后进程直接消失（最严重，已修）**
+WinDbg 取证：崩溃桶 `STOWED_EXCEPTION_80004005_CoreMessagingXP.dll!DispatcherQueue::DeferInvokeCallback`，
+原生栈 `KERNELBASE!RaiseFailFastException ← combase!RoFailFastWithErrorContextInternal2`；
+托管侧完全无记录（该异常抛在我们代码之外的 WinUI 分发器里）。根因是**销毁顺序**：先
+`MediaPlayer.Dispose()`、后由框架摘 `MediaPlayerElement` —— 元素在被摘掉前仍向 UI 线程
+投递延迟回调，访问已销毁的播放器 → HRESULT 失败（E_FAIL/E_ABORT）→ fail-fast。
+已改为：**先让元素离开可视树并净源，且退出时不再 Dispose 播放器**（留到下次建播放器时释放）。
+
+**② 点「登入自己云盘」闪退 / 只出黑底（已修）**
+三层叠加：① MAUI WebView 在构造期设 `HtmlWebViewSource` → WebView2 代理空引用崩进程；
+② 装到 `C:\Program Files` 后 **WebView2 默认用户数据目录不可写** → 初始化失败
+（这正是「Debug 正常、发行版闪退」的原因）；③ 换宿主时漏了把 HTML 交给它。
+已修：全局 `WEBVIEW2_USER_DATA_FOLDER` 指向可写目录 + 树渲染改走**原生 WinUI WebView2 的正规 MAUI Handler**。
+
+**③ 标题栏拖拽区反复重算（已修）**
+`WindowDragHelper` 每次导航/尺寸变化都无条件 `ExtendsContentIntoTitleBar = true`，让 MAUI 的
+`WindowRootView.UpdateTitleBarContentSize()` 抛 `E_INVALIDARG`（且抛在 WinRT 事件回调里）。
+已改为仅在需要时设置，并对该已知栈标记为已处理兜底。同时**停用**了对已销毁元素做指针事件簿记的
+「手动拖拽兜底」（本就是兜底，正常不触发）。
+
+**④ 解析失败自动重试（新增）**
+guest 里的桥崩过一次后，引擎重置、新桥其实是好的（用户实测「点第 2 集就正常」）。现在：异常带
+「桥崩溃」→ 等 16s 自动重试一次；解析拿到不可播地址（如网盘复合 id）→ 等 3s 重试一次解析。
+
+**⑤ guest 内存 2560 → 4096MB**（超大选集解析时的内存余量；实测 guest 内 `MemTotal 4008132 kB`）。
+
+**已知未解**：guest 里的桥在解析几百集巨型选集后偶发 SIGSEGV（`[sig] s=11 a=0 … /memfd:jit-cache`，
+即 JIT 代码内空指针）。网盘源受影响，重试可恢复；根治需改 guest 启动参数（如禁 JIT）并重打 initrd。
