@@ -243,9 +243,8 @@
                 <Label x:Name="ColdStartPct" Text="0%" FontSize="24" FontAttributes="Bold"
                        HorizontalOptions="Center"
                        TextColor="{DynamicResource TextPrimaryColor}" />
-                <ProgressBar x:Name="ColdStartProgress" Progress="0.01" WidthRequest="420" HeightRequest="5"
-                             HorizontalOptions="Center"
-                             ProgressColor="{DynamicResource PrimaryColor}" />
+                <!-- 进度条已移到底部通栏（见本 Grid 最后一个子元素）：百分比数字留在中央，
+                     进度条贴窗口底边、宽度跟随窗口，40 秒等待里它是最主要的「在动」信号。 -->
                 <Label x:Name="ColdStartStatus" FontSize="13.5" MaxLines="2" WidthRequest="460"
                        HorizontalOptions="Center" HorizontalTextAlignment="Center"
                        TextColor="{DynamicResource TextSecondaryColor}" />
@@ -265,6 +264,14 @@
                        HorizontalOptions="Center" HorizontalTextAlignment="Center"
                        TextColor="{DynamicResource TextHintColor}" />
             </VerticalStackLayout>
+
+            <!-- 底部通栏进度条：贴窗口底边、宽度 = 窗口宽度，高度 4px 走细线观感；与遮罩一起淡出。
+                 ⚠ 负边距用来抵消根 Grid 的 Padding="24,12,24,14"（遮罩是它的子元素、会被内缩），
+                 这样进度条才真的齐窗口左右边与底边；若改动根 Grid 的 Padding，这里要同步改。 -->
+            <ProgressBar x:Name="ColdStartProgress" Progress="0.01"
+                         HeightRequest="4" Margin="-24,0,-24,-14"
+                         HorizontalOptions="Fill" VerticalOptions="End"
+                         ProgressColor="{DynamicResource PrimaryColor}" />
         </Grid>
 
     </Grid>
