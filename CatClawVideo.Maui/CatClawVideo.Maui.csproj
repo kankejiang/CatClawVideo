@@ -127,6 +127,11 @@
 		<PackageReference Include="OpenTK" Version="4.8.2" />
 		<PackageReference Include="Silk.NET.Direct3D11" Version="2.21.0" />
 		<PackageReference Include="Silk.NET.OpenGL" Version="2.21.0" />
+		<!-- 2026-10-03 体积清理：Microsoft.Windows.AI.MachineLearning 是 Windows App SDK 连带进来的
+		     运行时包（onnxruntime.dll 20.7MB + DirectML.dll 17.8MB ≈ 38.5MB，安装包里约 15~20MB），
+		     全仓代码一处没用（grep onnxruntime/DirectML 无命中），用 ExcludeAssets=all 挡在 publish 之外。
+		     版本锁 2.1.74 = 当前解析到的版本，避免 NU1605 降级告警。 -->
+		<PackageReference Include="Microsoft.Windows.AI.MachineLearning" Version="2.1.74" ExcludeAssets="all" />
 	</ItemGroup>
 
 	<!-- libmpv 本体（DV 解码+渲染引擎）。含于仓库：克隆即可编译运行，无需运行期下载。
