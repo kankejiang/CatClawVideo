@@ -1,4 +1,4 @@
-﻿using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml;
 using Microsoft.Maui.Hosting;
 
 namespace CatClawVideo.Maui.WinUI;
@@ -62,6 +62,18 @@ public partial class App : MauiWinUIApplication
             && (e.Exception.StackTrace?.Contains("WebView2Proxy", StringComparison.Ordinal) ?? false))
         {
             LogCrash("已知 MAUI WebView2 缺陷 → 已吞掉，避免闪退", e.Exception);
+            e.Handled = true;
+        }
+
+        // 已知 MAUI 缺陷（2026-10-03 WinDbg 取证）：WindowRootView.UpdateTitleBarContentSize() 抛
+        // ArgumentException(E_INVALIDARG 0x80070057)，且抛在 WinRT 事件回调里。未处理就会以
+        // stowed exception(0xc000027b) 在 CoreMessagingXP!DispatcherQueue::DeferInvokeCallback
+        // fail-fast，进程直接消失（托管日志只留一条 UnhandledException）。这里标记为已处理避免闪退；
+        // 触发源（反复设置 ExtendsContentIntoTitleBar）已在 WindowDragHelper 侧修掉，此处为兜底。
+        if (e.Exception is ArgumentException
+            && (e.Exception.StackTrace?.Contains("UpdateTitleBarContentSize", StringComparison.Ordinal) ?? false))
+        {
+            LogCrash("已知 MAUI 标题栏缺陷 → 已吞掉，避免闪退", e.Exception);
             e.Handled = true;
         }
     }

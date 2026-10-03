@@ -1,4 +1,4 @@
-﻿#if WINDOWS
+#if WINDOWS
 using System.Runtime.InteropServices;
 
 namespace CatClawVideo.Maui.Services;
@@ -41,7 +41,12 @@ public static class WindowDragHelper
             var hwnd = App.MainWindowHwnd;
             if (win is null || aw is null || hwnd == IntPtr.Zero) return;
 
-            win.ExtendsContentIntoTitleBar = true;
+            // ★ 只在真正需要时设置（2026-10-03 WinDbg 取证）：原先每次导航/尺寸变化都无条件重设，
+            //   会让 MAUI 的 WindowRootView 反复执行 UpdateTitleBarContentSize()，状态不一致时抛
+            //   ArgumentException(E_INVALIDARG 0x80070057)；该异常抛在 WinRT 事件回调里，最终以
+            //   stowed exception(0xc000027b) 在 CoreMessagingXP!DispatcherQueue::DeferInvokeCallback
+            //   fail-fast，进程直接消失。
+            if (!win.ExtendsContentIntoTitleBar) win.ExtendsContentIntoTitleBar = true;
 
             AttachPointerFallback(el);
 
@@ -203,7 +208,8 @@ public static class WindowDragHelper
         hwnd = App.MainWindowHwnd;
         if (App.CurrentAppWindow is not { } w || hwnd == IntPtr.Zero) return false;
 
-        if (App.CurrentNativeWindow is { } native) native.ExtendsContentIntoTitleBar = true;
+        if (App.CurrentNativeWindow is { } native && !native.ExtendsContentIntoTitleBar)
+            native.ExtendsContentIntoTitleBar = true;   // 同上：仅在需要时设置，避免反复触发标题栏重算
         aw = w;
         return true;
     }
