@@ -1428,9 +1428,16 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
             //
             // 现在：预算 = 实测均摊耗时 × 站点数 / 并发 × 1.6 冗余，夹在 60s~420s。
             //   均摊用 1.2s（= p50 448ms 与 p90 2094ms 之间的量级，jitter 留给 1.6 冗余）。
-            var avgSiteMs = 1200;
-            var totalBudgetMs = (int)Math.Clamp(
-                (long)(avgSiteMs * sites.Count / SearchConcurrency * 1.6), 60000, 420000);
+            //
+            // ⚠ 算术要按「总量 ÷ 并发 × 冗余」估，全程 double。
+            //   原式 avgSiteMs * sites.Count / SearchConcurrency * 1.6 算的是**单批**耗时
+            //   （1200 × 96 ÷ 8 = 14400ms，×1.6 = 23s），却被当作总预算 → 被夹到 60s 下限，
+            //   实测又变回「预算 60s 用尽，已完成 37/96」。正确的是先算总量再除并发：
+            //   96 站总量 1200×96 = 115.2s，÷ 并发 8 = 14.4s/批，× 批数 12 = **173s**。
+            var avgSiteMs = 1200.0;
+            var batches = Math.Ceiling(sites.Count / (double)SearchConcurrency);       // 96/8 = 12 批
+            var perBatchMs = avgSiteMs * batches / SearchConcurrency;                   // 一批的墙钟耗时 ≈ 14.4s
+            var totalBudgetMs = (int)Math.Clamp(perBatchMs * batches * 1.6, 60000, 420000);  // ×12 批 ×1.6 冗余 ≈ 277s
             var waited = 0;
             DiagLog.Write($"[搜索] 「{kw}」共 {sites.Count} 个站点，并发 {SearchConcurrency}，" +
                          $"等待预算 {totalBudgetMs / 1000}s（实测均摊 {avgSiteMs}ms/站）");
