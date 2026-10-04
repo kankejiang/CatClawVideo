@@ -331,7 +331,12 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
     {
         base.OnDisappearing();
         RemoteKeyRouter.Pop(this);
-        _searchCts?.Cancel();
+        // ⚠ 2026-10-04：这里原来直接 _searchCts?.Cancel()，把**所有**在飞与排队的站点请求
+        //   一次性掐掉 —— 用户只是切了下页面/焦点栏，搜索就只剩三四十个站（实测 96 → 40）。
+        //   现在：**不再取消**。取消令牌会同时掐掉在飞请求（同一个 ct），所以彻底中止只保留
+        //   「重新搜索」这一条路径（它会新建令牌并取消上一轮，见 DoSearchAsync 开头）。
+        //   离开页面后搜索继续在后台跑完，结果照常上屏 —— 用户回来看时结果更全。
+        //   （注：搜索有自己的时间预算 45~180s，后台最多跑那么久，不会永久占用。）
         PushHistory(SearchEntry.Text);   // 记一笔历史（空则忽略）
         _ = SearchIndex.FlushAsync();    // 索引落盘
     }
@@ -1312,7 +1317,15 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
                     // 排队（并发上限）+ 已取消 / 已离开本页就提前退出
                     await searchGate.WaitAsync(ct);
                     entered = true;
-                    if (!_searching) return;
+                    if (!_searching)
+                    {
+                        // 2026-10-04：这行是「96 个站只搜了 40 个就停」的**直接原因** ——
+                        // 一旦页面离开（OnDisappearing 取消）或上一轮搜索收尾把 _searching 置 false，
+                        // **所有还在排队的站点会在拿到名额的瞬间直接 return，从未被发起**。
+                        // 现在改为：排队继续（不受 _searching 影响），只有真正的取消令牌才放弃；
+                        // 结果仍会照常上屏（此时页面若还在）。
+                        DiagLog.Write($"[搜索] {site.Name}: 排队后 _searching 已为 false，仍照常搜索");
+                    }
 
                     // ⚠ 不要用 Task.WhenAny(search, Delay(12s)) 把「迟到的结果」丢掉：
                     //   实测某盘搜站点 14.2s 才返回几十条，被整批丢弃会让用户看到的条数远少于实际。
