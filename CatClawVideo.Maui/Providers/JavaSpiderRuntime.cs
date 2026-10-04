@@ -891,8 +891,12 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
             // ⚠ 持久数据盘（datadev）启用时**必须跳过**：/data 已跨重启存活，盘上的状态比
             // 宿主 guest-prefs 更新（prefs-sync 只在 flush 时上行），回灌会用宿主旧值盖新值
             // ——实测「扫码成功的新 Cookie 被回灌的旧 spUtils 覆盖」（2026-10-02）。
-            if (_art?.PersistentDataDisk == true)
-                Log("持久数据盘已挂载 /data —— 跳过偏好回灌（盘上即最新状态）");
+            // ⚠ 2026-10-04：判断条件从「宿主传了 datadev」改成「**guest 实测 /data 真的持久**」。
+            //   旧条件是误判 —— 宿主传盘 ≠ guest 挂上：该定制内核（6.1.0-50-50）不带 ext4 驱动，
+            //   guest 侧 mount -t ext4 实际失败（串口日志 `mount RC=255` / `insmod ext4: unknown symbol`），
+            //   /data 仍是 tmpfs。误判 ⇒ **既没盘也没回灌** ⇒ 网盘登录态每次重启必丢（用户 2026-10-04 反馈）。
+            if (_art?.PersistentDataDisk == true && await IsGuestDataPersistentAsync(ct).ConfigureAwait(false))
+                Log("持久数据盘已挂载 /data（实测确认）—— 跳过偏好回灌（盘上即最新状态）");
             else
                 await RestoreGuestPrefsAsync(ct).ConfigureAwait(false);
         }
@@ -904,6 +908,52 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     /// 回灌进 guest —— 走 <c>prefsput</c> op 写 guest 的 shared_prefs，网盘 Cookie 等
     /// 因此能在 VM 冷启后存活。
     /// </summary>
+    private Task<bool> IsGuestDataPersistentAsync(CancellationToken ct)
+    {
+        // 直接读 guest 串口日志（宿主本来就在转发它，见 QemuHostRuntime 的 slirp 日志转发）：
+        // init 挂载成功会打 `[persist] mount RC=0`，失败则是 `RC=255` 或 insmod ext4 报 unknown symbol。
+        // 这样**不需要桥新增 op**（桥的 gb.dex 含 org.json，源码重编缺依赖，见 docs 里的记录）。
+        try
+        {
+            // QemuHostRuntime 把串口日志写到 <LocalDir>/qemu-console-art.log（consoleLogTag="-art"）
+            var path = CatClaw.Qemu.QemuPaths.LocalOf("qemu-console-art.log");
+            if (string.IsNullOrEmpty(path) || !File.Exists(path))
+            { Log("[persist] 未找到 guest 串口日志 → 按「不持久」处理并回灌"); return Task.FromResult(false); }
+            var fi = new FileInfo(path);
+            var read = Math.Min(fi.Length, 256 * 1024);
+            string text;
+            using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            {
+                fs.Seek(-read, SeekOrigin.End);
+                using var sr = new StreamReader(fs, Encoding.UTF8);
+                text = sr.ReadToEnd();
+            }
+            // 取最后一次挂载尝试的结果
+            var lastMount = LastValue(text, "[persist] mount RC=");
+            var lastFsck = LastValue(text, "[persist] fsck 后 mount RC=");
+            var rcText = !string.IsNullOrEmpty(lastFsck) ? lastFsck : lastMount;
+            var persisted = rcText == "0";
+            Log($"[persist] guest /data 持久性实测：{(persisted ? "持久" : "不持久")}（mount RC={rcText}）");
+            return Task.FromResult(persisted);
+        }
+        catch (Exception ex)
+        {
+            Log($"[persist] guest /data 持久性实测失败 → 按「不持久」处理并回灌：{ex.Message}");
+            return Task.FromResult(false);
+        }
+    }
+
+    /// <summary>取文本里最后一次出现的 marker 之后的值（同一行）。</summary>
+    private static string LastValue(string text, string marker)
+    {
+        var i = text.LastIndexOf(marker, StringComparison.Ordinal);
+        if (i < 0) return string.Empty;
+        var start = i + marker.Length;
+        var end = text.IndexOf('\n', start);
+        if (end < 0) end = text.Length;
+        return text[start..end].Trim();
+    }
+
     private async Task RestoreGuestPrefsAsync(CancellationToken ct)
     {
         try
