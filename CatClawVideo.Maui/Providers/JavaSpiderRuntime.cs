@@ -776,6 +776,9 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
                 (_stdin, _stdout) = link.Value;
                 Log($"桥已连上 ART guest（127.0.0.1:{art.BridgePort}）");
                 _ = Task.Run(ReadLoopAsync);
+                // 多桥（2026-10-04）：主桥连上后，把第 2..N 个桥也连上（CATCLAW_BRIDGES>1 时）。
+                // 失败不影响主桥 —— AcquireSlot 返回 null 就全部走主桥，行为同单桥。
+                if (art.BridgeCount > 1) _ = Task.Run(() => ConnectSideBridgesAsync(art));
                 break;
             }
 
@@ -971,6 +974,107 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     /// </summary>
     private int _resetting;
 
+    // ═══════════ 多桥连接池（2026-10-04）═══════════
+    //
+    // 起因：guest 内的桥对**所有** jar 源是**逐站串行**的 —— Server.call 用
+    //   synchronized(SITE_LOCKS[...])（见 docs/调试报告-磁力播放链路-20260930.md:442），
+    //   而每个站首次搜索要先 load（取 jar → DexClassLoader → 反射实例化 → init，实测 0.7~3s/站）
+    //   ⇒ 96 个站的 load 只能一个个排队，宿主侧加并发也无济于事（「搜索跑不到 90 个站」的根因）。
+    //
+    // 做法：同一 guest 里并排起 N 个桥（/init 的 bridges=N，各自独立的 ART 虚拟机与 jar 缓存），
+    //   宿主把**站点固定绑定**到某个桥：一个站的 load 与它后续所有调用必须在同一桥上
+    //   （jar 实例活在桥内，换桥就得重新 load）。分配用「轮转起点 + 最闲优先」均衡负载。
+    //   某桥断开 → 解绑其上所有站点 → 下次调用重新分配到活着的桥（= 用户要的「其他桥替补」）。
+    //
+    // 单桥（N=1）时全部退化到原有单连接路径，行为不变。
+
+    /// <summary>副桥槽位：索引 1..N-1（索引 0 是主桥，走 _stdin/_stdout）。</summary>
+    private readonly ConcurrentDictionary<int, BridgeSlot> _slots = new();
+
+    /// <summary>站点 → 桥索引的固定绑定（一个站的 load 与后续调用必须同桥）。</summary>
+    private readonly ConcurrentDictionary<string, int> _siteBridge = new();
+
+    private int _rrCursor;      // 轮转游标
+    private int _multiReady;     // 副桥全部连上时置 1
+
+    private bool MultiBridgeReady => Volatile.Read(ref _multiReady) != 0 && !_slots.IsEmpty;
+
+    private sealed class BridgeSlot
+    {
+        public int Index;
+        public StreamWriter Stdin = null!;
+        public StreamReader Stdout = null!;
+        public SemaphoreSlim WriteLock = new(1, 1);
+        public volatile bool Alive = true;
+        public int Pending;
+    }
+
+    /// <summary>
+    /// 给站点挑桥：已绑定且活着 → 沿用；绑定已死 → 解绑重选；否则按「轮转起点 + 最闲优先」挑一个。
+    /// 没有可用副桥时返回 null（调用方走主桥 _stdin，行为同单桥）。
+    /// </summary>
+    private BridgeSlot? AcquireSlot(string siteKey)
+    {
+        if (!MultiBridgeReady) return null;
+        if (_siteBridge.TryGetValue(siteKey, out var bound))
+        {
+            if (_slots.TryGetValue(bound, out var s0) && s0.Alive) return s0;
+            _siteBridge.TryRemove(siteKey, out _);       // 绑定的桥没了 → 重新分配（其它桥接手）
+        }
+        var n = _slots.Count;
+        var start = (int)((uint)Interlocked.Increment(ref _rrCursor) % (uint)n);
+        BridgeSlot? best = null;
+        var bestPend = int.MaxValue;
+        for (var k = 0; k < n; k++)
+        {
+            var idx = (start + k) % n;
+            if (!_slots.TryGetValue(idx, out var s) || !s.Alive) continue;
+            if (s.Pending < bestPend) { bestPend = s.Pending; best = s; }
+        }
+        if (best is null) return null;
+        _siteBridge[siteKey] = best.Index;
+        return best;
+    }
+
+    /// <summary>副桥断开：摘槽位 + 解绑其上所有站点（下次调用重新分配 ⇒ 其它桥替补）。</summary>
+    private void DropSlot(int index)
+    {
+        if (!_slots.TryRemove(index, out var s)) return;
+        s.Alive = false;
+        try { s.Stdin.Dispose(); } catch { }
+        try { s.Stdout.Dispose(); } catch { }
+        var freed = 0;
+        foreach (var key in _siteBridge.Where(x => x.Value == index).Select(x => x.Key).ToList())
+            if (_siteBridge.TryRemove(key, out _)) freed++;
+        if (_slots.IsEmpty) Volatile.Write(ref _multiReady, 0);
+        Log($"桥 #{index} 断开 → 解绑其上 {freed} 个站点，下次调用重新分配到活着的桥（多桥替补）");
+    }
+
+    /// <summary>连上第 2..N 个桥（CATCLAW_BRIDGES&gt;1 时才做）。任一副桥连不上就只启用已连上的。</summary>
+    private async Task ConnectSideBridgesAsync(CatClaw.Qemu.QemuArtGuest art)
+    {
+        var count = art.BridgeCount;
+        if (count <= 1) return;
+        var ok = 0;
+        for (var i = 1; i < count; i++)
+        {
+            if (await art.ConnectBridgeAsync(i).ConfigureAwait(false) is not { } link) continue;
+            var slot = new BridgeSlot { Index = i, Stdin = link.Stdin, Stdout = link.Stdout };
+            _slots[i] = slot;
+            _ = ReadLoopAsync(slot.Stdout, i, DropSlot);   // 副桥读循环：断了自己下线
+            ok++;
+        }
+        if (ok > 0)
+        {
+            Volatile.Write(ref _multiReady, 1);
+            Log($"多桥就绪：主桥 + {ok} 个副桥（共 {ok + 1}），站点按轮转+最闲分配到各桥");
+        }
+        else
+        {
+            Log("副桥一个都没连上，退回单桥模式");
+        }
+    }
+
     /// <summary>桥会话代际（ResetBridge 递增）：在飞的 EnsureBridgeAsync 用它识别
     /// 「长等待（冷启动探针）期间会话已被重置」——拿到的旧实例/链接一律作废，
     /// 防止旧 QemuHostRuntime 被复活成孤儿 qemu（2026-09-27 多 qemu 事故）。</summary>
@@ -1013,9 +1117,16 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     }
 
     /// <summary>常驻读桥输出（ART guest 的 socket 流）：按 id 分发响应、按 ev 分发 UI 事件。</summary>
-    private async Task ReadLoopAsync()
+    /// <summary>
+    /// 主桥读循环。多桥（2026-10-04）时副桥走 <see cref="ReadLoopAsync(StreamReader,int,Action{int}?)"/>，
+    /// 那条路径在读完时只丢该桥槽位（<c>onBridgeLost</c>），不会触发 <see cref="FailAllPending"/>
+    /// —— 主桥与其它副桥都不受影响，即用户要的「一个桥崩了其他桥替补」。
+    /// </summary>
+    private Task ReadLoopAsync() => ReadLoopAsync(_stdout, 0, null);
+
+    /// <summary>读某个桥的上行流。<paramref name="rd"/> 为 null 时直接返回（桥没连上）。</summary>
+    private async Task ReadLoopAsync(StreamReader? rd, int bridgeIndex, Action<int>? onBridgeLost)
     {
-        var rd = _stdout;
         if (rd is null) return;
         try
         {
@@ -1080,6 +1191,13 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
             }
         }
         catch { }
+        if (onBridgeLost is not null)
+        {
+            // 副桥：只丢这个槽位，它上面绑定的站点会被解绑并重新分配到活着的桥
+            Log($"副桥 #{bridgeIndex} 读循环退出");
+            onBridgeLost(bridgeIndex);
+            return;
+        }
         Log("桥读循环退出");
         FailAllPending("ART guest 里的桥崩溃退出，引擎已自动重置——请稍候重试该站点");
     }
@@ -1114,6 +1232,16 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         lock (_loadedSites) { _loadedSites.Clear(); }
         lock (_loadFailedSites) { _loadFailedSites.Clear(); }
         _lastGuardSiteKey = null;
+
+        // 多桥（2026-10-04）：主桥也断了 ⇒ 副桥没有意义（它们在同一 VM 里，VM 重启会一起没），
+        // 整池下线并清空绑定。下次调用会重新走 EnsureBridgeAsync → ConnectSideBridgesAsync 重建。
+        if (!_slots.IsEmpty)
+        {
+            foreach (var idx in _slots.Keys.ToList()) DropSlot(idx);
+            _siteBridge.Clear();
+            Volatile.Write(ref _multiReady, 0);
+            Log("多桥池已清空（主桥断开）");
+        }
 
         Log($"桥会话断开（{why}）→ 已丢弃会话，等待 guest 内 /init 重启桥（约 2s；" +
             "VM 与 /data 不动，网盘登录态保留）。下一次调用会自动连上新桥。");
@@ -1192,8 +1320,12 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         }
     }
 
+    /// <summary>
+    /// 发一条请求并等应答。<paramref name="slot"/> 为 null 时走主桥（_stdin，行为同单桥）；
+    /// 非 null 时发到该副桥（多桥，见 <see cref="AcquireSlot"/>）。
+    /// </summary>
     private async Task<JsonObject> RoundTripAsync(JsonObject req, TimeSpan timeout, CancellationToken ct,
-        bool resetOnTimeout = true)
+        bool resetOnTimeout = true, BridgeSlot? slot = null)
     {
         var expectId = req["id"]?.GetValue<int>()
             ?? throw new InvalidOperationException("桥请求缺少 id");
@@ -1204,13 +1336,23 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         try
         {
             // 先注册再写（响应可能在写返回前就到）——读循环按 id 完成之
-            await _stdinLock.WaitAsync(ct).ConfigureAwait(false);
+            //
+            // 多桥（2026-10-04）：slot 为 null 走主桥（共用 _stdin + _stdinLock）；
+            // 否则写到该副桥自己的流 + 自己的写锁（各桥独立，互不排队）。
+            var w = slot is null ? _stdin : slot.Stdin;
+            var wlock = slot is null ? _stdinLock : slot.WriteLock;
+            if (slot is not null) slot.Pending++;
+            await wlock.WaitAsync(ct).ConfigureAwait(false);
             try
             {
-                await _stdin!.WriteLineAsync(req.ToJsonString().AsMemory(), ct).ConfigureAwait(false);
-                await _stdin.FlushAsync(ct).ConfigureAwait(false);
+                await w!.WriteLineAsync(req.ToJsonString().AsMemory(), ct).ConfigureAwait(false);
+                await w.FlushAsync(ct).ConfigureAwait(false);
             }
-            finally { _stdinLock.Release(); }
+            finally
+            {
+                wlock.Release();
+                if (slot is not null) slot.Pending--;
+            }
 
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutCts.CancelAfter(timeout);
@@ -1276,7 +1418,10 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     {
         await EnsureBridgeAsync(ct);
         var jar = await EnsureConvertedJarAsync(site, ct);
-        await EnsureSiteLoadedAsync(site, jar, ct);
+        // 多桥（2026-10-04）：本站绑定一个桥，load 与后续所有调用都走它
+        //（jar 实例活在桥内，中途换桥就得重新 load —— 那正是要避免的排队）。
+        var slot = AcquireSlot(site.Key);
+        await EnsureSiteLoadedAsync(site, jar, ct, slot: slot);
         _lastSite = site;   // spider 稍后发起的 /proxy 回调不带 siteKey，靠它定位
 
         _inFlight = $"{site.Key}.{method}";
@@ -1290,7 +1435,7 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
                 ["method"] = method,
                 ["args"] = args,
             };
-            var resp = await RoundTripAsync(req, timeout ?? TimeSpan.FromSeconds(90), ct, resetOnTimeout);
+            var resp = await RoundTripAsync(req, timeout ?? TimeSpan.FromSeconds(90), ct, resetOnTimeout, slot);
             if (resp["ok"]?.GetValue<bool>() != true)
             {
                 var why = resp["error"]?.GetValue<string>() ?? "";
@@ -1300,9 +1445,9 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
                 if (why.Contains("上一次调用仍未结束"))
                 {
                     Log($"{site.Key}: 桥侧报该站被无响应调用占住 → force 重装载自愈，重试 {method}");
-                    await EnsureSiteLoadedAsync(site, jar, ct, force: true).ConfigureAwait(false);
+                    await EnsureSiteLoadedAsync(site, jar, ct, force: true, slot).ConfigureAwait(false);
                     req["id"] = Interlocked.Increment(ref _id);
-                    resp = await RoundTripAsync(req, timeout ?? TimeSpan.FromSeconds(90), ct, resetOnTimeout);
+                    resp = await RoundTripAsync(req, timeout ?? TimeSpan.FromSeconds(90), ct, resetOnTimeout, slot);
                     why = resp["ok"]?.GetValue<bool>() == true ? "" : (resp["error"]?.GetValue<string>() ?? "");
                     if (why.Length > 0) throw new InvalidOperationException($"spider {site.Key}.{method}: {why}");
                     return resp["result"]?.GetValue<string>() ?? "{}";
@@ -1466,7 +1611,8 @@ Log($"proxy 隧道：{siteKey} do={query.GetValueOrDefault("do")} → {(int)resp
         site.Api.StartsWith("csp_", StringComparison.OrdinalIgnoreCase) &&
         site.Api.EndsWith("Guard", StringComparison.OrdinalIgnoreCase) && site.Api.Length > 6;
 
-    private async Task EnsureSiteLoadedAsync(VodSiteInfo site, string jarPath, CancellationToken ct, bool force = false)
+    private async Task EnsureSiteLoadedAsync(VodSiteInfo site, string jarPath, CancellationToken ct,
+        bool force = false, BridgeSlot? slot = null)
     {
         if (_loadedSites.TryGetValue(site.Key, out _) && !force) return;
         // 会话级负缓存：结构性加载失败（VerifyError 等，重试也不会好）不再反复烧桥——
@@ -1496,7 +1642,7 @@ Log($"proxy 隧道：{siteKey} do={query.GetValueOrDefault("do")} → {(int)resp
         req["jars"] = new JsonArray(url);
         req["rawJar"] = url;
         Log($"{site.Name}: ART guest 取 jar ← {url}");
-        var resp = await RoundTripAsync(req, TimeSpan.FromSeconds(60), ct);
+        var resp = await RoundTripAsync(req, TimeSpan.FromSeconds(60), ct, true, slot);
         if (resp["ok"]?.GetValue<bool>() != true)
         {
             // 加载失败必须留痕：此前只 log 成功分支，导致「站点没反应」无从查因
