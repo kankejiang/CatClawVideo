@@ -1,4 +1,4 @@
-﻿using System.Text.Json.Nodes;
+using System.Text.Json.Nodes;
 
 namespace CatClawVideo.Maui.Services;
 
@@ -481,8 +481,9 @@ public static class SpiderUiHost
     /// 原生行为，与 TVBox 真机一致）→ ui-dialog 事件上行 → <see cref="HandleAsync"/> 自动渲染。
     ///
     /// <para>2026-09-24 用户拍板：宿主侧登录适配（官网登录 WebView / 硬编码网盘列表）全部删除——
-    /// jar 框架全权负责登录 UX，宿主只做 UI 接入。没等到弹窗时仅保留 jar 自带的 do=config
-    /// Cookie 推送页兜底（那是 jar 自己的页面，非宿主适配）。</para>
+    /// jar 框架全权负责登录 UX，宿主只做 UI 接入。没等到弹窗时给一句人话提示
+    /// （2026-10-03 用户要求删除「打开 jar 自带 do=config 网页」的兜底：它在 Android 上打不开，
+    /// 在 Windows 上也不是好体验）。</para>
     /// </summary>
     public static async Task OpenDriveEntryAsync(VodSiteInfo site, VodItem item)
     {
@@ -527,7 +528,8 @@ public static class SpiderUiHost
                     // （扫码走不通时这条是能用的登录路径）。
                     await ShowToastAsync("扫码弹窗没从 jar 送到宿主（桥侧没有 UI 事件）——改用「粘贴 Cookie」登录")
                         .ConfigureAwait(true);
-                    await GoCookiePageAsync(provider, site, item).ConfigureAwait(true);
+                    // 同上：不再打开 do=config 网页（2026-10-03），改给一句人话。
+                    await ShowToastAsync("该网盘的配置界面没能弹出（jar 未上报）。可改用「粘贴 Cookie」登录，或切换其它线路后再试。").ConfigureAwait(true);
                     return;
                 }
             }
@@ -538,21 +540,16 @@ public static class SpiderUiHost
             await provider.GetPlaySourcesAsync(site, item).ConfigureAwait(true);
             if (await wait.ConfigureAwait(true)) return;   // jar 已弹对话框/二维码（宿主已展示）
 
-            // jar 没弹窗（QEMU so 未就绪等）→ 兜底：Cookie 推送页（jar 自己的 do=config HTML）
-            await GoCookiePageAsync(provider, site, item).ConfigureAwait(true);
+            // jar 没弹窗 → 给一句人话（2026-10-03 用户要求：删掉「打开 do=config 网页」这个兜底，
+            // Windows 与 Android 都不再开 —— 那条 URL 指向宿主本地代理，Android 上 jar 跑在
+            // 进程内，手机 WebView 打开只会看到「网页无法打开 net::ERR_HTTP_RESPONSE」）。
+            await ShowToastAsync("该网盘的配置界面没能弹出（jar 未上报）。可改用「粘贴 Cookie」登录，或切换其它线路后再试。").ConfigureAwait(true);
         }
         catch (Exception ex)
         {
             DiagLog.Write($"[spider-ui] 网盘配置入口异常: {ex.Message}");
         }
 
-        // jar 自带 do=config 的 Cookie 推送页（不是宿主适配，是 jar 自己的页面）
-        async Task GoCookiePageAsync(Core.Interfaces.IVodSourceProvider p, VodSiteInfo s, VodItem it)
-        {
-            var url = $"http://127.0.0.1:{Core.Services.SpiderProxyServer.ActivePort}/proxy?do=config&url={Uri.EscapeDataString(it.Id)}";
-            var title = Uri.EscapeDataString(it.Title ?? "网盘配置");
-            await Shell.Current.GoToAsync($"webpage?title={title}&url={Uri.EscapeDataString(url)}").ConfigureAwait(true);
-        }
     }
 
 
