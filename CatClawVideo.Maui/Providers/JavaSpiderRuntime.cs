@@ -1,4 +1,4 @@
-﻿﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Net.Sockets;
 using System.Diagnostics;
 using System.Security.Cryptography;
@@ -1084,19 +1084,76 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         FailAllPending("ART guest 里的桥崩溃退出，引擎已自动重置——请稍候重试该站点");
     }
 
-    /// <summary>桥会话断开（socket EOF）：pending 请求立即失败并触发引擎重置。
-    /// 为什么必须（2026-09-27 实测）：Guard 壳真实类初始化 SIGSEGV 带走整个桥，
-    /// load 的应答永远不会来——不清的话上层干等 60s 超时 + 4s 生死探针才报「不可用」，
-    /// UI 就是一分钟白屏；清了之后秒级报错，且下一次调用自动重新起桥。
-    /// ART 链路的 IsUp 只看 socket.Connected 与 VM 进程，桥崩后两者仍真、不会自动
-    /// 重拉，必须 ResetBridge 清态。它自带 _resetting 防重入：正常收尾/超时重置
-    /// 杀桥导致的 EOF 在这里直接 return，不会二次重置。</summary>
+    /// <summary>桥会话断开（socket EOF）：pending 请求立即失败，并把会话摘掉等新桥。
+    ///
+    /// <para><b>2026-10-04 关键改动</b>：原实现走 <see cref="ResetBridge"/> → <c>Shutdown()</c> →
+    /// <c>art.Dispose()</c>，即**把整个 VM 杀掉重来**（~20s，期间所有 jar 源全灭）。
+    /// 现在改为：清 pending、摘会话引用、清站点缓存，<b>但不杀 VM</b> ——
+    /// guest 的 /init 监督器（见 guest/qemu-src/tools/x86guest/init_x86.sh，2026-10-04）
+    /// 会按指数退避（2s→4s→…→30s 封顶）<b>在 guest 内原地重启桥</b>，
+    /// 恢复从 ~20s 降到 ~2s，且 /data（持久盘上的网盘 Cookie / 登录态）不动、无需重新登录。</para>
+    ///
+    /// <para>为什么必须清 pending（2026-09-27 实测）：壳真实类初始化 SIGSEGV 会带走整个桥，
+    /// load 的应答永远不会来 —— 不清的话上层干等 60s 超时 + 4s 生死探针才报「不可用」，
+    /// UI 是一分钟白屏；清了之后秒级报错。</para>
+    ///
+    /// <para>ART 链路的 IsUp 只看 socket.Connected 与 VM 进程，桥崩后两者仍真、不会自动
+    /// 重连，故这里把 _art/_stdin/_stdout 摘成 null —— 让下一次调用走 EnsureBridgeAsync
+    /// 重新探到新桥（_bridgeEpoch 不递增：本次不换 VM，只是同代内换了桥）。</para></summary>
     private void FailAllPending(string why)
     {
         foreach (var kv in _pendingResponses)
             if (_pendingResponses.TryRemove(kv.Key, out var tcs))
                 _ = tcs.TrySetException(new InvalidOperationException(why));
-        ResetBridge("读循环退出（桥进程死亡）");
+
+        // 摘会话引用（不 Dispose：VM 与 guest 里的 /init 监督器都要留着）
+        Interlocked.Exchange(ref _art, null);
+        Interlocked.Exchange(ref _stdin, null);
+        _stdout = null;
+
+        lock (_loadedSites) { _loadedSites.Clear(); }
+        lock (_loadFailedSites) { _loadFailedSites.Clear(); }
+        _lastGuardSiteKey = null;
+
+        Log($"桥会话断开（{why}）→ 已丢弃会话，等待 guest 内 /init 重启桥（约 2s；" +
+            "VM 与 /data 不动，网盘登录态保留）。下一次调用会自动连上新桥。");
+
+        // 已装载站点清单会被清掉，但**不重置会话代际**：本次不换 VM。
+        // 若新桥迟迟不来（guest 侧起桥持续失败），下面的兜底窗口会退化为杀 VM 重来，
+        // 保证不会永远卡在「桥不可用」。
+        ScheduleBridgeRecoverFallback();
+    }
+
+    /// <summary>
+    /// 桥断开后的兜底窗口：若 <c>BridgeRecoverGraceSeconds</c> 内没能连上新桥
+    /// （guest 侧 /init 监督器起桥失败、或新桥一起来就崩），则退化为**杀 VM 重来**
+    /// —— 与改动前行为一致，保证「永远卡在桥不可用」这种状态不会发生。
+    ///
+    /// <para>正常路径不会触发：/init 的退避重启一般 2~4 秒内就能接上。
+    /// 这里只做「保险丝」，阈值给得宽（默认 90s）以免误杀。</para>
+    /// </summary>
+    private const int BridgeRecoverGraceSeconds = 90;
+
+    private void ScheduleBridgeRecoverFallback()
+    {
+        var epoch = Volatile.Read(ref _bridgeEpoch);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var deadline = DateTime.UtcNow.AddSeconds(BridgeRecoverGraceSeconds);
+                while (DateTime.UtcNow < deadline)
+                {
+                    await Task.Delay(2000).ConfigureAwait(false);
+                    if (epoch != Volatile.Read(ref _bridgeEpoch)) return;   // 已被别的路径重置
+                    if (IsBridgeReady) return;                              // 新桥已接上，保险丝解除
+                }
+                if (IsBridgeReady || epoch != Volatile.Read(ref _bridgeEpoch)) return;
+                Log($"桥断开后 {BridgeRecoverGraceSeconds}s 仍未恢复 → 退化为杀 VM 重来（兜底路径）");
+                ResetBridge("桥长时间未恢复（兜底）");
+            }
+            catch { /* 兜底线程不抛 */ }
+        });
     }
 
     /// <summary>宿主回传对话框用户操作（which≥0=列表项，-1/-2/-3=肯定/否定/中性按钮）。</summary>

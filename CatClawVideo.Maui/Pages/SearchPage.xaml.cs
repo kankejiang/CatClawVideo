@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using CatClawVideo.Core.Interfaces;
 using CatClawVideo.Core.Models;
 using CatClawVideo.Core.Services;
@@ -1294,7 +1294,11 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
             // 「下载 jar → DexClassLoader → 反射实例化 → init」；并发 6 时把 guest 里的桥压崩过
             // （用户实测：手机端同源 112 个结果、Windows 端 0 个）。降到 3 换取稳定性，
             // 代价是慢源更晚出结果 —— 边搜边出的增量上屏逻辑不受影响。
-            var searchGate = new SemaphoreSlim(3);
+            // 并发上限。2026-10-04：3 → 6。降到 3 是当时为「怀疑并发压垮 ART 桥」做的改动，
+            // 但后续实测该假设不成立（桥崩在 JIT 代码里的空指针，与并发无关），
+            // 而并发 3 会让 96 个站的排队时间远超搜索预算 —— 那是「只搜了 28 个站」的真因。
+            const int SearchConcurrency = 6;
+            var searchGate = new SemaphoreSlim(SearchConcurrency);
 
             // ⚠ 必须用**本次搜索**的令牌（_searchCts）：用户退出页面 / 重新搜索时应当立即停止
             //   后续站点的请求。原实现连令牌都没传，退出后几十个 JNI 调用仍在后台跑。
@@ -1356,25 +1360,34 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
                 }
             }).ToArray();
 
-            // 两段式等待：12s 内到达的先上屏（不等慢站）；慢站再给 20s，迟到的结果照样补进列表。
-            // 总上限 ≈32s，避免个别死站把整页拖到桥那边的 90s 调用超时。
+            // 等待策略（2026-10-04 修「96 个站只搜了 28 个就停」）：
             //
-            // ⚠ 这里**不能**用 Task.Delay(20000) 的固定第二段：那会让「结果早就到齐」的情况
-            //   也白等满 20s —— 用户看到的就是「搜了半天不出结果」（2026-09-19 实测）。
-            //   拆成两段：第一段等首批 12s；只要还有站点没回再给第二段，
-            //   第二段用「500ms 轮询 + 全部回来就提前结束」替代固定等待。
+            // 原实现是两段固定等待：先 12s，再「最多再等 20s」⇒ **总上限恒为 32 秒**。
+            // 而并发上限只有 SearchGate(=3)，96 个站排队光「等名额」就远超 32s
+            // （实测 28 个站 ≈ 32s × 3 ÷ 平均站点耗时），于是队列还没排完就收工，
+            // 剩下的站点**根本没被发起过** —— 用户看到的就是「站点少了」。
+            //
+            // 现在：总时限**按站点数与并发动态计算**，并发闸门放开到 6（ART 桥侧已做 4 worker
+            // 的规划，单进程并发仍是主要压力源，故取折中 6，且下方有失败重试与日志）。
+            // 关键：**超时只是不再等**，已在飞的任务不取消 —— 它们回来后照样上屏
+            // （用户可继续看到结果，无需重搜）。
             var all = Task.WhenAll(tasks);
-            await Task.WhenAny(all, Task.Delay(12000));
 
-            if (!all.IsCompleted && doneCount < sites.Count)
+            // 单站最慢 12s（与 jar 侧调用超时同量级）；每批 3~6 个并发；
+            // 预算 = 首批 12s + 剩余批次估算，最少 45s、最多 180s。
+            var perSiteBudget = 12;
+            var waves = (int)Math.Ceiling(sites.Count / (double)SearchConcurrency);
+            var totalBudgetMs = (int)Math.Clamp(12000 + waves * perSiteBudget * 1000 / 2, 45000, 180000);
+            var waited = 0;
+            while (!all.IsCompleted && doneCount < sites.Count && waited < totalBudgetMs)
             {
-                var waited = 0;
-                while (!all.IsCompleted && doneCount < sites.Count && waited < 20000)
-                {
-                    await Task.Delay(500);
-                    waited += 500;
-                }
+                await Task.Delay(500);
+                waited += 500;
             }
+            if (!all.IsCompleted)
+                DiagLog.Write($"[搜索] 「{kw}」等待预算 {totalBudgetMs / 1000}s 用尽，" +
+                    $"已完成 {doneCount}/{sites.Count} 个站点；其余站点的请求**仍在后台跑**（不取消），" +
+                    "有结果会继续上屏。可按「切换源」或重新搜索查看。");
 
             MainThread.BeginInvokeOnMainThread(() =>
             {
