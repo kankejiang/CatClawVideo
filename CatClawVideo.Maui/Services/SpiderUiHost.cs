@@ -198,11 +198,29 @@ public static class SpiderUiHost
             return;
         }
 
-        // 按钮组合（无自定义 View 的纯 AlertDialog）：合成一棵最小树走树渲染页（白卡片 +
-        // 底部按钮），视觉与其余对话框统一，不再用 MAUI DisplayAlert（2026-10-02 用户反馈）。
+        // 按钮组合（无自定义 View 的纯 AlertDialog）。
+        //
+        // ★ 2026-10-03：纯提示型（正文只是告知，如「算法精准: 择日飞升 第14集 567条 QY」）
+        //   **改走非模态 toast**，与 Android 表现一致（自己消失、不用点「好的」）。用户原话：
+        //   「windows 平台这个对话框能不能改成消息框很烦，和安卓一样会自己消失的」。
+        //   只有**需要用户选择**的（点某个按钮才继续）才保留模态卡片。
         var pos = ev["positive"]?.GetValue<string>();
         var neg = ev["negative"]?.GetValue<string>();
         var neu = ev["neutral"]?.GetValue<string>();
+
+        // 纯提示判定：有正文、且按钮只有「确定/OK」这类无分支语义的（negative/neutral 为空）。
+        // 有 cancelable 或多个按钮时仍走模态：用户可能要点「取消」，toast 会把那条路堵掉。
+        var onlyConfirm = string.IsNullOrEmpty(neg) && string.IsNullOrEmpty(neu);
+        if (onlyConfirm && !string.IsNullOrWhiteSpace(message))
+        {
+            Windows.Remove(seq, out _);            // 不再登记：没有需要等待的用户输入
+            await ShowToastAsync(
+                string.IsNullOrWhiteSpace(title) ? message : $"{title}：{message}").ConfigureAwait(true);
+            // jar 侧仍在等这次对话框的结果：回一个「确定」让它继续（等价按了确定按钮）。
+            _ = SendUiResultAsync(seq, -1);
+            return;
+        }
+
         {
             JsonObject TV(string t, double ts, int tc) => new()
             {
@@ -477,7 +495,9 @@ public static class SpiderUiHost
         var page = Shell.Current?.CurrentPage ?? Application.Current?.Windows?.FirstOrDefault()?.Page;
         if (page is not ContentPage cp || cp.Content is not Grid root)
         {
-            try { if (page is not null) await page.DisplayAlertAsync("提示", text, "好的"); } catch { }
+            // 找不到可叠加容器时也**不弹模态对话框**（2026-10-03 用户反馈：Windows 上「提示/好的」
+            // 那种框很烦，要手动点掉）。退化成短暂日志即可——这条路径本身罕见。
+            DiagLog.Write($"[spider-ui] toast 无可叠加容器，仅记录：{text}");
             return;
         }
         var tip = new Border
