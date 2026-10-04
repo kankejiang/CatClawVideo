@@ -331,10 +331,10 @@ public static class SpiderUiHost
 
         var dim = new Grid
         {
-            BackgroundColor = Microsoft.Maui.Graphics.Color.FromArgb("#99000000"),
+            BackgroundColor = Microsoft.Maui.Graphics.Color.FromArgb("#B3000000"),
             RowDefinitions =
             {
-                new RowDefinition(GridLength.Auto),   // 标题
+                new RowDefinition(GridLength.Auto),   // 标题（避开窗口顶栏）
                 new RowDefinition(GridLength.Star),    // 卡片
             },
         };
@@ -345,9 +345,19 @@ public static class SpiderUiHost
             FontAttributes = FontAttributes.Bold,
             TextColor = Colors.White,
             HorizontalTextAlignment = TextAlignment.Center,
-            Margin = new Thickness(16, 18, 16, 10),
+            // 顶部留出标题栏高度（桌面端 chrome 48px，见 WatchPage 的 Padding），否则标题压在标题栏上
+            Margin = new Thickness(16, 60, 16, 10),
         }, 0, 0);
         dim.Add(card, 0, 1);
+        // 点遮罩空白处也收起（与 jar 的「点遮罩 = 取消」语义一致）
+        var dimTap = new TapGestureRecognizer();
+        dimTap.Tapped += (_, _) =>
+        {
+            Windows.Remove(seq, out _);
+            _ = SendUiResultAsync(seq, -2);
+            DismissOverlay();
+        };
+        dim.GestureRecognizers.Add(dimTap);
 
         // 浮层：挂到当前页的根 Grid（**不进导航栈** ⇒ 不挡 jar 面板的交互与可见性）。
         //
@@ -359,6 +369,15 @@ public static class SpiderUiHost
         void EnsureMounted()
         {
             if (dim.Parent is not null) return;
+            // 挂在**窗口层**而不是当前页的 Content：当前页是滚动页，挂上去只会盖住内容区，
+            // 标题与遮罩会溢出到应用 chrome 之外（实测：标题浮在顶栏上方、遮罩只覆盖下半屏）。
+            // 取 MainPage 的根 ScrollView 的父级（本应用的窗口内容根 = ContentPage.Content）。
+            if (Application.Current?.Windows?.FirstOrDefault()?.Page is ContentPage winRoot
+                && winRoot.Content is Grid winGrid)
+            {
+                winGrid.Children.Add(dim);
+                return;
+            }
             if (Shell.Current.CurrentPage is ContentPage host && host.Content is Grid root)
                 root.Children.Add(dim);
         }
