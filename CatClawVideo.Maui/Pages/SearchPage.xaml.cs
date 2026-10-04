@@ -1259,19 +1259,39 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
         try
         {
             // 逐源勾选（对位 SOURCES_FOR_SEARCH）：没勾上的台不参与本次搜索，也不会计时
+            //
+            // ★ 2026-10-04 重排（修「96 站只跑到 40 出头」）：原排序把「本会话没搜过的站」一律给 0 分、
+            //   排到最前 —— 这个假设**反了**：实测 96 个站里约 95% 是 jar 源（csp_*），
+            //   每一个都要先走 EnsureSiteLoadedAsync（取 jar + DexClassLoader + 反射实例化 + init，
+            //   实测 0.7~3s），而真正毫秒级的恰恰是 MacCMS/直链源（SpiderKind.None）。
+            //   于是「没搜过的 jar 站」全部抢在第一批，把并发名额占满，慢的直链源反而排在后面。
+            //   现在：① 先按站点类型分层（None 直链 → Script 脚本 → Jar 爬虫）；
+            //        ② 同层内仍按历史实测耗时（快站先搜），无记录的按**该层的中位数量级**给默认值，
+            //        而不是一律 0；③ >8s 的慢源沉底（+30s 惩罚），不占首批名额。
             var sites = SiteRegistry.Playable
                 .Where(x => SearchSourceStore.IsSearchable(x.SubscriptionName, x.Key))
-                // ★ 按历史搜索速度调度（用户要求「快的立即显示、慢的延后搜索」）：
-                //   耗时档案由 JavaSpiderRuntime 按 searchContent 实测记录（含桥内排队）；
-                //   MacCMS/本会话没搜过的源无记录 = 0 最先（它们本就是并发 HTTP，最快）；
-                //   上轮 >8s 的慢源加 30s 惩罚沉底，不占第一批并发名额。OrderBy 稳定，同值保持注册顺序。
-                .OrderBy(x => SearchSpeedHint(x.Key))
+                .OrderBy(x => SearchTier(x))
+                .ThenBy(x => SearchSpeedHint(x))
                 .ToList();
 
-            static long SearchSpeedHint(string key) =>
-                CatClawVideo.Core.Providers.JavaSpiderRuntime.LastSearchMs(key) is { } ms
+            // 站点类型分层：直链(0) 真毫秒级 → 脚本(1) → jar 爬虫(2，首次要 load 0.7~3s)
+            static int SearchTier(VodSiteInfo s) => s.SpiderKind switch
+            {
+                CatClawVideo.Core.Models.VodSpiderKind.None => 0,
+                CatClawVideo.Core.Models.VodSpiderKind.Script => 1,
+                _ => 2,
+            };
+
+            // 同层内的默认权重：直链 50ms、脚本 400ms、jar 900ms（实测 load+search 的量级）
+            static long SearchSpeedHint(VodSiteInfo s) =>
+                CatClawVideo.Core.Providers.JavaSpiderRuntime.LastSearchMs(s.Key) is { } ms
                     ? (ms > 8000 ? ms + 30_000 : ms)
-                    : 0;
+                    : (s.SpiderKind switch
+                    {
+                        CatClawVideo.Core.Models.VodSpiderKind.None => 50,
+                        CatClawVideo.Core.Models.VodSpiderKind.Script => 400,
+                        _ => 900,
+                    });
             if (sites.Count == 0)
             {
                 StatusLabel.Text = "暂无可用影片源，请先在设置中添加订阅";
