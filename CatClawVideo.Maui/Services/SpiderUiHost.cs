@@ -582,17 +582,20 @@ public static class SpiderUiHost
                     // 而桥侧**一整天 0 条 ui-dialog 事件** —— jar 的二维码弹窗根本没送到宿主。
                     // 静默等于把故障藏起来：这里给一句人话，并落到 jar 自己的 Cookie 推送页
                     // （扫码走不通时这条是能用的登录路径）。
-                    // 2026-10-03：文案去平台化。原句带「桥侧」（Android 上 jar 跑在进程内、
-                    //   根本没有桥这个概念），按实际情形给一句人话。
+                    // 2026-10-03 三处修正：
+                    // ① 文案去平台化（原句写「桥侧」，Android 上 jar 跑在进程内、没有桥这个概念）；
+                    // ② **只弹一条** —— 此前两轮改文案时在下面又留了一个 ShowToastAsync，两个 toast
+                    //    连着弹、内容互相矛盾；
+                    // ③ 措辞改「登录界面没能弹出」而非「扫码界面没能弹出」：走这条分支的前提是 jar
+                    //    什么界面都没上报，而实测 Android 上二维码是会出的（只是比 action 回话晚一点），
+                    //    说「扫码界面没能弹出」会与屏幕上已经出现的码自相矛盾。
                     await ShowToastAsync(
 #if ANDROID
-                        "扫码界面没能弹出——可改用「粘贴 Cookie」登录，或切换其它线路后再试。")
+                        "该网盘的登录界面没能弹出。可改用「粘贴 Cookie」登录，或切换其它线路后再试。")
 #else
-                        "扫码界面没能弹出（jar 未上报界面事件）——可改用「粘贴 Cookie」登录。")
+                        "该网盘的登录界面没能弹出（jar 未上报界面事件）。可改用「粘贴 Cookie」登录。")
 #endif
                         .ConfigureAwait(true);
-                    // 同上：不再打开 do=config 网页（2026-10-03），改给一句人话。
-                    await ShowToastAsync("该网盘的配置界面没能弹出（jar 未上报）。可改用「粘贴 Cookie」登录，或切换其它线路后再试。").ConfigureAwait(true);
                     return;
                 }
             }
@@ -606,7 +609,7 @@ public static class SpiderUiHost
             // jar 没弹窗 → 给一句人话（2026-10-03 用户要求：删掉「打开 do=config 网页」这个兜底，
             // Windows 与 Android 都不再开 —— 那条 URL 指向宿主本地代理，Android 上 jar 跑在
             // 进程内，手机 WebView 打开只会看到「网页无法打开 net::ERR_HTTP_RESPONSE」）。
-            await ShowToastAsync("该网盘的配置界面没能弹出（jar 未上报）。可改用「粘贴 Cookie」登录，或切换其它线路后再试。").ConfigureAwait(true);
+            await ShowToastAsync("该网盘的配置界面没能弹出（jar 未上报界面事件）。可改用「粘贴 Cookie」登录，或切换其它线路后再试。").ConfigureAwait(true);
         }
         catch (Exception ex)
         {
