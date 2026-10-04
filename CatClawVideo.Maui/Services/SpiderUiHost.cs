@@ -92,6 +92,9 @@ public static class SpiderUiHost
     /// <summary>用户操作回传：桥侧对话框走 stdin，QEMU Guard VM 对话框走控制口 UIR。</summary>
     private static Task SendUiResultAsync(int seq, int which)
     {
+        // 2026-10-04 取证：点「扫码登录」后没出码，此前 ui-result 在日志里一条都没有 ——
+        // 加这行是为了区分「点压根没进来」与「回传了但 jar 没回码」。
+        DiagLog.Write($"[spider-ui] 用户点击回传 seq={seq} which={which}（{(which >= 0 ? "点第 " + which + " 项" : which == -1 ? "确定" : which == -2 ? "取消" : "中性")}）");
         if (QemuSeqs.Contains(seq))
         {
             CatClaw.Qemu.GuardRuntime.Engine?.SendUiResult(seq, which);
@@ -347,22 +350,22 @@ public static class SpiderUiHost
         dim.Add(card, 0, 1);
 
         // 浮层：挂到当前页的根 Grid（**不进导航栈** ⇒ 不挡 jar 面板的交互与可见性）。
-        var page = new ContentPage
-        {
-            BackgroundColor = Colors.Transparent,
-            Content = dim,
-        };
-
+        //
+        // ⚠ 必须挂 **dim（Grid）** 而不是包一层 ContentPage：
+        //   MAUI 规定「Page 的父级也必须是 Page」，把 ContentPage 塞进 Grid 会抛
+        //   InvalidOperationException: Parent of a Page must also be a Page
+        //   （2026-10-04 实测：jar 已把 720x720 的码画好、宿主也解码成功，却因这一次异常
+        //     在事件处理里被吞掉，二维码始终不显示）。
         void EnsureMounted()
         {
-            if (page.Parent is not null) return;
+            if (dim.Parent is not null) return;
             if (Shell.Current.CurrentPage is ContentPage host && host.Content is Grid root)
-                root.Children.Add(page);
+                root.Children.Add(dim);
         }
         void DismissOverlay()
         {
-            try { if (page.Parent is Grid g) g.Children.Remove(page); } catch { }
-            if (ReferenceEquals(TargetOverlay, page)) TargetOverlay = null;
+            try { if (dim.Parent is Grid g) g.Children.Remove(dim); } catch { }
+            if (ReferenceEquals(TargetOverlay, dim)) TargetOverlay = null;
         }
 
         // 关闭按钮放在卡片内容末尾：告诉 jar「取消」（BUTTON_NEGATIVE），否则它一直挂着对话框
@@ -382,10 +385,14 @@ public static class SpiderUiHost
         });
         grid.Children.Add(close);      // grid 现为 VerticalStackLayout（上面统一赋值）
 
-        page.Loaded += (_, _) => EnsureMounted();
+        // 当前页可能还没挂上（jar 的对话框与二维码常常连续到达），Loaded 时补挂一次
+        var host0 = Shell.Current?.CurrentPage;
+        if (host0 is Page hp0) hp0.Loaded += (_, _) => EnsureMounted();
         EnsureMounted();
-        TargetOverlay = page;          // 供 Close(seq) 摘除（浮层不在导航栈里）
-        Windows[seq] = page;
+        TargetOverlay = dim;           // 供 Close(seq) 摘除（浮层不在导航栈里）
+        // 登记一个占位 Page：Close(seq) 只认 Windows 里的登记项，用一个空壳即可
+        // （浮层本身是 Grid，不进导航栈）
+        Windows[seq] = new ContentPage();
     }
 
     /// <summary>URL 的 host（日志只到这一层——登录 URL 的 token 在 query 里，不能落盘）。</summary>
@@ -535,7 +542,8 @@ public static class SpiderUiHost
     }
 
     /// <summary>当前挂着的扫码浮层（ShowQrAsync 挂载时登记，Close 时摘除）。</summary>
-    private static ContentPage? TargetOverlay;
+    /// <summary>当前挂着的扫码浮层（Grid，不进导航栈；见 ShowQrAsync 里的说明）。</summary>
+    private static Grid? TargetOverlay;
 
     // ═══════════ Guard 系网盘源「已登录+启用中」对话框（TVBox 同款交互） ═══════════
 
