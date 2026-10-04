@@ -1426,18 +1426,19 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
             //   而旧公式（waves × 12s / 2）只给 108s —— **差了近一半**，队列排到一半就收工，
             //   这才是「跑到 40 来个站就停」的最后一道闸。
             //
-            // 现在：预算 = 实测均摊耗时 × 站点数 / 并发 × 1.6 冗余，夹在 60s~420s。
-            //   均摊用 1.2s（= p50 448ms 与 p90 2094ms 之间的量级，jitter 留给 1.6 冗余）。
+            // 搜索等待预算（2026-10-04，按实测数据定）。
             //
-            // ⚠ 算术要按「总量 ÷ 并发 × 冗余」估，全程 double。
-            //   原式 avgSiteMs * sites.Count / SearchConcurrency * 1.6 算的是**单批**耗时
-            //   （1200 × 96 ÷ 8 = 14400ms，×1.6 = 23s），却被当作总预算 → 被夹到 60s 下限，
-            //   实测又变回「预算 60s 用尽，已完成 37/96」。正确的是先算总量再除并发：
-            //   96 站总量 1200×96 = 115.2s，÷ 并发 8 = 14.4s/批，× 批数 12 = **173s**。
-            var avgSiteMs = 1200.0;
-            var batches = Math.Ceiling(sites.Count / (double)SearchConcurrency);       // 96/8 = 12 批
-            var perBatchMs = avgSiteMs * batches / SearchConcurrency;                   // 一批的墙钟耗时 ≈ 14.4s
-            var totalBudgetMs = (int)Math.Clamp(perBatchMs * batches * 1.6, 60000, 420000);  // ×12 批 ×1.6 冗余 ≈ 277s
+            // 实测依据（904 个 init 样本）：p50=448ms / p90=2.1s / p99=16s，>25s 的仅 0.9%。
+            //   ⇒ 96 站总量约 1.2s × 96 = 115s；并发 8 下约 **15s** 就能跑完。
+            //   但实测一轮里总有 4~5 个站撞满 25s 超时（个别壳自己会挂 30~60s），
+            //   尾部因此拉长 100s 以上 ⇒ 额外给 serialFloorMs 的「慢站尾部」预算。
+            //
+            // ⚠ 刻意写成最直白的「总量 ÷ 并发 × 冗余 + 尾部」，全程 double：
+            //   之前两次都栽在算术上（先漏乘批数、后把单批耗时当总预算），预算反而缩回 60s。
+            var avgSiteMs = 1200.0;            // 每站均摊耗时（实测 p50~p90 之间）
+            var serialFloorMs = 120_000.0;     // 慢站尾部兜底：实测 4~5 个站各撞满 25s
+            var totalBudgetMs = (int)Math.Clamp(
+                avgSiteMs * sites.Count / SearchConcurrency * 1.6 + serialFloorMs, 60000, 300000);
             var waited = 0;
             DiagLog.Write($"[搜索] 「{kw}」共 {sites.Count} 个站点，并发 {SearchConcurrency}，" +
                          $"等待预算 {totalBudgetMs / 1000}s（实测均摊 {avgSiteMs}ms/站）");
