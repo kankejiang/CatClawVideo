@@ -242,6 +242,19 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
                                     _ => throw new ArgumentException("op=host 不认的方法: " + req["method"]),
                                 };
                             }
+                            else if (req["raw"]?.GetValue<string>() is { Length: > 0 } rawOp)
+                            {
+                                // 2026-10-04 诊断直通道：req.raw 指定要发的 op（req.op 仍按常规解析），
+                                // 原样转发桥并等应答。找 guest 里网盘 Cookie 的落点用：
+                                //   {"id":1,"op":"guest","raw":"find-cookie"}
+                                // op=call 会先查 site 是否已加载、op=host 只认固定几个方法，都不通；
+                                // 这里绕开它们直送桥。
+                                var rawReq = req.DeepClone().AsObject();
+                                rawReq["op"] = rawOp;
+                                payload = (await RoundTripAsync(rawReq,
+                                    TimeSpan.FromSeconds(20), CancellationToken.None, resetOnTimeout: false)
+                                    .ConfigureAwait(false)).ToJsonString();
+                            }
                             else if (req["op"]?.GetValue<string>() == "ui-result")
                             {
                                 // 桥对 ui-result **不写响应**（Server 主循环里直接派发给 UiBridge），
