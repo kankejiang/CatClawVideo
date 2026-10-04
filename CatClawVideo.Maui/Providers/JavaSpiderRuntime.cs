@@ -161,6 +161,18 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         // 正常退出先走一次优雅收尾（VM 进程另有 KillOnClose job 兜底崩溃/被 kill 的情况）
         AppDomain.CurrentDomain.ProcessExit += (_, _) => Shutdown();
         StartBridgeDebugPump();
+
+        // 换源后自动补预热（2026-10-04，用户问「换其他源也能正常预热吗」）：
+        // 订阅集合一变就后台补一轮，PreloadSitesAsync 只处理**尚未 loaded / 未失败**的站，
+        // 所以重复调用很便宜；换源新增的 jar 站会在后台自动预上，不必重启应用。
+        CatClawVideo.Core.Models.SiteRegistry.Changed += () =>
+        {
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(1500).ConfigureAwait(false);   // 让订阅解析/UI 先稳定
+                await PreloadSitesAsync(CancellationToken.None).ConfigureAwait(false);
+            });
+        };
     }
 
     /// <summary>
@@ -710,15 +722,32 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
         }
     }
 
+    /// <summary>
+    /// 预热让路标志：用户发出任何桥请求时由 RoundTripAsync 置 1（本轮预热随即让路），
+    /// 下一次预热开始时复位为 0。见 PreloadSitesAsync。
+    /// </summary>
+    private int _preloadGate;
+
     /// <summary>预加载站点 jar：让首次搜索只剩 searchContent（不再等 load/init）。
-    /// 失败即跳过（负缓存已由 EnsureSiteLoadedAsync 记），不影响用户后续手动搜索。</summary>
+    /// 失败即跳过（负缓存已由 EnsureSiteLoadedAsync 记），不影响用户后续手动搜索。
+    ///
+    /// <para>2026-10-04：用户问「换其他源也能正常预热吗」—— 订阅换了以后新增的站也���被预热。
+    /// 现在：① 本方法在任何时刻调用都只补**尚未 loaded** 的站（_loadedSites 是幂等闸门 ✓），
+    /// 重复调用无害且便宜；② 订阅集合变化时自动补一轮（见构造函数里对 SiteRegistry.Changed 的订阅），
+    /// 所以换源后新增的 jar 站会在后台自动预热，不必重启。</para>
+    /// </summary>
     private async Task PreloadSitesAsync(CancellationToken ct)
     {
+        // 用户请求优先（2026-10-04）：_preloadGate 初始为 0，用户请求到达时由 RoundTripAsync
+        // 置为 1，预热每站前检查它 —— 非 0 就跳���这站，让出桥给交互操作。
+        _preloadGate = 0;
         try
         {
             var sites = CatClawVideo.Core.Models.SiteRegistry.Playable
                 .Where(s => s.SpiderKind == CatClawVideo.Core.Models.VodSpiderKind.Jar
-                         && !string.IsNullOrEmpty(s.Api))
+                         && !string.IsNullOrEmpty(s.Api)
+                         && !_loadedSites.ContainsKey(s.Key)      // 已 loaded 的跳过 ⇒ 换源后只补新增的
+                         && !_loadFailedSites.ContainsKey(s.Key)) // 已知失败的跳过（负缓存）
                 .Take(120).ToList();
             if (sites.Count == 0) return;
             var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -728,9 +757,27 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
             //   （实测 Kan360 → Rebo → App3Q 各吃掉 25s，结果一个都没预热上）。
             // 现在并发 8 路：慢站只拖它自己那一个名额，其余站照常预热。
             //   桥侧 load 与 call 共用不限线程的 CALL_POOL，8 路是安全的。
-            var gate = new SemaphoreSlim(8);
+            // ⚠ 2026-10-04 用户反馈「加了预热以后扫码变得很卡」——
+            //   预热和用户操作抢**同一个桥**：8 路预热在飞时，扫码/播放的请求排在后面，
+            //   表现为点「扫码登录」迟迟不出框。预热是优化，用户操作才是主路。
+            // 现在两条规矩：
+            //   ① 并发从 8 降到 **2**（对桥的压力小到可以忽略，用户请求随时插进来）；
+            //   ② 每次取名额前先看「有没有用户请求在飞」——有就等它跑完再预热
+            //      （_pendingResponses 非空即说明有请求在途）。
+            var gate = new SemaphoreSlim(2);
             using var preloadCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            preloadCts.CancelAfter(TimeSpan.FromSeconds(180));   // 整体封顶，别无限跑
+            preloadCts.CancelAfter(TimeSpan.FromSeconds(240));   // 整体封顶
+
+            // 用户请求在飞时不预热：最多等 20s，超时也继续（宁可慢也别卡住用户）
+            async Task WaitIdleAsync()
+            {
+                var waited = 0;
+                while (waited < 20000 && _pendingResponses.Count > 0)
+                {
+                    await Task.Delay(400).ConfigureAwait(false);
+                    waited += 400;
+                }
+            }
 
             var tasks = sites.Select(async s =>
             {
@@ -739,6 +786,9 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
                 {
                     await gate.WaitAsync(preloadCts.Token).ConfigureAwait(false);
                     entered = true;
+                    await WaitIdleAsync().ConfigureAwait(false);      // ★ 让路给用户操作
+                    if (preloadCts.IsCancellationRequested) return;
+                    if (Volatile.Read(ref _preloadGate) != 0) return;  // ★ 用户正在操作，本轮预热让路
                     if (!IsBridgeReady) await EnsureBridgeAsync(preloadCts.Token).ConfigureAwait(false);
                     var jar = await EnsureConvertedJarAsync(s, preloadCts.Token).ConfigureAwait(false);
                     await EnsureSiteLoadedAsync(s, jar, preloadCts.Token).ConfigureAwait(false);
@@ -1403,6 +1453,10 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
             throw new InvalidOperationException("爬虫引擎正在重置（上一次调用无响应），请稍后重试");
         var tcs = new TaskCompletionSource<JsonObject>(TaskCreationOptions.RunContinuationsAsynchronously);
         _pendingResponses[expectId] = tcs;
+
+        // 用户请求来了 → 立刻打断预热（2026-10-04：加了预热后「扫码变得很卡」）。
+        // 预热只是优化；点扫码/播放这类交互必须立刻优先，否则请求要排在预热后面等。
+        Volatile.Write(ref _preloadGate, 1);
         try
         {
             // 先注册再写（响应可能在写返回前就到）——读循环按 id 完成之

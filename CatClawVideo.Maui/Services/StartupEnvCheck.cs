@@ -1,4 +1,4 @@
-﻿using CatClaw.Qemu;
+using CatClaw.Qemu;
 
 namespace CatClawVideo.Maui.Services;
 
@@ -107,9 +107,8 @@ public static class StartupEnvCheck
         // JavaSpiderRuntime.EnsureDexJarAsync 明确报错并给出替代方案（换含 classes.dex 的源）。
         try
         {
-            var osVer = Environment.OSVersion.Version;   // 比 OSDescription 短，右栏放得下
             items.Add(new EnvCheckItem("系统", EnvCheckLevel.Info,
-                $"Windows {osVer.Major}.{osVer.Minor}.{osVer.Build} · " +
+                $"{WindowsVersionText()} · " +
                 $"{System.Runtime.InteropServices.RuntimeInformation.OSArchitecture} · .NET {Environment.Version.Major}"));
         }
         catch { }
@@ -117,4 +116,51 @@ public static class StartupEnvCheck
         return items;
     }
 
+    /// <summary>
+    /// Windows 版本描述，形如「Windows 11 Pro · 26200.9457」。
+    ///
+    /// <para><b>为什么不能直接读注册表 ProductName</b>：微软从 Windows 11 21H2 起就没再更新过那个键 ——
+    /// 实测本机（Build 26200 / 25H2，实打实的 Windows 11）注册表里仍写着
+    /// <c>ProductName = "Windows 10 Pro"</c>，照样认错。</para>
+    ///
+    /// <para><b>也不能用 Environment.OSVersion</b>：它在 Win11 上谎报 <c>10.0.x</c>
+    /// （兼容性谎报），本机实测 <c>10.0.26200.0</c>。</para>
+    ///
+    /// <para><b>可靠判据只有 Build 号</b>：≥22000 即 Windows 11（微软官方分界），
+    /// ≥20348 是 Server 2022，≥19041 是 Server / Win10 21H1 一线。Build 号本身是真实的。</para>
+    /// </summary>
+    private static string WindowsVersionText()
+    {
+        var build = 0; var ubr = 0;
+        try { build = Environment.OSVersion.Version.Build; } catch { }
+
+        var product = ""; var display = "";
+        try
+        {
+            using var key = Microsoft.Win32.Registry.LocalMachine
+                .OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion");
+            if (key is not null)
+            {
+                product = key.GetValue("ProductName") as string ?? "";
+                display = key.GetValue("DisplayVersion") as string ?? "";
+                ubr = Convert.ToInt32(key.GetValue("UBR") ?? 0);
+            }
+        }
+        catch { }
+
+        // 版别（Pro / Home / Enterprise…）从 ProductName 里剥掉系统名，只留版别
+        var edition = product.Replace("Windows 10", "").Replace("Windows 11", "")
+                            .Replace("Windows 11 ", "").Replace("Windows 10 ", "").Trim();
+        var isServer = product.Contains("Server", StringComparison.OrdinalIgnoreCase);
+
+        var sysName = isServer
+            ? "Windows Server"
+            : (build >= 22000 ? "Windows 11" : "Windows 10");
+
+        var name = edition.Length > 0 ? $"{sysName} {edition}" : sysName;
+        var buildText = build > 0
+            ? (ubr > 0 ? $"{build}.{ubr}" : build.ToString())
+            : (product.Length > 0 ? product : "未知版本");
+        return $"{name} · {buildText}" + (display.Length > 0 ? $"（{display}）" : "");
+    }
 }

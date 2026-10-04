@@ -120,6 +120,11 @@ public partial class HomePage : ContentView, ITabView, IRemoteKeyHandler
         //   Android 端用进程内 DexSpiderRuntime，直接进主界面即可（数据加载已有骨架/转圈）。
         if (!OperatingSystem.IsWindows()) return;
 
+        // ★ 必须在这里显式打开：XAML 里已改成 IsVisible="False"（免得 Android 端构造期闪一下），
+        //   Windows 端由本方法负责显示。
+        //   2026-10-04 用户反馈「启动画面给你改没了」—— 当时就漏了这一行。
+        ColdStartOverlay.IsVisible = true;
+
         _coldStartTimer = Dispatcher.CreateTimer();
         _coldStartTimer.Interval = TimeSpan.FromMilliseconds(400);
         _coldStartTimer.Tick += (_, _) => UpdateColdStartOverlay();
