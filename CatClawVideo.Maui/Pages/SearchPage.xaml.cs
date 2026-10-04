@@ -1322,7 +1322,10 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
             // 并发上限。2026-10-04：3 → 6。降到 3 是当时为「怀疑并发压垮 ART 桥」做的改动，
             // 但后续实测该假设不成立（桥崩在 JIT 代码里的空指针，与并发无关），
             // 而并发 3 会让 96 个站的排队时间远超搜索预算 —— 那是「只搜了 28 个站」的真因。
-            const int SearchConcurrency = 6;
+            // 2026-10-04：6 → 8。实测 init p75=1.3s / p90=2.1s（904 样本），站点很快，
+            // 闸门太窄会让 96 个站的队列排很久；ART 侧已有多桥（CATCLAW_BRIDGES）与
+            // per-site 异步 CALL_POOL，8 路并发是安全的。
+            const int SearchConcurrency = 8;
             var searchGate = new SemaphoreSlim(SearchConcurrency);
 
             // ⚠ 必须用**本次搜索**的令牌（_searchCts）：用户退出页面 / 重新搜索时应当立即停止
@@ -1406,12 +1409,21 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
             // （用户可继续看到结果，无需重搜）。
             var all = Task.WhenAll(tasks);
 
-            // 单站最慢 12s（与 jar 侧调用超时同量级）；每批 3~6 个并发；
-            // 预算 = 首批 12s + 剩余批次估算，最少 45s、最多 180s。
-            var perSiteBudget = 12;
-            var waves = (int)Math.Ceiling(sites.Count / (double)SearchConcurrency);
-            var totalBudgetMs = (int)Math.Clamp(12000 + waves * perSiteBudget * 1000 / 2, 45000, 180000);
+            // 搜索等待预算（2026-10-04 二次修正：公式按实测重算，不再拍脑袋）。
+            //
+            // 实测（904 个 init 样本）：p50=448ms / p90=2094ms / p99=16.0s，>25s 的只有 0.9%。
+            //   ⇒ 96 个站逐站耗时合计约 1172s（25s 截断后），并发 6 需要 **195s**；
+            //   而旧公式（waves × 12s / 2）只给 108s —— **差了近一半**，队列排到一半就收工，
+            //   这才是「跑到 40 来个站就停」的最后一道闸。
+            //
+            // 现在：预算 = 实测均摊耗时 × 站点数 / 并发 × 1.6 冗余，夹在 60s~420s。
+            //   均摊用 1.2s（= p50 448ms 与 p90 2094ms 之间的量级，jitter 留给 1.6 冗余）。
+            var avgSiteMs = 1200;
+            var totalBudgetMs = (int)Math.Clamp(
+                (long)(avgSiteMs * sites.Count / SearchConcurrency * 1.6), 60000, 420000);
             var waited = 0;
+            DiagLog.Write($"[搜索] 「{kw}」共 {sites.Count} 个站点，并发 {SearchConcurrency}，" +
+                         $"等待预算 {totalBudgetMs / 1000}s（实测均摊 {avgSiteMs}ms/站）");
             while (!all.IsCompleted && doneCount < sites.Count && waited < totalBudgetMs)
             {
                 await Task.Delay(500);
