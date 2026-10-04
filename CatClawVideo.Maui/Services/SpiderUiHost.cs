@@ -280,51 +280,94 @@ public static class SpiderUiHost
         else
             DiagLog.Write("[spider-ui] 宿主未能从二维码解出 URL（不影响显示，仅少一行可复制文本）");
 
-        var cancel = new Button
+        // 卡片内容：二维码 + 可复制的 URL（关闭按钮在下面统一加，避免出现两个取消）
+        // 行必须显式排：不写的话 Image 与 urlLabel 都落 row 0，挤在一起
+        var stack = new VerticalStackLayout
         {
-            Text = "取消",
-            TextColor = Colors.White,
-            BackgroundColor = Microsoft.Maui.Graphics.Color.FromArgb("#333333"),
-            Margin = new Thickness(24, 0, 24, 24),
+            Spacing = 6,
             HorizontalOptions = LayoutOptions.Center,
+            Children = { image },
         };
-        cancel.Command = new Microsoft.Maui.Controls.Command(async () =>
+        if (urlLabel is not null) stack.Children.Add(urlLabel);
+        var grid = stack;
+        // ★ 不再整页模态（2026-10-03，用户反馈「扫码弹窗挡住二维码」）：
+        //   旧实现 PushModalAsync 一个黑底整页，把 jar 自己弹的网盘面板（已登录+启用中/停用中 那些行）
+        //   完全盖住，用户既看不到状态、也点不到下面的按钮。
+        //   改为**半透明浮层**挂在当前页上：卡片居中、四周仍可见并可点；点浮层空白处或「关闭」收起。
+        //   这样 jar 的面板保持可见，扫码与操作可以对照着来。
+        var card = new Border
         {
-            // 告诉桥「取消」（Android BUTTON_NEGATIVE），否则它一直挂着这个对话框。
-            // 先摘掉登记：桥随后上行的 ui-dismiss 会走 Close(seq)，不摘就会**再弹一次模态**，
-            // 把背后那页也弹没。
-            Windows.Remove(seq, out _);
-            await SendUiResultAsync(seq, -2).ConfigureAwait(true);
-            try { await Shell.Current.Navigation.PopModalAsync(); } catch { }
-        });
-        // 按钮必须显式放第 1 行：不写的话它和 Image 都落在 row 0，挤在屏幕正中
-        var grid = new Grid
-        {
-            RowDefinitions =
-            {
-                new RowDefinition(GridLength.Star),
-                new RowDefinition(GridLength.Auto),
-            },
-        };
-        grid.Children.Add(image);
-        if (urlLabel is not null)
-        {
-            grid.RowDefinitions.Add(new RowDefinition(GridLength.Auto));   // 中间插一行可复制的 URL
-            grid.Add(urlLabel, 0, 1);
-            grid.Add(cancel, 0, 2);
-        }
-        else
-        {
-            grid.Add(cancel, 0, 1);
-        }
-        var page = new ContentPage
-        {
-            Title = string.IsNullOrWhiteSpace(title) ? "扫码登录" : title,
-            BackgroundColor = Colors.Black,
+            BackgroundColor = Microsoft.Maui.Graphics.Color.FromArgb("#F2101010"),
+            Stroke = Microsoft.Maui.Graphics.Color.FromArgb("#40FFFFFF"),
+            StrokeThickness = 1,
+            StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 14 },
+            Padding = new Thickness(10, 14, 10, 8),
+            WidthRequest = 360,
+            VerticalOptions = LayoutOptions.Center,
+            HorizontalOptions = LayoutOptions.Center,
             Content = grid,
         };
+
+        var dim = new Grid
+        {
+            BackgroundColor = Microsoft.Maui.Graphics.Color.FromArgb("#99000000"),
+            RowDefinitions =
+            {
+                new RowDefinition(GridLength.Auto),   // 标题
+                new RowDefinition(GridLength.Star),    // 卡片
+            },
+        };
+        dim.Add(new Label
+        {
+            Text = string.IsNullOrWhiteSpace(title) ? "扫码登录" : title,
+            FontSize = 15,
+            FontAttributes = FontAttributes.Bold,
+            TextColor = Colors.White,
+            HorizontalTextAlignment = TextAlignment.Center,
+            Margin = new Thickness(16, 18, 16, 10),
+        }, 0, 0);
+        dim.Add(card, 0, 1);
+
+        // 浮层：挂到当前页的根 Grid（**不进导航栈** ⇒ 不挡 jar 面板的交互与可见性）。
+        var page = new ContentPage
+        {
+            BackgroundColor = Colors.Transparent,
+            Content = dim,
+        };
+
+        void EnsureMounted()
+        {
+            if (page.Parent is not null) return;
+            if (Shell.Current.CurrentPage is ContentPage host && host.Content is Grid root)
+                root.Children.Add(page);
+        }
+        void DismissOverlay()
+        {
+            try { if (page.Parent is Grid g) g.Children.Remove(page); } catch { }
+            if (ReferenceEquals(TargetOverlay, page)) TargetOverlay = null;
+        }
+
+        // 关闭按钮放在卡片内容末尾：告诉 jar「取消」（BUTTON_NEGATIVE），否则它一直挂着对话框
+        var close = new Button
+        {
+            Text = "关闭",
+            TextColor = Colors.White,
+            BackgroundColor = Microsoft.Maui.Graphics.Color.FromArgb("#333333"),
+            CornerRadius = 10,
+            Margin = new Thickness(0, 12, 0, 0),
+        };
+        close.Command = new Microsoft.Maui.Controls.Command(async () =>
+        {
+            Windows.Remove(seq, out _);          // 先摘登记：jar 随后 ui-dismiss 走 Close 不会重复弹
+            await SendUiResultAsync(seq, -2).ConfigureAwait(true);
+            DismissOverlay();
+        });
+        grid.Children.Add(close);      // grid 现为 VerticalStackLayout（上面统一赋值）
+
+        page.Loaded += (_, _) => EnsureMounted();
+        EnsureMounted();
+        TargetOverlay = page;          // 供 Close(seq) 摘除（浮层不在导航栈里）
         Windows[seq] = page;
-        await Shell.Current.Navigation.PushModalAsync(page).ConfigureAwait(true);
     }
 
     /// <summary>URL 的 host（日志只到这一层——登录 URL 的 token 在 query 里，不能落盘）。</summary>
@@ -458,8 +501,21 @@ public static class SpiderUiHost
     private static void Close(int seq)
     {
         if (!Windows.Remove(seq, out _)) return;
-        try { MainThread.BeginInvokeOnMainThread(() => _ = Shell.Current.Navigation.PopModalAsync()); } catch { }
+        try
+        {
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                // 浮层（扫码页）不在导航栈里 → 直接从承载 Grid 摘掉；模态页才 PopModal。
+                var target = (Microsoft.Maui.Controls.Element?)null;
+                if (TargetOverlay is { } ov && ov.Parent is Grid og) { og.Children.Remove(ov); TargetOverlay = null; return; }
+                _ = Shell.Current.Navigation.PopModalAsync();
+            });
+        }
+        catch { }
     }
+
+    /// <summary>当前挂着的扫码浮层（ShowQrAsync 挂载时登记，Close 时摘除）。</summary>
+    private static ContentPage? TargetOverlay;
 
     // ═══════════ Guard 系网盘源「已登录+启用中」对话框（TVBox 同款交互） ═══════════
 
@@ -526,7 +582,14 @@ public static class SpiderUiHost
                     // 而桥侧**一整天 0 条 ui-dialog 事件** —— jar 的二维码弹窗根本没送到宿主。
                     // 静默等于把故障藏起来：这里给一句人话，并落到 jar 自己的 Cookie 推送页
                     // （扫码走不通时这条是能用的登录路径）。
-                    await ShowToastAsync("扫码弹窗没从 jar 送到宿主（桥侧没有 UI 事件）——改用「粘贴 Cookie」登录")
+                    // 2026-10-03：文案去平台化。原句带「桥侧」（Android 上 jar 跑在进程内、
+                    //   根本没有桥这个概念），按实际情形给一句人话。
+                    await ShowToastAsync(
+#if ANDROID
+                        "扫码界面没能弹出——可改用「粘贴 Cookie」登录，或切换其它线路后再试。")
+#else
+                        "扫码界面没能弹出（jar 未上报界面事件）——可改用「粘贴 Cookie」登录。")
+#endif
                         .ConfigureAwait(true);
                     // 同上：不再打开 do=config 网页（2026-10-03），改给一句人话。
                     await ShowToastAsync("该网盘的配置界面没能弹出（jar 未上报）。可改用「粘贴 Cookie」登录，或切换其它线路后再试。").ConfigureAwait(true);
