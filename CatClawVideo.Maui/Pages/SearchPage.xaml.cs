@@ -55,6 +55,15 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
     public Command SearchCommand { get; }
 
     private bool _searching;
+
+    /// <summary>
+    /// 搜索代际号（2026-10-04）：每次开搜 +1。
+    ///
+    /// <para>修「跑到几十个站就停」的竞态：上一轮搜索的 <c>finally</c> 会无条件把
+    /// <c>_searching</c> 置 false，而新一轮已经置 true 并在排队发请求了 —— 旧 finally
+    /// 一到，新一轮的「排队后 _searching 已为 false」就命中 274 次，UI 状态被旧轮次覆盖。</para>
+    /// </summary>
+    private int _searchGen;
     private bool _hotLoaded;
 
     /// <summary>结果态（true）／输入态（false）。结果态下键盘收起、结果显示。</summary>
@@ -1229,6 +1238,7 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
         }
 
         _searching = true;
+        var gen = ++_searchGen;      // 本轮代际：finally 里只有代际仍相同才允许清 _searching
         ((Command)SearchCommand).ChangeCanExecute();
 
         PushHistory(kw);
@@ -1447,8 +1457,13 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
         }
         finally
         {
-            _searching = false;
-            ((Command)SearchCommand).ChangeCanExecute();
+            // 只有**本轮**才允许清 _searching：若是更新的搜索已经开始（用户又点了一次），
+            // 这里绝不能把它的状态覆盖掉（那正是「跑到几十个站就停」的根因）。
+            if (gen == _searchGen)
+            {
+                _searching = false;
+                ((Command)SearchCommand).ChangeCanExecute();
+            }
         }
     }
 
