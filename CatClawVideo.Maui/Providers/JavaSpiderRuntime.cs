@@ -697,10 +697,63 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
             var sw = System.Diagnostics.Stopwatch.StartNew();
             await EnsureBridgeAsync(cts.Token).ConfigureAwait(false);
             Log($"桥预热完成（{sw.ElapsedMilliseconds}ms，ART guest）");
+            // 桥起来后顺手把常用站点的 jar 预加载掉（2026-10-04）。
+            // 为什么需要：实测搜索慢在 **load** 而不是搜索本身 ——
+            //   58 个站的 init 中位 441ms、合计 52.9s，且 step#10 是**逐站串行**推进（间隔 0.6~0.8s）；
+            //   而 searchContent 本身中位只有 373ms。
+            //   ⇒ 96 个站的「首次 load」就是搜索慢的全部原因。空闲时提前 load 好，搜索只剩搜索。
+            _ = Task.Run(() => PreloadSitesAsync(CancellationToken.None));
         }
         catch (Exception ex)
         {
             Log($"桥预热失败/放弃（不影响后续懒启动）: {ex.Message}");
+        }
+    }
+
+    /// <summary>预加载站点 jar：让首次搜索只剩 searchContent（不再等 load/init）。
+    /// 失败即跳过（负缓存已由 EnsureSiteLoadedAsync 记），不影响用户后续手动搜索。</summary>
+    private async Task PreloadSitesAsync(CancellationToken ct)
+    {
+        try
+        {
+            var sites = CatClawVideo.Core.Models.SiteRegistry.Playable
+                .Where(s => s.SpiderKind == CatClawVideo.Core.Models.VodSpiderKind.Jar
+                         && !string.IsNullOrEmpty(s.Api))
+                .Take(120).ToList();
+            if (sites.Count == 0) return;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var ok = 0; var fail = 0;
+
+            // ⚠ 2026-10-04：原来这里是**串行**，于是「load 超时 25s」的站会一个接一个把预加载拖死
+            //   （实测 Kan360 → Rebo → App3Q 各吃掉 25s，结果一个都没预热上）。
+            // 现在并发 8 路：慢站只拖它自己那一个名额，其余站照常预热。
+            //   桥侧 load 与 call 共用不限线程的 CALL_POOL，8 路是安全的。
+            var gate = new SemaphoreSlim(8);
+            using var preloadCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            preloadCts.CancelAfter(TimeSpan.FromSeconds(180));   // 整体封顶，别无限跑
+
+            var tasks = sites.Select(async s =>
+            {
+                var entered = false;
+                try
+                {
+                    await gate.WaitAsync(preloadCts.Token).ConfigureAwait(false);
+                    entered = true;
+                    if (!IsBridgeReady) await EnsureBridgeAsync(preloadCts.Token).ConfigureAwait(false);
+                    var jar = await EnsureConvertedJarAsync(s, preloadCts.Token).ConfigureAwait(false);
+                    await EnsureSiteLoadedAsync(s, jar, preloadCts.Token).ConfigureAwait(false);
+                    Interlocked.Increment(ref ok);
+                }
+                catch { Interlocked.Increment(ref fail); }
+                finally { if (entered) gate.Release(); }
+            }).ToArray();
+
+            await Task.WhenAll(tasks).ConfigureAwait(false);
+            Log($"jar 预加载完成：{ok} 成功 / {fail} 失败 / 共 {sites.Count}（{sw.ElapsedMilliseconds}ms）");
+        }
+        catch (Exception ex)
+        {
+            Log($"jar 预加载结束（不影响使用）: {ex.Message}");
         }
     }
 

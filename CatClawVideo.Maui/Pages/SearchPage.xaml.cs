@@ -1332,10 +1332,12 @@ public partial class SearchPage : ContentPage, IRemoteKeyHandler
             // 并发上限。2026-10-04：3 → 6。降到 3 是当时为「怀疑并发压垮 ART 桥」做的改动，
             // 但后续实测该假设不成立（桥崩在 JIT 代码里的空指针，与并发无关），
             // 而并发 3 会让 96 个站的排队时间远超搜索预算 —— 那是「只搜了 28 个站」的真因。
-            // 2026-10-04：6 → 8。实测 init p75=1.3s / p90=2.1s（904 样本），站点很快，
-            // 闸门太窄会让 96 个站的队列排很久；ART 侧已有多桥（CATCLAW_BRIDGES）与
-            // per-site 异步 CALL_POOL，8 路并发是安全的。
-            const int SearchConcurrency = 8;
+            // 2026-10-04：8 → 16。慢的真正原因是 **load 阶段**：
+            //   实测 58 个站的 init 中位 441ms、合计 52.9s，step#10 在桥内逐站串行推进（间隔 0.6~0.8s），
+            //   而 searchContent 本身中位只有 373ms —— 慢的全在 load/init。
+            //   桥侧 load 与 call 共用 CALL_POOL（newCachedThreadPool，不限线程），
+            //   瓶颈在宿主侧闸门：8 路 ⇒ 96 站 12 批 ×0.6s ≈ 70s；提到 16 ⇒ 6 批 ≈ 35s。
+            const int SearchConcurrency = 16;
             var searchGate = new SemaphoreSlim(SearchConcurrency);
 
             // ⚠ 必须用**本次搜索**的令牌（_searchCts）：用户退出页面 / 重新搜索时应当立即停止
