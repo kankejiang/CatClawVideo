@@ -1010,6 +1010,23 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     }
 
     /// <summary>
+    /// 桥绑定的键：按 jar 归组（2026-10-04，见 CallAsync 处的说明）。
+    /// 同一 jar 的站共用一把桥内锁，必须落在同一桥；不同 jar 才并行。
+    /// </summary>
+    private static string JarKeyOf(string jarPath)
+    {
+        try
+        {
+            // jar 路径形如 …\raw-<hash>.jar 或 …\<hash>.jar，取文件名里的 hash 部分归组
+            var name = Path.GetFileNameWithoutExtension(jarPath);
+            var i = name.IndexOf('-');
+            if (i >= 0 && i < name.Length - 1) name = name[(i + 1)..];
+            return "jar:" + name;
+        }
+        catch { return "jar:" + jarPath; }
+    }
+
+    /// <summary>
     /// 给站点挑桥：已绑定且活着 → 沿用；绑定已死 → 解绑重选；否则按「轮转起点 + 最闲优先」挑一个。
     /// 没有可用副桥时返回 null（调用方走主桥 _stdin，行为同单桥）。
     /// </summary>
@@ -1418,9 +1435,18 @@ public class JavaSpiderRuntime : ISpiderRuntime, ISpiderProxyRuntime, ISpiderAct
     {
         await EnsureBridgeAsync(ct);
         var jar = await EnsureConvertedJarAsync(site, ct);
-        // 多桥（2026-10-04）：本站绑定一个桥，load 与后续所有调用都走它
-        //（jar 实例活在桥内，中途换桥就得重新 load —— 那正是要避免的排队）。
-        var slot = AcquireSlot(site.Key);
+        // 多桥（2026-10-04）：**按 jar** 而不是按站点绑定桥。
+        //
+        // 为什么按 jar（实测 825 次 load 只有 2 个不同 hash，1071 次取的是同一个 jar）：
+        //   桥内是 synchronized(SITE_LOCKS[...]) 串行同族调用，而同一 jar 的多个站（Wogg 族、
+        //   荐片族…实测 AppUn/TingShijie 单族能堆到 30 秒）会**抢同一把锁**。
+        //   若按站点分配，这些同族站会被打散到不同桥、各自串行 —— 锁仍在桥内，并发没变，
+        //   却多了「同族站被拆散」的问题。按 jar 绑定则：
+        //   · 同一 jar 的站都在同一桥上，串行行为与单桥一致（正确性不变）；
+        //   · 不同 jar 分布到不同桥，真正并行（96 个站里只有 2 个 jar ⇒ 最多 2 路并行，
+        //     收益有限但符合语义；等 jar 种类变多时自动扩展）。
+        //   · 站点自身仍会「首次 load 后复用」（_loadedSites），不会每搜一次重载。
+        var slot = AcquireSlot(JarKeyOf(jar));
         await EnsureSiteLoadedAsync(site, jar, ct, slot: slot);
         _lastSite = site;   // spider 稍后发起的 /proxy 回调不带 siteKey，靠它定位
 
@@ -1642,7 +1668,24 @@ Log($"proxy 隧道：{siteKey} do={query.GetValueOrDefault("do")} → {(int)resp
         req["jars"] = new JsonArray(url);
         req["rawJar"] = url;
         Log($"{site.Name}: ART guest 取 jar ← {url}");
-        var resp = await RoundTripAsync(req, TimeSpan.FromSeconds(60), ct, true, slot);
+        // load 超时 60s → 25s（2026-10-04）。实测 48 个站的 init 中位数只有 8ms，但个别源
+        // （TingShijie 30s / TingYou 12s / Tiu6 / JSo 各 10.5s）会把 60s 满额耗死 ——
+        // 搜索是「广撒网」，这些站本轮失败即可，不该让整轮 96 个站陪着等。
+        // 25s 与 SearchContentAsync 的搜索超时对齐（同一批站、同一量级）。
+        //
+        // 超时也要进负缓存（_loadFailedSites）：否则下一次搜索又对这个站重新 load 一遍、
+        // 再耗 25s —— 实测「TingShijie 30s」反复出现 5 次就是这么来的。
+        JsonObject resp;
+        try
+        {
+            resp = await RoundTripAsync(req, TimeSpan.FromSeconds(25), ct, resetOnTimeout: false, slot);
+        }
+        catch (TimeoutException)
+        {
+            _loadFailedSites[site.Key] = "load 超时 25s（本会话不再重试）";
+            Log($"站点 {site.Key} load 超时 25s（类名 {className}）→ 本会话跳过，不再重试");
+            throw;
+        }
         if (resp["ok"]?.GetValue<bool>() != true)
         {
             // 加载失败必须留痕：此前只 log 成功分支，导致「站点没反应」无从查因
